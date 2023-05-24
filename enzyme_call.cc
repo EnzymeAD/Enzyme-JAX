@@ -20,6 +20,8 @@
 
 #include "pybind11/pybind11.h"
 
+#include "clang_compile.h"
+
 namespace {
 class CpuKernel {
  public:
@@ -37,6 +39,15 @@ class CpuKernel {
                         bool dump_ir) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     int64_t identifier = last_identifier++;
+
+    std::string output;
+    int64_t status = GetLLVMFromJob("/enzyme_call/source.cpp", source.str(), output);
+    if (status != 0)
+      throw pybind11::value_error("failed to compile C++");
+
+    // TODO: replace this with something more useful
+    llvm::errs() << "compiled c++ to: " << output << "\n";
+
     kernels.try_emplace(
         identifier,
         std::make_unique<CpuKernel>(identifier, source, out_shapes, dump_ir));

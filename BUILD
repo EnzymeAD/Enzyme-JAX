@@ -8,20 +8,11 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pybind_extension(
-    name = "enzyme_call",
-    srcs = ["enzyme_call.cc"],
+cc_library(
+    name = "clang_compile",
+    srcs = ["clang_compile.cc"],
+    hdrs = ["clang_compile.h"],
     deps = [
-        "@pybind11",
-        "@llvm-project//llvm:Support",
-    ],
-)
-
-pybind_extension(
-    name = "pyllvm",
-    srcs = ["pyllvm.cc"],
-    deps = [
-        "@pybind11",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:driver",
@@ -32,5 +23,25 @@ pybind_extension(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
+    ],
+)
+
+pybind_extension(
+    name = "enzyme_call",
+    srcs = ["enzyme_call.cc"],
+    deps = [
+        "@pybind11",
+        "@llvm-project//llvm:Support",
+        ":clang_compile",
+    ],
+)
+
+pybind_extension(
+    name = "pyllvm",
+    srcs = ["pyllvm.cc"],
+    deps = [
+        "@pybind11",
+        "@llvm-project//llvm:Support",
+        ":clang_compile",
     ],
 )
