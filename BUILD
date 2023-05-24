@@ -12,6 +12,7 @@ cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
+    data = ["@llvm-project//clang:builtin_headers_gen"],
     deps = [
         "@pybind11",
         "@llvm-project//clang:ast",
