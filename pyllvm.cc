@@ -227,9 +227,6 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 
   fs->addFile(filename, timer, llvm::MemoryBuffer::getMemBuffer(filecontents, filename, /*RequiresNullTerminator*/false));
 
-  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> fuseFS(new llvm::vfs::OverlayFileSystem(baseFS));
-  fuseFS->pushOverlay(fuseFS);
-
   std::unique_ptr<llvm::raw_pwrite_stream> outputStream(new llvm::raw_svector_ostream(outputvec));
   Clang->setOutputStream(std::move(outputStream));
   Clang->createFileManager(fs);
@@ -268,6 +265,7 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 
   output.assign(outputvec.data(), outputvec.size());
 
+  return 0;
 }
 
 
