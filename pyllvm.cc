@@ -20,14 +20,14 @@ PYBIND11_MODULE(pyllvm, m) {
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
 
-  m.def("compile", [&](std::string &s) {
+  m.def("compile", [&](std::string &s, pybind11::object args) {
     std::string output;
-    GetLLVMFromJob("/pyenzyme/input.c", s, output);
+    GetLLVMFromJob("/pyenzyme/input.c", s, output, /*cpp*/false, args.ptr());
       return output;
   });
-  m.def("compilepp", [&](std::string &s) {
+  m.def("compilepp", [&](std::string &s, pybind11::object args) {
     std::string output;
-    GetLLVMFromJob("/pyenzyme/input.cpp", s, output);
+    GetLLVMFromJob("/pyenzyme/input.cpp", s, output, /*cpp*/true, args.ptr());
       //obvious memory leak, but need to do something with memory since not taken
       return output; //std::shared_ptr<llvm::LLLexer>(new llvm::LLLexer(*(new std::string(s)),  *sm, *sd, Ctx));
   });

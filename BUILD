@@ -13,6 +13,7 @@ cc_library(
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
     deps = [
+        "@pybind11",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:driver",

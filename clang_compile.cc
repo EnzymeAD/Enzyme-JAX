@@ -62,6 +62,30 @@
 #include "llvm/Support/Host.h"
 #include "clang/FrontendTool/Utils.h"
 
+#include <Python.h>
+#include <pybind11/pybind11.h>
+#if PY_VERSION_HEX < 0x03000000
+#define MyPyText_AsString PyString_AsString
+#else
+#define MyPyText_AsString PyUnicode_AsUTF8
+#endif
+
+
+namespace clang {
+namespace driver {
+namespace tools {
+/// \p EnvVar is split by system delimiter for environment variables.
+/// If \p ArgName is "-I", "-L", or an empty string, each entry from \p EnvVar
+/// is prefixed by \p ArgName then added to \p Args. Otherwise, for each
+/// entry of \p EnvVar, \p ArgName is added to \p Args first, then the entry
+/// itself is added.
+void addDirectoryList(const llvm::opt::ArgList &Args,
+                      llvm::opt::ArgStringList &CmdArgs, const char *ArgName,
+                      const char *EnvVar);
+}
+}
+}
+
 using namespace clang;
 using namespace llvm;
 
@@ -70,7 +94,7 @@ private:
   /// Helper storage.
   llvm::SmallVector<llvm::SmallString<0>> Storage;
   /// List of arguments
-  llvm::SmallVector<const char *> Args;
+  llvm::opt::ArgStringList Args;
 
 public:
   /// Add argument.
@@ -99,7 +123,7 @@ public:
   ///
   /// The return value of this operation could be invalidated by subsequent
   /// calls to push_back() or emplace_back().
-  llvm::ArrayRef<const char *> getArguments() const { return Args; }
+  llvm::opt::ArgStringList& getArguments() { return Args; }
 };
 
 /*
@@ -119,14 +143,40 @@ template <class T> class ptr_wrapper
 PYBIND11_DECLARE_HOLDER_TYPE(T, ptr_wrapper<T>, true);
 */
 
-int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output) {
-      const char *binary = "clang"; //Argv0; // CudaLower ? "clang++" : "clang";
-  //const std::unique_ptr<clang::driver::Driver> driver(
-  //    new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags));
+int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output, bool cpp, PyObject* pyargv) {
+    const llvm::opt::InputArgList Args;
+      const char *binary = cpp ? "clang++" : "clang"; 
+  // Buffer diagnostics from argument parsing so that we can output them using a
+  // well formed diagnostic object.
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
+  TextDiagnosticBuffer *DiagsBuffer = new TextDiagnosticBuffer;
+
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
+  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
+  const std::unique_ptr<clang::driver::Driver> driver(
+      new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags));
   ArgumentList Argv;
   // Argv.push_back(binary);
   Argv.emplace_back(StringRef(filename));
     Argv.push_back("-v");
+
+
+  assert (PySequence_Check(pyargv));
+	auto sz = PySequence_Size(pyargv);
+    for (Py_ssize_t i = 0; i < sz; ++i) {
+        PyObject* item = PySequence_GetItem(pyargv, i);
+        auto argv = (char*)MyPyText_AsString(item);
+        Py_DECREF(item);
+		assert(argv);
+		Argv.emplace_back(StringRef(argv));
+        free(argv);
+    }
+
+
+
+  const std::unique_ptr<clang::driver::Compilation> compilation(
+      driver->BuildCompilation(Argv.getArguments()));
+
   /*
   for (const auto &filename : filenames) {
     Argv.emplace_back(filename);
@@ -186,22 +236,40 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 
   Argv.push_back("-emit-llvm");
   Argv.push_back("-S");
+  // Parse additional include paths from environment variables.
+  // FIXME: We should probably sink the logic for handling these from the
+  // frontend into the driver. It will allow deleting 4 otherwise unused flags.
+  // CPATH - included following the user specified includes (but prior to
+  // builtin and standard includes).
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-I", "CPATH");
+  // C_INCLUDE_PATH - system includes enabled when compiling C.
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-c-isystem", "C_INCLUDE_PATH");
+  // CPLUS_INCLUDE_PATH - system includes enabled when compiling C++.
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-cxx-isystem", "CPLUS_INCLUDE_PATH");
+  // OBJC_INCLUDE_PATH - system includes enabled when compiling ObjC.
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-objc-isystem", "OBJC_INCLUDE_PATH");
+  // OBJCPLUS_INCLUDE_PATH - system includes enabled when compiling ObjC++.
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-objcxx-isystem", "OBJCPLUS_INCLUDE_PATH");
+
+  auto &TC = compilation->getDefaultToolChain();
+  if (cpp) {
+    bool HasStdlibxxIsystem = false; // Args.hasArg(options::OPT_stdlibxx_isystem);
+          HasStdlibxxIsystem ? TC.AddClangCXXStdlibIsystemArgs(Args, Argv.getArguments())
+                             : TC.AddClangCXXStdlibIncludeArgs(Args, Argv.getArguments());
+  }
+
+                                 TC.AddClangSystemIncludeArgs(Args, Argv.getArguments());
+  
   SmallVector<char, 1> outputvec;
   
   {
   std::unique_ptr<CompilerInstance> Clang(new CompilerInstance());
-  IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
 
   // Register the support for object-file-wrapped Clang modules.
   // auto PCHOps = Clang->getPCHContainerOperations();
   // PCHOps->registerWriter(std::make_unique<ObjectFilePCHContainerWriter>());
   // PCHOps->registerReader(std::make_unique<ObjectFilePCHContainerReader>());
 
-  // Buffer diagnostics from argument parsing so that we can output them using a
-  // well formed diagnostic object.
-  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
-  TextDiagnosticBuffer *DiagsBuffer = new TextDiagnosticBuffer;
-  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
 
   auto baseFS = createVFSFromCompilerInvocation(Clang->getInvocation(),
                                                  Diags);

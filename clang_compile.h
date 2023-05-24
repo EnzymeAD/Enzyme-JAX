@@ -9,8 +9,9 @@
 #ifndef ENZYME_JAX_CLANG_COMPILE_H
 #define ENZYME_JAX_CLANG_COMPILE_H
 
+#include <Python.h>
 #include <string>
 
-int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output);
+int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output, bool cpp, PyObject* pyargv);
 
 #endif  // ENZYME_JAX_CLANG_COMPILE_H
