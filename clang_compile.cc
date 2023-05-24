@@ -237,8 +237,8 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
   }
   */
 
-  Argv.push_back("-emit-llvm");
   Argv.push_back("-S");
+  Argv.push_back("-emit-llvm");
   // Parse additional include paths from environment variables.
   // FIXME: We should probably sink the logic for handling these from the
   // frontend into the driver. It will allow deleting 4 otherwise unused flags.
