@@ -1,0 +1,9 @@
+[submodule "llvm-project"]
+	path = llvm-project
+	url = git@github.com:llvm/llvm-project.git
+[submodule "jax"]
+	path = jax
+	url = git@github.com:google/jax.git
+[submodule "xla"]
+	path = xla
+	url = git@github.com:openxla/xla.git
