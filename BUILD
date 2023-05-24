@@ -17,3 +17,20 @@ pybind_extension(
     ],
 )
 
+pybind_extension(
+    name = "pyllvm",
+    srcs = ["pyllvm.cc"],
+    deps = [
+        "@pybind11",
+        "@llvm-project//clang:ast",
+        "@llvm-project//clang:basic",
+        "@llvm-project//clang:driver",
+        "@llvm-project//clang:frontend",
+        "@llvm-project//clang:frontend_tool",
+        "@llvm-project//clang:lex",
+        "@llvm-project//clang:serialization",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:IRReader",
+    ],
+)
