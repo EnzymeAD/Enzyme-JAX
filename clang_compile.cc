@@ -64,11 +64,6 @@
 
 #include <Python.h>
 #include <pybind11/pybind11.h>
-#if PY_VERSION_HEX < 0x03000000
-#define MyPyText_AsString PyString_AsString
-#else
-#define MyPyText_AsString PyUnicode_AsUTF8
-#endif
 
 
 namespace clang {
@@ -165,11 +160,19 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 	auto sz = PySequence_Size(pyargv);
     for (Py_ssize_t i = 0; i < sz; ++i) {
         PyObject* item = PySequence_GetItem(pyargv, i);
-        auto argv = (char*)MyPyText_AsString(item);
+#if PY_VERSION_HEX < 0x03000000
+        auto argv = PyString_AsString(item);
+#else
+        auto argv = PyUnicode_AsUTF8(item);
+#endif
         Py_DECREF(item);
 		assert(argv);
 		Argv.emplace_back(StringRef(argv));
+#if PY_VERSION_HEX < 0x03000000
         free(argv);
+#else
+        // should not free py3+
+#endif
     }
 
 
