@@ -218,7 +218,12 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 
   std::unique_ptr<llvm::raw_pwrite_stream> outputStream(new llvm::raw_svector_ostream(outputvec));
   Clang->setOutputStream(std::move(outputStream));
-  Clang->createFileManager(fs);
+
+  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> fuseFS(new llvm::vfs::OverlayFileSystem(baseFS));
+  fuseFS->pushOverlay(fs);
+  fuseFS->pushOverlay(baseFS);
+
+  Clang->createFileManager(fuseFS);
 
 
   bool Success = CompilerInvocation::CreateFromArgs(Clang->getInvocation(),

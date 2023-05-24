@@ -23,8 +23,7 @@ PYBIND11_MODULE(pyllvm, m) {
   m.def("compile", [&](std::string &s) {
     std::string output;
     GetLLVMFromJob("/pyenzyme/input.c", s, output);
-      //obvious memory leak, but need to do something with memory since not taken
-      return output; //std::shared_ptr<llvm::LLLexer>(new llvm::LLLexer(*(new std::string(s)),  *sm, *sd, Ctx));
+      return output;
   });
   m.def("compilepp", [&](std::string &s) {
     std::string output;
