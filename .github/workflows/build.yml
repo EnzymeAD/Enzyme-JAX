@@ -7,8 +7,8 @@ on:
     pull_request:
       branches:
       - main
-  
-  jobs:
+
+jobs:
     build-linux:
       name: Build ${{ matrix.os }}
       runs-on: ${{ matrix.os }}
