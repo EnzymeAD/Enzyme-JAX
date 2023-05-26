@@ -44,7 +44,12 @@ py_wheel(
     name = "enzyme_jax",
     # Package data. We're building "example_minimal_package-0.0.1-py3-none-any.whl"
     distribution = "enzyme_jax",
+    author="Enzyme Authors",
+    license='LLVM',
+    author_email="wmoses@mit.edu, zinenko@google.com",
     python_tag = "py3",
     version = "0.0.1",
-    deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"],
+    platform = "//platforms:linux_x86_64",
+    requires = ["jax"],
+    deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"]
 )
