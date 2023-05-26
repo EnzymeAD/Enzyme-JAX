@@ -49,7 +49,14 @@ py_wheel(
     author_email="wmoses@mit.edu, zinenko@google.com",
     python_tag = "py3",
     version = "0.0.2",
-    platform = "//platforms:linux_x86_64",
+    platform = select({
+        "@bazel_tools//src/conditions:windows_x64": "win_amd64",
+        "@bazel_tools//src/conditions:darwin_arm64": "macosx_10_7_arm64",
+        "@bazel_tools//src/conditions:darwin_x86_64": "macosx_10_7_x86_64",
+        "@bazel_tools//src/conditions:linux_aarch64": "manylinux2014_aarch64",
+        "@bazel_tools//src/conditions:linux_x86_64": "manylinux2014_x86_64",
+        "@bazel_tools//src/conditions:linux_ppc64le": "manylinux2014_ppc64le",
+    }),
     requires = ["jax"],
     deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"]
 )
