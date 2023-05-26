@@ -229,6 +229,8 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   Argv.push_back("-S");
   Argv.push_back("-emit-llvm");
   Argv.push_back("-I/enzyme");
+  Argv.push_back("-O1");
+  Argv.push_back("-disable-llvm-passes");
   // Parse additional include paths from environment variables.
   // FIXME: We should probably sink the logic for handling these from the
   // frontend into the driver. It will allow deleting 4 otherwise unused flags.
@@ -281,10 +283,15 @@ namespace enzyme {
   RT __enzyme_fwddiff(Args...);
   template<typename RT=void, typename... Args>
   RT __enzyme_autodiff(Args...);
+  template<typename RT, typename... Args>
+  RT __enzyme_augmentfwd(Args...);
+  template<typename RT, typename... Args>
+  RT __enzyme_reverse(Args...);
 }
 extern "C" int enzyme_dup;
 extern "C" int enzyme_const;
 extern "C" int enzyme_dupnoneed;
+extern "C" int enzyme_nooverwrite;
   )", "/enzyme/enzyme/utils", /*RequiresNullTerminator*/false));
   fs->addFile("/enzyme/enzyme/tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
 // Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
@@ -527,6 +534,11 @@ void operator+=(tensor<T, N0, N...> & lhs, T rhs)
   }
 
   auto mod = Act->takeModule();
+  for (auto &f : *mod) {
+    if (f.empty()) continue;
+    if (f.getName() == "entry") continue;
+    f.setLinkage(Function::LinkageTypes::InternalLinkage);
+  }
   
   PipelineTuningOptions PTO;
   LoopAnalysisManager LAM;

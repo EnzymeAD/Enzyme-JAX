@@ -81,22 +81,75 @@ class CpuKernel {
     ss << "#include <enzyme/tensor>\n";
     ss << "#include <enzyme/utils>\n";
     ss << source << "\n";
-    ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
-    for (size_t i=0, off=0; i<out_shapes.size(); i++) {
-      ss << " " << make_type(out_names[i], out_shapes[i], false) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << i << "];\n";
-      off++;
-      if (mode == 1) {
-        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << off << "];\n";
+    if (mode != 0) {
+      ss << " void entry_wrap(";
+      bool comma = false;
+        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << " " << make_type(out_names[i], out_shapes[i], false) << "& __restrict__ out_" << i;
+          comma = true;
+        }
+      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+          if (comma) ss << ", ";
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i;
+        comma = true;
       }
-      off++;
+      ss << ") {\n";
+      ss << "  " << fn << "(";
+      comma = false;
+        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << " " << "out_" << i;
+          comma = true;
+        }
+      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << " " << "in_" << i;
+          comma = true;
+      }
+      ss << ");\n";
+      ss << "}\n";
+    }
+    ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
+    size_t out_off = 0;
+    size_t in_off = 0;
+
+    if (mode == 3) {
+      ss << " void* tape = " << "*(void**)ins[" << in_off << "];\n";
+      in_off++;
+    }
+
+    for (size_t i=0; i<out_shapes.size(); i++) {
+      if (mode != 3) {
+        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << out_off << "];\n";
+        out_off++;
+      }
+      if (mode == 1) {
+        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << out_off << "];\n";
+        out_off++;
+      }
+      if (mode == 3) {
+        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)ins[" << in_off << "];\n";
+        in_off++;
+      }
     }
     for (size_t i=0, off=0; i<in_shapes.size(); i++) {
-      ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << off << "];\n";
-      off++;
-      if (mode == 1) {
-        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << off << "];\n";
-        off++;
+      if (mode != 3) {
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << in_off << "];\n";
+        in_off++;
       }
+      if (mode == 1) {
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << in_off << "];\n";
+        in_off++;
+      }
+      if (mode == 3) {
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)outs[" << out_off << "];\n";
+        out_off++;
+      }
+    }
+    if (mode == 2) {
+      ss << " void*& tape = " << "*(void**)outs[" << out_off << "];\n";
+      out_off++;
     }
     if (mode == 0) {
       num_out = out_shapes.size();
@@ -115,21 +168,7 @@ class CpuKernel {
     ss << ");\n";
     } else if (mode == 1) {
       num_out = 2 * out_shapes.size();
-      ss << "  enzyme::__enzyme_fwddiff(static_cast<void (*)(";
-      {
-        bool comma = false;
-        for (size_t i=0; i<out_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << make_type(out_names[i], out_shapes[i], false) << "&";
-          comma = true;
-        }
-        for (size_t i=0; i<in_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << make_type(in_names[i], in_shapes[i], true) << "&";
-          comma = true;
-        }
-      }
-      ss << ")>(&" << fn << ")";
+      ss << "  enzyme::__enzyme_fwddiff(entry_wrap";
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup, ";
           ss << "&out_" << i << ", ";
@@ -142,23 +181,36 @@ class CpuKernel {
       }
       ss << ");\n";
     } else if (mode == 2) {
-      // TODO
-      num_out = out_shapes.size();
-      // og outputs, og inputs
-      //     doutputs (in), dinputs (out)
-      ss << "  enzyme::__enzyme_fwddiff(" << fn;
+      // outs, tapeout
+      // ins
+      num_out = out_shapes.size() + 1 /*tape*/;
+      ss << "  tape = enzyme::__enzyme_augmentfwd<void*>(entry_wrap";
       for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme::enzyme_dup, ";
-          ss << "out_" << i << ", ";
-          ss << "out_" << (i+1);
-          i++;
+          ss << ", enzyme_dup, &out_" << i << ", nullptr";
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme::enzyme_dup, ";
-          ss << "in_" << i << ", ";
-          ss << "in_" << (i+1);
+          ss << ", enzyme_dup, &in_" << i << ", nullptr";
       }
       ss << ");\n";
+    } else if (mode == 3) {
+      num_out = in_shapes.size();
+
+      // d_ins
+      // tape, d_out
+
+      // og outputs, og inputs
+      //     doutputs (in), dinputs (out)
+      for (size_t i=0; i<in_shapes.size(); i++) {
+          ss << "  d_in_" << i << " = 0;\n";
+      }
+      ss << "  enzyme::__enzyme_reverse<void>(entry_wrap";
+      for (size_t i=0; i<out_shapes.size(); i++) {
+          ss << ", enzyme_dup, nullptr, &d_out_" << i;
+      }
+      for (size_t i=0; i<in_shapes.size(); i++) {
+          ss << ", enzyme_dup, nullptr, &d_in_" << i;
+      }
+      ss << ", tape);\n";
     } else {
       assert(0 && "unhandled mode");
     }
@@ -167,6 +219,8 @@ class CpuKernel {
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv, llvm_ctx.get());
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
+
+    llvm::errs() << " mod: " << *mod << "\n";
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
@@ -194,6 +248,8 @@ class CpuKernel {
     // Look up the JIT'd code entry point.
     auto EntrySym = JIT->lookup(LibA.get(), "entry");
     if (!EntrySym) {
+      llvm::errs() << " source: " << ss.str() << "\n";
+      llvm::errs() << EntrySym.takeError() << "\n";
       throw pybind11::value_error("failed to lookup function called 'entry'");
     }
 
