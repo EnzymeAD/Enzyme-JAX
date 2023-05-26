@@ -40,14 +40,6 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
-static LLVM_ATTRIBUTE_USED void linkComponents() {
-  llvm::errs() << (void *)&llvm_orc_registerEHFrameSectionWrapper
-         << (void *)&llvm_orc_deregisterEHFrameSectionWrapper
-         << (void *)&llvm_orc_registerJITLoaderGDBWrapper
-         << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
-}
-
-
 namespace {
 class CpuKernel {
   // static llvm::orc::ExecutionSession ES;
@@ -55,13 +47,12 @@ class CpuKernel {
   static std::unique_ptr<llvm::orc::LLJIT > JIT;
 
   int64_t identifier;
-  llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
+  size_t num_out;
   uint64_t addr;
  public:
   CpuKernel(int64_t identifier,
-            llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes, uint64_t addr)
-      : identifier(identifier), addr(addr) {
-    this->out_shapes.assign(out_shapes.begin(), out_shapes.end());
+            size_t num_out, uint64_t addr)
+      : identifier(identifier), num_out(num_out), addr(addr) {
   }
 
   static std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape, bool constv) {
@@ -72,12 +63,12 @@ class CpuKernel {
     return s + ">";
   }
 
-  static int64_t create(llvm::StringRef source,
+  static int64_t create(llvm::StringRef fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                         llvm::ArrayRef<std::string> in_names,
-                        PyObject* pyargv) {
+                        PyObject* pyargv, int mode) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     int64_t identifier = last_identifier++;
 
@@ -85,17 +76,27 @@ class CpuKernel {
 
     std::string input;
     llvm::raw_string_ostream ss(input);
+    size_t num_out;
     ss << "#include <cstdint>\n";
-    ss << "#include <enzyme_tensor>\n";
+    ss << "#include <enzyme/tensor>\n";
+    ss << "#include <enzyme/utils>\n";
     ss << source << "\n";
     ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
     for (size_t i=0; i<out_shapes.size(); i++) {
       ss << " " << make_type(out_names[i], out_shapes[i], false) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << i << "];\n";
+      if (mode == 1) {
+        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << i << "];\n";
+      }
     }
     for (size_t i=0; i<in_shapes.size(); i++) {
       ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << i << "];\n";
+      if (mode == 1) {
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << i << "];\n";
+      }
     }
-    ss << "  myfn(";
+    if (mode == 0) {
+      num_out = out_shapes.size();
+    ss << "  " << fn << "(";
     bool comma = false;
     for (size_t i=0; i<out_shapes.size(); i++) {
         if (comma) ss << ", ";
@@ -108,6 +109,55 @@ class CpuKernel {
         comma = true;
     }
     ss << ");\n";
+    } else if (mode == 1) {
+      num_out = 2 * out_shapes.size();
+      ss << "  enzyme::__enzyme_fwddiff(static_cast<void (*)(";
+      {
+        bool comma = false;
+        for (size_t i=0; i<out_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << make_type(out_names[i], out_shapes[i], false) << "&";
+          comma = true;
+        }
+        for (size_t i=0; i<in_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << make_type(in_names[i], in_shapes[i], true) << "&";
+          comma = true;
+        }
+      }
+      ss << ")>(&" << fn << ")";
+      for (size_t i=0; i<out_shapes.size(); i++) {
+          ss << ", enzyme_dup, ";
+          ss << "out_" << i << ", ";
+          ss << "dout_" << i;
+      }
+      for (size_t i=0; i<in_shapes.size(); i++) {
+          ss << ", enzyme_dup, ";
+          ss << "in_" << i << ", ";
+          ss << "din_" << i;
+      }
+      ss << ");\n";
+    } else if (mode == 2) {
+      // TODO
+      num_out = out_shapes.size();
+      // og outputs, og inputs
+      //     doutputs (in), dinputs (out)
+      ss << "  enzyme::__enzyme_fwddiff(" << fn;
+      for (size_t i=0; i<out_shapes.size(); i++) {
+          ss << ", enzyme::enzyme_dup, ";
+          ss << "out_" << i << ", ";
+          ss << "out_" << (i+1);
+          i++;
+      }
+      for (size_t i=0; i<in_shapes.size(); i++) {
+          ss << ", enzyme::enzyme_dup, ";
+          ss << "in_" << i << ", ";
+          ss << "in_" << (i+1);
+      }
+      ss << ");\n";
+    } else {
+      assert(0 && "unhandled mode");
+    }
     ss << "}\n";
 
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv, llvm_ctx.get());
@@ -148,7 +198,7 @@ class CpuKernel {
  
     kernels.try_emplace(
         identifier,
-        std::make_unique<CpuKernel>(identifier, out_shapes, Entry));
+        std::make_unique<CpuKernel>(identifier, num_out, Entry));
     return identifier;
   }
 
@@ -160,12 +210,10 @@ class CpuKernel {
   }
 
   void call(void *out, void **ins) const {
-    void **outs = out_shapes.size() > 1 ? reinterpret_cast<void **>(out) : &out;
+    void **outs = num_out > 1 ? reinterpret_cast<void **>(out) : &out;
 
-    llvm::errs() << " calling outshape: " << out_shapes.size() << "\n";
     auto fn = (void(*)(void**outs, void**ins))addr;
     fn(outs, ins);
-    llvm::errs() << "done calling\n";
   }
 
  private:
@@ -201,9 +249,9 @@ PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllAsmParsers();
 
   m.def("create_enzyme_cpu_kernel",
-        [](const std::string &source, const pybind11::list &py_out_shapes,
+        [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
           const pybind11::list &py_in_shapes,
-           pybind11::object pyargv) -> int64_t {
+           pybind11::object pyargv, int mode) -> int64_t {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -237,17 +285,12 @@ PYBIND11_MODULE(enzyme_call, m) {
               target.push_back(nested_element.cast<int64_t>());
             }
           }
-          return CpuKernel::create(source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr());
+          return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), mode);
         });
 
   m.def("get_cpu_callback", []() {
     return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
                              "xla._CUSTOM_CALL_TARGET");
-  });
-  m.def("link_components", []() {
-    llvm_orc_registerEHFrameSectionWrapper(0, 0);
-    linkComponents();
-
   });
 }
 

@@ -187,11 +187,15 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   // well formed diagnostic object.
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
   TextDiagnosticBuffer *DiagsBuffer = new TextDiagnosticBuffer;
+  auto *DiagsBuffer0 = new IgnoringDiagConsumer;
 
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
   DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts0 = new DiagnosticOptions();
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID0(new DiagnosticIDs());
+  DiagnosticsEngine Diags0(DiagID0, &*DiagOpts0, DiagsBuffer0);
   const std::unique_ptr<clang::driver::Driver> driver(
-      new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags));
+      new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags0));
   ArgumentList Argv;
   
   Argv.emplace_back(StringRef(filename));
@@ -215,8 +219,12 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
 #endif
     }
 
+  SmallVector<const char*> PreArgs;
+  PreArgs.push_back(binary);
+  PreArgs.append(Argv.getArguments());
+  PreArgs[1] = "-";
   const std::unique_ptr<clang::driver::Compilation> compilation(
-      driver->BuildCompilation(Argv.getArguments()));
+      driver->BuildCompilation(PreArgs));
 
   Argv.push_back("-S");
   Argv.push_back("-emit-llvm");
@@ -267,7 +275,18 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   time_t timer = mktime(&y2k);
 
   fs->addFile(filename, timer, llvm::MemoryBuffer::getMemBuffer(filecontents, filename, /*RequiresNullTerminator*/false));
-  fs->addFile("/enzyme/enzyme_tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
+  fs->addFile("/enzyme/enzyme/utils", timer, llvm::MemoryBuffer::getMemBuffer(R"(
+namespace enzyme {
+  template<typename RT=void, typename... Args>
+  RT __enzyme_fwddiff(Args...);
+  template<typename RT=void, typename... Args>
+  RT __enzyme_autodiff(Args...);
+}
+extern "C" int enzyme_dup;
+extern "C" int enzyme_const;
+extern "C" int enzyme_dupnoneed;
+  )", "/enzyme/enzyme/utils", /*RequiresNullTerminator*/false));
+  fs->addFile("/enzyme/enzyme/tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
 // Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
 // at the Lawrence Livermore National Laboratory. All Rights reserved. See files
 // LICENSE and NOTICE for details. LLNL-CODE-806117.
@@ -459,7 +478,7 @@ void operator+=(tensor<T, N0, N...> & lhs, T rhs)
 }
 
 }
-  )", "/enzyme/tensor", /*RequiresNullTerminator*/false));
+  )", "/enzyme/enzyme/tensor", /*RequiresNullTerminator*/false));
 
   std::unique_ptr<llvm::raw_pwrite_stream> outputStream(new llvm::raw_svector_ostream(outputvec));
   Clang->setOutputStream(std::move(outputStream));
