@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 from enzyme_jax import cpp_fwd, cpp_rev
 
-
 def do_something(fn):
     @jax.jit
     def do_something_internal(ones):

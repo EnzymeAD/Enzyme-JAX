@@ -35,7 +35,7 @@ load(":package.bzl", "py_package")
 py_package(
     name = "enzyme_jax_data",
     # Only include these Python packages.
-    # packages = ["examples.wheel"],
+    packages = ["@//enzyme_jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
     deps = ["//enzyme_jax:enzyme_call", "@llvm-project//clang:builtin_headers_gen"],
     prefix = "enzyme_jax/",
 )

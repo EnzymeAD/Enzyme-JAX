@@ -1,48 +1,17 @@
-
-def _path_inside_wheel(prefix, input_file):
-    # input_file.short_path is sometimes relative ("../${repository_root}/foobar")
-    # which is not a valid path within a zip file. Fix that.
-    short_path = input_file.short_path
-    if short_path.startswith("..") and len(short_path) >= 3:
-        # Path separator. '/' on linux.
-        separator = short_path[2]
-
-        # Consume '../' part.
-        short_path = short_path[3:]
-
-        # Find position of next '/' and consume everything up to that character.
-        pos = short_path.find(separator)
-        short_path = short_path[pos + 1:]
-    short_path = prefix + short_path
-    return short_path
-
 def _py_package_impl(ctx):
     inputs = depset(
         transitive = [dep[DefaultInfo].data_runfiles.files for dep in ctx.attr.deps] +
                      [dep[DefaultInfo].default_runfiles.files for dep in ctx.attr.deps],
     )
 
-    # TODO: '/' is wrong on windows, but the path separator is not available in starlark.
-    # Fix this once ctx.configuration has directory separator information.
-    packages = [p.replace(".", "/") for p in ctx.attr.packages]
-    print("INPUTS", inputs)
-    print("PACKAGES", packages)
-    print("prefix", ctx.attr.prefix)
+    filtered_files = []
 
-    if not packages:
-        filtered_inputs = inputs
-    else:
-        filtered_files = []
+    # TODO: rewrite path
+    for input_file in inputs.to_list():
+        if str(input_file.owner) in ctx.attr.packages:
+            filtered_files.append(input_file)
+    filtered_inputs = depset(direct = filtered_files)
 
-        # TODO: flattening depset to list gives poor performance,
-        for input_file in inputs.to_list():
-            wheel_path = _path_inside_wheel(ctx.attr.prefix, input_file)
-            for package in packages:
-                if wheel_path.startswith(package):
-                    filtered_files.append(input_file)
-        filtered_inputs = depset(direct = filtered_files)
-
-    print("FILTERED ", filtered_inputs)
     return [DefaultInfo(
         files = filtered_inputs,
     )]
@@ -65,8 +34,7 @@ List of Python packages to include in the distribution.
 Sub-packages are automatically included.
 """,
         ),
-    },
-    path_inside_wheel = _path_inside_wheel,
+    }
 )
 
 py_package = rule(
