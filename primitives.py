@@ -322,31 +322,15 @@ enzyme_primal.defvjp(enzyme_aug, enzyme_rev)
 
 @jax.jit
 def do_something(ones):
-  shape = jax.core.ShapedArray(ones.shape, ones.dtype)
-  a, b = enzyme_primal("""
-template<std::size_t N, std::size_t M>
-void myfn(enzyme::tensor<float, N, M>& out0, enzyme::tensor<float, N, M>& out1, const enzyme::tensor<float, N, M>& in0) {
-    for (int j=0; j<N; j++) {
-      for (int k=0; k<M; k++) {
-        out0[j][k] = in0[j][k] + 42;
-      }
-    }
-    for (int j=0; j<2; j++) {
-      for (int k=0; k<3; k++) {
-        out0[j][k] = in0[j][k] + 2 * 42;
-      }
-    }
-}
-  """, "myfn", [shape, shape], ones)
   c = enzyme_primal(
       """
 template<typename T1, typename T2>
 void myfn(T1& out0, const T2& in1) {
   out0 = 56.0f;
 }
-""", "myfn", [jax.core.ShapedArray([4, 4], jnp.float32)], a
+""", "myfn", [jax.core.ShapedArray([4, 4], jnp.float32)], ones
   )[0]
-  return a, b, c
+  return c
 
 
 def main(args: Sequence[str]):
@@ -368,7 +352,7 @@ def main(args: Sequence[str]):
 
 
   primals, f_vjp = jax.vjp(do_something, ones)
-  (grads,) = f_vjp((x, y, z))
+  (grads,) = f_vjp(z)
   # primals, tangents = jax.jvp(do_something, (ones,), (ones,) )
   print(primals)
   print(grads)
