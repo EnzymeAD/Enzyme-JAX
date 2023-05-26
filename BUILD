@@ -25,6 +25,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
+        "@enzyme//:EnzymeStatic"
     ],
 )
 
@@ -34,6 +35,7 @@ pybind_extension(
     deps = [
         "@pybind11",
         "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:OrcJIT",
         ":clang_compile",
     ],
 )

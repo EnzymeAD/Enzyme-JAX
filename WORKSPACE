@@ -13,6 +13,10 @@ local_repository(
     name = "xla",
     path = "xla",
 )
+local_repository(
+    name = "enzyme",
+    path = "Enzyme/enzyme",
+)
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()
@@ -33,4 +37,3 @@ local_repository(
     name = "jax",
     path = "jax",
 )
-

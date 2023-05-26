@@ -7,3 +7,6 @@
 [submodule "xla"]
 	path = xla
 	url = git@github.com:openxla/xla.git
+[submodule "Enzyme"]
+	path = Enzyme
+	url = git@github.com:EnzymeAD/Enzyme

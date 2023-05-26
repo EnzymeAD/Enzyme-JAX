@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang_compile.h"
+#include "llvm/IRReader/IRReader.h"
 
 #include <iostream>
 #include <memory>
@@ -34,6 +35,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
+#include "clang/CodeGen/CodeGenAction.h"
 
 #include "clang/AST/Decl.h"
 #include "clang/Basic/DiagnosticOptions.h"
@@ -62,9 +64,12 @@
 #include "llvm/Support/Host.h"
 #include "clang/FrontendTool/Utils.h"
 
+#include "llvm/Support/MemoryBufferRef.h"
+
 #include <Python.h>
 #include <pybind11/pybind11.h>
 
+#include "Enzyme/Enzyme.h"
 
 namespace clang {
 namespace driver {
@@ -138,7 +143,44 @@ template <class T> class ptr_wrapper
 PYBIND11_DECLARE_HOLDER_TYPE(T, ptr_wrapper<T>, true);
 */
 
-int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output, bool cpp, PyObject* pyargv) {
+static TargetLibraryInfoImpl *createTLII(llvm::Triple &&TargetTriple,
+                                         const CodeGenOptions &CodeGenOpts) {
+  TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
+ 
+  switch (CodeGenOpts.getVecLib()) {
+  case CodeGenOptions::Accelerate:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate,
+                                             TargetTriple);
+    break;
+  case CodeGenOptions::LIBMVEC:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::LIBMVEC_X86,
+                                             TargetTriple);
+    break;
+  case CodeGenOptions::MASSV:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::MASSV,
+                                             TargetTriple);
+    break;
+  case CodeGenOptions::SVML:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML,
+                                             TargetTriple);
+    break;
+  case CodeGenOptions::SLEEF:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SLEEFGNUABI,
+                                             TargetTriple);
+    break;
+  case CodeGenOptions::Darwin_libsystem_m:
+    TLII->addVectorizableFunctionsFromVecLib(
+        TargetLibraryInfoImpl::DarwinLibSystemM, TargetTriple);
+    break;
+  default:
+    break;
+  }
+  return TLII;
+}
+
+static LLVMContext GlobalContext;
+
+std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, PyObject* pyargv, LLVMContext* Context) {
     const llvm::opt::InputArgList Args;
       const char *binary = cpp ? "clang++" : "clang"; 
   // Buffer diagnostics from argument parsing so that we can output them using a
@@ -151,10 +193,8 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
   const std::unique_ptr<clang::driver::Driver> driver(
       new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags));
   ArgumentList Argv;
-  // Argv.push_back(binary);
+  
   Argv.emplace_back(StringRef(filename));
-    Argv.push_back("-v");
-
 
   assert (PySequence_Check(pyargv));
 	auto sz = PySequence_Size(pyargv);
@@ -175,70 +215,12 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 #endif
     }
 
-
-
   const std::unique_ptr<clang::driver::Compilation> compilation(
       driver->BuildCompilation(Argv.getArguments()));
 
-  /*
-  for (const auto &filename : filenames) {
-    Argv.emplace_back(filename);
-  }
-  */
-  /*
-  if (FOpenMP)
-    Argv.push_back("-fopenmp");
-  if (TargetTripleOpt != "") {
-    Argv.push_back("-target");
-    Argv.emplace_back(TargetTripleOpt);
-  }
-  if (McpuOpt != "") {
-    Argv.emplace_back("-mcpu=", McpuOpt);
-  }
-  if (Standard != "") {
-    Argv.emplace_back("-std=", Standard);
-  }
-  if (ResourceDir != "") {
-    Argv.push_back("-resource-dir");
-    Argv.emplace_back(ResourceDir);
-  }
-  if (SysRoot != "") {
-    Argv.push_back("--sysroot");
-    Argv.emplace_back(SysRoot);
-  }
-  if (Verbose) {
-    Argv.push_back("-v");
-  }
-  if (NoCUDAInc) {
-    Argv.push_back("-nocudainc");
-  }
-  if (NoCUDALib) {
-    Argv.push_back("-nocudalib");
-  }
-  if (CUDAGPUArch != "") {
-    Argv.emplace_back("--cuda-gpu-arch=", CUDAGPUArch);
-  }
-  if (CUDAPath != "") {
-    Argv.emplace_back("--cuda-path=", CUDAPath);
-  }
-  if (MArch != "") {
-    Argv.emplace_back("-march=", MArch);
-  }
-  for (const auto &dir : includeDirs) {
-    Argv.push_back("-I");
-    Argv.emplace_back(dir);
-  }
-  for (const auto &define : defines) {
-    Argv.emplace_back("-D", define);
-  }
-  for (const auto &Include : Includes) {
-    Argv.push_back("-include");
-    Argv.emplace_back(Include);
-  }
-  */
-
   Argv.push_back("-S");
   Argv.push_back("-emit-llvm");
+  Argv.push_back("-I/enzyme");
   // Parse additional include paths from environment variables.
   // FIXME: We should probably sink the logic for handling these from the
   // frontend into the driver. It will allow deleting 4 otherwise unused flags.
@@ -265,7 +247,6 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
   
   SmallVector<char, 1> outputvec;
   
-  {
   std::unique_ptr<CompilerInstance> Clang(new CompilerInstance());
 
   // Register the support for object-file-wrapped Clang modules.
@@ -286,6 +267,199 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
   time_t timer = mktime(&y2k);
 
   fs->addFile(filename, timer, llvm::MemoryBuffer::getMemBuffer(filecontents, filename, /*RequiresNullTerminator*/false));
+  fs->addFile("/enzyme/enzyme_tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
+// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
+// at the Lawrence Livermore National Laboratory. All Rights reserved. See files
+// LICENSE and NOTICE for details. LLNL-CODE-806117.
+//
+// This file is part of the MFEM library. For more information and source code
+// availability visit https://mfem.org.
+//
+// MFEM is free software; you can redistribute it and/or modify it under the
+// terms of the BSD-3 license. We welcome feedback and contributions, see file
+// CONTRIBUTING.md for details.
+#define MFEM_HOST_DEVICE 
+#include <stdint.h>
+namespace enzyme {
+using size_t=std::size_t;
+template <typename T, size_t... n>
+struct tensor;
+
+/// The implementation can be drastically generalized by using concepts of the
+/// c++17 standard.
+
+template < typename T >
+struct tensor<T>
+{
+   using type = T;
+   static constexpr size_t ndim      = 1;
+   static constexpr size_t first_dim = 0;
+   T& operator[](size_t /*unused*/) { return values; }
+   MFEM_HOST_DEVICE const T& operator[](size_t /*unused*/) const { return values; }
+   MFEM_HOST_DEVICE T& operator()(size_t /*unused*/) { return values; }
+   MFEM_HOST_DEVICE const T& operator()(size_t /*unused*/) const { return values; }
+   MFEM_HOST_DEVICE operator T() const { return values; }
+   T values;
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator=(T rhs)
+  {
+    values = rhs;
+    return rhs;
+  }
+};
+
+template < typename T, size_t n0 >
+struct tensor<T, n0>
+{
+   using type = T;
+   static constexpr size_t ndim      = 1;
+   static constexpr size_t first_dim = n0;
+   MFEM_HOST_DEVICE T& operator[](size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const T& operator[](size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE T& operator()(size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const T& operator()(size_t i) const { return values[i]; }
+   T values[n0];
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator=(T rhs)
+  {
+    for (size_t i=0; i<n0; i++)
+      values[i] = rhs;
+    return rhs;
+  }
+};
+
+template < typename T, size_t n0, size_t n1 >
+struct tensor<T, n0, n1>
+{
+   using type = T;
+   static constexpr size_t ndim      = 2;
+   static constexpr size_t first_dim = n0;
+   MFEM_HOST_DEVICE tensor< T, n1 >& operator[](size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1 >& operator[](size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n1 >& operator()(size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1 >& operator()(size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j) { return values[i][j]; }
+   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j) const { return values[i][j]; }
+   tensor < T, n1 > values[n0];
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator=(T rhs)
+  {
+    for (size_t i=0; i<n0; i++)
+      values[i] = rhs;
+    return rhs;
+  }
+};
+
+template < typename T, size_t n0, size_t n1, size_t n2 >
+struct tensor<T, n0, n1, n2>
+{
+   using type = T;
+   static constexpr size_t ndim      = 3;
+   static constexpr size_t first_dim = n0;
+   MFEM_HOST_DEVICE tensor< T, n1, n2 >& operator[](size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2 >& operator[](size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n1, n2 >& operator()(size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2 >& operator()(size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n2 >& operator()(size_t i, size_t j) { return values[i][j]; }
+   MFEM_HOST_DEVICE const tensor< T, n2 >& operator()(size_t i, size_t j) const { return values[i][j]; }
+   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
+   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j, size_t k) const { return values[i][j][k]; }
+   tensor < T, n1, n2 > values[n0];
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator=(T rhs)
+  {
+    for (size_t i=0; i<n0; i++)
+      values[i] = rhs;
+    return rhs;
+  }
+};
+
+template < typename T, size_t n0, size_t n1, size_t n2, size_t n3 >
+struct tensor<T, n0, n1, n2, n3>
+{
+   using type = T;
+   static constexpr size_t ndim      = 4;
+   static constexpr size_t first_dim = n0;
+   MFEM_HOST_DEVICE tensor< T, n1, n2, n3 >& operator[](size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3 >& operator[](size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n1, n2, n3 >& operator()(size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3 >& operator()(size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n2, n3 >& operator()(size_t i, size_t j) { return values[i][j]; }
+   MFEM_HOST_DEVICE const tensor< T, n2, n3 >& operator()(size_t i, size_t j) const { return values[i][j]; }
+   MFEM_HOST_DEVICE tensor< T, n3 >& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
+   MFEM_HOST_DEVICE const tensor< T, n3 >& operator()(size_t i, size_t j, size_t k) const { return values[i][j][k]; }
+   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k, size_t l) { return values[i][j][k][l]; }
+   MFEM_HOST_DEVICE const T&  operator()(size_t i, size_t j, size_t k, size_t l) const { return values[i][j][k][l]; }
+   tensor < T, n1, n2, n3 > values[n0];
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator=(T rhs)
+  {
+    for (size_t i=0; i<n0; i++)
+      values[i] = rhs;
+    return rhs;
+  }
+};
+
+template < typename T, size_t n0, size_t n1, size_t n2, size_t n3, size_t n4 >
+struct tensor<T, n0, n1, n2, n3, n4>
+{
+   using type = T;
+   static constexpr size_t ndim      = 5;
+   static constexpr size_t first_dim = n0;
+   MFEM_HOST_DEVICE tensor< T, n1, n2, n3, n4 >& operator[](size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3, n4 >& operator[](size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n1, n2, n3, n4 >& operator()(size_t i) { return values[i]; }
+   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3, n4 >& operator()(size_t i) const { return values[i]; }
+   MFEM_HOST_DEVICE tensor< T, n2, n3, n4 >& operator()(size_t i, size_t j) { return values[i][j]; }
+   MFEM_HOST_DEVICE const tensor< T, n2, n3, n4 >& operator()(size_t i,
+                                                              size_t j) const { return values[i][j]; }
+   MFEM_HOST_DEVICE tensor< T, n3, n4>& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
+   MFEM_HOST_DEVICE const tensor< T, n3, n4>& operator()(size_t i, size_t j,
+                                                         size_t k) const { return values[i][j][k]; }
+   MFEM_HOST_DEVICE tensor< T, n4 >& operator()(size_t i, size_t j, size_t k, size_t l) { return values[i][j][k][l]; }
+   MFEM_HOST_DEVICE const tensor< T, n4 >& operator()(size_t i, size_t j, size_t k,
+                                                      size_t l) const { return values[i][j][k][l]; }
+   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k, size_t l, size_t m) { return values[i][j][k][l][m]; }
+   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j, size_t k, size_t l, size_t m) const { return values[i][j][k][l][m]; }
+   tensor < T, n1, n2, n3, n4 > values[n0];
+
+  __attribute__((always_inline))
+  MFEM_HOST_DEVICE T operator+=(T rhs)
+  {
+    for (size_t i=0; i<n0; i++)
+      values[i] = rhs;
+    return rhs;
+  }
+};
+
+
+
+template<typename T, size_t... N>
+void operator+=(tensor<T, N...> & lhs, T rhs);
+
+template<typename T, size_t N0>
+__attribute__((always_inline))
+void operator+=(tensor<T, N0> & lhs, T rhs)
+{
+  for (size_t i=0; i<N0; i++)
+    lhs.values[i] += rhs;
+}
+
+template<typename T, size_t N0, size_t... N>
+__attribute__((always_inline))
+void operator+=(tensor<T, N0, N...> & lhs, T rhs)
+{
+  for (size_t i=0; i<N0; i++)
+    lhs.values[i] += rhs;
+}
+
+}
+  )", "/enzyme/tensor", /*RequiresNullTerminator*/false));
 
   std::unique_ptr<llvm::raw_pwrite_stream> outputStream(new llvm::raw_svector_ostream(outputvec));
   Clang->setOutputStream(std::move(outputStream));
@@ -308,8 +482,10 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
 
   // Create the actual diagnostics engine.
   Clang->createDiagnostics();
-  if (!Clang->hasDiagnostics())
-    return 1;
+  if (!Clang->hasDiagnostics()) {
+    llvm::errs() << " failed create diag\n";
+    return {};
+  }
 
   // Set an error handler, so that any LLVM backend diagnostics go through our
   // error handler.
@@ -319,17 +495,54 @@ int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success) {
     Clang->getDiagnosticClient().finish();
-    return 1;
+    llvm::errs() << " failed diag\n";
+    return {};
   }
 
-  // Execute the frontend actions.
-  {
-    Success = ExecuteCompilerInvocation(Clang.get());
-  }
+  if (!Context) Context=&GlobalContext;
+  auto Act = std::make_unique<EmitLLVMOnlyAction>(Context);
+  Success = Clang->ExecuteAction(*Act);
+  if (!Success) {
+    llvm::errs() << " failed execute\n";
+    return {};
   }
 
-  output.assign(outputvec.data(), outputvec.size());
+  auto mod = Act->takeModule();
+  
+  PipelineTuningOptions PTO;
+  LoopAnalysisManager LAM;
+  FunctionAnalysisManager FAM;
+  CGSCCAnalysisManager CGAM;
+  ModuleAnalysisManager MAM;
 
-  return 0;
+  // Register the target library analysis directly and give it a customized
+  // preset TLI.
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(llvm::Triple(mod->getTargetTriple()), Clang->getCodeGenOpts()));
+  FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
+
+  std::optional<PGOOptions> PGOOpt;
+  PassInstrumentationCallbacks PIC;
+  PassBuilder PB(nullptr, PTO, PGOOpt, &PIC);
+
+  augmentPassBuilder(PB);
+
+  // Register all the basic analyses with the managers.
+  PB.registerModuleAnalyses(MAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerLoopAnalyses(LAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  ModulePassManager MPM;
+
+    // Map our optimization levels into one of the distinct levels used to
+    // configure the pipeline.
+    OptimizationLevel Level = OptimizationLevel::O3;
+    
+    MPM = PB.buildPerModuleDefaultPipeline(Level);
+ 
+    MPM.run(*mod, MAM);
+  return mod;
 }
 

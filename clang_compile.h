@@ -11,7 +11,8 @@
 
 #include <Python.h>
 #include <string>
+#include "llvm/IR/Module.h"
 
-int GetLLVMFromJob(std::string filename, std::string filecontents, std::string &output, bool cpp, PyObject* pyargv);
+std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, PyObject* pyargv, llvm::LLVMContext*ctx=nullptr);
 
 #endif  // ENZYME_JAX_CLANG_COMPILE_H
