@@ -282,8 +282,8 @@ class CpuKernel {
     int mode = 4;
     auto [mod, llvm_ctx, num_out] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode);
     auto lfn = mod->getFunction("entry");
-    auto RI = cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
-    auto val = cast<llvm::ConstantInt>(RI->getReturnValue());
+    auto RI = llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
+    auto val = llvm::cast<llvm::ConstantInt>(RI->getReturnValue());
     return val->getZExtValue();
   }
 

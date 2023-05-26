@@ -1,36 +1,35 @@
+name: Build Wheel
 on:
-    schedule:
-      - cron: 0 0 * * *
-    push:
-      branches:
-      - main
-    pull_request:
-      branches:
-      - main
+  schedule:
+    - cron: 0 0 * * *
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
-    build-linux:
-      name: Build ${{ matrix.os }}
-      runs-on: ${{ matrix.os }}
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [openstack22, macOS-latest]
+    timeout-minutes: 500 
+    steps:
+      - uses: actions/checkout@v3
+      - uses: bazelbuild/setup-bazelisk@v2
+      - name: Mount bazel cache  # Optional
+        uses: actions/cache@v3
+        with:
+          path: "~/.cache/bazel"
+          key: bazel
+      - run: bazel build :enzyme_jax
       
-      strategy:
-        fail-fast: false
-        matrix:
-          os: [openstack22, macOS-latest]
-    
-      timeout-minutes: 500 
-      steps:
-        - uses: actions/checkout@v3
-        - uses: bazelbuild/setup-bazelisk@v2
-        - name: Mount bazel cache  # Optional
-          uses: actions/cache@v3
-          with:
-            path: "~/.cache/bazel"
-            key: bazel
-        - run: bazel build :enzyme_jax
-        
-        - name: Upload Build
+      - name: Upload Build
         uses: actions/upload-artifact@v3
         with:
           name: Wheel-${{ matrix.os }}
-          path: *.whl
+          path: "*.whl"
