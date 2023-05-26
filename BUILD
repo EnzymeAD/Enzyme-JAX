@@ -12,7 +12,6 @@ cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
-    data = ["@llvm-project//clang:builtin_headers_gen"],
     deps = [
         "@pybind11",
         "@llvm-project//clang:ast",
@@ -29,27 +28,16 @@ cc_library(
     ],
 )
 
-pybind_extension(
-    name = "enzyme_call",
-    srcs = ["enzyme_call.cc"],
-    deps = [
-        "@pybind11",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//llvm:OrcJIT",
-        ":clang_compile",
-    ],
-)
-
 load("@rules_python//python:packaging.bzl", "py_wheel")
 
-py_library(
-    name = "enzyme_jax_internal",
-    srcs = ["enzyme_jax/primitives.py", "enzyme_jax/__init__.py"],
-    data = [':enzyme_call'],
-    deps = [
-        ":enzyme_call",
-    ],
-    visibility = ["//visibility:public"]
+load(":package.bzl", "py_package")
+
+py_package(
+    name = "enzyme_jax_data",
+    # Only include these Python packages.
+    # packages = ["examples.wheel"],
+    deps = ["//enzyme_jax:enzyme_call", "@llvm-project//clang:builtin_headers_gen"],
+    prefix = "enzyme_jax/",
 )
 
 py_wheel(
@@ -58,5 +46,5 @@ py_wheel(
     distribution = "enzyme_jax",
     python_tag = "py3",
     version = "0.0.1",
-    deps = [":enzyme_jax_internal"],
+    deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"],
 )
