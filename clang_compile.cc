@@ -281,195 +281,183 @@ extern "C" int enzyme_tape;
 extern "C" int enzyme_allocated;
   )", "/enzyme/enzyme/utils", /*RequiresNullTerminator*/false));
   fs->addFile("/enzyme/enzyme/tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
-// Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced
-// at the Lawrence Livermore National Laboratory. All Rights reserved. See files
-// LICENSE and NOTICE for details. LLNL-CODE-806117.
-//
-// This file is part of the MFEM library. For more information and source code
-// availability visit https://mfem.org.
-//
-// MFEM is free software; you can redistribute it and/or modify it under the
-// terms of the BSD-3 license. We welcome feedback and contributions, see file
-// CONTRIBUTING.md for details.
-#define MFEM_HOST_DEVICE 
 #include <stdint.h>
+#include <tuple>
 namespace enzyme {
 using size_t=std::size_t;
 template <typename T, size_t... n>
 struct tensor;
 
-/// The implementation can be drastically generalized by using concepts of the
-/// c++17 standard.
-
-template < typename T >
+template <typename T>
 struct tensor<T>
 {
-   using type = T;
-   static constexpr size_t ndim      = 1;
-   static constexpr size_t first_dim = 0;
-   T& operator[](size_t /*unused*/) { return values; }
-   MFEM_HOST_DEVICE const T& operator[](size_t /*unused*/) const { return values; }
-   MFEM_HOST_DEVICE T& operator()(size_t /*unused*/) { return values; }
-   MFEM_HOST_DEVICE const T& operator()(size_t /*unused*/) const { return values; }
-   MFEM_HOST_DEVICE operator T() const { return values; }
+   using dtype = T;
+   auto static constexpr shape = std::make_tuple();
+
    T values;
 
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator=(T rhs)
-  {
-    values = rhs;
-    return rhs;
-  }
+   __attribute__((always_inline))
+   T& operator[](size_t) {
+     return values;
+   }
+   __attribute__((always_inline))
+   const T& operator[](size_t) const {
+     return values;
+   }
+   __attribute__((always_inline))
+   T& operator()() {
+     return values;
+   }
+   __attribute__((always_inline))
+   const T& operator()() const {
+     return values;
+   }
+   __attribute__((always_inline))
+   operator T() const {
+     return values;
+   }
+
+    __attribute__((always_inline))
+    T operator=(T rhs)
+    {
+      return values = rhs;
+    }
+    __attribute__((always_inline))
+    T operator+=(T rhs)
+    {
+      return values += rhs;
+    }
+    __attribute__((always_inline))
+    T operator-=(T rhs)
+    {
+      return values -= rhs;
+    }
+    __attribute__((always_inline))
+    T operator*=(T rhs)
+    {
+      return values *= rhs;
+    }
+    __attribute__((always_inline))
+    T operator/=(T rhs)
+    {
+      return values /= rhs;
+    }
 };
 
-template < typename T, size_t n0 >
+template <typename T, size_t n0>
 struct tensor<T, n0>
 {
-   using type = T;
-   static constexpr size_t ndim      = 1;
-   static constexpr size_t first_dim = n0;
-   MFEM_HOST_DEVICE T& operator[](size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const T& operator[](size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE T& operator()(size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const T& operator()(size_t i) const { return values[i]; }
+   using dtype = T;
+   auto static constexpr shape = std::make_tuple(n0);
+
    T values[n0];
 
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator=(T rhs)
-  {
-    for (size_t i=0; i<n0; i++)
-      values[i] = rhs;
-    return rhs;
-  }
+   __attribute__((always_inline))
+   T& operator[](size_t i) {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   const T& operator[](size_t i) const {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   T& operator()(size_t i) {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   const T& operator()(size_t i) const {
+     return values[i];
+   }
+
+    __attribute__((always_inline))
+    void operator=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] = rhs;
+    }
+    __attribute__((always_inline))
+    void operator+=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] += rhs;
+    }
+    __attribute__((always_inline))
+    void operator-=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] -= rhs;
+    }
+    __attribute__((always_inline))
+    void operator*=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] *= rhs;
+    }
+    __attribute__((always_inline))
+    void operator/=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] /= rhs;
+    }
 };
 
-template < typename T, size_t n0, size_t n1 >
-struct tensor<T, n0, n1>
+template<typename T, size_t n0, size_t... N>
+struct tensor<T, n0, N...>
 {
-   using type = T;
-   static constexpr size_t ndim      = 2;
-   static constexpr size_t first_dim = n0;
-   MFEM_HOST_DEVICE tensor< T, n1 >& operator[](size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1 >& operator[](size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n1 >& operator()(size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1 >& operator()(size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j) { return values[i][j]; }
-   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j) const { return values[i][j]; }
-   tensor < T, n1 > values[n0];
+   using dtype = T;
+   auto static constexpr shape = std::make_tuple(n0, N...);
+   using ST = tensor<T, N...>;
 
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator=(T rhs)
-  {
-    for (size_t i=0; i<n0; i++)
-      values[i] = rhs;
-    return rhs;
-  }
+   ST values[n0];
+
+   __attribute__((always_inline))
+   ST& operator[](size_t i) {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   const ST& operator[](size_t i) const {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   ST& operator()(size_t i) {
+     return values[i];
+   }
+   __attribute__((always_inline))
+   const ST& operator()(size_t i) const {
+     return values[i];
+   }
+
+    __attribute__((always_inline))
+    void operator=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] = rhs;
+    }
+    __attribute__((always_inline))
+    void operator+=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] += rhs;
+    }
+    __attribute__((always_inline))
+    void operator-=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] -= rhs;
+    }
+    __attribute__((always_inline))
+    void operator*=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] *= rhs;
+    }
+    __attribute__((always_inline))
+    void operator/=(T rhs)
+    {
+      for (size_t i=0; i<n0; i++)
+        values[i] /= rhs;
+    }
 };
-
-template < typename T, size_t n0, size_t n1, size_t n2 >
-struct tensor<T, n0, n1, n2>
-{
-   using type = T;
-   static constexpr size_t ndim      = 3;
-   static constexpr size_t first_dim = n0;
-   MFEM_HOST_DEVICE tensor< T, n1, n2 >& operator[](size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2 >& operator[](size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n1, n2 >& operator()(size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2 >& operator()(size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n2 >& operator()(size_t i, size_t j) { return values[i][j]; }
-   MFEM_HOST_DEVICE const tensor< T, n2 >& operator()(size_t i, size_t j) const { return values[i][j]; }
-   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
-   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j, size_t k) const { return values[i][j][k]; }
-   tensor < T, n1, n2 > values[n0];
-
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator=(T rhs)
-  {
-    for (size_t i=0; i<n0; i++)
-      values[i] = rhs;
-    return rhs;
-  }
-};
-
-template < typename T, size_t n0, size_t n1, size_t n2, size_t n3 >
-struct tensor<T, n0, n1, n2, n3>
-{
-   using type = T;
-   static constexpr size_t ndim      = 4;
-   static constexpr size_t first_dim = n0;
-   MFEM_HOST_DEVICE tensor< T, n1, n2, n3 >& operator[](size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3 >& operator[](size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n1, n2, n3 >& operator()(size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3 >& operator()(size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n2, n3 >& operator()(size_t i, size_t j) { return values[i][j]; }
-   MFEM_HOST_DEVICE const tensor< T, n2, n3 >& operator()(size_t i, size_t j) const { return values[i][j]; }
-   MFEM_HOST_DEVICE tensor< T, n3 >& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
-   MFEM_HOST_DEVICE const tensor< T, n3 >& operator()(size_t i, size_t j, size_t k) const { return values[i][j][k]; }
-   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k, size_t l) { return values[i][j][k][l]; }
-   MFEM_HOST_DEVICE const T&  operator()(size_t i, size_t j, size_t k, size_t l) const { return values[i][j][k][l]; }
-   tensor < T, n1, n2, n3 > values[n0];
-
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator=(T rhs)
-  {
-    for (size_t i=0; i<n0; i++)
-      values[i] = rhs;
-    return rhs;
-  }
-};
-
-template < typename T, size_t n0, size_t n1, size_t n2, size_t n3, size_t n4 >
-struct tensor<T, n0, n1, n2, n3, n4>
-{
-   using type = T;
-   static constexpr size_t ndim      = 5;
-   static constexpr size_t first_dim = n0;
-   MFEM_HOST_DEVICE tensor< T, n1, n2, n3, n4 >& operator[](size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3, n4 >& operator[](size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n1, n2, n3, n4 >& operator()(size_t i) { return values[i]; }
-   MFEM_HOST_DEVICE const tensor< T, n1, n2, n3, n4 >& operator()(size_t i) const { return values[i]; }
-   MFEM_HOST_DEVICE tensor< T, n2, n3, n4 >& operator()(size_t i, size_t j) { return values[i][j]; }
-   MFEM_HOST_DEVICE const tensor< T, n2, n3, n4 >& operator()(size_t i,
-                                                              size_t j) const { return values[i][j]; }
-   MFEM_HOST_DEVICE tensor< T, n3, n4>& operator()(size_t i, size_t j, size_t k) { return values[i][j][k]; }
-   MFEM_HOST_DEVICE const tensor< T, n3, n4>& operator()(size_t i, size_t j,
-                                                         size_t k) const { return values[i][j][k]; }
-   MFEM_HOST_DEVICE tensor< T, n4 >& operator()(size_t i, size_t j, size_t k, size_t l) { return values[i][j][k][l]; }
-   MFEM_HOST_DEVICE const tensor< T, n4 >& operator()(size_t i, size_t j, size_t k,
-                                                      size_t l) const { return values[i][j][k][l]; }
-   MFEM_HOST_DEVICE T& operator()(size_t i, size_t j, size_t k, size_t l, size_t m) { return values[i][j][k][l][m]; }
-   MFEM_HOST_DEVICE const T& operator()(size_t i, size_t j, size_t k, size_t l, size_t m) const { return values[i][j][k][l][m]; }
-   tensor < T, n1, n2, n3, n4 > values[n0];
-
-  __attribute__((always_inline))
-  MFEM_HOST_DEVICE T operator+=(T rhs)
-  {
-    for (size_t i=0; i<n0; i++)
-      values[i] = rhs;
-    return rhs;
-  }
-};
-
-
-
-template<typename T, size_t... N>
-void operator+=(tensor<T, N...> & lhs, T rhs);
-
-template<typename T, size_t N0>
-__attribute__((always_inline))
-void operator+=(tensor<T, N0> & lhs, T rhs)
-{
-  for (size_t i=0; i<N0; i++)
-    lhs.values[i] += rhs;
-}
-
-template<typename T, size_t N0, size_t... N>
-__attribute__((always_inline))
-void operator+=(tensor<T, N0, N...> & lhs, T rhs)
-{
-  for (size_t i=0; i<N0; i++)
-    lhs.values[i] += rhs;
-}
 
 }
   )", "/enzyme/enzyme/tensor", /*RequiresNullTerminator*/false));
