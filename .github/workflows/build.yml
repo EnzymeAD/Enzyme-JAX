@@ -16,7 +16,7 @@ on:
       strategy:
         fail-fast: false
         matrix:
-          os: [openstack22]
+          os: [openstack22, macOS-latest]
     
       timeout-minutes: 500 
       steps:

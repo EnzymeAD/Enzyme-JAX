@@ -48,7 +48,7 @@ py_wheel(
     license='LLVM',
     author_email="wmoses@mit.edu, zinenko@google.com",
     python_tag = "py3",
-    version = "0.0.1",
+    version = "0.0.2",
     platform = "//platforms:linux_x86_64",
     requires = ["jax"],
     deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"]

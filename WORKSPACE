@@ -1,6 +1,6 @@
 new_local_repository(
     name = "llvm-raw",
-    build_file = "llvm_dummy.BUILD",
+    build_file_content = "# empty",
     path = "llvm-project",
 )
 
