@@ -40,12 +40,23 @@ pybind_extension(
     ],
 )
 
-pybind_extension(
-    name = "pyllvm",
-    srcs = ["pyllvm.cc"],
+load("@rules_python//python:packaging.bzl", "py_wheel")
+
+py_library(
+    name = "enzyme_jax_internal",
+    srcs = ["enzyme_jax/primitives.py", "enzyme_jax/__init__.py"],
+    data = [':enzyme_call'],
     deps = [
-        "@pybind11",
-        "@llvm-project//llvm:Support",
-        ":clang_compile",
+        ":enzyme_call",
     ],
+    visibility = ["//visibility:public"]
+)
+
+py_wheel(
+    name = "enzyme_jax",
+    # Package data. We're building "example_minimal_package-0.0.1-py3-none-any.whl"
+    distribution = "enzyme_jax",
+    python_tag = "py3",
+    version = "0.0.1",
+    deps = [":enzyme_jax_internal"],
 )

@@ -10,3 +10,6 @@
 [submodule "Enzyme"]
 	path = Enzyme
 	url = git@github.com:EnzymeAD/Enzyme
+[submodule "rules_python"]
+	path = rules_python
+	url = https://github.com/bazelbuild/rules_python

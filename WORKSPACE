@@ -18,6 +18,11 @@ local_repository(
     path = "Enzyme/enzyme",
 )
 
+local_repository(
+    name = "rules_python",
+    path = "rules_python",
+)
+
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()
 
