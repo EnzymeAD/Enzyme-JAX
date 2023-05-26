@@ -223,7 +223,7 @@ class CpuKernel {
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
-      auto tJIT = llvm::orc::LLJITBuilder().setDataLayout(*DL.get()).setObjectLinkingLayerCreator(
+      auto tJIT = llvm::orc::LLJITBuilder().setDataLayout(*DL.get()).setLinkProcessSymbolsByDefault(true).setObjectLinkingLayerCreator(
           [](llvm::orc::ExecutionSession & ES, const llvm::Triple &OLL) -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
             return std::make_unique<llvm::orc::ObjectLinkingLayer>(ES);
           }).setJITTargetMachineBuilder(llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple()))).create();
@@ -235,7 +235,7 @@ class CpuKernel {
       assert(JIT);
     }
 
-    auto LibA = JIT->getExecutionSession().createJITDylib("enzymedl_"+std::to_string(identifier));
+    auto LibA = JIT->createJITDylib("enzymedl_"+std::to_string(identifier));
 
     // Add the module.
     // if (auto Err = JIT->addIRModule(llvm::orc::ThreadSafeModule(std::move(mod), std::move(llvm_ctx)))) {
