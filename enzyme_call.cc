@@ -49,10 +49,11 @@ class CpuKernel {
   int64_t identifier;
   size_t num_out;
   uint64_t addr;
+  std::string code;
  public:
   CpuKernel(int64_t identifier,
-            size_t num_out, uint64_t addr)
-      : identifier(identifier), num_out(num_out), addr(addr) {
+            size_t num_out, uint64_t addr, std::string code)
+      : identifier(identifier), num_out(num_out), addr(addr), code(code) {
   }
 
   static std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape, bool constv) {
@@ -258,7 +259,7 @@ class CpuKernel {
  
     kernels.try_emplace(
         identifier,
-        std::make_unique<CpuKernel>(identifier, num_out, Entry));
+        std::make_unique<CpuKernel>(identifier, num_out, Entry, ss.str()));
     return identifier;
   }
 

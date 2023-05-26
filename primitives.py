@@ -88,7 +88,7 @@ def _enzyme_aug_abstract_eval(
   del source, fn, args_flat
 
   # each return is duplicated
-  return tuple(out_shapes) + (jax.core.ShapedArray((1,), (jax.numpy.int64)),)
+  return tuple(out_shapes) + (jax.core.ShapedArray((8,), (jax.numpy.int8)),)
 
 def _enzyme_rev_abstract_eval(
     *args_flat: jax.core.ShapedArray,
@@ -204,6 +204,7 @@ def _enzyme_aug_lowering(
   custom_call = stablehlo.CustomCallOp(
       out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
+  print(custom_call)
 
   return custom_call.results
 
@@ -238,6 +239,8 @@ def _enzyme_rev_lowering(
   custom_call = stablehlo.CustomCallOp(
       in_types, mlir_args, call_target_name="jaxzyme.rev"
   )
+  print(args_flat)
+  print(custom_call.results, custom_call)
 
   return custom_call.results
 
@@ -284,6 +287,7 @@ def enzyme_aug(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], 
   shadconv = _enzyme_aug_p.bind(
       *args, source=source, fn=fn, out_shapes=out_shapes)
   shadconv = ( shadconv[0:len(shadconv)-1], (shadconv[-1],  tuple((a.shape, jaxify(a.dtype)) for a in args) ) )
+  print("aug shadowconv", shadconv)
   return shadconv
 
 _enzyme_aug_p = jax.core.Primitive("enzyme_aug")
@@ -297,7 +301,10 @@ xla_client.register_custom_call_target(
 )
 
 def enzyme_rev(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], tape, args):
+  print("pretape", tape)
   (tape, in_shapes) = tape
+  assert tape.dtype == jnp.int8
+  assert tape.shape == (8,)
   args = (tape,) + tuple(args)
   print("args", args, in_shapes)
   shadconv = _enzyme_rev_p.bind(
