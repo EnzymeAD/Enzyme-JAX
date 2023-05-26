@@ -88,7 +88,7 @@ def _enzyme_aug_abstract_eval(
   del source, fn, args_flat
 
   # each return is duplicated
-  return tuple(out_shapes) + (jax.core.ShapedArray((8,), (jax.numpy.int8)),)
+  return tuple(out_shapes) + (jax.core.ShapedArray((80,), (jax.numpy.int8)),)
 
 def _enzyme_rev_abstract_eval(
     *args_flat: jax.core.ShapedArray,
@@ -239,8 +239,6 @@ def _enzyme_rev_lowering(
   custom_call = stablehlo.CustomCallOp(
       in_types, mlir_args, call_target_name="jaxzyme.rev"
   )
-  print(args_flat)
-  print(custom_call.results, custom_call)
 
   return custom_call.results
 
@@ -286,6 +284,7 @@ def dejaxify(x):
 def enzyme_aug(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], *args):
   shadconv = _enzyme_aug_p.bind(
       *args, source=source, fn=fn, out_shapes=out_shapes)
+  print(" aug normconv", shadconv)
   shadconv = ( shadconv[0:len(shadconv)-1], (shadconv[-1],  tuple((a.shape, jaxify(a.dtype)) for a in args) ) )
   print("aug shadowconv", shadconv)
   return shadconv
@@ -301,15 +300,12 @@ xla_client.register_custom_call_target(
 )
 
 def enzyme_rev(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], tape, args):
-  print("pretape", tape)
   (tape, in_shapes) = tape
   assert tape.dtype == jnp.int8
-  assert tape.shape == (8,)
+  assert tape.shape == (80,)
   args = (tape,) + tuple(args)
-  print("args", args, in_shapes)
   shadconv = _enzyme_rev_p.bind(
       *args, source=source, fn=fn, in_shapes=in_shapes)
-  print("rev shadconv", shadconv)
   return tuple(shadconv)
 
 _enzyme_rev_p = jax.core.Primitive("enzyme_rev")
@@ -349,15 +345,18 @@ void myfn(T1& out0, const T2& in1) {
   out0 = 56.0f;
 }
 """, "myfn", [jax.core.ShapedArray([4, 4], jnp.float32)], a
-  )
+  )[0]
   return a, b, c
 
 
 def main(args: Sequence[str]):
   del args
   ones = jnp.ones((2, 3), jnp.float32)
-  x, y, z = do_something(ones)
-
+  # x, y, z = do_something(ones)
+  x = ones
+  y = ones
+  z = jnp.ones((4, 4), jnp.float32)
+  # z = [jnp.ones((4, 4), jnp.float32),]
   print(x)
   print(y)
   print(z)

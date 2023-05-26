@@ -185,7 +185,7 @@ class CpuKernel {
       // outs, tapeout
       // ins
       num_out = out_shapes.size() + 1 /*tape*/;
-      ss << "  tape = enzyme::__enzyme_augmentfwd<void*>(entry_wrap";
+      ss << "  auto tmptape = enzyme::__enzyme_augmentfwd<void*>(entry_wrap";
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup, &out_" << i << ", nullptr";
       }
@@ -220,8 +220,6 @@ class CpuKernel {
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv, llvm_ctx.get());
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
-
-    llvm::errs() << " mod: " << *mod << "\n";
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
@@ -273,8 +271,17 @@ class CpuKernel {
   void call(void *out, void **ins) const {
     void **outs = num_out > 1 ? reinterpret_cast<void **>(out) : &out;
 
+    llvm::errs() << " pre jitcall: " << num_out << "\n"; llvm::errs().flush();
+    for(int i=0; i<num_out; i++) {
+      void* data = outs[i];
+      llvm::errs() << " zpremid jitcall: " << i << " - " << data << "\n"; llvm::errs().flush();
+      *(void**)(data) = 0;
+      llvm::errs() << " zmid jitcall: " << i << "\n"; llvm::errs().flush();
+    }
+    llvm::errs() << " mid jitcall: " << num_out << "\n"; llvm::errs().flush();
     auto fn = (void(*)(void**outs, void**ins))addr;
     fn(outs, ins);
+    llvm::errs() << " post jitcall: " << num_out << "\n"; llvm::errs().flush();
   }
 
  private:
@@ -299,8 +306,9 @@ void CpuCallback(void *out, void **ins) {
     // TODO: find a way to fail more gracefully.
     llvm::report_fatal_error("couldn't find enzyme kernel");
   }
-
+  llvm::errs() << " pre call: " << kernel << "\n"; llvm::errs().flush();
   kernel->call(out, ins + 1);
+  llvm::errs() << " post call: " << kernel << "\n"; llvm::errs().flush();
 }
 
 PYBIND11_MODULE(enzyme_call, m) {
