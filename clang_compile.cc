@@ -180,7 +180,7 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &&TargetTriple,
 
 static LLVMContext GlobalContext;
 
-std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, PyObject* pyargv, LLVMContext* Context) {
+std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, ArrayRef<std::string> pyargv, LLVMContext* Context) {
     const llvm::opt::InputArgList Args;
       const char *binary = cpp ? "clang++" : "clang"; 
   // Buffer diagnostics from argument parsing so that we can output them using a
@@ -199,25 +199,8 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   ArgumentList Argv;
   
   Argv.emplace_back(StringRef(filename));
-
-  assert (PySequence_Check(pyargv));
-	auto sz = PySequence_Size(pyargv);
-    for (Py_ssize_t i = 0; i < sz; ++i) {
-        PyObject* item = PySequence_GetItem(pyargv, i);
-#if PY_VERSION_HEX < 0x03000000
-        auto argv = PyString_AsString(item);
-#else
-        auto argv = PyUnicode_AsUTF8(item);
-#endif
-        Py_DECREF(item);
-		assert(argv);
-		Argv.emplace_back(StringRef(argv));
-#if PY_VERSION_HEX < 0x03000000
-        free(argv);
-#else
-        // should not free py3+
-#endif
-    }
+  for (auto v : pyargv)
+    Argv.emplace_back(v);
 
   SmallVector<const char*> PreArgs;
   PreArgs.push_back(binary);
@@ -287,11 +270,15 @@ namespace enzyme {
   RT __enzyme_augmentfwd(Args...);
   template<typename RT, typename... Args>
   RT __enzyme_reverse(Args...);
+  template<typename... Args>
+  std::size_t __enzyme_augmentsize(Args...);
 }
 extern "C" int enzyme_dup;
 extern "C" int enzyme_const;
 extern "C" int enzyme_dupnoneed;
 extern "C" int enzyme_nooverwrite;
+extern "C" int enzyme_tape;
+extern "C" int enzyme_allocated;
   )", "/enzyme/enzyme/utils", /*RequiresNullTerminator*/false));
   fs->addFile("/enzyme/enzyme/tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
 // Copyright (c) 2010-2023, Lawrence Livermore National Security, LLC. Produced

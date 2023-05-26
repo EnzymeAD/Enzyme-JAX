@@ -24,6 +24,7 @@ def _enzyme_primal_impl(
     *args_flat: jax.Array,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray]
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
@@ -33,6 +34,7 @@ def _enzyme_fwd_impl(
     *args_flat: jax.Array,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray]
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
@@ -42,6 +44,7 @@ def _enzyme_aug_impl(
     *args_flat: jax.Array,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray]
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
@@ -51,6 +54,7 @@ def _enzyme_rev_impl(
     *args_flat: jax.Array,
     source: str,
     fn: str,
+    argv: Sequence[str],
     in_shapes
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
@@ -60,6 +64,7 @@ def _enzyme_primal_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
@@ -72,6 +77,7 @@ def _enzyme_fwd_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
@@ -79,21 +85,41 @@ def _enzyme_fwd_abstract_eval(
   # each return is duplicated
   return tuple(o for o in out_shapes for _ in range(2))
 
+def absmaketup(ty):
+  tystr = ty.dtype.__str__()
+  tystr = {'float32':'float','float64':'double'}[tystr]
+  return (tystr, ty.shape)
+
 def _enzyme_aug_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[jax.core.ShapedArray]:
-  del source, fn, args_flat
+  
+  in_shapes = args_flat
 
-  # each return is duplicated
-  return tuple(out_shapes) + (jax.core.ShapedArray((80,), (jax.numpy.int8)),)
+  prev_out_shapes = out_shapes
+
+  out_shapes = [absmaketup(a) for a in out_shapes]
+
+  in_shapes = [absmaketup(a) for a in in_shapes]
+
+  import os
+  dn = os.path.dirname(enzyme_call.__file__)
+  dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
+  argv = argv + ( "-resource-dir", dn)
+
+  tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv)
+  res = tuple(prev_out_shapes) + (jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),)
+  return res
 
 def _enzyme_rev_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source: str,
     fn: str,
+    argv: Sequence[str],
     in_shapes
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
@@ -112,6 +138,7 @@ def _enzyme_primal_lowering(
     *args_flat: ir.Value,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[ir.Value]:
   del out_shapes
@@ -126,7 +153,7 @@ def _enzyme_primal_lowering(
   import os
   dn = os.path.dirname(enzyme_call.__file__)
   dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
-  argv = [ "-resource-dir", dn]
+  argv = argv + ( "-resource-dir", dn )
   mode = 0
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -145,6 +172,7 @@ def _enzyme_fwd_lowering(
     *args_flat: ir.Value,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[ir.Value]:
   del out_shapes
@@ -160,7 +188,7 @@ def _enzyme_fwd_lowering(
   import os
   dn = os.path.dirname(enzyme_call.__file__)
   dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
-  argv = [ "-resource-dir", dn]
+  argv = argv + ( "-resource-dir", dn )
   mode = 1
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -179,6 +207,7 @@ def _enzyme_aug_lowering(
     *args_flat: ir.Value,
     source: str,
     fn: str,
+    argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[ir.Value]:
   del out_shapes
@@ -194,7 +223,7 @@ def _enzyme_aug_lowering(
   import os
   dn = os.path.dirname(enzyme_call.__file__)
   dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
-  argv = [ "-resource-dir", dn]
+  argv = argv + ( "-resource-dir", dn)
   mode = 2
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -204,7 +233,6 @@ def _enzyme_aug_lowering(
   custom_call = stablehlo.CustomCallOp(
       out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
-  print(custom_call)
 
   return custom_call.results
 
@@ -214,6 +242,7 @@ def _enzyme_rev_lowering(
     *args_flat: ir.Value,
     source: str,
     fn: str,
+    argv: Sequence[str],
     in_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[ir.Value]:
   del in_shapes
@@ -229,7 +258,7 @@ def _enzyme_rev_lowering(
   import os
   dn = os.path.dirname(enzyme_call.__file__)
   dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
-  argv = [ "-resource-dir", dn]
+  argv = argv + ( "-resource-dir", dn)
   mode = 3
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -242,11 +271,11 @@ def _enzyme_rev_lowering(
 
   return custom_call.results
 
-# @partial(jax.custom_jvp, nondiff_argnums=(0, 1, 2))
-@partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2))
-def enzyme_primal(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], *args):
+# @partial(jax.custom_jvp, nondiff_argnums=(0, 1, 2, 3))
+@partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2, 3))
+def enzyme_primal(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
   return _enzyme_primal_p.bind(
-      *args, source=source, fn=fn, out_shapes=out_shapes)
+      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
 
 _enzyme_primal_p = jax.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
@@ -259,10 +288,10 @@ xla_client.register_custom_call_target(
 )
 
 # @enzyme_primal.defjvp
-def enzyme_fwd(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], *args):
+def enzyme_fwd(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
   args = (a[0] for a in args)
   shadconv = _enzyme_fwd_p.bind(
-      *args, source=source, fn=fn, out_shapes=out_shapes)
+      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
   return (shadconv[0::2], shadconv[1::2])
 
 _enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
@@ -281,12 +310,10 @@ def jaxify(x):
 def dejaxify(x):
   return {0:jnp.float32, 1:jnp.float64}[x]
 
-def enzyme_aug(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], *args):
+def enzyme_aug(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
   shadconv = _enzyme_aug_p.bind(
-      *args, source=source, fn=fn, out_shapes=out_shapes)
-  print(" aug normconv", shadconv)
+      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
   shadconv = ( shadconv[0:len(shadconv)-1], (shadconv[-1],  tuple((a.shape, jaxify(a.dtype)) for a in args) ) )
-  print("aug shadowconv", shadconv)
   return shadconv
 
 _enzyme_aug_p = jax.core.Primitive("enzyme_aug")
@@ -299,13 +326,11 @@ xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
-def enzyme_rev(source: str, fn:str, out_shapes: Sequence[jax.core.ShapedArray], tape, args):
+def enzyme_rev(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], tape, args):
   (tape, in_shapes) = tape
-  assert tape.dtype == jnp.int8
-  assert tape.shape == (80,)
   args = (tape,) + tuple(args)
   shadconv = _enzyme_rev_p.bind(
-      *args, source=source, fn=fn, in_shapes=in_shapes)
+      *args, source=source, fn=fn, argv=argv, in_shapes=in_shapes)
   return tuple(shadconv)
 
 _enzyme_rev_p = jax.core.Primitive("enzyme_rev")
@@ -322,25 +347,38 @@ enzyme_primal.defvjp(enzyme_aug, enzyme_rev)
 
 @jax.jit
 def do_something(ones):
+  shape = jax.core.ShapedArray(ones.shape, ones.dtype)
+  a, b = enzyme_primal("""
+template<std::size_t N, std::size_t M>
+void myfn(enzyme::tensor<float, N, M>& out0, enzyme::tensor<float, N, M>& out1, const enzyme::tensor<float, N, M>& in0) {
+    for (int j=0; j<N; j++) {
+      for (int k=0; k<M; k++) {
+        out0[j][k] = in0[j][k] + 42;
+      }
+    }
+    for (int j=0; j<2; j++) {
+      for (int k=0; k<3; k++) {
+        out0[j][k] = in0[j][k] + 2 * 42;
+      }
+    }
+}
+  """, "myfn", (), [shape, shape], ones)
   c = enzyme_primal(
       """
 template<typename T1, typename T2>
 void myfn(T1& out0, const T2& in1) {
   out0 = 56.0f;
 }
-""", "myfn", [jax.core.ShapedArray([4, 4], jnp.float32)], ones
-  )[0]
-  return c
+""", "myfn", (), [jax.core.ShapedArray([4, 4], jnp.float32)], ones
+  )
+  return a, b, c
 
 
 def main(args: Sequence[str]):
   del args
   ones = jnp.ones((2, 3), jnp.float32)
-  # x, y, z = do_something(ones)
-  x = ones
-  y = ones
-  z = jnp.ones((4, 4), jnp.float32)
-  # z = [jnp.ones((4, 4), jnp.float32),]
+  x, y, z = do_something(ones)
+
   print(x)
   print(y)
   print(z)
@@ -352,7 +390,7 @@ def main(args: Sequence[str]):
 
 
   primals, f_vjp = jax.vjp(do_something, ones)
-  (grads,) = f_vjp(z)
+  (grads,) = f_vjp((x, y, z))
   # primals, tangents = jax.jvp(do_something, (ones,), (ones,) )
   print(primals)
   print(grads)
