@@ -130,7 +130,7 @@ class CpuKernel {
         out_off++;
       }
       if (mode == 3) {
-        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)ins[" << in_off << "];\n";
+        ss << " " << make_type(out_names[i], out_shapes[i], true) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], true) << "*)ins[" << in_off << "];\n";
         in_off++;
       }
     }
@@ -144,7 +144,7 @@ class CpuKernel {
         in_off++;
       }
       if (mode == 3) {
-        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)outs[" << out_off << "];\n";
+        ss << " " << make_type(in_names[i], in_shapes[i], false) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], false) << "*)outs[" << out_off << "];\n";
         out_off++;
       }
     }
@@ -202,14 +202,14 @@ class CpuKernel {
       // og outputs, og inputs
       //     doutputs (in), dinputs (out)
       for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << "  d_in_" << i << " = 0;\n";
+          ss << "  din_" << i << " = (" << in_names[i]<<")0;\n";
       }
       ss << "  enzyme::__enzyme_reverse<void>(entry_wrap";
       for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup, nullptr, &d_out_" << i;
+          ss << ", enzyme_dup, nullptr, &dout_" << i;
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup, nullptr, &d_in_" << i;
+          ss << ", enzyme_dup, nullptr, &din_" << i;
       }
       ss << ", tape);\n";
     } else {
@@ -271,6 +271,7 @@ class CpuKernel {
   void call(void *out, void **ins) const {
     void **outs = num_out > 1 ? reinterpret_cast<void **>(out) : &out;
 
+    llvm::errs() << " calling code from:\n" << code << "\n";
     llvm::errs() << " pre jitcall: " << num_out << "\n"; llvm::errs().flush();
     for(int i=0; i<num_out; i++) {
       void* data = outs[i];

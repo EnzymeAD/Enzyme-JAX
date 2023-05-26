@@ -230,7 +230,7 @@ def _enzyme_rev_lowering(
   dn = os.path.dirname(enzyme_call.__file__)
   dn = os.path.join(dn, "external", "llvm-project", "clang", "staging")
   argv = [ "-resource-dir", dn]
-  mode = 2
+  mode = 3
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
