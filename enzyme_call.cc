@@ -82,16 +82,20 @@ class CpuKernel {
     ss << "#include <enzyme/utils>\n";
     ss << source << "\n";
     ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
-    for (size_t i=0; i<out_shapes.size(); i++) {
+    for (size_t i=0, off=0; i<out_shapes.size(); i++) {
       ss << " " << make_type(out_names[i], out_shapes[i], false) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << i << "];\n";
+      off++;
       if (mode == 1) {
-        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << i << "];\n";
+        ss << " " << make_type(out_names[i], out_shapes[i], false) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false) << "*)outs[" << off << "];\n";
       }
+      off++;
     }
-    for (size_t i=0; i<in_shapes.size(); i++) {
-      ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << i << "];\n";
+    for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+      ss << " " << make_type(in_names[i], in_shapes[i], true) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << off << "];\n";
+      off++;
       if (mode == 1) {
-        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << i << "];\n";
+        ss << " " << make_type(in_names[i], in_shapes[i], true) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true) << "*)ins[" << off << "];\n";
+        off++;
       }
     }
     if (mode == 0) {
@@ -128,13 +132,13 @@ class CpuKernel {
       ss << ")>(&" << fn << ")";
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup, ";
-          ss << "out_" << i << ", ";
-          ss << "dout_" << i;
+          ss << "&out_" << i << ", ";
+          ss << "&dout_" << i;
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup, ";
-          ss << "in_" << i << ", ";
-          ss << "din_" << i;
+          ss << "&in_" << i << ", ";
+          ss << "&din_" << i;
       }
       ss << ");\n";
     } else if (mode == 2) {
