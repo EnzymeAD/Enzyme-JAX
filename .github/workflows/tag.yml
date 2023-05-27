@@ -33,12 +33,6 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: bazel build :enzyme_jax
-      
-      - name: Upload Build
-        uses: actions/upload-artifact@v3
-        with:
-          name: Wheel-${{ matrix.os }}
-          path: "bazel-bin/*.whl"
 
       - env:
           TWINE_USERNAME: ${{ secrets.PYPI_TOKEN }}

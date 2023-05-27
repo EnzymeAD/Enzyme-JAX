@@ -37,9 +37,11 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: bazel build :enzyme_jax
+
+      - run: cp bazel-bin/*.whl .
       
       - name: Upload Build
         uses: actions/upload-artifact@v3
         with:
           name: Wheel-${{ matrix.os }}
-          path: "bazel-bin/*.whl"
+          path: "*.whl"
