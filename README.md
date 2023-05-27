@@ -1,5 +1,59 @@
 # Enzyme-JAX
 
+Custom bindings for Enzyme within JaX. Currently this is set up to allow you
+to automatically import, and automatically differentiate (both jvp and vjp)
+external C++ code into JaX. As Enzyme is language-agnostic, this can be extended
+for arbitrary programming languages (Julia, Swift, Fortra, even Python)!
+
+As JaX only supports a single custom rule (either forward or reverse) on a function,
+Enzyme exports two versions of its FFI: one for forward mode, and one for reverse mode.
+
+You can use 
+
+```python
+from enzyme_jax import cpp_fwd, cpp_rev
+
+# Forward-mode C++ AD example
+
+@jax.jit
+def fwd_something(inp):
+    y = cpp_fwd(inp, out_shapes=[jax.core.ShapedArray([2, 3], jnp.float32)], source="""
+        template<std::size_t N, std::size_t M>
+        void myfn(enzyme::tensor<float, N, M>& out0, const enzyme::tensor<float, N, M>& in0) {
+        out0 = 56.0f + in0(0, 0);
+        }
+        """, fn="myfn")
+    return y
+
+ones = jnp.ones((2, 3), jnp.float32)
+primals, tangents = jax.jvp(fwd_somthing, (ones,), (ones,) )
+
+# Reverse-mode C++ AD example
+
+@jax.jit
+def rev_something(inp):
+    y = cpp_rev(inp, out_shapes=[jax.core.ShapedArray([2, 3], jnp.float32)], source="""
+        template<std::size_t N, std::size_t M>
+        void myfn(enzyme::tensor<float, N, M>& out0, const enzyme::tensor<float, N, M>& in0) {
+        out0 = 56.0f + in0(0, 0);
+        }
+        """, fn="myfn")
+    return y
+
+primals, f_vjp = jax.vjp(rev_something(), ones)
+(grads,) = f_vjp((x, y, z))
+```
+
+# Installation
+
+The easiest way to install is using pip.
+
+```bash
+# The project is available on PyPi and installable like
+# a usual python package (https://pypi.org/project/enzyme-jax/)
+pip install enzyme-jax
+```
+
 ## Building from source
 
 Requirements: `bazel-5.3.0`, `clang++`, `python`, `python-virtualenv`,
@@ -14,7 +68,7 @@ git submodule update --init --recursive
 # However dirty this looks, it is actually the suggested mechanism for JAX.
 ./patches/apply.sh
 
-# Build and install JAX into a new virtual environment.
+# [Optional] Build and install JAX into a new virtual environment.
 # Refer to https://jax.readthedocs.io/en/latest/developer.html for more details.
 virtualenv .venv
 pip install numpy wheel
@@ -25,7 +79,8 @@ pip install -e .
 cd ..
 
 # Build our extension.
-bazel-5.3.0 build :enzyme_call
+# Will create a whl in bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
+bazel build :enzyme_jax
 ```
 
 After changing LLVM, it is necessary to rebuild and reinstall JAX.
@@ -33,6 +88,6 @@ After changing LLVM, it is necessary to rebuild and reinstall JAX.
 ## Running the test
 
 ```sh
-export PYTHONPATH=$PWD/bazel-bin:$PWD/jax:$PYTHONPATH
-python primitives.py
+pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
+cd test && python test.py
 ```
