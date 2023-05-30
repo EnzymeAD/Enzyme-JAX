@@ -3,7 +3,7 @@
 Custom bindings for Enzyme within JaX. Currently this is set up to allow you
 to automatically import, and automatically differentiate (both jvp and vjp)
 external C++ code into JaX. As Enzyme is language-agnostic, this can be extended
-for arbitrary programming languages (Julia, Swift, Fortra, even Python)!
+for arbitrary programming languages (Julia, Swift, Fortran, Rust, and even Python)!
 
 As JaX only supports a single custom rule (either forward or reverse) on a function,
 Enzyme exports two versions of its FFI: one for forward mode, and one for reverse mode.
