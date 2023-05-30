@@ -48,6 +48,8 @@ primals, f_vjp = jax.vjp(rev_something(), ones)
 
 The easiest way to install is using pip.
 
+! Note that the current pypi binary will only work on Linux. This is intended to be fixed once I get macOS CI hours. If anyone is interested with supporting please reach out to @wsmoses.
+
 ```bash
 # The project is available on PyPi and installable like
 # a usual python package (https://pypi.org/project/enzyme-jax/)
