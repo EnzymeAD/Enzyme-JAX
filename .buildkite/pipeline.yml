@@ -1,0 +1,16 @@
+steps:
+  - label: "CI {{agent.arch}} -- {{agent.os}}"
+    agents:
+      queue: "juliaecosystem"
+      arch: ["x86_64", "arm"]
+      os: ["linux", "macOS", "windows"]
+    commands: |
+      git submodule update --init --recursive
+      python3 -m pip install --user numpy
+      bash patches/apply.sh
+      bazel build :enzyme_jax
+      cp bazel-bin/*.whl .
+    artifact_paths:
+      - "*.whl"
+
+    timeout_in_minutes: 120

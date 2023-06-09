@@ -259,10 +259,16 @@ def _enzyme_rev_lowering(
 
   return custom_call.results
 
+@jax.custom_transpose
 @partial(jax.custom_jvp, nondiff_argnums=(0, 1, 2, 3))
 def cpp_fwd_internal(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
   return _enzyme_primal_p.bind(
       *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
+
+@f.def_transpose
+def ft(*args):
+  print(args)
+  return 3. * args[-1]
 
 def cpp_fwd(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
   return cpp_fwd_internal(source, fn, argv, out_shapes, *args)

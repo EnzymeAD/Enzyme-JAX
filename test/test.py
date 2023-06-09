@@ -42,7 +42,7 @@ print(primals)
 print(tangents)
 
 
-primals, f_vjp = jax.vjp(do_something(cpp_rev), ones)
+primals, f_vjp = jax.vjp(do_something(cpp_fwd), ones)
 (grads,) = f_vjp((x, y, z))
 print(primals)
 print(grads)
