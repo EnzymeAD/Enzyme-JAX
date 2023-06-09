@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [openstack22, macOS-latest]
+        os: [openstack22]
     timeout-minutes: 500 
     steps:
       - name: add llvm 
