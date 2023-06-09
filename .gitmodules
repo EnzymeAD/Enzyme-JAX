@@ -1,15 +1,6 @@
-[submodule "llvm-project"]
-	path = llvm-project
-	url = https://github.com/llvm/llvm-project
 [submodule "jax"]
 	path = jax
 	url = https://github.com/google/jax
-[submodule "xla"]
-	path = xla
-	url = https://github.com/openxla/xla
 [submodule "Enzyme"]
 	path = Enzyme
 	url = https://github.com/EnzymeAD/Enzyme
-[submodule "rules_python"]
-	path = rules_python
-	url = https://github.com/bazelbuild/rules_python
