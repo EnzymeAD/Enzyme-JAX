@@ -1,11 +1,19 @@
 steps:
-  - label: "CI {{agent.arch}} -- {{agent.os}}"
+  - label: "CI {{matrix.arch}} -- {{matrix.os}}"
+    matrix:
+      setup:
+        arch:
+          - "x86_64"
+          - "arm"
+        os:
+          - "linux"
+          - "macOS"
+          - "windows"
     agents:
       queue: "juliaecosystem"
-      arch: ["x86_64", "arm"]
-      os: ["linux", "macOS", "windows"]
+      arch: {{matrix.arch}}
+      os: {{matrix.os}}
     commands: |
-      git submodule update --init --recursive
       python3 -m pip install --user numpy
       bash patches/apply.sh
       bazel build :enzyme_jax
