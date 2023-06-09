@@ -1,5 +1,7 @@
 steps:
   - label: "CI {{matrix.arch}} -- {{matrix.os}}"
+    env:
+      BUILDKITE_GIT_FETCH_FLAGS: "--depth=1"
     matrix:
       setup:
         arch:
