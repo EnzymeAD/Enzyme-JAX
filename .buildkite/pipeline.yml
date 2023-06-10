@@ -12,10 +12,9 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
-      export PATH="$PATH:/sbin"
-      wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
-      bash *.sh -b -p miniconda
-      ./miniconda/bin/activate
+      mkdir brew && curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C brew
+      brew/bin/brew install python3 bazel
+      export PATH="$PATH:$(pwd)/brew/bin"
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       export BAZEL_VERSION=5.2.0
