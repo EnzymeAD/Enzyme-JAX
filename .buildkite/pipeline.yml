@@ -12,7 +12,8 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
-      python3 -m pip install --user numpy
+      python -m ensurepip --upgrade
+      python -m pip install --user numpy
       bazel build :enzyme_jax
       cp bazel-bin/*.whl .
     artifact_paths:
