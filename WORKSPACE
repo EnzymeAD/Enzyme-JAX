@@ -5,6 +5,7 @@ git_repository(
     build_file_content = "# empty",
     remote = "https://github.com/llvm/llvm-project",
     commit = "e13d1b5227a77bb7becfd4c49a60720ecc33f870",
+    patch_args = ["-p1"],
     patches = ["//:patches/llvm_build.patch"]
 )
 
@@ -17,13 +18,6 @@ git_repository(
     name = "xla",
     commit = "c1e4a16e77a7ba2000003ccade3ffba3749ada35",
     remote = "https://github.com/openxla/xla"
-)
-
-git_repository(
-    name = "jax",
-    commit = "21fc6e0229e0f5f1cb5f1f69d2c3daa2e5c2ca11",
-    remote = "https://github.com/google/jax",
-    patches = ["//:patches/jax_workspace.patch"]
 )
 
 git_repository(
@@ -52,7 +46,10 @@ xla_workspace1()
 load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
-local_repository(
+git_repository(
     name = "jax",
-    path = "jax",
+    commit = "21fc6e0229e0f5f1cb5f1f69d2c3daa2e5c2ca11",
+    remote = "https://github.com/google/jax",
+    patch_args = ["-p1"],
+    patches = ["//:patches/jax_workspace.patch"]
 )
