@@ -1,20 +1,16 @@
 steps:
-  - label: "CI {{matrix.arch}} -- {{matrix.os}}"
-    env:
-      BUILDKITE_GIT_FETCH_FLAGS: "--depth=1"
+  - name: "CI {{matrix.arch}} -- {{matrix.os}}"
     matrix:
       setup:
         arch:
-          - "x86_64"
-          - "arm"
+          - x86_64
+          - arm64
         os:
-          - "linux"
-          - "macOS"
-          - "windows"
+          - linux
+          - darwin
+          - windows
     agents:
       queue: "juliaecosystem"
-      arch: {{matrix.arch}}
-      os: {{matrix.os}}
     commands: |
       python3 -m pip install --user numpy
       bazel build :enzyme_jax
