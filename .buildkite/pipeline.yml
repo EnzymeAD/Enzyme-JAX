@@ -12,6 +12,7 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
+      export PATH="$PATH:/sbin"
       wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
       bash *.sh -b -p miniconda
       ./miniconda/bin/activate
