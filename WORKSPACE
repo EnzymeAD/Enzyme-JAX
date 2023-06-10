@@ -1,7 +1,12 @@
-new_local_repository(
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+
+git_repository(
     name = "llvm-raw",
     build_file_content = "# empty",
-    path = "llvm-project",
+    remote = "https://github.com/llvm/llvm-project",
+    commit = "e13d1b5227a77bb7becfd4c49a60720ecc33f870",
+    patch_args = ["-p1"],
+    patches = ["//:patches/llvm_build.patch"]
 )
 
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure", "llvm_disable_optional_support_deps")
@@ -9,18 +14,21 @@ load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure", "llvm_disable_opt
 llvm_disable_optional_support_deps()
 llvm_configure(name = "llvm-project", targets = ["X86"])
 
-local_repository(
+git_repository(
     name = "xla",
-    path = "xla",
+    commit = "c1e4a16e77a7ba2000003ccade3ffba3749ada35",
+    remote = "https://github.com/openxla/xla"
 )
-local_repository(
-    name = "enzyme",
-    path = "Enzyme/enzyme",
+
+git_repository(
+    name = "rules_python",
+    commit = "693a1587baf055979493565933f8f40225c00c6d",
+    remote = "https://github.com/bazelbuild/rules_python"
 )
 
 local_repository(
-    name = "rules_python",
-    path = "rules_python",
+    name = "enzyme",
+    path = "Enzyme/enzyme",
 )
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
@@ -38,7 +46,10 @@ xla_workspace1()
 load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
-local_repository(
+git_repository(
     name = "jax",
-    path = "jax",
+    commit = "21fc6e0229e0f5f1cb5f1f69d2c3daa2e5c2ca11",
+    remote = "https://github.com/google/jax",
+    patch_args = ["-p1"],
+    patches = ["//:patches/jax_workspace.patch"]
 )

@@ -17,7 +17,6 @@ steps:
       os: {{matrix.os}}
     commands: |
       python3 -m pip install --user numpy
-      bash patches/apply.sh
       bazel build :enzyme_jax
       cp bazel-bin/*.whl .
     artifact_paths:
