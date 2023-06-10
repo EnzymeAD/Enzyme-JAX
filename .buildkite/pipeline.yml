@@ -13,9 +13,10 @@ steps:
       queue: "juliaecosystem"
     commands: |
       wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
-      yes | bash *.sh
+      bash *.sh -b -p miniconda
+      ./miniconda/bin/activate
       python -m ensurepip --upgrade
-      python -m pip install --user numpy
+      python -m pip install --user numpy wheel
       bazel build :enzyme_jax
       cp bazel-bin/*.whl .
     artifact_paths:
