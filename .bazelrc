@@ -3,7 +3,6 @@ build --announce_rc
 build --experimental_repo_remote_exec
 build --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 build --cxxopt=-w --host_cxxopt=-w
-
 build --define=grpc_no_ares=true
 build --define=tsl_link_protobuf=true
 build --define open_source_build=true
