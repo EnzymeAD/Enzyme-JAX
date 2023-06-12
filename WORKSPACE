@@ -15,7 +15,7 @@ http_archive(
 )
 
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = ["Native","NVPTX"])
+llvm_configure(name = "llvm-project", targets = ["X86", "AArch64", "AMDGPU", "ARM", "NVPTX"])
 
 XLA_COMMIT = "7423e38a383ccd25fb144db298257a6b6dd8cc4d"
 XLA_SHA256 = "e7ea840e4a58a91bdb5dbcaee71669dd799cecc8d2084106389699619fe76129"
