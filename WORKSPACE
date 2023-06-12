@@ -4,7 +4,7 @@ git_repository(
     name = "llvm-raw",
     build_file_content = "# empty",
     remote = "https://github.com/llvm/llvm-project",
-    commit = "e13d1b5227a77bb7becfd4c49a60720ecc33f870",
+    commit = "c5f6a287499a816cba5585708999e2c8b134290f",
     patch_args = ["-p1"],
     patches = ["//:patches/llvm_build.patch"]
 )
