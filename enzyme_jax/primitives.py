@@ -158,7 +158,6 @@ def _enzyme_primal_lowering(
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
-  print(argv)
   mode = 0
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
