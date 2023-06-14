@@ -57,6 +57,6 @@ py_wheel(
         "@bazel_tools//src/conditions:linux_x86_64": "manylinux2014_x86_64",
         "@bazel_tools//src/conditions:linux_ppc64le": "manylinux2014_ppc64le",
     }),
-    requires = ["jax"],
+    requires = [""],
     deps = ["//enzyme_jax:enzyme_jax_internal", ":enzyme_jax_data"]
 )

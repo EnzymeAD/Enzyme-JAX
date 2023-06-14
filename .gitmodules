@@ -4,3 +4,6 @@
 [submodule "Enzyme"]
 	path = Enzyme
 	url = https://github.com/EnzymeAD/Enzyme
+[submodule "julia"]
+	path = julia
+	url = https://github.com/JuliaLang/julia

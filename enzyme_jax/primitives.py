@@ -19,9 +19,16 @@ from enzyme_jax import enzyme_call
 
 def resource_dir():
   import os
-  import os
   dn = os.path.dirname(enzyme_call.__file__)
   return os.path.join(dn, "..", "clang", "staging")
+
+def cflags():
+    import platform
+    import os
+    if platform.system() == 'Darwin':
+        return ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
+    else:
+        return ()
 
 def _enzyme_primal_impl(
     *args_flat: jax.Array,
@@ -109,7 +116,7 @@ def _enzyme_aug_abstract_eval(
 
   in_shapes = [absmaketup(a) for a in in_shapes]
 
-  argv = argv + ( "-resource-dir", resource_dir())
+  argv = argv + ( "-resource-dir", resource_dir()) + cflags()
 
   tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv)
   res = tuple(prev_out_shapes) + (jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),)
@@ -150,7 +157,8 @@ def _enzyme_primal_lowering(
   out_shapes = list(map(maketup, out_types))
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
-  argv = argv + ( "-resource-dir", resource_dir() )
+  argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
+  print(argv)
   mode = 0
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -182,7 +190,7 @@ def _enzyme_fwd_lowering(
   
   in_shapes = list(map(lambda x: maketup(x.type), args_flat[::2]))
 
-  argv = argv + ( "-resource-dir", resource_dir() )
+  argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   mode = 1
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -214,7 +222,7 @@ def _enzyme_aug_lowering(
   
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
-  argv = argv + ( "-resource-dir", resource_dir())
+  argv = argv + ( "-resource-dir", resource_dir()) + cflags()
   mode = 2
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -246,7 +254,7 @@ def _enzyme_rev_lowering(
 
   out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))  
 
-  argv = argv + ( "-resource-dir", resource_dir())
+  argv = argv + ( "-resource-dir", resource_dir()) + cflags()
   mode = 3
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -259,16 +267,10 @@ def _enzyme_rev_lowering(
 
   return custom_call.results
 
-@jax.custom_transpose
 @partial(jax.custom_jvp, nondiff_argnums=(0, 1, 2, 3))
 def cpp_fwd_internal(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
   return _enzyme_primal_p.bind(
       *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
-
-@f.def_transpose
-def ft(*args):
-  print(args)
-  return 3. * args[-1]
 
 def cpp_fwd(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
   return cpp_fwd_internal(source, fn, argv, out_shapes, *args)

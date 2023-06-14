@@ -284,7 +284,10 @@ class CpuKernel {
     auto lfn = mod->getFunction("entry");
     auto RI = llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
     auto val = llvm::cast<llvm::ConstantInt>(RI->getReturnValue());
-    return val->getZExtValue();
+    size_t res = val->getZExtValue();
+    // force deletion of mod first explicitly
+    mod = nullptr;
+    return res;
   }
 
 

@@ -20,7 +20,7 @@ def do_something(fn):
             }
             }
         }
-        """, fn="myfn")
+        """, fn="myfn", argv=("-mllvm", "-enzyme-print"))
         c = fn(a, out_shapes=[jax.core.ShapedArray([4, 4], jnp.float32)], source="""
         template<typename T1, typename T2>
         void f(T1& out0, const T2& in1) {
@@ -42,7 +42,7 @@ print(primals)
 print(tangents)
 
 
-primals, f_vjp = jax.vjp(do_something(cpp_fwd), ones)
+primals, f_vjp = jax.vjp(do_something(cpp_rev), ones)
 (grads,) = f_vjp((x, y, z))
 print(primals)
 print(grads)

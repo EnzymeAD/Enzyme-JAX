@@ -1,8 +1,8 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # Replace with the LLVM commit you want to use.
-LLVM_COMMIT = "c5f6a287499a816cba5585708999e2c8b134290f"
-LLVM_SHA256 = "03a8eb4b243846ee037d700b048ec48a87eeef480cb129ab56aa7e0537172b98"
+LLVM_COMMIT = "aa495214b39d475bab24b468de7a7c676ce9e366"
+LLVM_SHA256 = "73cb1e91901d975bf4c97f1ea7000dd1554ad77f704a2d899498866a67471444"
 
 http_archive(
     name = "llvm-raw",
