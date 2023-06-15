@@ -48,14 +48,11 @@ steps:
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
       export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
-      echo "JDK_DIR=\$JDK_DIR"
       export JAVA_HOME="`pwd`/\$JDK_DIR"
-      echo "JAVA_HOME=\$JAVA_HOME"
-      find \$JAVA_HOME
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
-      bazel --output_user_root=`pwd`/baztmp build :enzyme_jax
+      bazel --output_user_root=`pwd`/baztmp build :enzyme_jax || cat `find baztmp "*.out"`
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install jax && python test.py
