@@ -8,13 +8,13 @@ steps:
         os:
           - linux
           - darwin
-          - windows
         bazel:
           - 5.2.0
     agents:
       queue: "juliaecosystem"
     commands: |
       uname -a
+      uname -m
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
@@ -24,7 +24,11 @@ steps:
       # curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
       # bash bazel*.sh --prefix=`pwd`/.local
       # rm bazel*.sh
-      wget https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-{{matrix.arch}}.sh
+      if [ "$(uname)" == "Darwin" ]; then
+        wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
+      elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then      
+	    wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
+      fi
       chmod +x Miniconda*.sh
       PATH="`pwd`/.local/bin:$PATH" ./Miniconda*.sh -b -p `pwd`/conda
       rm Miniconda*.sh
