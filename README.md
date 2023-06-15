@@ -61,27 +61,14 @@ pip install enzyme-jax
 Requirements: `bazel-5.3.0`, `clang++`, `python`, `python-virtualenv`,
 `python3-dev`.
 
+Build our extension with:
 ```sh
-# Get submodules.
-git submodule update --init --recursive
-
-# [Optional] Build and install JAX into a new virtual environment.
-# Refer to https://jax.readthedocs.io/en/latest/developer.html for more details.
-virtualenv .venv
-pip install numpy wheel
-cd jax
-python build/build.py
-pip install dist/*.whl --force-reinstall
-pip install -e .
-cd ..
-
-# Build our extension.
 # Will create a whl in bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
 bazel build :enzyme_jax
 ```
 
 Finally, install the built library with:
-```
+```sh
 pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
 ```
 
