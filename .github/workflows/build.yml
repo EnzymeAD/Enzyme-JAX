@@ -1,7 +1,5 @@
 name: Build Wheel
 on:
-  schedule:
-    - cron: 0 0 * * *
   push:
     branches:
     - main
