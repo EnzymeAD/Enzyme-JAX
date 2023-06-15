@@ -51,7 +51,7 @@ py_wheel(
     version = "0.0.2",
     platform = select({
         "@bazel_tools//src/conditions:windows_x64": "win_amd64",
-        "@bazel_tools//src/conditions:darwin_arm64": "macosx_10_14_arm64",
+        "@bazel_tools//src/conditions:darwin_arm64": "macosx_11_0_arm64",
         "@bazel_tools//src/conditions:darwin_x86_64": "macosx_10_14_x86_64",
         "@bazel_tools//src/conditions:linux_aarch64": "manylinux2014_aarch64",
         "@bazel_tools//src/conditions:linux_x86_64": "manylinux2014_x86_64",
