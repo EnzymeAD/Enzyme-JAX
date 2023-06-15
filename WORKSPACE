@@ -38,12 +38,12 @@ http_archive(
 )
 
 ENZYME_COMMIT = "bcd061afc6260d2266ca9a8489830c36a4ceefe6"
-ENZYME_SHA256 = ""
+ENZYME_SHA256 = "f215f6654b000a7eed387d89fe51561382dc7a86e1ed83941399335f819c1f66"
 
 http_archive(
     name = "enzyme",
     sha256 = ENZYME_SHA256,
-    strip_prefix = "Enzyme-" + LLVM_COMMIT + "/enzyme",
+    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
