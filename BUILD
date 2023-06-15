@@ -48,7 +48,7 @@ py_wheel(
     license='LLVM',
     author_email="wmoses@mit.edu, zinenko@google.com",
     python_tag = "py3",
-    version = "0.0.2",
+    version = "0.0.3",
     platform = select({
         "@bazel_tools//src/conditions:windows_x64": "win_amd64",
         "@bazel_tools//src/conditions:darwin_arm64": "macosx_11_0_arm64",
