@@ -45,6 +45,7 @@ steps:
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
         rm Miniconda*.exe
       fi
+      export JAVA_HOME=`pwd`/conda
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
       python -m ensurepip --upgrade
