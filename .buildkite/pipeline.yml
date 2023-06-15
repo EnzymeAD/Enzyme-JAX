@@ -46,7 +46,7 @@ steps:
         rm Miniconda*.exe
       fi
       export PATH="`pwd`/conda/bin:\$PATH"
-      conda install -c conda-forge bazel conda -y
+      conda install -c conda-forge bazel conda openjdk -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
