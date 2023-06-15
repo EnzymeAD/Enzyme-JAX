@@ -12,13 +12,13 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
-      mkdir brew_tmp
-      export HOMEBREW_TEMP="`pwd`/brew_tmp"
-      mkdir brew && curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C brew
-      brew/bin/brew install python3 bazel
-      export PATH="$PATH:$(pwd)/brew/bin"
-      python -m ensurepip --upgrade
-      python -m pip install --user numpy wheel
+      mkdir .local
+      export BAZEL_VERSION=5.2.0
+      curl -fLO "https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-installer-{{matrix.os}}-{{matrix.arch}}.sh"
+      bash bazel*.sh --prefix=`pwd`/.local
+      export PATH="`pwd`/.local:$PATH"
+      # python -m ensurepip --upgrade
+      # python -m pip install --user numpy wheel
       bazel build :enzyme_jax
       cp bazel-bin/*.whl .
     artifact_paths:

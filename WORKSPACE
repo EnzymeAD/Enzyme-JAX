@@ -1,6 +1,5 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# Replace with the LLVM commit you want to use.
 LLVM_COMMIT = "aa495214b39d475bab24b468de7a7c676ce9e366"
 LLVM_SHA256 = "73cb1e91901d975bf4c97f1ea7000dd1554ad77f704a2d899498866a67471444"
 
@@ -38,9 +37,14 @@ http_archive(
     urls = ["https://github.com/bazelbuild/rules_python/archive/{commit}.tar.gz".format(commit = PYRULES_COMMIT)]
 )
 
-local_repository(
+ENZYME_COMMIT = "bcd061afc6260d2266ca9a8489830c36a4ceefe6"
+ENZYME_SHA256 = ""
+
+http_archive(
     name = "enzyme",
-    path = "Enzyme/enzyme",
+    sha256 = ENZYME_SHA256,
+    strip_prefix = "Enzyme-" + LLVM_COMMIT + "/enzyme",
+    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
