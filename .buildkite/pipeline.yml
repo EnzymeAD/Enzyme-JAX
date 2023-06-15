@@ -45,9 +45,10 @@ steps:
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
         rm Miniconda*.exe
       fi
-      export JAVA_HOME=`pwd`/conda
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
+      export JAVA_HOME=$(find -type -f -iname "/conda/pkg/openjdk*")
+      echo $JAVA_HOME
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
