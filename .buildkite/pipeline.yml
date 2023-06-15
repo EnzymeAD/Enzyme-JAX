@@ -63,7 +63,7 @@ steps:
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
         rm Miniconda*.exe
       fi
-      conda install -c conda-forge gcc -y
+      conda install -c conda-forge cxx-compiler -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
