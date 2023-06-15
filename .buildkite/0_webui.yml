@@ -1,0 +1,22 @@
+steps:
+  # In the WebUI, the `cryptic` launch job _must_ be the first job to run
+  - label: ":rocket: launch pipelines"
+    branches: "!gh-pages"
+    agents:
+      queue: "juliaecosystem"
+    plugins:
+      - staticfloat/cryptic:
+          # Our list of pipelines that should be launched (but don't require a signature)
+          # These pipelines can be modified by any contributor and CI will still run.
+          # Build secrets will not be available in these pipelines (or their children)
+          unsigned_pipelines:
+            - .buildkite/pipeline.yml
+          # Our list of pipelines that should be launched (and do require a signature)
+          # If these pipelines are modified, job execution will fail.
+          signed_pipelines:
+            - pipeline: .buildkite/secure_pipeline.yml
+              signature_file: .buildkite/secure_pipeline.yml.signature
+              inputs:
+                - .buildkite/utils/*.sh
+              allow_hash_override: true
+    command: "true"

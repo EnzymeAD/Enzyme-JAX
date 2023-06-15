@@ -1,5 +1,5 @@
 steps:
-  - name: "CI {{matrix.arch}} -- {{matrix.os}}"
+  - name: "Tag {{matrix.arch}} -- {{matrix.os}}"
     matrix:
       setup:
         arch:
@@ -19,9 +19,13 @@ steps:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
       arch: "{{matrix.arch}}"
+    plugins:
+      - staticfloat/cryptic:
+        variables:
+          - TWINE_USERNAME="U2FsdGVkX1+klgFCAUlH1ht3/MyFLbgbao5zmd6LgTqoA4nIJAJ8Wqug/XhdblOv42lyBEAn6+13KDwI5HtLWmExE3VKh1szyzmv+jS9VjpnIpH9aZucbyhVci4QC0RoMkKevJOK2GTyRDDAchYOjpaMkv4pFYdcHPq2VyMMC1PpCiHOx3R6m4LbFPxngJgyOj//YhFT2+rzNoncrxWoJ4clFfC8hpkgQR0mEMAMRTkVfgY6sODbKLW7jtcu8jkE3nf2/kyEMwbt9w1e6ci3pNsdQO67PYlgbnGLX8dIzCpw5s6Eap2GTCvI3iL1+uLZ"
     commands: |
-
       if [ -z "$BUILDKITE_TAG" ]; then
+      else
 
       uname -a
       uname -m
@@ -71,10 +75,14 @@ steps:
       python -m pip debug --verbose
       xcrun --show-sdk-version
       mkdir baztmp
+      sed 's~version = \"[0-9.]*\"~version = \"$BUILDKITE_TAG\"~g' BUILD      
       bazel --output_user_root=`pwd`/baztmp build :enzyme_jax
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install "jax[cpu]" && python test.py
+      python -m pip install --user numpy twine
+      twine upload bazel-bin/*.whl
+
       fi
     artifact_paths:
       - "*.whl"
