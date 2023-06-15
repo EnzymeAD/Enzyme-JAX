@@ -22,7 +22,11 @@ steps:
       chmod +x .local/bin/md5
 
       if [ "$(uname)" == "Darwin" ]; then
-        curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
+        if [ "{{matrix.arch}}" == "aarch64" ]; then
+          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-amd64.sh
+        else
+          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
+        fi
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
@@ -32,12 +36,12 @@ steps:
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
       else
-        wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
+        curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
         rm Miniconda*.exe
       fi
       export PATH="`pwd`/conda/bin:\$PATH"
-      conda install -c conda-forge bazel conda
+      conda install -c conda-forge bazel conda -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       bazel build :enzyme_jax
