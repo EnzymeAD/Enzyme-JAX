@@ -23,8 +23,8 @@ steps:
       BUILDKITE_PLUGIN_CRYPTIC_BASE64_SIGNED_JOB_ID_SECRET: ${BUILDKITE_PLUGIN_CRYPTIC_BASE64_SIGNED_JOB_ID_SECRET?}
     plugins:
       - staticfloat/cryptic:
-        variables:
-          - TWINE_USERNAME="U2FsdGVkX1+klgFCAUlH1ht3/MyFLbgbao5zmd6LgTqoA4nIJAJ8Wqug/XhdblOv42lyBEAn6+13KDwI5HtLWmExE3VKh1szyzmv+jS9VjpnIpH9aZucbyhVci4QC0RoMkKevJOK2GTyRDDAchYOjpaMkv4pFYdcHPq2VyMMC1PpCiHOx3R6m4LbFPxngJgyOj//YhFT2+rzNoncrxWoJ4clFfC8hpkgQR0mEMAMRTkVfgY6sODbKLW7jtcu8jkE3nf2/kyEMwbt9w1e6ci3pNsdQO67PYlgbnGLX8dIzCpw5s6Eap2GTCvI3iL1+uLZ"
+          variables:
+            - TWINE_USERNAME="U2FsdGVkX1+klgFCAUlH1ht3/MyFLbgbao5zmd6LgTqoA4nIJAJ8Wqug/XhdblOv42lyBEAn6+13KDwI5HtLWmExE3VKh1szyzmv+jS9VjpnIpH9aZucbyhVci4QC0RoMkKevJOK2GTyRDDAchYOjpaMkv4pFYdcHPq2VyMMC1PpCiHOx3R6m4LbFPxngJgyOj//YhFT2+rzNoncrxWoJ4clFfC8hpkgQR0mEMAMRTkVfgY6sODbKLW7jtcu8jkE3nf2/kyEMwbt9w1e6ci3pNsdQO67PYlgbnGLX8dIzCpw5s6Eap2GTCvI3iL1+uLZ"
     commands: |
       if [ -z "$BUILDKITE_TAG" ]; then
       else
