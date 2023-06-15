@@ -11,8 +11,8 @@ steps:
           - windows
     agents:
       queue: "juliaecosystem"
-      os: {{matrix.os}}
-      arch: {{matrix.arch}}
+      os: "{{matrix.os}}"
+      arch: "{{matrix.arch}}"
     commands: |
       uname -a
       uname -m
