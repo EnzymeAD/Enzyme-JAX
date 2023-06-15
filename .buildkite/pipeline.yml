@@ -22,8 +22,7 @@ steps:
       curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-{{matrix.arch}}.sh
       bash Miniconda*.sh -b -p `pwd`/conda
       rm Miniconda*.sh
-      `pwd`/conda/bin/conda init bash
-      `pwd`/conda/bin/conda init zsh
+      `pwd`/conda/bin/conda activate
       `pwd`/conda/bin/conda install -c conda-forge bazel conda
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
