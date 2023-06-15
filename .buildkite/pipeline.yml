@@ -9,12 +9,13 @@ steps:
           - linux
           - darwin
           - windows
+        bazel:
+          - 5.2.0
     agents:
       queue: "juliaecosystem"
     commands: |
       mkdir .local
-      export BAZEL_VERSION=5.2.0
-      curl -fLO "https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-installer-{{matrix.os}}-{{matrix.arch}}.sh"
+      curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
       bash bazel*.sh --prefix=`pwd`/.local
       export PATH="`pwd`/.local:$PATH"
       # python -m ensurepip --upgrade
