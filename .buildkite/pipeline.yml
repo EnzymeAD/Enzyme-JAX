@@ -26,7 +26,7 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
-      if [ "$(uname)" == "Darwin" ]; then
+      if [ "{{matrix.os}}" == "macos" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-arm64.sh
         else
@@ -35,7 +35,7 @@ steps:
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
-      elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then      
+      elif [ "{{matrix.os}}" == "linux" ]; then      
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
@@ -47,8 +47,9 @@ steps:
       fi
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
-      find conda/pkgs -type d -iname "*openjdk*"
-      export JAVA_HOME=`pwd`/`find conda/pkgs -type d -iname "*openjdk*"`
+      export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
+      echo "JDK_DIR=\$JDK_DIR"
+      export JAVA_HOME="`pwd`/$JDK_DIR"
       echo "JAVA_HOME=$JAVA_HOME"
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
