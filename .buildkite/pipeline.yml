@@ -31,10 +31,10 @@ steps:
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-arm64.sh
-          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-darwin-arm64"
+          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-darwin-arm64"
         else
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
-          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-darwin-x86_64"
+          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-darwin-x86_64"
         fi
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
@@ -64,7 +64,7 @@ steps:
       bazel --output_user_root=`pwd`/baztmp build :enzyme_jax || cat `find baztmp "jvm.out"`
       cp bazel-bin/*.whl .
       python -m pip install *.whl
-      cd test && python -m pip install jax && python test.py
+      cd test && python -m pip install "jax[cpu]" && python test.py
     artifact_paths:
       - "*.whl"
 
