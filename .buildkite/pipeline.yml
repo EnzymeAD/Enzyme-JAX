@@ -19,12 +19,8 @@ steps:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
       arch: "{{matrix.arch}}"
+    if: build.tag == null
     commands: |
-
-      if [ -z "$BUILDKITE_TAG" ]; then
-
-      uname -a
-      uname -m
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
@@ -68,14 +64,11 @@ steps:
       # conda install -c conda-forge cxx-compiler -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
-      python -m pip debug --verbose
-      xcrun --show-sdk-version
       mkdir baztmp
       bazel --output_user_root=`pwd`/baztmp build :enzyme_jax
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install "jax[cpu]" && python test.py
-      fi
     artifact_paths:
       - "*.whl"
 
