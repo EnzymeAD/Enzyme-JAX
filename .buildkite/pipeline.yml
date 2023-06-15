@@ -27,7 +27,7 @@ steps:
       if [ "$(uname)" == "Darwin" ]; then
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
       elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then      
-	    wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
+        wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
       fi
       chmod +x Miniconda*.sh
       PATH="`pwd`/.local/bin:$PATH" ./Miniconda*.sh -b -p `pwd`/conda
