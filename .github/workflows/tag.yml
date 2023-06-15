@@ -35,4 +35,4 @@ jobs:
 
       - env:
           TWINE_USERNAME: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload bazel-bin/*.whl
+        run: python3 -m twine upload bazel-bin/*.whl

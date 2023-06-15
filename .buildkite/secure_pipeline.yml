@@ -57,11 +57,11 @@ steps:
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
       else
-        curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
+        wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
         if [ "{{matrix.arch}}" == "aarch64" ]; then
-          curl -fLO https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-arm64.exe
+          wget https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-arm64.exe
         else
-          curl -fLO https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-x86_64.exe
+          wget https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-x86_64.exe
         fi
         mv bazel* .local/bin/bazel.exe
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
@@ -75,8 +75,8 @@ steps:
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install "jax[cpu]" && python test.py
-      python -m pip install --user numpy twine
-      twine upload bazel-bin/*.whl
+      python -m pip install --user twine
+      python -m twine upload bazel-bin/*.whl
     artifact_paths:
       - "*.whl"
 
