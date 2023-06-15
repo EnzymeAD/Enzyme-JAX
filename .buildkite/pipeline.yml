@@ -64,6 +64,9 @@ steps:
         rm Miniconda*.exe
       fi
       conda install -c conda-forge cxx-compiler -y
+      if [ "{{matrix.os}}" == "linux" ]; then      
+        conda upgrade -c conda-forge --all
+      fi
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
