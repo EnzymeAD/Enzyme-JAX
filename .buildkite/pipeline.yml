@@ -40,12 +40,13 @@ steps:
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
           curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-darwin-x86_64.sh"
         fi
-        chmod +x Miniconda*.sh
-        ./Miniconda*.sh -b -p `pwd`/conda
-        rm Miniconda*.sh
+        which unzip
         chmod +x bazel*.sh
         ./bazel*.sh --prefix=`pwd`/.local
         rm bazel*.sh
+        chmod +x Miniconda*.sh
+        ./Miniconda*.sh -b -p `pwd`/conda
+        rm Miniconda*.sh
       elif [ "{{matrix.os}}" == "linux" ]; then      
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
         chmod +x Miniconda*.sh
