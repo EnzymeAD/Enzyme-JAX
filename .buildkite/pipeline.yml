@@ -9,6 +9,11 @@ steps:
           - linux
           - macos
           - windows
+      adjustments:
+        - with:
+            os: windows
+            arch: aarch64
+        skip: true
     agents:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
@@ -23,7 +28,7 @@ steps:
 
       if [ "$(uname)" == "Darwin" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
-          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-amd64.sh
+          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-arm64.sh
         else
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
         fi
@@ -44,8 +49,11 @@ steps:
       conda install -c conda-forge bazel conda -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
-      bazel build :enzyme_jax
+      mkdir baztmp
+      bazel build --output_base=`pwd`/baztmp :enzyme_jax
       cp bazel-bin/*.whl .
+      python -m pip install *.whl
+      cd test && python -m pip install jax && python test.py
     artifact_paths:
       - "*.whl"
 
