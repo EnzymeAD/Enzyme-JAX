@@ -14,10 +14,11 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
-      ls /sbin
+      mkdir -o .local/bin
+      export PATH="`pwd`/.local/bin:$PATH"
+      echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
+      chmod +x .local/bin/md5
       which md5
-      # mkdir .local
-      # export PATH="`pwd`/.local:$PATH"
       # curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
       # bash bazel*.sh --prefix=`pwd`/.local
       # rm bazel*.sh
