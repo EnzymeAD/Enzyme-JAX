@@ -14,6 +14,7 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
+      uname -a
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
