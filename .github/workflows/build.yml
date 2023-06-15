@@ -39,6 +39,12 @@ jobs:
 
       - run: cp bazel-bin/*.whl .
       
+      - name: test
+        run: |
+          python3 -m pip install --user jax *.whl
+          cd test
+          python3 test.py
+      
       - name: Upload Build
         uses: actions/upload-artifact@v3
         with:
