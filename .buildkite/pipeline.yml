@@ -3,15 +3,16 @@ steps:
     matrix:
       setup:
         arch:
+		  - aarch64
           - x86_64
           - arm64
         os:
           - linux
-          - darwin
-        bazel:
-          - 5.2.0
+          - macos
     agents:
       queue: "juliaecosystem"
+      os: {{matrix.os}}
+      arch: {{matrix.arch}}
     commands: |
       uname -a
       uname -m
