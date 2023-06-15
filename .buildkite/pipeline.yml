@@ -47,7 +47,7 @@ steps:
       fi
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
-      export JAVA_HOME=$(find . -type d -iname "conda/pkg/openjdk*")
+      export JAVA_HOME=$(find conda/pkgs -type d -iname "*openjdk*")
       echo $JAVA_HOME
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
