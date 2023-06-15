@@ -46,16 +46,18 @@ steps:
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
-        conda install -c conda-forge bazel -y
+        conda install -c conda-forge bazel openjdk -y
+        export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
+        export JAVA_HOME="`pwd`/\$JDK_DIR"
       else
         curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
         start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
         rm Miniconda*.exe
-        conda install -c conda-forge bazel -y
+        conda install -c conda-forge bazel openjdk -y
+        export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
+        export JAVA_HOME="`pwd`/\$JDK_DIR"
       fi
-      conda install -c conda-forge conda openjdk gcc -y
-      export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
-      export JAVA_HOME="`pwd`/\$JDK_DIR"
+      conda install -c conda-forge conda gcc -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
