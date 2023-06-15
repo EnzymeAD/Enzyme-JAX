@@ -3,12 +3,12 @@ steps:
     matrix:
       setup:
         arch:
-		  - aarch64
+          - aarch64
           - x86_64
-          - arm64
         os:
           - linux
           - macos
+          - windows
     agents:
       queue: "juliaecosystem"
       os: {{matrix.os}}
