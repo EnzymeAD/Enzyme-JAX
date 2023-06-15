@@ -17,20 +17,20 @@ steps:
       uname -a
       uname -m
       mkdir -p .local/bin
-      export PATH="`pwd`/.local/bin:$PATH"
+      export PATH="`pwd`/.local/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
-      PATH="`pwd`/.local/bin:$PATH" which md5
+      PATH="`pwd`/.local/bin:\$PATH" which md5
 
       if [ "$(uname)" == "Darwin" ]; then
         curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
         chmod +x Miniconda*.sh
-        PATH="`pwd`/.local/bin:$PATH" ./Miniconda*.sh -b -p `pwd`/conda
+        PATH="`pwd`/.local/bin:\$PATH" ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
       elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then      
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-{{matrix.arch}}.sh
         chmod +x Miniconda*.sh
-        PATH="`pwd`/.local/bin:$PATH" ./Miniconda*.sh -b -p `pwd`/conda
+        PATH="`pwd`/.local/bin:\$PATH" ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
       else
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Windows-{{matrix.arch}}.exe
