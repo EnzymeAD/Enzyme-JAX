@@ -14,12 +14,19 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
-      mkdir .local
-      curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
-      bash bazel*.sh --prefix=`pwd`/.local
-      export PATH="`pwd`/.local:$PATH"
-      # python -m ensurepip --upgrade
-      # python -m pip install --user numpy wheel
+      # mkdir .local
+      # export PATH="`pwd`/.local:$PATH"
+      # curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
+      # bash bazel*.sh --prefix=`pwd`/.local
+      # rm bazel*.sh
+      curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-{{matrix.arch}}.sh
+      bash Miniconda*.sh -b -p `pwd`/conda
+      rm Miniconda*.sh
+      `pwd`/conda/bin/conda init bash
+      `pwd`/conda/bin/conda init zsh
+      `pwd`/conda/bin/conda install -c conda-forge bazel conda
+      python -m ensurepip --upgrade
+      python -m pip install --user numpy wheel
       bazel build :enzyme_jax
       cp bazel-bin/*.whl .
     artifact_paths:
