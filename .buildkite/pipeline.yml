@@ -12,6 +12,8 @@ steps:
     agents:
       queue: "juliaecosystem"
     commands: |
+      mkdir brew_tmp
+      export HOMEBREW_TEMP="`pwd`/brew_tmp"
       mkdir brew && curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C brew
       brew/bin/brew install python3 bazel
       export PATH="$PATH:$(pwd)/brew/bin"
