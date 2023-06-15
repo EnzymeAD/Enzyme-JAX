@@ -26,7 +26,8 @@ steps:
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
-      echo \$TMPDIR
+      env
+      echo "TMPDIR=\$TMPDIR"
       mkdir tmp
       export TMPDIR=`pwd`/tmp
       chmod +x .local/bin/md5
