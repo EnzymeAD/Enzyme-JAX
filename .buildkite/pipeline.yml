@@ -49,7 +49,7 @@ steps:
       conda install -c conda-forge bazel conda openjdk -y
       export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
       echo "JDK_DIR=\$JDK_DIR"
-      export JAVA_HOME="`pwd`/$JDK_DIR"
+      export JAVA_HOME="`pwd`/\$JDK_DIR"
       echo "JAVA_HOME=\$JAVA_HOME"
       find \$JAVA_HOME
       python -m ensurepip --upgrade
