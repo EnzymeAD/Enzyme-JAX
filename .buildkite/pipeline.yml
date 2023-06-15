@@ -48,7 +48,7 @@ steps:
       export PATH="`pwd`/conda/bin:\$PATH"
       conda install -c conda-forge bazel conda openjdk -y
       export JAVA_HOME=$(find conda/pkgs -type d -iname "*openjdk*")
-      echo $JAVA_HOME
+      echo "JAVA_HOME=$JAVA_HOME"
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
