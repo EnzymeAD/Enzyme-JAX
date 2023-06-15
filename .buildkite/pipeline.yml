@@ -35,15 +35,12 @@ steps:
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-arm64.sh
-          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-darwin-arm64.sh"
         else
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
-          curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-darwin-x86_64.sh"
         fi
-        which unzip
-        chmod +x bazel*.sh
-        ./bazel*.sh --prefix=`pwd`/.local
-        rm bazel*.sh
+        curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-darwin"
+        mv bazelisk-darwin .local/bin/bazel
+        chmod +x .local/bin/bazel
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
