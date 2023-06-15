@@ -80,7 +80,10 @@ cd ..
 bazel build :enzyme_jax
 ```
 
-After changing LLVM, it is necessary to rebuild and reinstall JAX.
+Finally, install the built library with:
+```
+pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
+```
 
 ## Running the test
 
