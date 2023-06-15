@@ -22,9 +22,6 @@ steps:
       chmod +x .local/bin/md5
       PATH="`pwd`/.local/bin:$PATH" which md5
 
-      # curl -fLO "https://github.com/bazelbuild/bazel/releases/download/{{matrix.bazel}}/bazel-{{matrix.bazel}}-installer-{{matrix.os}}-{{matrix.arch}}.sh"
-      # bash bazel*.sh --prefix=`pwd`/.local
-      # rm bazel*.sh
       if [ "$(uname)" == "Darwin" ]; then
         wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
       elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then      
