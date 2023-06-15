@@ -72,7 +72,7 @@ steps:
         bazel --output_user_root=`pwd`/baztmp build --macos_sdk_version=11.0 :enzyme_jax
       else
         bazel --output_user_root=`pwd`/baztmp build --macos_sdk_version=10.14 :enzyme_jax
-      endif
+      fi
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install "jax[cpu]" && python test.py
