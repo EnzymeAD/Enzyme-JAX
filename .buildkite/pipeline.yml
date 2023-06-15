@@ -50,7 +50,8 @@ steps:
       export JDK_DIR=`find conda/pkgs -type d -iname "*openjdk*"`
       echo "JDK_DIR=\$JDK_DIR"
       export JAVA_HOME="`pwd`/$JDK_DIR"
-      echo "JAVA_HOME=$JAVA_HOME"
+      echo "JAVA_HOME=\$JAVA_HOME"
+      find \$JAVA_HOME
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
