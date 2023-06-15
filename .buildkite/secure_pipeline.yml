@@ -74,9 +74,9 @@ steps:
       bazel --output_user_root=`pwd`/baztmp build :enzyme_jax
       cp bazel-bin/*.whl .
       python -m pip install *.whl
-      cd test && python -m pip install "jax[cpu]" && python test.py
+      cd test && python -m pip install "jax[cpu]" && python test.py && cd ..
       python -m pip install --user twine
-      python -m twine upload bazel-bin/*.whl
+      python -m twine upload *.whl
     artifact_paths:
       - "*.whl"
 
