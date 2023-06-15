@@ -13,7 +13,7 @@ steps:
         - with:
             os: windows
             arch: aarch64
-        skip: true
+          skip: true
     agents:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
