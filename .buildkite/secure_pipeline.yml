@@ -71,7 +71,7 @@ steps:
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
-      sed 's~version = \"[0-9.]*\"~version = \"$BUILDKITE_TAG\"~g' BUILD      
+      sed -i.bak 's~version = \"[0-9.]*\"~version = \"$BUILDKITE_TAG\"~g' BUILD      
       bazel --output_user_root=`pwd`/baztmp build :enzyme_jax
       cp bazel-bin/*.whl .
       python -m pip install *.whl

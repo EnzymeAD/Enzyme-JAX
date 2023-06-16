@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
-      - run: sed 's~version = \"[0-9.]*\"~version = \"${GITHUB_REF}\"~g' BUILD
+      - run: sed -i.bak 's~version = \"[0-9.]*\"~version = \"${GITHUB_REF}\"~g' BUILD
       - uses: bazelbuild/setup-bazelisk@v2
       - name: Mount bazel cache  # Optional
         uses: actions/cache@v3
