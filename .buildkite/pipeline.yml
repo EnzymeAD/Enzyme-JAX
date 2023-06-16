@@ -64,4 +64,4 @@ steps:
     artifact_paths:
       - "*.whl"
 
-    timeout_in_minutes: 120
+    timeout_in_minutes: 180
