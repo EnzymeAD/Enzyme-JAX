@@ -27,8 +27,10 @@ steps:
 
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
+          sed -i.bak 's~targets = \[.*\]~targets = \[\"AArch64\", \"AMDGPU\"]~g' WORKSPACE
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-arm64.sh
         else
+          sed -i.bak 's~targets = \[.*\]~targets = \[\"X86\", \"AMDGPU\"]~g' WORKSPACE
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
         fi
         curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-darwin"
