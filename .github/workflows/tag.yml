@@ -26,11 +26,6 @@ jobs:
           submodules: recursive
       - run: sed -i.bak 's~version = \"[0-9.]*\"~version = \"${GITHUB_REF}\"~g' BUILD
       - uses: bazelbuild/setup-bazelisk@v2
-      - name: Mount bazel cache  # Optional
-        uses: actions/cache@v3
-        with:
-          path: "~/.cache/bazel"
-          key: bazel-${{ matrix.os }}
       - run: bazel build :enzyme_jax
 
       - env:

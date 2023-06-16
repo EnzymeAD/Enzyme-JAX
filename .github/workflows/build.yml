@@ -28,11 +28,6 @@ jobs:
         with:
           submodules: recursive
       - uses: bazelbuild/setup-bazelisk@v2
-      - name: Mount bazel cache  # Optional
-        uses: actions/cache@v3
-        with:
-          path: "~/.cache/bazel"
-          key: bazel-${{ matrix.os }}
       - run: bazel build :enzyme_jax
 
       - run: cp bazel-bin/*.whl .
