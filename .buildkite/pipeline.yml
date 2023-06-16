@@ -26,7 +26,6 @@ steps:
           sed -i.bak 's~targets = \[.*\]~targets = \[\"X86\", \"AMDGPU\"]~g' WORKSPACE
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
         fi
-        cat WORKSPACE
         curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-darwin"
         mv bazelisk-darwin .local/bin/bazel
         chmod +x .local/bin/bazel
