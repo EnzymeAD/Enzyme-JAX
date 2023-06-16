@@ -48,7 +48,6 @@ py_wheel(
     license='LLVM',
     author_email="wmoses@mit.edu, zinenko@google.com",
     python_tag = "py3",
-    abi = "abi3",
     version = "0.0.4",
     platform = select({
         "@bazel_tools//src/conditions:windows_x64": "win_amd64",
