@@ -33,7 +33,7 @@ jobs:
         with:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
-      - run: find ~/.cache/bazel -iname "*.whl" -exec rm {} \;
+      - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: bazel build :enzyme_jax
       - run: cp bazel-bin/*.whl .
       

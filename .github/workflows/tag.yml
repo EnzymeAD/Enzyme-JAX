@@ -28,8 +28,13 @@ jobs:
           export TAG=`echo $GITHUB_REF | cut -c2- `
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
       - uses: bazelbuild/setup-bazelisk@v2
+      - name: Mount bazel cache  # Optional
+        uses: actions/cache@v3
+        with:
+          path: "~/.cache/bazel"
+          key: bazel-${{ matrix.os }}
+      - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: bazel build :enzyme_jax
-
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
