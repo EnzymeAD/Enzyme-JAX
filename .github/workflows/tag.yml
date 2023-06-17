@@ -26,7 +26,7 @@ jobs:
           submodules: recursive
       - run: |
           export TAG=`echo $GITHUB_REF | cut -c2- `
-          sed -i.bak 's~version = \"[0-9.]*\"~version = \"$TAG\"~g' BUILD
+          sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
       - uses: bazelbuild/setup-bazelisk@v2
       - run: bazel build :enzyme_jax
 
