@@ -24,7 +24,9 @@ jobs:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
-      - run: sed -i.bak 's~version = \"[0-9.]*\"~version = \"`echo $GITHUB_REF | cut -c2- `\"~g' BUILD
+      - run: |
+          export TAG=`echo $GITHUB_REF | cut -c2- `
+          sed -i.bak 's~version = \"[0-9.]*\"~version = \"$TAG\"~g' BUILD
       - uses: bazelbuild/setup-bazelisk@v2
       - run: bazel build :enzyme_jax
 
