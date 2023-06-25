@@ -75,6 +75,5 @@ pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
 ## Running the test
 
 ```sh
-pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
 cd test && python test.py
 ```
