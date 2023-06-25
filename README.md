@@ -71,6 +71,7 @@ Finally, install the built library with:
 ```sh
 pip install bazel-bin/enzyme_jax-VERSION-SYSTEM.whl
 ```
+Note that you cannot run code from the root of the git directory. For instance, in the code below, you have to first run `cd test` before running `test.py`.
 
 ## Running the test
 
