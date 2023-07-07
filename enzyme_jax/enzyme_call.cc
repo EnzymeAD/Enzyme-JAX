@@ -12,35 +12,31 @@
 #include <numeric>
 #include <string>
 
+#include "absl/status/statusor.h"
+#include "clang_compile.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/RWMutex.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/ErrorHandling.h"
-
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
-
-#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
-
-#include "pybind11/pybind11.h"
-
-#include "clang_compile.h"
-
-#include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
-
+#include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/RWMutex.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "pybind11/pybind11.h"
 
-#include "llvm/IR/Instructions.h"
+absl::StatusOr<std::string> compile_mhlo_to_llvm_with_xla(
+    const std::string &mhlo_text);
 
 namespace {
 class CpuKernel {
@@ -65,12 +61,14 @@ class CpuKernel {
     return s + ">";
   }
 
-  static std::tuple<std::unique_ptr<llvm::Module>, std::unique_ptr<llvm::LLVMContext>, size_t> createLLVMMod(llvm::StringRef fn, llvm::StringRef source,
-                        llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
-                        llvm::ArrayRef<std::string> out_names,
-                        llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-                        llvm::ArrayRef<std::string> in_names,
-                        PyObject* pyargv, int mode) {
+  static std::tuple<std::unique_ptr<llvm::Module>,
+                    std::unique_ptr<llvm::LLVMContext>, size_t>
+  createLLVMMod(llvm::StringRef fn, llvm::StringRef source,
+                llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
+                llvm::ArrayRef<std::string> out_names,
+                llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
+                llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
+                int mode) {
     auto llvm_ctx = std::make_unique<llvm::LLVMContext>();
 
     std::string input;
@@ -472,6 +470,16 @@ PYBIND11_MODULE(enzyme_call, m) {
   m.def("get_cpu_callback", []() {
     return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
                              "xla._CUSTOM_CALL_TARGET");
+  });
+
+  m.def("compile_mhlo_to_llvm_with_xla", [](const std::string &mhlo_text) {
+    absl::StatusOr<std::string> llvm_ir =
+        compile_mhlo_to_llvm_with_xla(mhlo_text);
+    if (!llvm_ir.ok()) {
+      throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
+                               llvm_ir.status().ToString());
+    }
+    return *llvm_ir;
   });
 }
 

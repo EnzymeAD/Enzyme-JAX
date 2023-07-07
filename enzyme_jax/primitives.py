@@ -25,12 +25,12 @@ def resource_dir():
   return os.path.join(dn, "..", "clang", "staging")
 
 def cflags():
-    import platform
-    import os
-    if platform.system() == 'Darwin':
-        return ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
-    else:
-        return ()
+  import platform
+  import os
+  if platform.system() == 'Darwin':
+    return ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
+  else:
+    return ()
 
 def _enzyme_primal_impl(
     *args_flat: jax.Array,
@@ -119,7 +119,7 @@ def _enzyme_aug_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[jax.core.ShapedArray]:
-  
+
   in_shapes = args_flat
 
   prev_out_shapes = out_shapes
@@ -187,7 +187,7 @@ def _enzyme_primal_lowering(
 
   mlir_args = (identifier_op, *args_flat)
   custom_call = stablehlo.CustomCallOp(
-      out_types, mlir_args, call_target_name="jaxzyme.primal"
+    out_types, mlir_args, call_target_name="jaxzyme.primal"
   )
 
   return custom_call.results
@@ -208,7 +208,7 @@ def _enzyme_fwd_lowering(
   )
 
   out_shapes = list(map(maketup, out_types[::2]))
-  
+
   in_shapes = list(map(lambda x: maketup(x.type), args_flat[::2]))
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
@@ -219,7 +219,7 @@ def _enzyme_fwd_lowering(
 
   mlir_args = (identifier_op, *args_flat)
   custom_call = stablehlo.CustomCallOp(
-      out_types, mlir_args, call_target_name="jaxzyme.fwd"
+    out_types, mlir_args, call_target_name="jaxzyme.fwd"
   )
 
   return custom_call.results
@@ -240,7 +240,7 @@ def _enzyme_aug_lowering(
   )
 
   out_shapes = list(map(maketup, out_types[:len(out_types)-1]))
-  
+
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
@@ -251,7 +251,7 @@ def _enzyme_aug_lowering(
 
   mlir_args = (identifier_op, *args_flat)
   custom_call = stablehlo.CustomCallOp(
-      out_types, mlir_args, call_target_name="jaxzyme.aug"
+    out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
 
   return custom_call.results
@@ -272,7 +272,7 @@ def _enzyme_rev_lowering(
 
   in_shapes = list(map(maketup, in_types))
 
-  out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))  
+  out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
   mode = 3
@@ -282,7 +282,7 @@ def _enzyme_rev_lowering(
 
   mlir_args = (identifier_op, *args_flat)
   custom_call = stablehlo.CustomCallOp(
-      in_types, mlir_args, call_target_name="jaxzyme.rev"
+    in_types, mlir_args, call_target_name="jaxzyme.rev"
   )
   return custom_call.results
 
@@ -402,3 +402,65 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
   return res
 
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
+
+
+def _enzyme_jax_impl(
+    *args_flat: jax.Array,
+    func: Callable[..., Any],
+    in_tree: jax.tree_util.PyTreeDef,
+    out_shapes: Sequence[jax.core.ShapedArray]
+) -> Sequence[jax.Array]:
+  del args_flat, source, out_shapes
+  raise RuntimeError("must be JIT'ed")
+
+
+def _enzyme_jax_abstract_eval(
+    *args_flat: jax.core.ShapedArray,
+    func: Callable[..., Any],
+    in_tree: jax.tree_util.PyTreeDef,
+    out_shapes: Sequence[jax.core.ShapedArray],
+) -> Sequence[jax.core.ShapedArray]:
+  del args_flat, func, in_tree
+
+  return tuple(
+      map(lambda x: jax.core.ShapedArray(x.shape, x.dtype), out_shapes)
+  )
+
+
+def _enzyme_jax_lowering(
+    ctx: jax_mlir.LoweringRuleContext,
+    *args_flat: ir.Value,
+    func: Callable[..., Any],
+    in_tree: jax.tree_util.PyTreeDef,
+    out_shapes: Sequence[tuple[int, ...]]
+) -> Sequence[ir.Value]:
+  del out_shapes
+  avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+  lowered_func = jax.jit(func).lower(*avals_in)
+  mhlo = lowered_func.compiler_ir(dialect='mhlo')
+
+  # TODO: unclear why pybind refuses to accept a MLIR object
+  # (or an XlaComputation) here so going through strings and parsing :(
+  print(enzyme_call.compile_mhlo_to_llvm_with_xla(str(mhlo)))
+
+  # TODO: optionally differentiate and actually compile LLVM IR here
+  # Differentiation is optional so we can use this path as baseline after
+  # JAX's AD on HLO in case JAX sets up the XLA compiler differently.
+  raise RuntimeError("NYI: actual calling")
+
+
+_enzyme_jax_p = jax.core.Primitive("enzyme_jax_ir")
+_enzyme_jax_p.multiple_results = True
+_enzyme_jax_p.def_impl(_enzyme_jax_impl)
+_enzyme_jax_p.def_abstract_eval(_enzyme_jax_abstract_eval)
+jax_mlir.register_lowering(_enzyme_jax_p, _enzyme_jax_lowering, platform="cpu")
+
+def enzyme_jax_ir(func: Callable[..., Any]) -> Callable[..., Any]:
+  @jax.jit
+  def wrapped(*args: Any):
+    args_flat, in_tree = jax.tree_util.tree_flatten(args)
+    out_shape = jax.eval_shape(func, *args)
+    out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
+    out_flat = _enzyme_jax_p.bind(*args_flat, func=func, in_tree=in_tree, out_shapes=out_shape_flat)
+    return jax.tree_util.tree_unflatten(out_tree, out_flat)
+  return wrapped
