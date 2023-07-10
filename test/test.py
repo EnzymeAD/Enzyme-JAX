@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from enzyme_jax import cpp_fwd, cpp_rev
+from enzyme_jax import cpp_fwd
 
 def do_something(fn):
     @jax.jit
@@ -33,16 +33,16 @@ def do_something(fn):
 ones = jnp.ones((2, 3), jnp.float32)
 x, y, z = do_something(cpp_fwd)(ones)
 
-print(x)
-print(y)
-print(z)
+# print(x)
+# print(y)
+# print(z)
 
-primals, tangents = jax.jvp(do_something(cpp_fwd), (ones,), (ones,) )
-print(primals)
-print(tangents)
+# primals, tangents = jax.jvp(do_something(cpp_fwd), (ones,), (ones,) )
+# print(primals)
+# print(tangents)
 
 
-primals, f_vjp = jax.vjp(do_something(cpp_rev), ones)
+primals, f_vjp = jax.vjp(do_something(cpp_fwd), ones)
 (grads,) = f_vjp((x, y, z))
 print(primals)
 print(grads)
