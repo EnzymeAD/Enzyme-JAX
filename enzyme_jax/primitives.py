@@ -299,14 +299,13 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
   arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
   args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
-  # Jax is dumb and for reverse mode does not permit the same result
-  # from the derivative op
   shadconv = _enzyme_fwd_p.bind(
       *args, source=kwargs['source'], fn=kwargs['fn'], argv=kwargs['argv'], out_shapes=kwargs['out_shapes'])
   res = (shadconv[0::2], shadconv[1::2])
   # TODO (this unnecessarily calls the forward pass when the dual would also compute the result)
   # this is unnecessary in forward mode, but needs to be like this for the custom transpose to work.
   return (cpp_call(*arg_primals, **kwargs), res[1])
+  # return res
 
 ad.primitive_jvps[_enzyme_primal_p] = enzyme_jvp
 
