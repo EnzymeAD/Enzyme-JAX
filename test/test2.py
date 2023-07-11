@@ -25,7 +25,9 @@ def do_something(ones, twos):
 
 ones = jnp.ones((2, 3), jnp.float32)
 twos = jnp.ones((5, 7), jnp.float32)
-x, y = jax.jit(do_something)(ones, twos)
+
+if False:
+    x, y = jax.jit(do_something)(ones, twos)
 
 # print(x)
 # print(y)
@@ -35,26 +37,37 @@ x, y = jax.jit(do_something)(ones, twos)
 # print(primals)
 # print(tangents)
 
+@jax.jit
+def fwdmode(a, b, c, d):
+    return jax.jvp(do_something, (a, b), (c,d))
+
+if False:
+    print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="mhlo"))
 
 @jax.jit
 def f(a, b):
     return jax.vjp(do_something, a, b)
 
+if False:
+    print(f.lower(ones, twos).compiler_ir(dialect="mhlo"))
 
+if True:
+    x = jnp.ones((6, 9), jnp.float32)
+    y = jnp.ones((4, 6), jnp.float32)
 
-@jax.jit
-def g(a, b, x, y):
-    primals, f_vjp = jax.vjp(do_something, a, b)
-    return primals, f_vjp((x, y))
+    @jax.jit
+    def g(a, b, x, y):
+        primals, f_vjp = jax.vjp(do_something, a, b)
+        return primals, f_vjp((x, y))
 
-print(f.lower(ones, twos).compiler_ir(dialect="mhlo"))
-print(g.lower(ones, twos, x, y).compiler_ir(dialect="stablehlo"))
-print(g.lower(ones, twos, x, y).compiler_ir(dialect="mhlo"))
+    print(g.lower(ones, twos, x, y).compiler_ir(dialect="stablehlo"))
 
-primals, f_vjp = jax.vjp(jax.jit(do_something), ones, twos)
-grads = f_vjp((x, y))
-print(primals)
-print(grads)
+    if False:
+        print(g.lower(ones, twos, x, y).compiler_ir(dialect="mhlo"))
 
+        primals, f_vjp = jax.vjp(jax.jit(do_something), ones, twos)
+        grads = f_vjp((x, y))
+        print(primals)
+        print(grads)
 
-print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="mhlo"))
+        print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="mhlo"))

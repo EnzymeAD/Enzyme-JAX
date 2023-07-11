@@ -62,6 +62,16 @@ def _enzyme_aug_impl(
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
 
+def _enzyme_shadow_aug_impl(
+    *args_flat: jax.Array,
+    source: str,
+    fn: str,
+    argv: Sequence[str],
+    out_shapes: Sequence[jax.core.ShapedArray]
+) -> Sequence[jax.Array]:
+  del args_flat, source, out_shapes
+  raise RuntimeError("must be JIT'ed")
+
 def _enzyme_rev_impl(
     *args_flat: jax.Array,
     source: str,
@@ -123,6 +133,16 @@ def _enzyme_aug_abstract_eval(
   tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv)
   res = tuple(prev_out_shapes) + (jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),)
   return res
+
+
+def _enzyme_shadow_aug_abstract_eval(
+    *args_flat: jax.core.ShapedArray,
+    source: str,
+    fn: str,
+    argv: Sequence[str],
+    out_shapes: Sequence[jax.core.ShapedArray],
+) -> Sequence[jax.core.ShapedArray]:
+  return out_shapes
 
 def _enzyme_rev_abstract_eval(
     *args_flat: jax.core.ShapedArray,
@@ -237,6 +257,26 @@ def _enzyme_aug_lowering(
   return custom_call.results
 
 
+def _enzyme_shadow_aug_lowering(
+    ctx: jax_mlir.LoweringRuleContext,
+    *args_flat: ir.Value,
+    source: str,
+    fn: str,
+    argv: Sequence[str],
+    out_shapes: Sequence[jax.core.ShapedArray],
+) -> Sequence[ir.Value]:
+  del out_shapes
+
+  out_types = tuple(
+      itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out))
+  )
+
+  custom_call = stablehlo.CustomCallOp(
+      out_types, args_flat, call_target_name="jaxzyme.shadow_aug"
+  )
+
+  return custom_call.results
+
 def _enzyme_rev_lowering(
     ctx: jax_mlir.LoweringRuleContext,
     *args_flat: ir.Value,
@@ -291,6 +331,11 @@ xla_client.register_custom_call_target(
     "jaxzyme.fwd", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
+
+def cpp_fwdcall(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
+  return _enzyme_fwd_p.bind(
+      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
+
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
   
   # TODO propagate activity info rather than make_zero
@@ -299,16 +344,12 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
   arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
   args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
-  shadconv = _enzyme_fwd_p.bind(
+  shadconv = cpp_fwdcall(
       *args, source=kwargs['source'], fn=kwargs['fn'], argv=kwargs['argv'], out_shapes=kwargs['out_shapes'])
   res = (shadconv[0::2], shadconv[1::2])
-  # TODO (this unnecessarily calls the forward pass when the dual would also compute the result)
-  # this is unnecessary in forward mode, but needs to be like this for the custom transpose to work.
-  return (cpp_call(*arg_primals, **kwargs), res[1])
-  # return res
+  return res
 
 ad.primitive_jvps[_enzyme_primal_p] = enzyme_jvp
-
 
 def jaxify(x):
   return {'float32':0, 'float64':1}[x.__str__()]
@@ -326,6 +367,16 @@ xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
+_enzyme_shadow_aug_p = jax.core.Primitive("enzyme_shadow_aug")
+_enzyme_shadow_aug_p.multiple_results = True
+_enzyme_shadow_aug_p.def_impl(_enzyme_shadow_aug_impl)
+_enzyme_shadow_aug_p.def_abstract_eval(_enzyme_shadow_aug_abstract_eval)
+jax_mlir.register_lowering(_enzyme_shadow_aug_p, _enzyme_shadow_aug_lowering, platform="cpu")
+
+xla_client.register_custom_call_target(
+    "jaxzyme.shadow_aug", enzyme_call.get_cpu_callback(), platform="cpu"
+)
+
 _enzyme_rev_p = jax.core.Primitive("enzyme_rev")
 _enzyme_rev_p.multiple_results = True
 _enzyme_rev_p.def_impl(_enzyme_rev_impl)
@@ -336,29 +387,81 @@ xla_client.register_custom_call_target(
     "jaxzyme.rev", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
+
+from jax._src.interpreters import partial_eval as pe
+
+def fwd_partial_eval(trace, *args, **kwargs):
+  print("partial eval", trace, args)
+  print("main", trace.main, trace.main.trace_type)
+  # partial eval is used after jvp and before transpose.
+  # if not jax._src.config.FLAGS.jax_host_callback_ad_transforms:
+  #   # TODO: just remote the partial eval rule
+  #   print("no transform")
+  #   return trace.default_process_primitive(_enzyme_fwd_p, args, kwargs)
+
+  transforms = kwargs.get("transforms", ())
+  print("kwargs", kwargs)
+  print("transforms", transforms)
+  # if not transforms or transforms[-1] != ("jvp",):
+  #   # We are not in the process of computing VJP
+  #   print("not vjp")
+  #   res = trace.default_process_primitive(_enzyme_fwd_p, args, kwargs)
+  #  print(res)
+  #  return res
+
+
+  assert len(args) % 2 == 0
+  nr_primals = len(args) // 2
+  primals, tangents = args[0::2], args[1::2]
+  all_primals_known = all(p.is_known() for p in primals)
+  some_tangents_unknown = any(not t.is_known() for t in tangents)
+
+  if not (all_primals_known and some_tangents_unknown):
+    print("bad condition")
+    return trace.default_process_primitive(_enzyme_fwd_p, args, kwargs)
+
+  outs_known = trace.default_process_primitive(
+      _enzyme_aug_p, primals, kwargs)
+
+  # shadows_known = _enzyme_shadow_aug_p.bind(
+  #     outs_known[-1], out_shapes=kwargs["out_shapes"])
+
+  print("primals", primals)
+  print("kwargs", kwargs)
+  print(" outs_known", len(outs_known), outs_known)
+  shadow_aug_args = (trace.full_raise(outs_known[-1]),) + primals + tangents
+  print("shadow_Aug_args", len(shadow_aug_args), shadow_aug_args)
+  shadows_known = trace.default_process_primitive(
+      _enzyme_shadow_aug_p, shadow_aug_args,
+        kwargs)
+
+  # shadows_known = (pe.PartialVal.unknown(a.aval) for a in outs_known[:-1])
+
+  print("outs_known", outs_known)
+  outs = tuple(v for tup in zip(outs_known[:-1], shadows_known) for v in tup)
+  print("outs", len(outs), outs)
+  return outs
+
+pe.custom_partial_eval_rules[_enzyme_fwd_p] = fwd_partial_eval
+
 def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
   out_shapes = kwargs['out_shapes']
   del kwargs['out_shapes']
   shadows = [ad.is_undefined_primal(x) for x in prim_args]
-  prim_args = prim_args[0::2]
+  print("VJP", prim_args)
+  tape = prim_args[0]
+  print("orig prim_args", len(prim_args), prim_args)
+  prim_args = prim_args[1::(len(prim_args)-1)//2]
   prim_args = tuple(jnp.ones(x.aval.shape, x.aval.dtype) if ad.is_undefined_primal(x) else x for x in prim_args)
-  shadow_rets = shadow_rets[1::2]
+  print("og srets", shadow_rets)
 
+  print("final prim_args", len(prim_args), prim_args)
   in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
-  # We unnecessarily compute the forward pass again here, in its entirety.
-  # It would be nicer to move this computation to be done wherever the forward pass works,
-  # and replace its results
-  augres = _enzyme_aug_p.bind(
-      *prim_args, out_shapes=out_shapes, **kwargs)
-
-  # We need to use _our_ forward pass
-  tape = augres[-1]
   args = (tape, ) + tuple(shadow_rets)
   shadconv = _enzyme_rev_p.bind(
       *args, **kwargs, in_shapes=in_shapes)
-  res = tuple(shadconv)
-  res = tuple(v for tup in zip([None for _ in range(len(shadconv))], shadconv) for v in tup)
+  res = (None,) + tuple(None for _ in range(len(shadconv))) + tuple(shadconv)
   return res
 
-ad.primitive_transposes[_enzyme_fwd_p] = enzyme_vjp
+ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
