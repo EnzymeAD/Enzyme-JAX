@@ -7,6 +7,7 @@ import itertools
 import sys
 
 import jax
+from jax import lax
 from jax.interpreters import mlir as jax_mlir
 from jax.interpreters import ad
 from jaxlib.mlir import ir
@@ -254,7 +255,7 @@ def _enzyme_rev_lowering(
 
   out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))  
 
-  argv = argv + ( "-resource-dir", resource_dir()) + cflags()
+  argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
   mode = 3
   identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
@@ -264,15 +265,11 @@ def _enzyme_rev_lowering(
   custom_call = stablehlo.CustomCallOp(
       in_types, mlir_args, call_target_name="jaxzyme.rev"
   )
-
   return custom_call.results
 
-def cpp_fwd_internal(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
+def cpp_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
   return _enzyme_primal_p.bind(
       *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
-
-def cpp_fwd(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
-  return cpp_fwd_internal(source, fn, argv, out_shapes, *args)
 
 _enzyme_primal_p = jax.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
@@ -295,13 +292,22 @@ xla_client.register_custom_call_target(
 )
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
-  print("JVP", arg_primals, arg_tangents)
+  
+  # TODO propagate activity info rather than make_zero
+  def make_zero(tan, prim):
+    return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan 
+
+  arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
   args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
+  # Jax is dumb and for reverse mode does not permit the same result
+  # from the derivative op
   shadconv = _enzyme_fwd_p.bind(
-      *args, **kwargs)
+      *args, source=kwargs['source'], fn=kwargs['fn'], argv=kwargs['argv'], out_shapes=kwargs['out_shapes'])
   res = (shadconv[0::2], shadconv[1::2])
-  print("res", res)
-  return res
+  # TODO (this unnecessarily calls the forward pass when the dual would also compute the result)
+  # this is unnecessary in forward mode, but needs to be like this for the custom transpose to work.
+  return (cpp_call(*arg_primals, **kwargs), res[1])
+
 ad.primitive_jvps[_enzyme_primal_p] = enzyme_jvp
 
 
@@ -310,12 +316,6 @@ def jaxify(x):
 
 def dejaxify(x):
   return {0:jnp.float32, 1:jnp.float64}[x]
-
-def enzyme_aug(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], *args):
-  shadconv = _enzyme_aug_p.bind(
-      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
-  shadconv = ( shadconv[0:len(shadconv)-1], (shadconv[-1],  tuple((a.shape, jaxify(a.dtype)) for a in args) ) )
-  return shadconv
 
 _enzyme_aug_p = jax.core.Primitive("enzyme_aug")
 _enzyme_aug_p.multiple_results = True
@@ -327,15 +327,6 @@ xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
-def enzyme_rev(source: str, fn:str, argv: Sequence[str], out_shapes: Sequence[jax.core.ShapedArray], tape, args):
-  (tape, in_shapes) = tape
-  args = (tape,) + tuple(args)
-
-
-  shadconv = _enzyme_rev_p.bind(
-      *args, source=source, fn=fn, argv=argv, in_shapes=in_shapes)
-  return tuple(shadconv)
-
 _enzyme_rev_p = jax.core.Primitive("enzyme_rev")
 _enzyme_rev_p.multiple_results = True
 _enzyme_rev_p.def_impl(_enzyme_rev_impl)
@@ -346,29 +337,29 @@ xla_client.register_custom_call_target(
     "jaxzyme.rev", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
-
-def enzyme_vjp(*args, **kwargs):
+def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
   out_shapes = kwargs['out_shapes']
   del kwargs['out_shapes']
-  shadow_ret = args[1:len(out_shapes)]
-  prim_args = args[len(out_shapes):]
-  print("VJP", shadow_ret, prim_args, kwargs)
+  shadows = [ad.is_undefined_primal(x) for x in prim_args]
+  prim_args = prim_args[0::2]
+  prim_args = tuple(jnp.ones(x.aval.shape, x.aval.dtype) if ad.is_undefined_primal(x) else x for x in prim_args)
+  shadow_rets = shadow_rets[1::2]
 
   in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
-  # We need to use _our_ forward pass
-  tape = [0]
-  args = (tape, ) + tuple(prim_args)
+  # We unnecessarily compute the forward pass again here, in its entirety.
+  # It would be nicer to move this computation to be done wherever the forward pass works,
+  # and replace its results
+  augres = _enzyme_aug_p.bind(
+      *prim_args, out_shapes=out_shapes, **kwargs)
 
-  args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
+  # We need to use _our_ forward pass
+  tape = augres[-1]
+  args = (tape, ) + tuple(shadow_rets)
   shadconv = _enzyme_rev_p.bind(
       *args, **kwargs, in_shapes=in_shapes)
   res = tuple(shadconv)
-  print ("vjpres", res)
+  res = tuple(v for tup in zip([None for _ in range(len(shadconv))], shadconv) for v in tup)
   return res
 
-ad.primitive_transposes[_enzyme_primal_p] = enzyme_vjp
-
-
-# Historical registration for reverse mode
-# cpp_fwd_internal.defvjp(enzyme_aug, enzyme_rev)
+ad.primitive_transposes[_enzyme_fwd_p] = enzyme_vjp

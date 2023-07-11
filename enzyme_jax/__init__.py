@@ -1,1 +1,1 @@
-from enzyme_jax.primitives import cpp_fwd
+from enzyme_jax.primitives import cpp_call
