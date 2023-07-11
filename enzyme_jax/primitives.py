@@ -391,7 +391,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
   del kwargs['out_shapes']
   shadows = [ad.is_undefined_primal(x) for x in prim_args]
   tape = prim_args[0]
-  prim_args = prim_args[1::(len(prim_args)-1)//2]
+  prim_args = prim_args[1:1+(len(prim_args)-1)//2]
   prim_args = tuple(jnp.ones(x.aval.shape, x.aval.dtype) if ad.is_undefined_primal(x) else x for x in prim_args)
   in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
