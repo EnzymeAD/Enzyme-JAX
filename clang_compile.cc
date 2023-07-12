@@ -63,8 +63,10 @@
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "llvm/Support/Host.h"
 #include "clang/FrontendTool/Utils.h"
-
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/Support/MemoryBufferRef.h"
+#include "llvm/Linker/Linker.h"
 
 #include <Python.h>
 #include <pybind11/pybind11.h>
@@ -178,9 +180,25 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &&TargetTriple,
   return TLII;
 }
 
-static LLVMContext GlobalContext;
+// Returns the TargetMachine instance or zero if no triple is provided.
+static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
+                                       StringRef FeaturesStr,
+                                       const llvm::TargetOptions &Options, CodeGenOpt::Level level) {
+  std::string Error;
+  const Target *TheTarget =
+      TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
+  // Some modules don't specify a triple, and this is okay.
+  if (!TheTarget) {
+    return nullptr;
+  }
 
-std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, ArrayRef<std::string> pyargv, LLVMContext* Context) {
+  return TheTarget->createTargetMachine(
+      TheTriple.getTriple(), codegen::getCPUStr(), codegen::getFeaturesStr(),
+      Options, codegen::getExplicitRelocModel(),
+      codegen::getExplicitCodeModel(), level);
+}
+
+std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, ArrayRef<std::string> pyargv, LLVMContext* Context, std::unique_ptr<llvm::Module> linkMod) {
     const llvm::opt::InputArgList Args;
       const char *binary = cpp ? "clang++" : "clang"; 
   // Buffer diagnostics from argument parsing so that we can output them using a
@@ -500,7 +518,7 @@ struct tensor<T, n0, N...>
     return {};
   }
 
-  if (!Context) Context=&GlobalContext;
+  assert(Context);
   auto Act = std::make_unique<EmitLLVMOnlyAction>(Context);
   Success = Clang->ExecuteAction(*Act);
   if (!Success) {
@@ -509,6 +527,11 @@ struct tensor<T, n0, N...>
   }
 
   auto mod = Act->takeModule();
+
+  if (linkMod) {
+    Linker::linkModules(*mod, std::move(linkMod));
+  }
+
   for (auto &f : *mod) {
     if (f.empty()) continue;
     if (f.getName() == "entry") continue;
@@ -527,9 +550,28 @@ struct tensor<T, n0, N...>
       createTLII(llvm::Triple(mod->getTargetTriple()), Clang->getCodeGenOpts()));
   FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
+
+  auto level = CodeGenOpt::Level::Aggressive; //OptimizationLevel::O3;
+
+  Triple ModuleTriple(mod->getTargetTriple());
+  std::string CPUStr, FeaturesStr;
+  llvm::TargetMachine *Machine = nullptr;
+  const llvm::TargetOptions Options =
+      codegen::InitTargetOptionsFromCodeGenFlags(ModuleTriple);
+
+  if (ModuleTriple.getArch()) {
+    CPUStr = codegen::getCPUStr();
+    FeaturesStr = codegen::getFeaturesStr();
+    Machine = GetTargetMachine(ModuleTriple, CPUStr, FeaturesStr, Options, level);
+  } else if (ModuleTriple.getArchName() != "unknown" &&
+             ModuleTriple.getArchName() != "") {
+    errs() << "unrecognized architecture '"
+           << ModuleTriple.getArchName() << "' provided.\n";
+  }
+
   std::optional<PGOOptions> PGOOpt;
   PassInstrumentationCallbacks PIC;
-  PassBuilder PB(nullptr, PTO, PGOOpt, &PIC);
+  PassBuilder PB(Machine, PTO, PGOOpt, &PIC);
 
   augmentPassBuilder(PB);
 
@@ -542,12 +584,16 @@ struct tensor<T, n0, N...>
 
   ModulePassManager MPM;
 
+
+  PB.parsePassPipeline(MPM, "default<O3>");
+
     // Map our optimization levels into one of the distinct levels used to
     // configure the pipeline.
-    OptimizationLevel Level = OptimizationLevel::O3;
+   // OptimizationLevel Level = ;
     
-    MPM = PB.buildPerModuleDefaultPipeline(Level);
+  //MPM = PB.buildPerModuleDefaultPipeline(Level);
  
+  llvm::errs() << " premod: " << *mod << "\n";
     MPM.run(*mod, MAM);
   return mod;
 }

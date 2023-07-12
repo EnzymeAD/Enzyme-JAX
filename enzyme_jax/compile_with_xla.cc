@@ -22,7 +22,7 @@
 
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 absl::StatusOr<std::string> compile_mhlo_to_llvm_with_xla(
-    const std::string &mhlo_text) {
+    llvm::StringRef mhlo_text) {
   // Parse MLIR.
   mlir::MLIRContext context;
   context.loadDialect<mlir::arith::ArithDialect>();

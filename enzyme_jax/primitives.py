@@ -19,6 +19,10 @@ import jax.numpy as jnp
 #from build import enzyme_call
 from enzyme_jax import enzyme_call
 
+LANG_CPP = enzyme_call.Language.CPP
+LANG_LLVM = enzyme_call.Language.LLVM
+LANG_MHLO = enzyme_call.Language.MHLO
+
 def resource_dir():
   import os
   dn = os.path.dirname(enzyme_call.__file__)
@@ -37,7 +41,8 @@ def _enzyme_primal_impl(
     source: str,
     fn: str,
     argv: Sequence[str],
-    out_shapes: Sequence[jax.core.ShapedArray]
+    out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
@@ -47,7 +52,8 @@ def _enzyme_fwd_impl(
     source: str,
     fn: str,
     argv: Sequence[str],
-    out_shapes: Sequence[jax.core.ShapedArray]
+    out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
@@ -57,7 +63,8 @@ def _enzyme_aug_impl(
     source: str,
     fn: str,
     argv: Sequence[str],
-    out_shapes: Sequence[jax.core.ShapedArray]
+    out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
@@ -67,7 +74,8 @@ def _enzyme_shadow_aug_impl(
     source: str,
     fn: str,
     argv: Sequence[str],
-    out_shapes: Sequence[jax.core.ShapedArray]
+    out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
@@ -77,7 +85,8 @@ def _enzyme_rev_impl(
     source: str,
     fn: str,
     argv: Sequence[str],
-    in_shapes
+    in_shapes,
+    lang: enzyme_call.Language
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
   raise RuntimeError("must be JIT'ed")
@@ -88,6 +97,7 @@ def _enzyme_primal_abstract_eval(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
 
@@ -101,6 +111,7 @@ def _enzyme_fwd_abstract_eval(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language,
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
 
@@ -118,6 +129,7 @@ def _enzyme_aug_abstract_eval(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang : enzyme_call.Language
 ) -> Sequence[jax.core.ShapedArray]:
 
   in_shapes = args_flat
@@ -130,7 +142,7 @@ def _enzyme_aug_abstract_eval(
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
 
-  tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv)
+  tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv, lang)
   res = tuple(prev_out_shapes) + (jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),)
   return res
 
@@ -141,6 +153,7 @@ def _enzyme_shadow_aug_abstract_eval(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[jax.core.ShapedArray]:
   return out_shapes
 
@@ -149,7 +162,8 @@ def _enzyme_rev_abstract_eval(
     source: str,
     fn: str,
     argv: Sequence[str],
-    in_shapes
+    in_shapes,
+    lang: enzyme_call.Language
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
 
@@ -169,6 +183,7 @@ def _enzyme_primal_lowering(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[ir.Value]:
   del out_shapes
 
@@ -181,7 +196,7 @@ def _enzyme_primal_lowering(
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   mode = 0
-  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
+  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -200,6 +215,7 @@ def _enzyme_fwd_lowering(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[ir.Value]:
   del out_shapes
 
@@ -213,7 +229,7 @@ def _enzyme_fwd_lowering(
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   mode = 1
-  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
+  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -232,6 +248,7 @@ def _enzyme_aug_lowering(
     fn: str,
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[ir.Value]:
   del out_shapes
 
@@ -245,7 +262,7 @@ def _enzyme_aug_lowering(
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
   mode = 2
-  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
+  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -263,6 +280,7 @@ def _enzyme_rev_lowering(
     fn: str,
     argv: Sequence[str],
     in_shapes: Sequence[jax.core.ShapedArray],
+    lang: enzyme_call.Language
 ) -> Sequence[ir.Value]:
   del in_shapes
 
@@ -276,7 +294,7 @@ def _enzyme_rev_lowering(
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
   mode = 3
-  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode)
+  identifier = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -286,9 +304,12 @@ def _enzyme_rev_lowering(
   )
   return custom_call.results
 
-def cpp_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
+def ffi_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=(), lang:int=LANG_CPP):
   return _enzyme_primal_p.bind(
-      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
+      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes, lang=lang)
+
+def cpp_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
+  return ffi_call(*args, source=source, fn=fn, argv=argv, out_shapes=out_shapes, lang=LANG_CPP)
 
 _enzyme_primal_p = jax.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
@@ -408,6 +429,7 @@ def _enzyme_jax_impl(
     *args_flat: jax.Array,
     func: Callable[..., Any],
     in_tree: jax.tree_util.PyTreeDef,
+    argv=(),
     out_shapes: Sequence[jax.core.ShapedArray]
 ) -> Sequence[jax.Array]:
   del args_flat, source, out_shapes
@@ -418,6 +440,7 @@ def _enzyme_jax_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     func: Callable[..., Any],
     in_tree: jax.tree_util.PyTreeDef,
+    argv=(),
     out_shapes: Sequence[jax.core.ShapedArray],
 ) -> Sequence[jax.core.ShapedArray]:
   del args_flat, func, in_tree
@@ -432,21 +455,25 @@ def _enzyme_jax_lowering(
     *args_flat: ir.Value,
     func: Callable[..., Any],
     in_tree: jax.tree_util.PyTreeDef,
+    argv=(),
     out_shapes: Sequence[tuple[int, ...]]
 ) -> Sequence[ir.Value]:
-  del out_shapes
   avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
   lowered_func = jax.jit(func).lower(*avals_in)
   mhlo = lowered_func.compiler_ir(dialect='mhlo')
-
+  print(mhlo)
   # TODO: unclear why pybind refuses to accept a MLIR object
   # (or an XlaComputation) here so going through strings and parsing :(
   print(enzyme_call.compile_mhlo_to_llvm_with_xla(str(mhlo)))
 
-  # TODO: optionally differentiate and actually compile LLVM IR here
-  # Differentiation is optional so we can use this path as baseline after
-  # JAX's AD on HLO in case JAX sets up the XLA compiler differently.
-  raise RuntimeError("NYI: actual calling")
+  return _enzyme_primal_lowering(
+    ctx,
+    *args_flat,
+    source=str(mhlo),
+    fn="",
+    argv=(),
+    out_shapes=out_shapes,
+    lang=LANG_MHLO)
 
 
 _enzyme_jax_p = jax.core.Primitive("enzyme_jax_ir")
@@ -455,12 +482,14 @@ _enzyme_jax_p.def_impl(_enzyme_jax_impl)
 _enzyme_jax_p.def_abstract_eval(_enzyme_jax_abstract_eval)
 jax_mlir.register_lowering(_enzyme_jax_p, _enzyme_jax_lowering, platform="cpu")
 
-def enzyme_jax_ir(func: Callable[..., Any]) -> Callable[..., Any]:
-  @jax.jit
-  def wrapped(*args: Any):
-    args_flat, in_tree = jax.tree_util.tree_flatten(args)
-    out_shape = jax.eval_shape(func, *args)
-    out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
-    out_flat = _enzyme_jax_p.bind(*args_flat, func=func, in_tree=in_tree, out_shapes=out_shape_flat)
-    return jax.tree_util.tree_unflatten(out_tree, out_flat)
-  return wrapped
+def enzyme_jax_ir(argv=()):
+  def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+    @jax.jit
+    def wrapped(*args: Any):
+      args_flat, in_tree = jax.tree_util.tree_flatten(args)
+      out_shape = jax.eval_shape(func, *args)
+      out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
+      out_flat = _enzyme_jax_p.bind(*args_flat, func=func, in_tree=in_tree, out_shapes=out_shape_flat, argv=argv)
+      return jax.tree_util.tree_unflatten(out_tree, out_flat)
+    return wrapped
+  return decorator
