@@ -24,6 +24,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:OrcJIT",
         "@enzyme//:EnzymeStatic"
     ],
 )
@@ -36,7 +37,10 @@ py_package(
     name = "enzyme_jax_data",
     # Only include these Python packages.
     packages = ["@//enzyme_jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
-    deps = ["//enzyme_jax:enzyme_call", "@llvm-project//clang:builtin_headers_gen"],
+    deps = [
+        "//enzyme_jax:enzyme_call",
+        "@llvm-project//clang:builtin_headers_gen",
+    ],
     prefix = "enzyme_jax/",
 )
 

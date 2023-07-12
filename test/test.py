@@ -44,3 +44,25 @@ primals, f_vjp = jax.vjp(do_something, ones)
 (grads,) = f_vjp((x, y, z))
 print(primals)
 print(grads)
+
+# Test enzyme mlir jit
+from enzyme_jax import enzyme_jax_ir
+
+
+@enzyme_jax_ir()
+def add_one(x: jax.Array, y) -> jax.Array:
+  return x + 1 + y
+
+
+# TODO: this currently throws NYI as it is not yet connected to JIT and runtime.
+# But it should print LLVM IR in the process.
+add_one(jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.]))
+
+primals, tangents = jax.jvp(add_one, (jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.])), (jnp.array([.1, .2, .3]), jnp.array([50., 70., 110.])) )
+print(primals)
+print(tangents)
+
+primals, f_vjp = jax.vjp(add_one, jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.]))
+grads = f_vjp(jnp.array([500., 700., 110.]))
+print(primals)
+print(grads)

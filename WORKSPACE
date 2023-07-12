@@ -23,7 +23,9 @@ http_archive(
     name = "xla",
     sha256 = XLA_SHA256,
     strip_prefix = "xla-" + XLA_COMMIT,
-    urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)]
+    urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
+    patch_args = ["-p1"],
+    patches = ["//:patches/xla.patch"],
 )
 
 
