@@ -123,6 +123,27 @@ diff '--color=auto' -ru a/xla/python/BUILD b/xla/python/BUILD
      deps = [
          ":status_casters",
          "//xla:status",
+diff '--color=auto' -ru a/xla/runtime/BUILD b/xla/runtime/BUILD
+--- a/xla/runtime/BUILD	2023-06-12 20:50:10.000000000 +0000
++++ b/xla/runtime/BUILD	2023-07-12 14:00:16.882174573 +0000
+@@ -282,8 +282,6 @@
+         "@llvm-project//llvm:OrcJIT",
+         "@llvm-project//llvm:Support",
+         "@llvm-project//llvm:TransformUtils",
+-        "@llvm-project//llvm:X86AsmParser",
+-        "@llvm-project//llvm:X86CodeGen",
+     ] + select({
+         "@tsl//tsl:arm_any": [
+             "@llvm-project//llvm:AArch64AsmParser",  # fixdeps: keep
+@@ -298,6 +296,8 @@
+             "@llvm-project//llvm:AArch64CodeGen",  # fixdeps: keep
+         ],
+         "//conditions:default": [
++            "@llvm-project//llvm:X86AsmParser",
++            "@llvm-project//llvm:X86CodeGen",
+         ],
+     }) + if_llvm_system_z_available([
+         "@llvm-project//llvm:SystemZAsmParser",  # fixdeps: keep
 diff '--color=auto' -ru a/xla/service/BUILD b/xla/service/BUILD
 --- a/xla/service/BUILD	2023-06-12 20:50:10.000000000 +0000
 +++ b/xla/service/BUILD	2023-07-10 15:36:23.550756903 +0000
