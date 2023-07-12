@@ -348,7 +348,6 @@ class CpuKernel {
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
-    llvm::errs() << " optmode: " << *mod << "\n";
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out);
   }
 

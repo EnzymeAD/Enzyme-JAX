@@ -140,6 +140,13 @@ def _enzyme_aug_abstract_eval(
 
   in_shapes = [absmaketup(a) for a in in_shapes]
 
+  if lang == LANG_MHLO:
+    (in_tree, func) = source
+    avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
+    lowered_func = jax.jit(func).lower(*avals_in)
+    mhlo = lowered_func.compiler_ir(dialect='mhlo')
+    source = str(mhlo)
+
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
 
   tapeSize = enzyme_call.tape_size(source, fn, out_shapes, in_shapes, argv, lang)
@@ -199,7 +206,6 @@ def _enzyme_primal_lowering(
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    print(mhlo)
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
@@ -237,10 +243,9 @@ def _enzyme_fwd_lowering(
 
   if lang == LANG_MHLO:
     (in_tree, func) = source
-    avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+    avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    print(mhlo)
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
@@ -281,7 +286,6 @@ def _enzyme_aug_lowering(
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    print(mhlo)
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
@@ -318,10 +322,9 @@ def _enzyme_rev_lowering(
 
   if lang == LANG_MHLO:
     (in_tree, func) = source
-    avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+    avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    print(mhlo)
     source = str(mhlo)
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
@@ -363,10 +366,6 @@ xla_client.register_custom_call_target(
     "jaxzyme.fwd", enzyme_call.get_cpu_callback(), platform="cpu"
 )
 
-def cpp_fwdcall(*args, out_shapes: Sequence[jax.core.ShapedArray], source: str, fn:str="f", argv: tuple[str]=()):
-  return _enzyme_fwd_p.bind(
-      *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes)
-
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
   
   # TODO propagate activity info rather than make_zero
@@ -375,8 +374,8 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
   arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
   args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
-  shadconv = cpp_fwdcall(
-      *args, source=kwargs['source'], fn=kwargs['fn'], argv=kwargs['argv'], out_shapes=kwargs['out_shapes'])
+  shadconv = _enzyme_fwd_p.bind(
+      *args, source=kwargs['source'], fn=kwargs['fn'], argv=kwargs['argv'], out_shapes=kwargs['out_shapes'], lang=kwargs['lang'])
   res = (shadconv[0::2], shadconv[1::2])
   return res
 

@@ -24,6 +24,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:OrcJIT",
         "@enzyme//:EnzymeStatic"
     ],
 )

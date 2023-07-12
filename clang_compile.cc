@@ -68,6 +68,8 @@
 #include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Linker/Linker.h"
 
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
+
 #include <Python.h>
 #include <pybind11/pybind11.h>
 
@@ -555,23 +557,16 @@ struct tensor<T, n0, N...>
 
   Triple ModuleTriple(mod->getTargetTriple());
   std::string CPUStr, FeaturesStr;
-  llvm::TargetMachine *Machine = nullptr;
-  const llvm::TargetOptions Options =
-      codegen::InitTargetOptionsFromCodeGenFlags(ModuleTriple);
 
-  if (ModuleTriple.getArch()) {
-    CPUStr = codegen::getCPUStr();
-    FeaturesStr = codegen::getFeaturesStr();
-    Machine = GetTargetMachine(ModuleTriple, CPUStr, FeaturesStr, Options, level);
-  } else if (ModuleTriple.getArchName() != "unknown" &&
-             ModuleTriple.getArchName() != "") {
-    errs() << "unrecognized architecture '"
-           << ModuleTriple.getArchName() << "' provided.\n";
+  auto ETM = llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple())).createTargetMachine ();
+  if (!ETM) {
+    throw pybind11::value_error("failed to create targetmachine");
   }
+  auto TM = std::move(ETM.get());
 
   std::optional<PGOOptions> PGOOpt;
   PassInstrumentationCallbacks PIC;
-  PassBuilder PB(Machine, PTO, PGOOpt, &PIC);
+  PassBuilder PB(TM.get(), PTO, PGOOpt, &PIC);
 
   augmentPassBuilder(PB);
 
@@ -583,18 +578,8 @@ struct tensor<T, n0, N...>
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-
-
   PB.parsePassPipeline(MPM, "default<O3>");
-
-    // Map our optimization levels into one of the distinct levels used to
-    // configure the pipeline.
-   // OptimizationLevel Level = ;
-    
-  //MPM = PB.buildPerModuleDefaultPipeline(Level);
- 
-  llvm::errs() << " premod: " << *mod << "\n";
-    MPM.run(*mod, MAM);
+  MPM.run(*mod, MAM);
   return mod;
 }
 
