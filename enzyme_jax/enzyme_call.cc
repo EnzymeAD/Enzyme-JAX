@@ -87,6 +87,7 @@ class CpuKernel {
     ss << "#include <enzyme/utils>\n";
 
     std::unique_ptr<llvm::Module> linkMod;
+    std::string stringbuf;
 
     switch (lang) {
     case Language::CPP:
@@ -101,17 +102,25 @@ class CpuKernel {
         throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
                                  llvm_ir.status().ToString());
       }
-      source = *llvm_ir;
+      stringbuf = *llvm_ir;
+      source = stringbuf;
       // explicitly fall through
     }
     case Language::LLVM:
       llvm::SMDiagnostic Err;
       linkMod = llvm::parseIR(llvm::MemoryBufferRef(source, "<input>"), Err, *llvm_ctx);
+      if (!linkMod) {
+        std::string err_str;
+        llvm::raw_string_ostream ss(err_str);
+        Err.print("llvmsource", ss, false);
+        throw pybind11::value_error("failed to compile LLVM: " + ss.str());
+      }
       assert(linkMod);
       if (lang == Language::MHLO) {
-        assert(linkMod->functions.size() == 1);
-        fn = "mhlo_main";
         for (auto &lfn : linkMod->functions()) {
+          if (lfn.empty()) continue;
+          assert(fn != "mhlo_main");
+          fn = "mhlo_main";
           lfn.setName(fn);
           lfn.addFnAttr(llvm::Attribute::AlwaysInline);
         }
