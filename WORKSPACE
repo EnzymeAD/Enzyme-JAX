@@ -66,12 +66,12 @@ xla_workspace0()
 
 
 JAX_COMMIT = "21fc6e0229e0f5f1cb5f1f69d2c3daa2e5c2ca11"
-JAX_SHA256 = ""
+JAX_SHA256 = "fe6d76285eef8cfd4b3ec7ec61240f92acabf554576111ee0c31d96fb6a746ce"
 
 http_archive(
     name = "jax",
     sha256 = JAX_SHA256,
-    strip_prefix = "jax-" + PYRULES_COMMIT,
+    strip_prefix = "jax-" + JAX_COMMIT,
     urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = JAX_COMMIT)],
     patch_args = ["-p1"],
     patches = ["//:patches/jax_workspace.patch"]
