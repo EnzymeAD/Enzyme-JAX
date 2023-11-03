@@ -185,7 +185,7 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &&TargetTriple,
 // Returns the TargetMachine instance or zero if no triple is provided.
 static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
                                        StringRef FeaturesStr,
-                                       const llvm::TargetOptions &Options, CodeGenOpt::Level level) {
+                                       const llvm::TargetOptions &Options, CodeGenOptLevel level) {
   std::string Error;
   const Target *TheTarget =
       TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
@@ -553,7 +553,7 @@ struct tensor<T, n0, N...>
   FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
 
-  auto level = CodeGenOpt::Level::Aggressive; //OptimizationLevel::O3;
+  auto level = CodeGenOptLevel::Aggressive; //OptimizationLevel::O3;
 
   Triple ModuleTriple(mod->getTargetTriple());
   std::string CPUStr, FeaturesStr;

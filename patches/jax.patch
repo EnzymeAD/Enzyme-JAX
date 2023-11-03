@@ -1,9 +1,11 @@
---- a/third_party/ducc/workspace.bzl
-+++ b/third_party/ducc/workspace.bzl
-@@ -25,5 +25,5 @@ def repo():
-             "https://github.com/mreineck/ducc/archive/356d619a4b5f6f8940d15913c14a043355ef23be.tar.gz",
-             "https://storage.googleapis.com/jax-releases/mirror/ducc/ducc-356d619a4b5f6f8940d15913c14a043355ef23be.tar.gz",
-         ],
--        build_file = "@//third_party/ducc:BUILD.bazel",
-+        build_file = "@jax//third_party/ducc:BUILD.bazel",
-     )
+--- a/jaxlib/cpu/BUILD
++++ a/jaxlib/cpu/BUILD
+@@ -79,7 +79,7 @@ cc_library(
+         ":ducc_fft_flatbuffers_cc",
+         "@xla//xla/service:custom_call_status",
+         "@com_github_google_flatbuffers//:flatbuffers",
+-        "@ducc//:fft",
++        "@ducc//:fft_wrapper",
+     ],
+ )
+ 

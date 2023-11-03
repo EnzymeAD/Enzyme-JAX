@@ -1,7 +1,21 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-LLVM_COMMIT = "aa495214b39d475bab24b468de7a7c676ce9e366"
-LLVM_SHA256 = "73cb1e91901d975bf4c97f1ea7000dd1554ad77f704a2d899498866a67471444"
+http_archive(
+    name = "rules_cc",
+    sha256 = "85723d827f080c5e927334f1fb18a294c0b3f94fee6d6b45945f5cdae6ea0fd4",
+    strip_prefix = "rules_cc-c8c38f8c710cbbf834283e4777916b68261b359c",
+    urls = [
+        "https://github.com/bazelbuild/rules_cc/archive/c8c38f8c710cbbf834283e4777916b68261b359c.tar.gz",
+    ],
+)
+
+load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
+
+rules_cc_dependencies()
+
+LLVM_COMMIT = "2f17c9f65e7da50a77101431ddf7f6ed7e1ea92c"
+LLVM_SHA256 = "a986740933506ebd1127c8abb64c78655a8c329798f37fd466a8e0f7aa7a5578"
+LLVM_TARGETS = ["X86", "AArch64", "AMDGPU"]
 
 http_archive(
     name = "llvm-raw",
@@ -14,10 +28,10 @@ http_archive(
 )
 
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = ["X86", "AArch64", "AMDGPU", "ARM", "NVPTX"])
+llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "7423e38a383ccd25fb144db298257a6b6dd8cc4d"
-XLA_SHA256 = "e7ea840e4a58a91bdb5dbcaee71669dd799cecc8d2084106389699619fe76129"
+XLA_COMMIT = "7ab5df624ff1d98804999b03b21abecd14ec57a6"
+XLA_SHA256 = "2b6a3ffdb3acf73eaa9b312407400b09c740450ab2222433890712dd4a402a0f"
 
 http_archive(
     name = "xla",
@@ -27,7 +41,6 @@ http_archive(
     patch_args = ["-p1"],
     patches = ["//:patches/xla.patch"],
 )
-
 
 PYRULES_COMMIT = "693a1587baf055979493565933f8f40225c00c6d"
 PYRULES_SHA256 = "c493a9506b5e1ea99e3c22fb15e672cdd2a6fa19fd7c627ec5d485aced23e50a"
@@ -39,8 +52,8 @@ http_archive(
     urls = ["https://github.com/bazelbuild/rules_python/archive/{commit}.tar.gz".format(commit = PYRULES_COMMIT)]
 )
 
-ENZYME_COMMIT = "bcd061afc6260d2266ca9a8489830c36a4ceefe6"
-ENZYME_SHA256 = "f215f6654b000a7eed387d89fe51561382dc7a86e1ed83941399335f819c1f66"
+ENZYME_COMMIT = "73ea8461c802689b2dfc2a6d9efea8ee9e506104"
+ENZYME_SHA256 = "b1e5aa029b24985a018bed7012953eac7743391aace2b1f1e55a4a2cad9e343e"
 
 http_archive(
     name = "enzyme",
@@ -49,8 +62,8 @@ http_archive(
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
-JAX_COMMIT = "21fc6e0229e0f5f1cb5f1f69d2c3daa2e5c2ca11"
-JAX_SHA256 = "fe6d76285eef8cfd4b3ec7ec61240f92acabf554576111ee0c31d96fb6a746ce"
+JAX_COMMIT = "32a317f7a43440800e1e39e00ed5f2980e088ab1"
+JAX_SHA256 = "6e2147be7360a5c0672b6ba0d654cdb2ac96113b63ef457dfdc76cd50fe69ff1"
 
 http_archive(
     name = "jax",
@@ -61,8 +74,8 @@ http_archive(
     patches = ["//:patches/jax.patch"],
 )
 
-load("@jax//third_party/ducc:workspace.bzl", ducc = "repo")
-ducc()
+load("@jax//third_party/xla:workspace.bzl", jax_xla_workspace = "repo")
+jax_xla_workspace()
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()
@@ -81,3 +94,9 @@ xla_workspace0()
 
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 flatbuffers()
+
+load("@jax//third_party/robin_map:workspace.bzl", robin_map = "repo")
+robin_map()
+
+load("@jax//third_party/nanobind:workspace.bzl", nanobind = "repo")
+nanobind()
