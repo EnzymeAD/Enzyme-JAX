@@ -42,8 +42,8 @@ http_archive(
     patches = ["//:patches/xla.patch"],
 )
 
-PYRULES_COMMIT = "693a1587baf055979493565933f8f40225c00c6d"
-PYRULES_SHA256 = "c493a9506b5e1ea99e3c22fb15e672cdd2a6fa19fd7c627ec5d485aced23e50a"
+PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"
+PYRULES_SHA256 = "cfa6957832ae0e0c7ee2ccf455a888a291e8419ed8faf45f4420dd7414d5dd96"
 
 http_archive(
     name = "rules_python",
@@ -51,6 +51,14 @@ http_archive(
     strip_prefix = "rules_python-" + PYRULES_COMMIT,
     urls = ["https://github.com/bazelbuild/rules_python/archive/{commit}.tar.gz".format(commit = PYRULES_COMMIT)]
 )
+
+load("@rules_python//python:repositories.bzl", "py_repositories")
+
+py_repositories()
+
+load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependencies")
+
+pip_install_dependencies()
 
 ENZYME_COMMIT = "73ea8461c802689b2dfc2a6d9efea8ee9e506104"
 ENZYME_SHA256 = "b1e5aa029b24985a018bed7012953eac7743391aace2b1f1e55a4a2cad9e343e"
