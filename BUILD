@@ -32,7 +32,7 @@ load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 py_package(
     name = "enzyme_jax_data",
     deps = [
-        "//enzyme_jax:enzyme_call",
+        "//enzyme_jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
 )

@@ -1,5 +1,5 @@
 
-load("@tsl//tsl:tsl.bzl", _if_windows = "if_windows", pybind_extension = "tsl_pybind_extension_opensource")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 
 py_library(
     name = "enzyme_jax_internal",
@@ -7,7 +7,7 @@ py_library(
     visibility = ["//visibility:public"]
 )
 
-cc_library(
+pybind_library(
     name = "compile_with_xla",
     srcs = ["compile_with_xla.cc"],
     deps = [
@@ -27,6 +27,8 @@ cc_library(
         "@tsl//tsl/util:determinism",
 
         # This is similar to xla_binary rule and is needed to make XLA client compile.
+        "@xla//xla:autotuning_proto_cc",
+        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla:autotune_results_proto_cc",
         "@xla//xla:autotune_results_proto_cc_impl",
         "@xla//xla/client",
@@ -34,9 +36,14 @@ cc_library(
         "@xla//xla/service/cpu:cpu_executable",
         "@xla//xla/service/gpu:backend_configs_cc",
         "@xla//xla/service/gpu:backend_configs_cc_impl",
+        "@xla//xla/service:buffer_assignment_proto_cc",
+        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_proto_cc_impl",
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
+        "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/stream_executor:device_description_proto_cc",
+        "@xla//xla/stream_executor:device_description_proto_cc_impl",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -63,7 +70,6 @@ pybind_extension(
     name = "enzyme_call",
     srcs = ["enzyme_call.cc"],
     deps = [
-        "@pybind11",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:OrcJIT",
         "//:clang_compile",
