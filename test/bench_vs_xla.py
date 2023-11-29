@@ -56,6 +56,7 @@ dout = jnp.array([500., 700., 110.])
 rev(in0, in1, dout)
 rev_plain(in0, in1, dout)
 
+print(rev.lower(in0, in1, dout).compiler_ir(dialect="mhlo"))
 print(rev_plain.lower(in0, in1, dout).compiler_ir(dialect="mhlo"))
 
 rev_plain(in0, in1, dout)

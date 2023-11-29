@@ -39,8 +39,8 @@ http_archive(
     urls = ["https://github.com/bazelbuild/rules_python/archive/{commit}.tar.gz".format(commit = PYRULES_COMMIT)]
 )
 
-ENZYME_COMMIT = "bcd061afc6260d2266ca9a8489830c36a4ceefe6"
-ENZYME_SHA256 = "f215f6654b000a7eed387d89fe51561382dc7a86e1ed83941399335f819c1f66"
+ENZYME_COMMIT = "f3206a3b0075fb9260054dbdfb8388a71f79ba8b"
+ENZYME_SHA256 = ""
 
 http_archive(
     name = "enzyme",

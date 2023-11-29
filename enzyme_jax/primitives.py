@@ -207,6 +207,7 @@ def _enzyme_primal_lowering(
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    print(source)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   mode = 0
@@ -246,6 +247,19 @@ def _enzyme_fwd_lowering(
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
+    print(mhlo, type(mhlo))
+    mlir_fns = [a for a in mhlo.body.operations if a.name == fn]
+    assert len(mlir_fns) == 1
+    mlir_fn = mlir_fns[0]
+    from jaxlib.mlir.dialects import func
+    from jaxlib.mlir.ir import Context, Module, InsertionPoint, Location
+    with InsertionPoint(mhlo.body), Location.unknown()
+        new_args = [a for a in args_flat for i in range(2)]
+        new_args_tys = [a for a in mlir_fn.type.inputs for i in range(2)]
+        res_tys = [a for a in mlir_fn.type.results for i in range(2)]
+        fwdDiffCall = func.FuncOp("__enzyme_fwddiff", new_args)
+        func.CallOp("__enzyme_fwddiff", fn, *args_flat)
+    ddstablehloddV
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
