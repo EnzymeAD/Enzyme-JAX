@@ -30,7 +30,7 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "e9500e39bf190ae3d13d191295d51da3161fc8f4"
+XLA_COMMIT = "fecd5e7e9f00f4a197ad54206f2bc0ca1058c858"
 XLA_SHA256 = ""
 
 http_archive(
