@@ -27,7 +27,8 @@ cc_library(
     ],
 )
 
-load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
+load("@rules_python//python:packaging.bzl", "py_wheel")
+load(":package.bzl", "py_package")
 
 py_package(
     name = "enzyme_jax_data",
@@ -35,6 +36,9 @@ py_package(
         "//enzyme_jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
+    # Only include these Python packages.
+    packages = ["@//enzyme_jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
+    prefix = "enzyme_jax/"
 )
 
 py_wheel(
