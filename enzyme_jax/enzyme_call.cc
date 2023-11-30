@@ -119,7 +119,16 @@ class CpuKernel {
       if (lang == Language::MHLO) {
         for (auto &lfn : linkMod->functions()) {
           if (lfn.empty()) continue;
-          assert(fn != "mhlo_main");
+          if (lfn.getLinkage() == llvm::Function::InternalLinkage)
+	    continue;
+	  if (fn == "mhlo_main") {
+            std::string err;
+            llvm::raw_string_ostream ess(err);
+	    ess << " Failed to compile mhlo, found multiple functions in module:\n";
+	    ess << *linkMod << "\n";
+	    ess << source << "\n";
+	    throw std::runtime_error(ess.str());
+	  }
           fn = "mhlo_main";
           lfn.setName(fn);
           lfn.addFnAttr(llvm::Attribute::AlwaysInline);
