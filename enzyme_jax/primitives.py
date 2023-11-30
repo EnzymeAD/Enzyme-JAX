@@ -16,8 +16,7 @@ from jax.lib import xla_client
 
 import jax.numpy as jnp
 
-#from build import enzyme_call
-from enzyme_jax import enzyme_call
+from . import enzyme_call
 
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM

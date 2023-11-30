@@ -1,8 +1,6 @@
 
 licenses(["notice"])
 
-load("@tsl//tsl:tsl.bzl", _if_windows = "if_windows", pybind_extension = "tsl_pybind_extension_opensource")
-
 package(
     default_applicable_licenses = [],
     default_visibility = ["//:__subpackages__"],
@@ -30,18 +28,17 @@ cc_library(
 )
 
 load("@rules_python//python:packaging.bzl", "py_wheel")
-
 load(":package.bzl", "py_package")
 
 py_package(
     name = "enzyme_jax_data",
-    # Only include these Python packages.
-    packages = ["@//enzyme_jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
     deps = [
-        "//enzyme_jax:enzyme_call",
+        "//enzyme_jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
-    prefix = "enzyme_jax/",
+    # Only include these Python packages.
+    packages = ["@//enzyme_jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
+    prefix = "enzyme_jax/"
 )
 
 py_wheel(

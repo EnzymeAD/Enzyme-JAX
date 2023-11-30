@@ -147,45 +147,10 @@ template <class T> class ptr_wrapper
 PYBIND11_DECLARE_HOLDER_TYPE(T, ptr_wrapper<T>, true);
 */
 
-static TargetLibraryInfoImpl *createTLII(llvm::Triple &&TargetTriple,
-                                         const CodeGenOptions &CodeGenOpts) {
-  TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
- 
-  switch (CodeGenOpts.getVecLib()) {
-  case CodeGenOptions::Accelerate:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate,
-                                             TargetTriple);
-    break;
-  case CodeGenOptions::LIBMVEC:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::LIBMVEC_X86,
-                                             TargetTriple);
-    break;
-  case CodeGenOptions::MASSV:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::MASSV,
-                                             TargetTriple);
-    break;
-  case CodeGenOptions::SVML:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML,
-                                             TargetTriple);
-    break;
-  case CodeGenOptions::SLEEF:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SLEEFGNUABI,
-                                             TargetTriple);
-    break;
-  case CodeGenOptions::Darwin_libsystem_m:
-    TLII->addVectorizableFunctionsFromVecLib(
-        TargetLibraryInfoImpl::DarwinLibSystemM, TargetTriple);
-    break;
-  default:
-    break;
-  }
-  return TLII;
-}
-
 // Returns the TargetMachine instance or zero if no triple is provided.
 static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
                                        StringRef FeaturesStr,
-                                       const llvm::TargetOptions &Options, CodeGenOpt::Level level) {
+                                       const llvm::TargetOptions &Options, CodeGenOptLevel level) {
   std::string Error;
   const Target *TheTarget =
       TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
@@ -548,12 +513,13 @@ struct tensor<T, n0, N...>
 
   // Register the target library analysis directly and give it a customized
   // preset TLI.
+  llvm::Triple triple(mod->getTargetTriple());
   std::unique_ptr<TargetLibraryInfoImpl> TLII(
-      createTLII(llvm::Triple(mod->getTargetTriple()), Clang->getCodeGenOpts()));
+      llvm::driver::createTLII(triple, Clang->getCodeGenOpts().getVecLib()));
   FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
 
-  auto level = CodeGenOpt::Level::Aggressive; //OptimizationLevel::O3;
+  auto level = CodeGenOptLevel::Aggressive; //OptimizationLevel::O3;
 
   Triple ModuleTriple(mod->getTargetTriple());
   std::string CPUStr, FeaturesStr;
