@@ -1,5 +1,31 @@
-
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
+
+licenses(["notice"])
+
+package(
+    default_visibility = ["//:__subpackages__"],
+)
+
+cc_library(
+    name = "clang_compile",
+    srcs = ["clang_compile.cc"],
+    hdrs = ["clang_compile.h"],
+    deps = [
+        "@pybind11",
+        "@llvm-project//clang:ast",
+        "@llvm-project//clang:basic",
+        "@llvm-project//clang:driver",
+        "@llvm-project//clang:frontend",
+        "@llvm-project//clang:frontend_tool",
+        "@llvm-project//clang:lex",
+        "@llvm-project//clang:serialization",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:OrcJIT",
+        "@enzyme//:EnzymeStatic"
+    ],
+)
 
 py_library(
     name = "enzyme_jax_internal",
@@ -72,7 +98,7 @@ pybind_extension(
     deps = [
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:OrcJIT",
-        "//:clang_compile",
+        ":clang_compile",
         ":compile_with_xla",
         "@com_google_absl//absl/status"
     ],
