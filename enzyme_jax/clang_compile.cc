@@ -7,36 +7,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang_compile.h"
-#include "llvm/IRReader/IRReader.h"
 
+#include <Python.h>
+#include <pybind11/pybind11.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
-#include <cstring>
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
-#include <setjmp.h>
-#include <sys/time.h>
 
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringRef.h"
-#include "llvm/AsmParser/LLLexer.h"
-#include "llvm/AsmParser/LLParser.h"
-#include "llvm/AsmParser/LLToken.h"
-#include "llvm/AsmParser/Parser.h"
-#include "llvm/AsmParser/SlotMapping.h"
-#include "llvm-c/Core.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Type.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetSelect.h"
-#include "clang/CodeGen/CodeGenAction.h"
-
+#include "Enzyme/Enzyme.h"
 #include "clang/AST/Decl.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
@@ -46,34 +31,45 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/Version.h"
+#include "clang/CodeGen/CodeGenAction.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendOptions.h"
+#include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
+#include "clang/FrontendTool/Utils.h"
 #include "clang/Parse/ParseAST.h"
 #include "clang/Parse/Parser.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include "clang/Frontend/TextDiagnosticBuffer.h"
-#include "llvm/Support/Host.h"
-#include "clang/FrontendTool/Utils.h"
-#include "llvm/MC/TargetRegistry.h"
+#include "llvm-c/Core.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/AsmParser/LLLexer.h"
+#include "llvm/AsmParser/LLParser.h"
+#include "llvm/AsmParser/LLToken.h"
+#include "llvm/AsmParser/Parser.h"
+#include "llvm/AsmParser/SlotMapping.h"
 #include "llvm/CodeGen/CommandFlags.h"
-#include "llvm/Support/MemoryBufferRef.h"
-#include "llvm/Linker/Linker.h"
-
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-#include "Enzyme/Enzyme.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Linker/Linker.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/Host.h"
+#include "llvm/Support/MemoryBufferRef.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace clang {
 namespace driver {
@@ -86,21 +82,21 @@ namespace tools {
 void addDirectoryList(const llvm::opt::ArgList &Args,
                       llvm::opt::ArgStringList &CmdArgs, const char *ArgName,
                       const char *EnvVar);
-}
-}
-}
+}  // namespace tools
+}  // namespace driver
+}  // namespace clang
 
 using namespace clang;
 using namespace llvm;
 
 class ArgumentList {
-private:
+ private:
   /// Helper storage.
   llvm::SmallVector<llvm::SmallString<0>> Storage;
   /// List of arguments
   llvm::opt::ArgStringList Args;
 
-public:
+ public:
   /// Add argument.
   ///
   /// The element stored will not be owned by this.
@@ -127,7 +123,7 @@ public:
   ///
   /// The return value of this operation could be invalidated by subsequent
   /// calls to push_back() or emplace_back().
-  llvm::opt::ArgStringList& getArguments() { return Args; }
+  llvm::opt::ArgStringList &getArguments() { return Args; }
 };
 
 /*
@@ -148,9 +144,10 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, ptr_wrapper<T>, true);
 */
 
 // Returns the TargetMachine instance or zero if no triple is provided.
-static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
+static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
                                        StringRef FeaturesStr,
-                                       const llvm::TargetOptions &Options, CodeGenOptLevel level) {
+                                       const llvm::TargetOptions &Options,
+                                       CodeGenOptLevel level) {
   std::string Error;
   const Target *TheTarget =
       TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
@@ -165,9 +162,12 @@ static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
       codegen::getExplicitCodeModel(), level);
 }
 
-std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, ArrayRef<std::string> pyargv, LLVMContext* Context, std::unique_ptr<llvm::Module> linkMod) {
-    const llvm::opt::InputArgList Args;
-      const char *binary = cpp ? "clang++" : "clang"; 
+std::unique_ptr<llvm::Module> GetLLVMFromJob(
+    std::string filename, std::string filecontents, bool cpp,
+    ArrayRef<std::string> pyargv, LLVMContext *Context,
+    std::unique_ptr<llvm::Module> linkMod) {
+  const llvm::opt::InputArgList Args;
+  const char *binary = cpp ? "clang++" : "clang";
   // Buffer diagnostics from argument parsing so that we can output them using a
   // well formed diagnostic object.
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
@@ -179,15 +179,14 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts0 = new DiagnosticOptions();
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID0(new DiagnosticIDs());
   DiagnosticsEngine Diags0(DiagID0, &*DiagOpts0, DiagsBuffer0);
-  const std::unique_ptr<clang::driver::Driver> driver(
-      new clang::driver::Driver(binary, llvm::sys::getDefaultTargetTriple(), Diags0));
+  const std::unique_ptr<clang::driver::Driver> driver(new clang::driver::Driver(
+      binary, llvm::sys::getDefaultTargetTriple(), Diags0));
   ArgumentList Argv;
-  
-  Argv.emplace_back(StringRef(filename));
-  for (auto v : pyargv)
-    Argv.emplace_back(v);
 
-  SmallVector<const char*> PreArgs;
+  Argv.emplace_back(StringRef(filename));
+  for (auto v : pyargv) Argv.emplace_back(v);
+
+  SmallVector<const char *> PreArgs;
   PreArgs.push_back(binary);
   PreArgs.append(Argv.getArguments());
   PreArgs[1] = "-";
@@ -204,27 +203,34 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   // frontend into the driver. It will allow deleting 4 otherwise unused flags.
   // CPATH - included following the user specified includes (but prior to
   // builtin and standard includes).
-  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-I", "CPATH");
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-I",
+                                         "CPATH");
   // C_INCLUDE_PATH - system includes enabled when compiling C.
-  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-c-isystem", "C_INCLUDE_PATH");
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(),
+                                         "-c-isystem", "C_INCLUDE_PATH");
   // CPLUS_INCLUDE_PATH - system includes enabled when compiling C++.
-  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-cxx-isystem", "CPLUS_INCLUDE_PATH");
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(),
+                                         "-cxx-isystem", "CPLUS_INCLUDE_PATH");
   // OBJC_INCLUDE_PATH - system includes enabled when compiling ObjC.
-  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-objc-isystem", "OBJC_INCLUDE_PATH");
+  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(),
+                                         "-objc-isystem", "OBJC_INCLUDE_PATH");
   // OBJCPLUS_INCLUDE_PATH - system includes enabled when compiling ObjC++.
-  clang::driver::tools::addDirectoryList(Args, Argv.getArguments(), "-objcxx-isystem", "OBJCPLUS_INCLUDE_PATH");
+  clang::driver::tools::addDirectoryList(
+      Args, Argv.getArguments(), "-objcxx-isystem", "OBJCPLUS_INCLUDE_PATH");
 
   auto &TC = compilation->getDefaultToolChain();
   if (cpp) {
-    bool HasStdlibxxIsystem = false; // Args.hasArg(options::OPT_stdlibxx_isystem);
-          HasStdlibxxIsystem ? TC.AddClangCXXStdlibIsystemArgs(Args, Argv.getArguments())
-                             : TC.AddClangCXXStdlibIncludeArgs(Args, Argv.getArguments());
+    bool HasStdlibxxIsystem =
+        false;  // Args.hasArg(options::OPT_stdlibxx_isystem);
+    HasStdlibxxIsystem
+        ? TC.AddClangCXXStdlibIsystemArgs(Args, Argv.getArguments())
+        : TC.AddClangCXXStdlibIncludeArgs(Args, Argv.getArguments());
   }
 
-                                 TC.AddClangSystemIncludeArgs(Args, Argv.getArguments());
-  
+  TC.AddClangSystemIncludeArgs(Args, Argv.getArguments());
+
   SmallVector<char, 1> outputvec;
-  
+
   std::unique_ptr<CompilerInstance> Clang(new CompilerInstance());
 
   // Register the support for object-file-wrapped Clang modules.
@@ -232,20 +238,27 @@ std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string f
   // PCHOps->registerWriter(std::make_unique<ObjectFilePCHContainerWriter>());
   // PCHOps->registerReader(std::make_unique<ObjectFilePCHContainerReader>());
 
+  auto baseFS = createVFSFromCompilerInvocation(Clang->getInvocation(), Diags);
 
-  auto baseFS = createVFSFromCompilerInvocation(Clang->getInvocation(),
-                                                 Diags);
-
-  IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> fs(new llvm::vfs::InMemoryFileSystem());
+  IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> fs(
+      new llvm::vfs::InMemoryFileSystem());
 
   struct tm y2k = {};
 
-  y2k.tm_hour = 0;   y2k.tm_min = 0; y2k.tm_sec = 0;
-  y2k.tm_year = 100; y2k.tm_mon = 0; y2k.tm_mday = 1;
+  y2k.tm_hour = 0;
+  y2k.tm_min = 0;
+  y2k.tm_sec = 0;
+  y2k.tm_year = 100;
+  y2k.tm_mon = 0;
+  y2k.tm_mday = 1;
   time_t timer = mktime(&y2k);
 
-  fs->addFile(filename, timer, llvm::MemoryBuffer::getMemBuffer(filecontents, filename, /*RequiresNullTerminator*/false));
-  fs->addFile("/enzyme/enzyme/utils", timer, llvm::MemoryBuffer::getMemBuffer(R"(
+  fs->addFile(filename, timer,
+              llvm::MemoryBuffer::getMemBuffer(
+                  filecontents, filename, /*RequiresNullTerminator*/ false));
+  fs->addFile("/enzyme/enzyme/utils", timer,
+              llvm::MemoryBuffer::getMemBuffer(
+                  R"(
 namespace enzyme {
   template<typename RT=void, typename... Args>
   RT __enzyme_fwddiff(Args...);
@@ -264,8 +277,11 @@ extern "C" int enzyme_dupnoneed;
 extern "C" int enzyme_nooverwrite;
 extern "C" int enzyme_tape;
 extern "C" int enzyme_allocated;
-  )", "/enzyme/enzyme/utils", /*RequiresNullTerminator*/false));
-  fs->addFile("/enzyme/enzyme/tensor", timer, llvm::MemoryBuffer::getMemBuffer(R"(
+  )",
+                  "/enzyme/enzyme/utils", /*RequiresNullTerminator*/ false));
+  fs->addFile("/enzyme/enzyme/tensor", timer,
+              llvm::MemoryBuffer::getMemBuffer(
+                  R"(
 #include <stdint.h>
 #include <tuple>
 namespace enzyme {
@@ -445,26 +461,28 @@ struct tensor<T, n0, N...>
 };
 
 }
-  )", "/enzyme/enzyme/tensor", /*RequiresNullTerminator*/false));
+  )",
+                  "/enzyme/enzyme/tensor", /*RequiresNullTerminator*/ false));
 
-  std::unique_ptr<llvm::raw_pwrite_stream> outputStream(new llvm::raw_svector_ostream(outputvec));
+  std::unique_ptr<llvm::raw_pwrite_stream> outputStream(
+      new llvm::raw_svector_ostream(outputvec));
   Clang->setOutputStream(std::move(outputStream));
 
-  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> fuseFS(new llvm::vfs::OverlayFileSystem(baseFS));
+  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> fuseFS(
+      new llvm::vfs::OverlayFileSystem(baseFS));
   fuseFS->pushOverlay(fs);
   fuseFS->pushOverlay(baseFS);
 
   Clang->createFileManager(fuseFS);
 
-
-  bool Success = CompilerInvocation::CreateFromArgs(Clang->getInvocation(),
-                                                    Argv.getArguments(), Diags, binary);
+  bool Success = CompilerInvocation::CreateFromArgs(
+      Clang->getInvocation(), Argv.getArguments(), Diags, binary);
 
   // Infer the builtin include path if unspecified.
   if (Clang->getHeaderSearchOpts().UseBuiltinIncludes &&
       Clang->getHeaderSearchOpts().ResourceDir.empty())
     Clang->getHeaderSearchOpts().ResourceDir =
-      CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/0x0);
+        CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
 
   // Create the actual diagnostics engine.
   Clang->createDiagnostics();
@@ -504,7 +522,7 @@ struct tensor<T, n0, N...>
     if (f.getName() == "entry") continue;
     f.setLinkage(Function::LinkageTypes::InternalLinkage);
   }
-  
+
   PipelineTuningOptions PTO;
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
@@ -518,13 +536,14 @@ struct tensor<T, n0, N...>
       llvm::driver::createTLII(triple, Clang->getCodeGenOpts().getVecLib()));
   FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
-
-  auto level = CodeGenOptLevel::Aggressive; //OptimizationLevel::O3;
+  auto level = CodeGenOptLevel::Aggressive;  // OptimizationLevel::O3;
 
   Triple ModuleTriple(mod->getTargetTriple());
   std::string CPUStr, FeaturesStr;
 
-  auto ETM = llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple())).createTargetMachine ();
+  auto ETM =
+      llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple()))
+          .createTargetMachine();
   if (!ETM) {
     throw pybind11::value_error("failed to create targetmachine");
   }
@@ -548,4 +567,3 @@ struct tensor<T, n0, N...>
   MPM.run(*mod, MAM);
   return mod;
 }
-

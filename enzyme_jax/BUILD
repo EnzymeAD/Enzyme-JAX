@@ -11,7 +11,7 @@ cc_library(
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
     deps = [
-        "@pybind11",
+        "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:driver",
@@ -19,18 +19,21 @@ cc_library(
         "@llvm-project//clang:frontend_tool",
         "@llvm-project//clang:lex",
         "@llvm-project//clang:serialization",
-        "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:OrcJIT",
-        "@enzyme//:EnzymeStatic"
+        "@llvm-project//llvm:Support",
+        "@pybind11",
     ],
 )
 
 py_library(
     name = "enzyme_jax_internal",
-    srcs = ["primitives.py", "__init__.py"],
-    visibility = ["//visibility:public"]
+    srcs = [
+        "__init__.py",
+        "primitives.py",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 pybind_library(
@@ -95,12 +98,12 @@ pybind_library(
 pybind_extension(
     name = "enzyme_call",
     srcs = ["enzyme_call.cc"],
+    visibility = ["//visibility:public"],
     deps = [
-        "@llvm-project//llvm:Support",
-        "@llvm-project//llvm:OrcJIT",
         ":clang_compile",
         ":compile_with_xla",
-        "@com_google_absl//absl/status"
+        "@com_google_absl//absl/status",
+        "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:Support",
     ],
-    visibility = ["//visibility:public"],
 )

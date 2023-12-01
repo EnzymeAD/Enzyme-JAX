@@ -29,40 +29,38 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/RWMutex.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "pybind11/pybind11.h"
-#include "llvm/IRReader/IRReader.h"
-#include "llvm/Support/SourceMgr.h"
 
 absl::StatusOr<std::string> compile_mhlo_to_llvm_with_xla(
     llvm::StringRef mhlo_text);
 
-enum class Language : int {
-  CPP = 0,
-  LLVM = 1,
-  MHLO = 2
-};
+enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
 
 namespace {
 class CpuKernel {
   // static llvm::orc::ExecutionSession ES;
   static std::unique_ptr<llvm::DataLayout> DL;
-  static std::unique_ptr<llvm::orc::LLJIT > JIT;
+  static std::unique_ptr<llvm::orc::LLJIT> JIT;
 
   int64_t identifier;
   size_t num_out;
   uint64_t addr;
- public:
-  CpuKernel(int64_t identifier,
-            size_t num_out, uint64_t addr)
-      : identifier(identifier), num_out(num_out), addr(addr) {
-  }
 
-  static std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape, bool constv, Language lang) {
-    std::string s = std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
+ public:
+  CpuKernel(int64_t identifier, size_t num_out, uint64_t addr)
+      : identifier(identifier), num_out(num_out), addr(addr) {}
+
+  static std::string make_type(std::string typenam,
+                               llvm::ArrayRef<int64_t> shape, bool constv,
+                               Language lang) {
+    std::string s =
+        std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
     for (auto v : shape) {
       s += ", " + std::to_string(v);
     }
@@ -90,98 +88,110 @@ class CpuKernel {
     std::string stringbuf;
 
     switch (lang) {
-    case Language::CPP:
-      ss << source << "\n";
-      break;
+      case Language::CPP:
+        ss << source << "\n";
+        break;
 
-
-    case Language::MHLO:{
-      absl::StatusOr<std::string> llvm_ir =
-          compile_mhlo_to_llvm_with_xla(source);
-      if (!llvm_ir.ok()) {
-        throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
-                                 llvm_ir.status().ToString());
-      }
-      stringbuf = *llvm_ir;
-      source = stringbuf;
-      // explicitly fall through
-    }
-    case Language::LLVM:
-      llvm::SMDiagnostic Err;
-      linkMod = llvm::parseIR(llvm::MemoryBufferRef(source, "<input>"), Err, *llvm_ctx);
-      if (!linkMod) {
-        std::string err_str;
-        llvm::raw_string_ostream ss(err_str);
-        Err.print("llvmsource", ss, false);
-        throw pybind11::value_error("failed to compile LLVM: " + ss.str());
-      }
-      assert(linkMod);
-      if (lang == Language::MHLO) {
-        for (auto &lfn : linkMod->functions()) {
-          if (lfn.empty()) continue;
-          assert(fn != "mhlo_main");
-          fn = "mhlo_main";
-          lfn.setName(fn);
-          lfn.addFnAttr(llvm::Attribute::AlwaysInline);
+      case Language::MHLO: {
+        absl::StatusOr<std::string> llvm_ir =
+            compile_mhlo_to_llvm_with_xla(source);
+        if (!llvm_ir.ok()) {
+          throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
+                                   llvm_ir.status().ToString());
         }
+        stringbuf = *llvm_ir;
+        source = stringbuf;
+        // explicitly fall through
       }
-      ss << " extern \"C\" void " << fn << "(void* retval, void* run_options, void* params, void* buffer_table, void* status, void* prof_counters);\n\n";
+      case Language::LLVM:
+        llvm::SMDiagnostic Err;
+        linkMod = llvm::parseIR(llvm::MemoryBufferRef(source, "<input>"), Err,
+                                *llvm_ctx);
+        if (!linkMod) {
+          std::string err_str;
+          llvm::raw_string_ostream ss(err_str);
+          Err.print("llvmsource", ss, false);
+          throw pybind11::value_error("failed to compile LLVM: " + ss.str());
+        }
+        assert(linkMod);
+        if (lang == Language::MHLO) {
+          for (auto &lfn : linkMod->functions()) {
+            if (lfn.empty()) continue;
+            assert(fn != "mhlo_main");
+            fn = "mhlo_main";
+            lfn.setName(fn);
+            lfn.addFnAttr(llvm::Attribute::AlwaysInline);
+          }
+        }
+        ss << " extern \"C\" void " << fn
+           << "(void* retval, void* run_options, void* params, void* "
+              "buffer_table, void* status, void* prof_counters);\n\n";
 
-      ss << " __attribute__((always_inline)) static inline void abi_wrap(";
-      bool comma = false;
-        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
+        ss << " __attribute__((always_inline)) static inline void abi_wrap(";
+        bool comma = false;
+        for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
           if (comma) ss << ", ";
-          ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& __restrict__ out_" << i;
+          ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
+             << "& __restrict__ out_" << i;
           comma = true;
         }
-      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+        for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
           if (comma) ss << ", ";
-        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i;
-        comma = true;
-      }
-      ss << ") {\n";
-      ss << "  void* buffers[" << (out_shapes.size() + in_shapes.size()) << "] = {";
-      comma = false;
-        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << " " << "(void*)&out_" << i;
+          ss << " " << make_type(in_names[i], in_shapes[i], true, lang)
+             << "& in_" << i;
           comma = true;
         }
-      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+        ss << ") {\n";
+        ss << "  void* buffers[" << (out_shapes.size() + in_shapes.size())
+           << "] = {";
+        comma = false;
+        for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
           if (comma) ss << ", ";
-          ss << " " << "(void*)&in_" << i;
+          ss << " "
+             << "(void*)&out_" << i;
           comma = true;
-      }
-      ss << "};\n";
-      ss << "  " << fn << "(nullptr, nullptr, nullptr, buffers, nullptr, nullptr);\n";
-      ss << "}\n";
-      fn = "abi_wrap";
+        }
+        for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+          if (comma) ss << ", ";
+          ss << " "
+             << "(void*)&in_" << i;
+          comma = true;
+        }
+        ss << "};\n";
+        ss << "  " << fn
+           << "(nullptr, nullptr, nullptr, buffers, nullptr, nullptr);\n";
+        ss << "}\n";
+        fn = "abi_wrap";
     }
     if (mode != 0) {
       ss << " void entry_wrap(";
       bool comma = false;
-        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& __restrict__ out_" << i;
-          comma = true;
-        }
-      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
-          if (comma) ss << ", ";
-        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i;
+      for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+        if (comma) ss << ", ";
+        ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
+           << "& __restrict__ out_" << i;
+        comma = true;
+      }
+      for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+        if (comma) ss << ", ";
+        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
+           << i;
         comma = true;
       }
       ss << ") {\n";
       ss << "  " << fn << "(";
       comma = false;
-        for (size_t i=0, off=0; i<out_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << " " << "out_" << i;
-          comma = true;
-        }
-      for (size_t i=0, off=0; i<in_shapes.size(); i++) {
-          if (comma) ss << ", ";
-          ss << " " << "in_" << i;
-          comma = true;
+      for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+        if (comma) ss << ", ";
+        ss << " "
+           << "out_" << i;
+        comma = true;
+      }
+      for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+        if (comma) ss << ", ";
+        ss << " "
+           << "in_" << i;
+        comma = true;
       }
       ss << ");\n";
       ss << "}\n";
@@ -190,74 +200,95 @@ class CpuKernel {
     if (mode == 4)
       ss << "extern \"C\" std::size_t entry() {\n";
     else
-      ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
+      ss << "extern \"C\" void entry(void** __restrict__ outs, void** "
+            "__restrict__ ins) {\n";
     size_t out_off = 0;
     size_t in_off = 0;
 
     if (mode == 3) {
-      ss << " void*& tape = " << "*(void**)ins[" << in_off << "];\n";
+      ss << " void*& tape = "
+         << "*(void**)ins[" << in_off << "];\n";
       in_off++;
     }
 
-    for (size_t i=0; i<out_shapes.size(); i++) {
+    for (size_t i = 0; i < out_shapes.size(); i++) {
       if (mode != 3 && mode != 4) {
-        ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
+        ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
+           << "& out_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
       if (mode == 1) {
-        ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
+        ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
+           << "& dout_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
       if (mode == 3) {
-        ss << " " << make_type(out_names[i], out_shapes[i], true, lang) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
+        ss << " " << make_type(out_names[i], out_shapes[i], true, lang)
+           << "& dout_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
     }
-    for (size_t i=0, off=0; i<in_shapes.size(); i++) {
+    for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
       if (mode != 3 && mode != 4) {
-        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
+        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
+           << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
       if (mode == 1) {
-        ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
+        ss << " " << make_type(in_names[i], in_shapes[i], true, lang)
+           << "& din_" << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
       if (mode == 3) {
-        ss << " " << make_type(in_names[i], in_shapes[i], false, lang) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
+        ss << " " << make_type(in_names[i], in_shapes[i], false, lang)
+           << "& din_" << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
     }
     if (mode == 2) {
-      ss << " void*& tape = " << "*(void**)outs[" << out_off << "];\n";
+      ss << " void*& tape = "
+         << "*(void**)outs[" << out_off << "];\n";
       out_off++;
     }
     if (mode == 0) {
       num_out = out_shapes.size();
-    ss << "  " << fn << "(";
-    bool comma = false;
-    for (size_t i=0; i<out_shapes.size(); i++) {
+      ss << "  " << fn << "(";
+      bool comma = false;
+      for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma) ss << ", ";
         ss << "out_" << i;
         comma = true;
-    }
-    for (size_t i=0; i<in_shapes.size(); i++) {
+      }
+      for (size_t i = 0; i < in_shapes.size(); i++) {
         if (comma) ss << ", ";
         ss << "in_" << i;
         comma = true;
-    }
-    ss << ");\n";
+      }
+      ss << ");\n";
     } else if (mode == 1) {
       num_out = 2 * out_shapes.size();
       ss << "  enzyme::__enzyme_fwddiff(" << fn;
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup, ";
-          ss << "&out_" << i << ", ";
-          ss << "&dout_" << i;
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup, ";
+        ss << "&out_" << i << ", ";
+        ss << "&dout_" << i;
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup, ";
-          ss << "&in_" << i << ", ";
-          ss << "&din_" << i;
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup, ";
+        ss << "&in_" << i << ", ";
+        ss << "&din_" << i;
       }
       ss << ");\n";
     } else if (mode == 2) {
@@ -265,19 +296,20 @@ class CpuKernel {
       // ins
       num_out = out_shapes.size() + 1 /*tape*/;
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
       ss << ");\n";
-      ss << "  enzyme::__enzyme_augmentfwd<void*>(" << fn << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup, &out_" << i << ", nullptr";
+      ss << "  enzyme::__enzyme_augmentfwd<void*>(" << fn
+         << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup, &out_" << i << ", nullptr";
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup, &in_" << i << ", nullptr";
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup, &in_" << i << ", nullptr";
       }
       ss << ");\n";
     } else if (mode == 3) {
@@ -289,22 +321,23 @@ class CpuKernel {
       // og outputs, og inputs
       //     doutputs (in), dinputs (out)
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
       ss << ");\n";
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << "  din_" << i << " = (" << in_names[i]<<")0;\n";
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << "  din_" << i << " = (" << in_names[i] << ")0;\n";
       }
-      ss << "  enzyme::__enzyme_reverse<void>(" << fn << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup, nullptr, &dout_" << i;
+      ss << "  enzyme::__enzyme_reverse<void>(" << fn
+         << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup, nullptr, &dout_" << i;
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup, nullptr, &din_" << i;
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup, nullptr, &din_" << i;
       }
       ss << ");\n";
     } else if (mode == 4) {
@@ -312,11 +345,11 @@ class CpuKernel {
       // ins
       num_out = out_shapes.size() + 1 /*tape*/;
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
-      for (size_t i=0; i<out_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
-      for (size_t i=0; i<in_shapes.size(); i++) {
-          ss << ", enzyme_dup";
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ss << ", enzyme_dup";
       }
       ss << ");\n";
       ss << "  return tapesize;\n";
@@ -326,41 +359,44 @@ class CpuKernel {
     ss << "}\n";
 
     llvm::SmallVector<std::string> pyargv_strs;
-  assert (PySequence_Check(pyargv));
-	auto sz = PySequence_Size(pyargv);
+    assert(PySequence_Check(pyargv));
+    auto sz = PySequence_Size(pyargv);
     for (Py_ssize_t i = 0; i < sz; ++i) {
-        PyObject* item = PySequence_GetItem(pyargv, i);
+      PyObject *item = PySequence_GetItem(pyargv, i);
 #if PY_VERSION_HEX < 0x03000000
-        auto argv = PyString_AsString(item);
+      auto argv = PyString_AsString(item);
 #else
-        auto argv = PyUnicode_AsUTF8(item);
+      auto argv = PyUnicode_AsUTF8(item);
 #endif
-        Py_DECREF(item);
-		assert(argv);
-		pyargv_strs.emplace_back(argv);
+      Py_DECREF(item);
+      assert(argv);
+      pyargv_strs.emplace_back(argv);
 #if PY_VERSION_HEX < 0x03000000
-        free(argv);
+      free(argv);
 #else
-        // should not free py3+
+      // should not free py3+
 #endif
     }
 
-    auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv_strs, llvm_ctx.get(), std::move(linkMod));
-    if (!mod)
-      throw pybind11::value_error("failed to compile C++");
+    auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
+                              pyargv_strs, llvm_ctx.get(), std::move(linkMod));
+    if (!mod) throw pybind11::value_error("failed to compile C++");
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out);
   }
 
   static size_t tapeSize(llvm::StringRef fn, llvm::StringRef source,
-                        llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
-                        llvm::ArrayRef<std::string> out_names,
-                        llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-                        llvm::ArrayRef<std::string> in_names,
-                        PyObject* pyargv, Language lang) {
+                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
+                         llvm::ArrayRef<std::string> out_names,
+                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
+                         llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
+                         Language lang) {
     int mode = 4;
-    auto [mod, llvm_ctx, num_out] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
+    auto [mod, llvm_ctx, num_out] =
+        createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
+                      pyargv, mode, lang);
     auto lfn = mod->getFunction("entry");
-    auto RI = llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
+    auto RI =
+        llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
     auto val = llvm::cast<llvm::ConstantInt>(RI->getReturnValue());
     size_t res = val->getZExtValue();
     // force deletion of mod first explicitly
@@ -368,24 +404,34 @@ class CpuKernel {
     return res;
   }
 
-
   static int64_t create(llvm::StringRef fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-                        llvm::ArrayRef<std::string> in_names,
-                        PyObject* pyargv, int mode, Language lang) {
+                        llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
+                        int mode, Language lang) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     int64_t identifier = last_identifier++;
 
-    auto [mod, llvm_ctx, num_out] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
+    auto [mod, llvm_ctx, num_out] =
+        createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
+                      pyargv, mode, lang);
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
-      auto tJIT = llvm::orc::LLJITBuilder().setDataLayout(*DL.get()).setLinkProcessSymbolsByDefault(true).setObjectLinkingLayerCreator(
-          [](llvm::orc::ExecutionSession & ES, const llvm::Triple &OLL) -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-            return std::make_unique<llvm::orc::ObjectLinkingLayer>(ES);
-          }).setJITTargetMachineBuilder(llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple()))).create();
+      auto tJIT =
+          llvm::orc::LLJITBuilder()
+              .setDataLayout(*DL.get())
+              .setLinkProcessSymbolsByDefault(true)
+              .setObjectLinkingLayerCreator(
+                  [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
+                      -> llvm::Expected<
+                          std::unique_ptr<llvm::orc::ObjectLayer>> {
+                    return std::make_unique<llvm::orc::ObjectLinkingLayer>(ES);
+                  })
+              .setJITTargetMachineBuilder(llvm::orc::JITTargetMachineBuilder(
+                  llvm::Triple(mod->getTargetTriple())))
+              .create();
       if (!tJIT) {
         llvm::errs() << tJIT.takeError() << "\n";
         throw pybind11::value_error("failed to create jit");
@@ -394,12 +440,16 @@ class CpuKernel {
       assert(JIT);
     }
 
-    auto LibA = JIT->createJITDylib("enzymedl_"+std::to_string(identifier));
+    auto LibA = JIT->createJITDylib("enzymedl_" + std::to_string(identifier));
 
     // Add the module.
-    // if (auto Err = JIT->addIRModule(llvm::orc::ThreadSafeModule(std::move(mod), std::move(llvm_ctx)))) {
-    if (auto Err = JIT->addIRModule(LibA.get(), llvm::orc::ThreadSafeModule(std::move(mod), std::move(llvm_ctx)))) {
-      llvm::errs() <<" error "  << Err << "\n";
+    // if (auto Err =
+    // JIT->addIRModule(llvm::orc::ThreadSafeModule(std::move(mod),
+    // std::move(llvm_ctx)))) {
+    if (auto Err = JIT->addIRModule(
+            LibA.get(),
+            llvm::orc::ThreadSafeModule(std::move(mod), std::move(llvm_ctx)))) {
+      llvm::errs() << " error " << Err << "\n";
       throw pybind11::value_error("failed to add IR module");
     }
 
@@ -412,10 +462,9 @@ class CpuKernel {
 
     // Cast the entry point address to a function pointer.
     auto Entry = EntrySym->getValue();
- 
+
     kernels.try_emplace(
-        identifier,
-        std::make_unique<CpuKernel>(identifier, num_out, Entry));
+        identifier, std::make_unique<CpuKernel>(identifier, num_out, Entry));
     return identifier;
   }
 
@@ -428,11 +477,11 @@ class CpuKernel {
 
   void call(void *out, void **ins) const {
     void **outs = num_out > 1 ? reinterpret_cast<void **>(out) : &out;
-    for(int i=0; i<num_out; i++) {
-      void* data = outs[i];
-      *(void**)(data) = 0;
+    for (int i = 0; i < num_out; i++) {
+      void *data = outs[i];
+      *(void **)(data) = 0;
     }
-    auto fn = (void(*)(void**outs, void**ins))addr;
+    auto fn = (void (*)(void **outs, void **ins))addr;
     fn(outs, ins);
   }
 
@@ -442,13 +491,13 @@ class CpuKernel {
   static llvm::sys::SmartRWMutex<true> kernel_mutex;
 };
 
-llvm::DenseMap<int64_t, std::unique_ptr<CpuKernel>>
-    CpuKernel::kernels;
+llvm::DenseMap<int64_t, std::unique_ptr<CpuKernel>> CpuKernel::kernels;
 int64_t CpuKernel::last_identifier = 1;
 llvm::sys::SmartRWMutex<true> CpuKernel::kernel_mutex;
 std::unique_ptr<llvm::DataLayout> CpuKernel::DL;
-std::unique_ptr<llvm::orc::LLJIT > CpuKernel::JIT = nullptr;
-// llvm::orc::ExecutionSession CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
+std::unique_ptr<llvm::orc::LLJIT> CpuKernel::JIT = nullptr;
+// llvm::orc::ExecutionSession
+// CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
 }  // namespace
 
 void CpuCallback(void *out, void **ins) {
@@ -468,14 +517,15 @@ PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllAsmParsers();
 
   pybind11::enum_<Language>(m, "Language")
-    .value("CPP", Language::CPP)
-    .value("LLVM", Language::LLVM)
-    .value("MHLO", Language::MHLO);
+      .value("CPP", Language::CPP)
+      .value("LLVM", Language::LLVM)
+      .value("MHLO", Language::MHLO);
 
   m.def("create_enzyme_cpu_kernel",
-        [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
-          const pybind11::list &py_in_shapes,
-           pybind11::object pyargv, int mode, Language lang) -> int64_t {
+        [](const std::string &source, const std::string &fn,
+           const pybind11::list &py_out_shapes,
+           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           int mode, Language lang) -> int64_t {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -509,13 +559,16 @@ PYBIND11_MODULE(enzyme_call, m) {
               target.push_back(nested_element.cast<int64_t>());
             }
           }
-          return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), mode, (Language)lang);
+          return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
+                                   in_types, pyargv.ptr(), mode,
+                                   (Language)lang);
         });
 
   m.def("tape_size",
-        [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
-          const pybind11::list &py_in_shapes,
-           pybind11::object pyargv, Language lang) -> int64_t {
+        [](const std::string &source, const std::string &fn,
+           const pybind11::list &py_out_shapes,
+           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           Language lang) -> int64_t {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -549,7 +602,9 @@ PYBIND11_MODULE(enzyme_call, m) {
               target.push_back(nested_element.cast<int64_t>());
             }
           }
-          return (int64_t)CpuKernel::tapeSize(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), (Language)lang);
+          return (int64_t)CpuKernel::tapeSize(fn, source, out_shapes, out_types,
+                                              in_shapes, in_types, pyargv.ptr(),
+                                              (Language)lang);
         });
 
   m.def("get_cpu_callback", []() {
@@ -567,4 +622,3 @@ PYBIND11_MODULE(enzyme_call, m) {
     return *llvm_ir;
   });
 }
-
