@@ -43,7 +43,7 @@ pip install enzyme-jax
 
 ## Building from source
 
-Requirements: `bazel-5.3.0`, `clang++`, `python`, `python-virtualenv`,
+Requirements: `bazel-6.2.1`, `clang++`, `python`, `python-virtualenv`,
 `python3-dev`.
 
 Build our extension with:
