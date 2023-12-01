@@ -12,6 +12,12 @@
 #include <numeric>
 #include <string>
 
+#include "xla/runtime/executable.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#define private public
+#include "xla/service/cpu/cpu_executable.h"
+#undef private
+
 #include "absl/status/statusor.h"
 #include "clang_compile.h"
 #include "llvm/ADT/DenseMap.h"
@@ -37,8 +43,78 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/SourceMgr.h"
 
-absl::StatusOr<std::string> compile_mhlo_to_llvm_with_xla(
-    llvm::StringRef mhlo_text);
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Parser/Parser.h"
+#include "xla/client/client_library.h"
+#include "xla/client/executable_build_options.h"
+#include "xla/client/xla_computation.h"
+#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "xla/service/cpu/cpu_executable.h"
+#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
+#include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+
+// Compile an MHLO module given as a string to LLVM IR using XLA.
+std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
+    llvm::StringRef mhlo_text, std::string& output) {
+  // Parse MLIR.
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::func::FuncDialect>();
+  context.loadDialect<mlir::mhlo::MhloDialect>();
+  mlir::ParserConfig parser_config(&context);
+  mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
+      mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
+
+  // Convert to XLA Computation.
+  xla::HloProto hlo_proto;
+  mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
+                            /*use_tuple_args=*/false, /*return_tuple=*/false);
+  xla::XlaComputation xla_computation(hlo_proto.hlo_module());
+
+  // Extract and convert the shapes fro MHLO.
+  std::vector<xla::Shape> shapes;
+  mlir::SymbolTable symbol_table(*parsed_module);
+  auto entry_point = symbol_table.lookup<mlir::FunctionOpInterface>("main");
+  shapes.reserve(entry_point.getNumArguments());
+  for (mlir::Type type : entry_point.getArgumentTypes()) {
+    shapes.push_back(xla::TypeToShape(type));
+  }
+  std::vector<const xla::Shape *> shape_pointers;
+  shape_pointers.reserve(shapes.size());
+  for (xla::Shape &shape : shapes) {
+    shape_pointers.push_back(&shape);
+  }
+
+  // Compile with XLA, local client means targeting CPU.
+  // XXX: this is using a debug feature of XLA to preserve LLVM IR. If the
+  // feature ever disappears and is not recoverable with a local patch, this
+  // will have to recreate the XLA pipeline. This may also be wiser in the long
+  // term so we don't waste compile time running LLVM optimizations and code
+  // generation only to throw away the binary.
+  absl::StatusOr<xla::LocalClient *> local_client_or_error =
+      xla::ClientLibrary::GetOrCreateLocalClient();
+  if (!local_client_or_error.ok()) {
+    throw pybind11::value_error(local_client_or_error.status().ToString());
+  }
+  xla::LocalClient *local_client = local_client_or_error.value();
+  xla::ExecutableBuildOptions build_options;
+  build_options.mutable_debug_options()->set_xla_embed_ir_in_executable(true);
+  absl::StatusOr<std::vector<std::unique_ptr<xla::LocalExecutable>>>
+      local_executables =
+          local_client->Compile(xla_computation, shape_pointers, build_options);
+  if (!local_executables.ok()) {
+    throw pybind11::value_error(local_executables.status().ToString());
+  }
+
+  // Extract the LLVM IR stored in the executable.
+  std::unique_ptr<xla::LocalExecutable> local_executable = std::move(local_executables.value()[0]);
+  auto *cpu_executable =
+      static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+  
+  output = cpu_executable->ir_module_string();
+  return std::move(local_executable);
+}
 
 enum class Language : int {
   CPP = 0,
@@ -70,7 +146,7 @@ class CpuKernel {
   }
 
   static std::tuple<std::unique_ptr<llvm::Module>,
-                    std::unique_ptr<llvm::LLVMContext>, size_t>
+                    std::unique_ptr<llvm::LLVMContext>, size_t, size_t>
   createLLVMMod(llvm::StringRef fn, llvm::StringRef source,
                 llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                 llvm::ArrayRef<std::string> out_names,
@@ -89,6 +165,8 @@ class CpuKernel {
     std::unique_ptr<llvm::Module> linkMod;
     std::string stringbuf;
 
+    size_t tmpBuf = 0;
+
     switch (lang) {
     case Language::CPP:
       ss << source << "\n";
@@ -96,14 +174,12 @@ class CpuKernel {
 
 
     case Language::MHLO:{
-      absl::StatusOr<std::string> llvm_ir =
-          compile_mhlo_to_llvm_with_xla(source);
-      if (!llvm_ir.ok()) {
-        throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
-                                 llvm_ir.status().ToString());
-      }
-      stringbuf = *llvm_ir;
+      auto local_executable = compile_mhlo_to_llvm_with_xla(source, stringbuf);
+      auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       source = stringbuf;
+      auto &assignment = cpu_executable->buffer_assignment();
+      tmpBuf = assignment.temp_allocation_total_size();
+      llvm::errs() << assignment.ToString() << "\n";
       // explicitly fall through
     }
     case Language::LLVM:
@@ -143,13 +219,18 @@ class CpuKernel {
           ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& __restrict__ out_" << i;
           comma = true;
         }
+      if (tmpBuf != 0) {
+          if (comma) ss << ", ";
+          ss << " enzyme::tensor<char, " << tmpBuf << "> & __restrict__ tmpBuf";
+          comma = true;
+      }
       for (size_t i=0, off=0; i<in_shapes.size(); i++) {
           if (comma) ss << ", ";
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i;
         comma = true;
       }
       ss << ") {\n";
-      ss << "  void* buffers[" << (out_shapes.size() + in_shapes.size()) << "] = {";
+      ss << "  void* buffers[" << (out_shapes.size() + in_shapes.size() + (tmpBuf != 0)) << "] = {";
       comma = false;
         for (size_t i=0, off=0; i<out_shapes.size(); i++) {
           if (comma) ss << ", ";
@@ -159,6 +240,11 @@ class CpuKernel {
       for (size_t i=0, off=0; i<in_shapes.size(); i++) {
           if (comma) ss << ", ";
           ss << " " << "(void*)&in_" << i;
+          comma = true;
+      }
+      if (tmpBuf != 0) {
+          if (comma) ss << ", ";
+          ss << " " << "(void*)&tmpBuf";
           comma = true;
       }
       ss << "};\n";
@@ -174,6 +260,11 @@ class CpuKernel {
           ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& __restrict__ out_" << i;
           comma = true;
         }
+      if (tmpBuf != 0) {
+          if (comma) ss << ", ";
+          ss << " enzyme::tensor<char, " << tmpBuf << "> & __restrict__ tmpBuf";
+          comma = true;
+      }
       for (size_t i=0, off=0; i<in_shapes.size(); i++) {
           if (comma) ss << ", ";
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i;
@@ -185,6 +276,11 @@ class CpuKernel {
         for (size_t i=0, off=0; i<out_shapes.size(); i++) {
           if (comma) ss << ", ";
           ss << " " << "out_" << i;
+          comma = true;
+        }
+        if (tmpBuf != 0) {
+          if (comma) ss << ", ";
+          ss << " " << "tmpBuf";
           comma = true;
         }
       for (size_t i=0, off=0; i<in_shapes.size(); i++) {
@@ -222,6 +318,7 @@ class CpuKernel {
         in_off++;
       }
     }
+
     for (size_t i=0, off=0; i<in_shapes.size(); i++) {
       if (mode != 3 && mode != 4) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
@@ -240,6 +337,25 @@ class CpuKernel {
       ss << " void*& tape = " << "*(void**)outs[" << out_off << "];\n";
       out_off++;
     }
+      if (mode != 4 && tmpBuf != 0) {
+        ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off << "];\n";
+        out_off++;
+      }
+      // forward mode, we have undef dtmpbuf
+      if (mode == 1 && tmpBuf != 0) {
+        ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off << "];\n";
+        out_off++;
+      }
+      // augmented forward mode, we have nullptr dtmpBuf
+      if (mode == 1 && tmpBuf != 0) {
+        ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
+      }
+      // reverse mode, we have zero'd
+      if (mode == 1 && tmpBuf != 0) {
+        ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << in_off << "];\n";
+        in_off++;
+      }
+
     if (mode == 0) {
       num_out = out_shapes.size();
     ss << "  " << fn << "(";
@@ -247,6 +363,11 @@ class CpuKernel {
     for (size_t i=0; i<out_shapes.size(); i++) {
         if (comma) ss << ", ";
         ss << "out_" << i;
+        comma = true;
+    }
+    if (tmpBuf != 0) {
+        if (comma) ss << ", ";
+        ss << "tmpBuf";
         comma = true;
     }
     for (size_t i=0; i<in_shapes.size(); i++) {
@@ -263,6 +384,9 @@ class CpuKernel {
           ss << "&out_" << i << ", ";
           ss << "&dout_" << i;
       }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
+      }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup, ";
           ss << "&in_" << i << ", ";
@@ -277,6 +401,9 @@ class CpuKernel {
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup";
       }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup,";
+      }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup";
       }
@@ -284,6 +411,9 @@ class CpuKernel {
       ss << "  enzyme::__enzyme_augmentfwd<void*>(" << fn << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup, &out_" << i << ", nullptr";
+      }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup, &in_" << i << ", nullptr";
@@ -301,6 +431,9 @@ class CpuKernel {
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup";
       }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup";
+      }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup";
       }
@@ -311,6 +444,9 @@ class CpuKernel {
       ss << "  enzyme::__enzyme_reverse<void>(" << fn << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup, nullptr, &dout_" << i;
+      }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup, nullptr, &din_" << i;
@@ -323,6 +459,9 @@ class CpuKernel {
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
       for (size_t i=0; i<out_shapes.size(); i++) {
           ss << ", enzyme_dup";
+      }
+      if (tmpBuf != 0) {
+        ss << ", enzyme_dup";
       }
       for (size_t i=0; i<in_shapes.size(); i++) {
           ss << ", enzyme_dup";
@@ -357,37 +496,50 @@ class CpuKernel {
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/true, pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
-    return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out);
+    return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out, tmpBuf);
   }
 
-  static size_t tapeSize(llvm::StringRef fn, llvm::StringRef source,
+  static std::pair<size_t, size_t> tapeAndTempSize(llvm::StringRef fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                         llvm::ArrayRef<std::string> in_names,
                         PyObject* pyargv, Language lang) {
     int mode = 4;
-    auto [mod, llvm_ctx, num_out] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
+    auto [mod, llvm_ctx, num_out, tmpBuf] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
     auto lfn = mod->getFunction("entry");
     auto RI = llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
     auto val = llvm::cast<llvm::ConstantInt>(RI->getReturnValue());
     size_t res = val->getZExtValue();
     // force deletion of mod first explicitly
     mod = nullptr;
-    return res;
+    return std::make_pair(res, tmpBuf);
+  }
+  
+  static size_t tempSize(llvm::StringRef source, Language lang) {
+    switch (lang) {
+    case Language::MHLO:{
+      std::string llvm_ir;
+      auto local_executable = compile_mhlo_to_llvm_with_xla(source, llvm_ir);
+      auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+      auto &assignment = cpu_executable->buffer_assignment();
+      return assignment.temp_allocation_total_size();
+    }
+    default:
+      return 0;
+    }
   }
 
-
-  static int64_t create(llvm::StringRef fn, llvm::StringRef source,
+  static std::tuple<size_t, size_t> create(llvm::StringRef fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                         llvm::ArrayRef<std::string> in_names,
                         PyObject* pyargv, int mode, Language lang) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
-    int64_t identifier = last_identifier++;
+    size_t identifier = last_identifier++;
 
-    auto [mod, llvm_ctx, num_out] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
+    auto [mod, llvm_ctx, num_out, tmpBuf] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
@@ -425,7 +577,7 @@ class CpuKernel {
     kernels.try_emplace(
         identifier,
         std::make_unique<CpuKernel>(identifier, num_out, Entry));
-    return identifier;
+    return std::make_tuple(identifier, tmpBuf);
   }
 
   static CpuKernel *get(int64_t identifier) {
@@ -447,13 +599,13 @@ class CpuKernel {
 
  private:
   static llvm::DenseMap<int64_t, std::unique_ptr<CpuKernel>> kernels;
-  static int64_t last_identifier;
+  static size_t last_identifier;
   static llvm::sys::SmartRWMutex<true> kernel_mutex;
 };
 
 llvm::DenseMap<int64_t, std::unique_ptr<CpuKernel>>
     CpuKernel::kernels;
-int64_t CpuKernel::last_identifier = 1;
+size_t CpuKernel::last_identifier = 1;
 llvm::sys::SmartRWMutex<true> CpuKernel::kernel_mutex;
 std::unique_ptr<llvm::DataLayout> CpuKernel::DL;
 std::unique_ptr<llvm::orc::LLJIT > CpuKernel::JIT = nullptr;
@@ -484,7 +636,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   m.def("create_enzyme_cpu_kernel",
         [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
           const pybind11::list &py_in_shapes,
-           pybind11::object pyargv, int mode, Language lang) -> int64_t {
+           pybind11::object pyargv, int mode, Language lang) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -520,11 +672,16 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), mode, (Language)lang);
         });
+  
+  m.def("tmp_size",
+        [](const std::string &source, Language lang) -> size_t {
+          return CpuKernel::tempSize(source, (Language)lang);
+        });
 
-  m.def("tape_size",
+  m.def("tape_and_tmp_size",
         [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
           const pybind11::list &py_in_shapes,
-           pybind11::object pyargv, Language lang) -> int64_t {
+           pybind11::object pyargv, Language lang) -> std::pair<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -558,7 +715,7 @@ PYBIND11_MODULE(enzyme_call, m) {
               target.push_back(nested_element.cast<int64_t>());
             }
           }
-          return (int64_t)CpuKernel::tapeSize(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), (Language)lang);
+          return CpuKernel::tapeAndTempSize(fn, source, out_shapes, out_types, in_shapes, in_types, pyargv.ptr(), (Language)lang);
         });
 
   m.def("get_cpu_callback", []() {
@@ -567,13 +724,9 @@ PYBIND11_MODULE(enzyme_call, m) {
   });
 
   m.def("compile_mhlo_to_llvm_with_xla", [](const std::string &mhlo_text) {
-    absl::StatusOr<std::string> llvm_ir =
-        compile_mhlo_to_llvm_with_xla(mhlo_text);
-    if (!llvm_ir.ok()) {
-      throw std::runtime_error("failed to compile to LLVM IR with XLA:" +
-                               llvm_ir.status().ToString());
-    }
-    return *llvm_ir;
+    std::string llvm_ir;
+    compile_mhlo_to_llvm_with_xla(mhlo_text, llvm_ir);
+    return llvm_ir;
   });
 }
 
