@@ -1,3 +1,5 @@
+load("@rules_python//python:packaging.bzl", "py_wheel")
+load(":package.bzl", "py_package")
 
 licenses(["notice"])
 
@@ -5,30 +7,6 @@ package(
     default_applicable_licenses = [],
     default_visibility = ["//:__subpackages__"],
 )
-
-cc_library(
-    name = "clang_compile",
-    srcs = ["clang_compile.cc"],
-    hdrs = ["clang_compile.h"],
-    deps = [
-        "@pybind11",
-        "@llvm-project//clang:ast",
-        "@llvm-project//clang:basic",
-        "@llvm-project//clang:driver",
-        "@llvm-project//clang:frontend",
-        "@llvm-project//clang:frontend_tool",
-        "@llvm-project//clang:lex",
-        "@llvm-project//clang:serialization",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//llvm:Core",
-        "@llvm-project//llvm:IRReader",
-        "@llvm-project//llvm:OrcJIT",
-        "@enzyme//:EnzymeStatic"
-    ],
-)
-
-load("@rules_python//python:packaging.bzl", "py_wheel")
-load(":package.bzl", "py_package")
 
 py_package(
     name = "enzyme_jax_data",
