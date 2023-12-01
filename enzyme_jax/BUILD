@@ -70,6 +70,7 @@ pybind_library(
         "@xla//xla/service:buffer_assignment_proto_cc",
         "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service/cpu:cpu_executable",
+        "@xla//xla/service/cpu:backend_config_proto_cc",
         "@xla//xla/service/gpu:backend_configs_cc",
         "@xla//xla/service/gpu:backend_configs_cc_impl",
         "@xla//xla/service:hlo_proto_cc",

@@ -11,12 +11,14 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <regex>
 
-#include "xla/runtime/executable.h"
-#include "xla/hlo/ir/hlo_instruction.h"
-#define private public
+#define protected public
+#include "xla/service/service.h"
+#undef protected
+
 #include "xla/service/cpu/cpu_executable.h"
-#undef private
+#include "xla/service/local_service_utils.h"
 
 #include "absl/status/statusor.h"
 #include "clang_compile.h"
@@ -53,6 +55,12 @@
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
+#include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/printer.h"
+
+// #include "xla/service/hlo.proto.h"
+#include "xla/service/cpu/backend_config.pb.h"
 
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
@@ -70,6 +78,23 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
   xla::HloProto hlo_proto;
   mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
                             /*use_tuple_args=*/false, /*return_tuple=*/false);
+
+
+  for (auto &computation :
+       *hlo_proto.mutable_hlo_module()->mutable_computations()) {
+    if (computation.id() != hlo_proto.hlo_module().entry_computation_id())
+      continue;
+    // Assume root is the last instruction.
+    xla::HloInstructionProto &instruction =
+        *computation.mutable_instructions()->rbegin();
+    xla::cpu::BackendConfig backend_config;
+    backend_config.ParseFromString(instruction.backend_config());
+    backend_config.Clear();
+    instruction.set_backend_config(backend_config.SerializeAsString());
+    break;
+  }
+  llvm::errs() << " pb: " << hlo_proto.DebugString() << "\n";
+
   xla::XlaComputation xla_computation(hlo_proto.hlo_module());
 
   // Extract and convert the shapes fro MHLO.
@@ -85,7 +110,7 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
   for (xla::Shape &shape : shapes) {
     shape_pointers.push_back(&shape);
   }
-
+  
   // Compile with XLA, local client means targeting CPU.
   // XXX: this is using a debug feature of XLA to preserve LLVM IR. If the
   // feature ever disappears and is not recoverable with a local patch, this
@@ -98,17 +123,45 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
     throw pybind11::value_error(local_client_or_error.status().ToString());
   }
   xla::LocalClient *local_client = local_client_or_error.value();
+
   xla::ExecutableBuildOptions build_options;
   build_options.mutable_debug_options()->set_xla_embed_ir_in_executable(true);
-  absl::StatusOr<std::vector<std::unique_ptr<xla::LocalExecutable>>>
-      local_executables =
-          local_client->Compile(xla_computation, shape_pointers, build_options);
-  if (!local_executables.ok()) {
-    throw pybind11::value_error(local_executables.status().ToString());
+
+
+  if (build_options.device_ordinal() == -1) {
+    build_options.set_device_ordinal(local_client->default_device_ordinal());
+  }
+  
+  absl::StatusOr<std::unique_ptr<xla::HloModuleConfig>> module_config_or_error =
+      xla::GetHloModuleConfig(
+          xla_computation, shape_pointers, xla::ExecutableBuildOptions(),
+          /*(serice) options=*/nullptr, local_client->mutable_backend());
+  if (!module_config_or_error.ok()) {
+	throw pybind11::value_error(module_config_or_error.status().ToString());
+  }
+  module_config_or_error.value()->set_intra_op_parallelism_threads(1);
+  
+  auto executor = local_client->mutable_backend()->stream_executor(build_options.device_ordinal());
+  if (!executor.ok()) {
+	throw pybind11::value_error(executor.status().ToString());
   }
 
-  // Extract the LLVM IR stored in the executable.
-  std::unique_ptr<xla::LocalExecutable> local_executable = std::move(local_executables.value()[0]);
+  auto executable = local_client->local_service()->BuildExecutable(xla_computation.proto(), std::move(module_config_or_error.value()),
+                        local_client->mutable_backend(), executor.value(),
+                        {build_options.device_allocator(),
+                         build_options.compile_thread_pool(),
+                         build_options.layout_canonicalization_callback()},
+                        build_options.run_backend_only());
+  if (!executable.ok()) {
+	throw pybind11::value_error(executable.status().ToString());
+  }
+
+  assert(executables.size() == 1);
+  auto local_executable = 
+	std::make_unique<xla::LocalExecutable>(
+        std::move(executable.value()), local_client->local_service()->mutable_backend(),
+        build_options);
+
   auto *cpu_executable =
       static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
   
@@ -147,7 +200,7 @@ class CpuKernel {
 
   static std::tuple<std::unique_ptr<llvm::Module>,
                     std::unique_ptr<llvm::LLVMContext>, size_t, size_t>
-  createLLVMMod(llvm::StringRef fn, llvm::StringRef source,
+  createLLVMMod(std::string fn, llvm::StringRef source,
                 llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                 llvm::ArrayRef<std::string> out_names,
                 llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
@@ -163,6 +216,7 @@ class CpuKernel {
     ss << "#include <enzyme/utils>\n";
 
     std::unique_ptr<llvm::Module> linkMod;
+	std::unique_ptr<xla::LocalExecutable> local_executable;
     std::string stringbuf;
 
     size_t tmpBuf = 0;
@@ -174,7 +228,8 @@ class CpuKernel {
 
 
     case Language::MHLO:{
-      auto local_executable = compile_mhlo_to_llvm_with_xla(source, stringbuf);
+      llvm::errs() << source << "\n";
+      local_executable = compile_mhlo_to_llvm_with_xla(source, stringbuf);
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       source = stringbuf;
       auto &assignment = cpu_executable->buffer_assignment();
@@ -205,12 +260,84 @@ class CpuKernel {
 	    ess << source << "\n";
 	    throw std::runtime_error(ess.str());
 	  }
-          fn = "mhlo_main";
+		  fn = "mhlo_main";
           lfn.setName(fn);
           lfn.addFnAttr(llvm::Attribute::AlwaysInline);
         }
+		if (fn != "mhlo_main") {
+        std::string err_str;
+        llvm::raw_string_ostream ss(err_str);
+		ss << " Could not find main function:\n";
+		ss << *linkMod << "\n";
+        throw pybind11::value_error(ss.str());
+		}
       }
       ss << " extern \"C\" void " << fn << "(void* retval, void* run_options, void* params, void* buffer_table, void* status, void* prof_counters);\n\n";
+	  
+	if (local_executable) {
+        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+        auto &assignment = cpu_executable->buffer_assignment();
+		for (auto & buf : assignment.Allocations()) {
+		  if (!buf.is_constant()) continue;
+		  assert(buf.assigned_buffers().size() == 1);
+		  auto hlo = buf.assigned_buffers().begin()->first;
+		  auto tyenum = hlo->shape().element_type();
+		  std::string ty;
+		  switch (tyenum) {
+			case xla::PrimitiveType::S8:
+			  ty = "int8_t";
+			  break;	
+			case xla::PrimitiveType::S16:
+			  ty = "int16_t";
+			  break;	
+			case xla::PrimitiveType::S32:
+			  ty = "int32_t";
+			  break;	
+			case xla::PrimitiveType::S64:
+			  ty = "int64_t";
+			  break;	
+			case xla::PrimitiveType::U8:
+			  ty = "uint8_t";
+			  break;	
+			case xla::PrimitiveType::U16:
+			  ty = "uint16_t";
+			  break;	
+			case xla::PrimitiveType::U32:
+			  ty = "uint32_t";
+			  break;	
+			case xla::PrimitiveType::U64:
+			  ty = "uint64_t";
+			  break;	
+			case xla::PrimitiveType::F16:
+			  ty = "half";
+			  break;	
+			case xla::PrimitiveType::F32:
+			  ty = "float";
+			  break;	
+			case xla::PrimitiveType::F64:
+			  ty = "double";
+			  break;	
+			default:{
+            std::string err;
+            llvm::raw_string_ostream ess(err);
+	    	ess << " Failed to compile mhlo, unknown constant element type: " << hlo->shape().ToString() << "\n";
+	    	throw std::runtime_error(ess.str());
+		}
+
+		  }
+		  auto val = xla::Cast<xla::HloConstantInstruction>(hlo->instruction());
+  
+		  llvm::ArrayRef<int64_t> shape(hlo->shape().dimensions().begin(), hlo->shape().dimensions().end());
+	      ss << "  static constexpr " << make_type(ty, shape, /*const*/false, lang) << " const_" << buf.index() << " = ";
+
+  		  xla::StringPrinter printer;
+  		  val->literal().PrintWithoutShape(&printer);
+		  auto str = std::move(printer).ToString();
+		  str = std::regex_replace(str, std::regex("\\{"), "{{");
+		  str = std::regex_replace(str, std::regex("\\}"), "}}");
+		  ss << str << ";\n";
+		}
+	}
 
       ss << " __attribute__((always_inline)) static inline void abi_wrap(";
       bool comma = false;
@@ -230,8 +357,94 @@ class CpuKernel {
         comma = true;
       }
       ss << ") {\n";
-      ss << "  void* buffers[" << (out_shapes.size() + in_shapes.size() + (tmpBuf != 0)) << "] = {";
-      comma = false;
+	  size_t numBuffers = out_shapes.size() + in_shapes.size();
+	  std::vector<int> out_idxs;
+	  if (local_executable) {
+        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+        auto &assignment = cpu_executable->buffer_assignment();
+		numBuffers = assignment.Allocations().size();
+		if (out_shapes.size() == 1) {
+			out_idxs.push_back(0);
+		} else {
+			// If a tuple, find the tuple buf, then use that to index the outputs.
+			ssize_t tupidx = -1;
+			for (auto &buf2 : assignment.Allocations()) {
+		  		if (!buf2.maybe_live_out()) continue;
+		  		if (!buf2.is_tuple()) continue;
+				assert(tupidx == -1);
+				tupidx = buf2.index();
+			}
+			assert(tupidx != -1);
+			auto &tup_buf = assignment.Allocations()[tupidx];
+		    assert(tup_buf.assigned_buffers().size() == 1);
+		    auto hlo = tup_buf.assigned_buffers().begin()->first;
+		    auto val = hlo->instruction();
+			assert(val->operand_count() == out_shapes.size());
+			for (size_t i=0; i<out_shapes.size(); i++) {
+				ssize_t found = -1;
+				for (auto &buf : assignment.Allocations()) {
+		  			if (!buf.maybe_live_out()) continue;
+		  			if (buf.is_tuple()) continue;
+					bool contains_output = false;
+					for (auto &pair : buf.assigned_buffers()) {
+						if (pair.first->instruction() != val->operand(i)) continue;
+						assert(!contains_output);
+						contains_output = true;
+						assert(pair.second.offset == 0);
+					}
+					if (!contains_output) continue;
+					assert(found == -1);
+					found = buf.index();
+				}
+				assert(found != -1);
+				out_idxs.push_back((int)found);
+			}
+		}
+		for (auto & buf : assignment.Allocations()) {
+		  if (!buf.maybe_live_out()) continue;
+		  if (!buf.is_tuple()) continue;
+	      ss << "  void* tup_" << buf.index() << "[" << out_idxs.size() << "] = {";
+
+		  for (size_t i=0; i<out_idxs.size(); i++) {
+			if (i != 0) ss << ", ";
+            ss << " " << "(void*)&out_" << i;
+		  } 
+		  ss << "};\n";
+        }
+	  }
+	  ss << "  void* buffers[" << numBuffers << "] = {";
+
+	  if (local_executable) {
+        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+        auto &assignment = cpu_executable->buffer_assignment();
+		for (auto & buf : assignment.Allocations()) {
+          if (buf.index() != 0) ss << ", ";
+		  if (buf.is_entry_computation_parameter()) {
+            ss << " " << "(void*)&in_" << buf.parameter_number();
+		  } else if (buf.IsPreallocatedTempBuffer()) {
+            ss << " " << "(void*)&tmpBuf";
+		  } else if (buf.maybe_live_out()) {
+			if (buf.is_tuple()) {
+				assert(out_shapes.size() != 1);
+            	ss << " " << "(void*)&tup_" << buf.index();
+				continue;
+			}
+			auto it = std::find(out_idxs.begin(), out_idxs.end(), buf.index());
+			assert(it != out_idxs.end());
+			int index = it - out_idxs.begin(); 
+			ss << " " << "(void*)&out_" << index;
+		  } else if (buf.is_constant()) {
+            ss << " " << "(void*)&const_" << buf.index();
+	      } else {
+            std::string err;
+            llvm::raw_string_ostream ess(err);
+	        ess << " Failed to compile mhlo, unknown buffer type:\n";
+	        ess << buf.ToString() << "\n";
+	        throw std::runtime_error(ess.str());
+		  }
+		}
+	  } else {
+        comma = false;
         for (size_t i=0, off=0; i<out_shapes.size(); i++) {
           if (comma) ss << ", ";
           ss << " " << "(void*)&out_" << i;
@@ -247,6 +460,7 @@ class CpuKernel {
           ss << " " << "(void*)&tmpBuf";
           comma = true;
       }
+	 }
       ss << "};\n";
       ss << "  " << fn << "(nullptr, nullptr, nullptr, buffers, nullptr, nullptr);\n";
       ss << "}\n";
@@ -499,7 +713,7 @@ class CpuKernel {
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out, tmpBuf);
   }
 
-  static std::pair<size_t, size_t> tapeAndTempSize(llvm::StringRef fn, llvm::StringRef source,
+  static std::pair<size_t, size_t> tapeAndTempSize(std::string fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
@@ -530,7 +744,7 @@ class CpuKernel {
     }
   }
 
-  static std::tuple<size_t, size_t> create(llvm::StringRef fn, llvm::StringRef source,
+  static std::tuple<size_t, size_t> create(std::string fn, llvm::StringRef source,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
