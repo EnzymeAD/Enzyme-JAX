@@ -242,7 +242,16 @@ public:
         auto &assignment = cpu_executable->buffer_assignment();
         numBuffers = assignment.Allocations().size();
         if (out_shapes.size() == 1) {
-          out_idxs.push_back(0);
+          ssize_t idx = -1;
+          for (auto &buf2 : assignment.Allocations()) {
+            if (!buf2.maybe_live_out())
+              continue;
+            assert(!buf2.is_tuple());
+            assert(idx == -1);
+            idx = buf2.index();
+          }
+          assert(idx != -1);
+          out_idxs.push_back(idx);
         } else {
           // If a tuple, find the tuple buf, then use that to index the outputs.
           ssize_t tupidx = -1;
