@@ -237,7 +237,6 @@ class CpuKernel {
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       source = stringbuf;
       auto &assignment = cpu_executable->buffer_assignment();
-      llvm::errs() << assignment.ToString() << "\n";
       tmpBuf = assignment.temp_allocation_total_size();
       // explicitly fall through
     }
@@ -257,9 +256,8 @@ class CpuKernel {
         assert(F);
 		fn = "mhlo_main";
         F->setName(fn);
+        assert(!F->empty());
         F->addFnAttr(llvm::Attribute::AlwaysInline);
-        if (mode != ABI::Primal)
-          F->setLinkage(llvm::Function::InternalLinkage);
       }
       ss << " extern \"C\" void " << fn << "(void* retval, void* run_options, void* params, void* buffer_table, void* status, void* prof_counters);\n\n";
 	  

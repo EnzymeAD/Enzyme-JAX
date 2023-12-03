@@ -166,8 +166,6 @@ static TargetMachine* GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
 }
 
 std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, ArrayRef<std::string> pyargv, LLVMContext* Context, std::unique_ptr<llvm::Module> linkMod) {
-    llvm::errs() << " file:\n";
-    llvm::errs() << filecontents << "\n";
     const llvm::opt::InputArgList Args;
       const char *binary = cpp ? "clang++" : "clang"; 
   // Buffer diagnostics from argument parsing so that we can output them using a

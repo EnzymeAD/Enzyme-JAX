@@ -202,8 +202,7 @@ def _enzyme_primal_lowering(
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
-  mode = 0
-  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
+  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Primal, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -251,8 +250,7 @@ def _enzyme_fwd_lowering(
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
-  mode = 1
-  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
+  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Forward, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -300,8 +298,7 @@ def _enzyme_aug_lowering(
     source = str(mhlo)
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
-  mode = 2
-  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
+  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Augmented, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -342,8 +339,7 @@ def _enzyme_rev_lowering(
     source = str(mhlo)
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
-  mode = 3
-  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, mode, lang)
+  identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Reverse, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
