@@ -262,23 +262,37 @@ public:
           assert(val->operand_count() == out_shapes.size());
           for (size_t i = 0; i < out_shapes.size(); i++) {
             ssize_t found = -1;
-            for (auto &buf : assignment.Allocations()) {
-              if (!buf.maybe_live_out())
-                continue;
-              if (buf.is_tuple())
-                continue;
-              bool contains_output = false;
-              for (auto &pair : buf.assigned_buffers()) {
-                if (pair.first->instruction() != val->operand(i))
+            auto operand = val->operand(i);
+            while (found == -1) {
+              for (auto &buf : assignment.Allocations()) {
+                if (!buf.maybe_live_out())
                   continue;
-                assert(!contains_output);
-                contains_output = true;
-                assert(pair.second.offset == 0);
+                if (buf.is_tuple())
+                  continue;
+                bool contains_output = false;
+                for (auto &pair : buf.assigned_buffers()) {
+                  if (pair.first->instruction() != operand)
+                    continue;
+                  assert(!contains_output);
+                  contains_output = true;
+                  assert(pair.second.offset == 0);
+                }
+                if (!contains_output)
+                  continue;
+                assert(found == -1);
+                found = buf.index();
               }
-              if (!contains_output)
+              if (operand->opcode() == xla::HloOpcode::kBitcast) {
+                operand = operand->operand(0);
                 continue;
-              assert(found == -1);
-              found = buf.index();
+              }
+              break;
+            }
+            if (found == -1) {
+              llvm::errs() << "assignment: " << assignment.ToString() << "\n";
+              llvm::errs() << "val: " << val->ToString() << "\n";
+              llvm::errs() << "vop: " << val->operand(i)->ToString() << "\n";
+              llvm::errs() << "i: " << i << "\n";
             }
             assert(found != -1);
             out_idxs.push_back((int)found);

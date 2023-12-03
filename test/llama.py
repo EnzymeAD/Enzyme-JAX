@@ -212,6 +212,7 @@ head_size = dim // n_heads
 
 key = jax.random.PRNGKey(0)
 weights = {}
+dweights = {}
 
 for name, shape in [("rms_att_weight", (n_layers, dim)),
                     ("wq", (n_layers, dim, n_heads * head_size)),
@@ -226,10 +227,14 @@ for name, shape in [("rms_att_weight", (n_layers, dim)),
                     ("wcls", (vocab_size, dim))
                     ]:
   key, subkey = jax.random.split(key)
-  weights[name] = jax.random.uniform(key, shape=shape)
-  key = subkey
+  key, subkey2 = jax.random.split(key)
+  weights[name] = jax.random.uniform(subkey, shape=shape)
+  dweights[name] = jax.random.uniform(subkey2, shape=shape)
 
-x = jax.random.uniform(key, shape=(dim,))
+key, subkey = jax.random.split(key)
+x = jax.random.uniform(subkey, shape=(dim,))
+key, subkey = jax.random.split(key)
+dx = jax.random.uniform(subkey, shape=(dim,))
 
 def partial(func, config):
     def sfn(x, weights, key_cache, value_cache):
@@ -240,20 +245,57 @@ pos = 0
 key_cache = jnp.zeros((n_layers, pos,kv_dim))
 value_cache = jnp.zeros((n_layers, pos,kv_dim))
 
+key, subkey = jax.random.split(key)
+dkc = jax.random.uniform(subkey, shape=(n_layers,pos+1,kv_dim))
+key, subkey = jax.random.split(key)
+dvc = jax.random.uniform(subkey, shape=(n_layers,pos+1,kv_dim))
+
 func = partial(forward, config)
+
+@jax.jit
+def jfunc(x, weights, key_cache, value_cache):
+    return func(x, weights, key_cache, value_cache)
 
 @enzyme_jax.enzyme_jax_ir()
 def efunc(x, weights, key_cache, value_cache):
     return func(x, weights, key_cache, value_cache)
 
 eres = efunc(x, weights, key_cache, value_cache)[1]
-print(eres)
+print("Enzyme primal", eres)
 res = func(x, weights, key_cache, value_cache)[1]
-print(res)
-print (jnp.max(jnp.abs(eres-res)))
+print("Jax primal", res)
+print (" max error", jnp.max(jnp.abs(eres-res)))
 assert (jnp.abs(eres - res) < 1e-3).all()
 
 #jfunc = jax.jit(partial(forward, config))
 # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
+@jax.jit
+def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+  return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+
+@jax.jit
+def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+  return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+
+eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+print("Enzyme fwd", eres)
+jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+print("Jax fwd", jres)
+
+
+@jax.jit
+def jres(x, weights, kc, vc, dx, dkc, dvc):
+  primals, f_vjp = jax.vjp(jfunc, x, weights, kc, vc)
+  return f_vjp(dx, dkc, dvc)
+
+@jax.jit
+def eres(x, weights, kc, vc, dx, dkc, dvc):
+  primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
+  return f_vjp(dx, dkc, dvc)
+
+eres = erev(x, weights, key_cache, dx, dkc, dvc)
+print("Enzyme rev", eres)
+jres = jrev(x, weights, key_cache, dx, dkc, dvc)
+print("Jax rev", jres)
 

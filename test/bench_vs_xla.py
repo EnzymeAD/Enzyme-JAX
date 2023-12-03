@@ -30,7 +30,7 @@ def fwd(in0, in1, din0, din1):
 
 @jax.jit
 def fwd_plain(in0, in1, din0, din1):
-  return jax.jvp(add_one, (in0, in1),  (din0, din1))
+  return jax.jvp(add_one_plain, (in0, in1),  (din0, din1))
 
 primals, tangents = fwd(in0, in1, din0, din1)
 primals, tangents = fwd_plain(in0, in1, din0, din1)
