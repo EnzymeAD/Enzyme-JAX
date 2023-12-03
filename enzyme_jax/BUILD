@@ -42,6 +42,7 @@ py_library(
 pybind_library(
     name = "compile_with_xla",
     srcs = ["compile_with_xla.cc"],
+    hdrs = ["compile_with_xla.h"],
     deps = [
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@tsl//tsl/framework:allocator",
