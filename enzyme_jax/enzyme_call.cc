@@ -38,10 +38,10 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "xla/service/cpu/cpu_executable.h"
-#include "xla/hlo/ir/hlo_instructions.h"
-#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "compile_with_xla.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
+#include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/service/cpu/cpu_executable.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
