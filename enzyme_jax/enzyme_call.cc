@@ -123,7 +123,7 @@ public:
       if (lang == Language::MHLO) {
         auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
             local_executable->executable());
-        StringRef fname = cpu_executable->module_name();
+        llvm::StringRef fname = cpu_executable->module_name();
         if (fname.size() && fname[0] == '_')
           fname = fname.substr(1);
         auto F = linkMod->getFunction(fname);
