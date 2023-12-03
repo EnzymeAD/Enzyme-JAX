@@ -123,7 +123,14 @@ public:
       if (lang == Language::MHLO) {
         auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
             local_executable->executable());
-        auto F = linkMod->getFunction(cpu_executable->module_name());
+        StringRef fname = cpu_executable->module_name();
+        if (fname.size() && fname[0] == '_')
+          fname = fname.substr(1);
+        auto F = linkMod->getFunction(fname);
+        if (!F) {
+          llvm::errs() << *linkMod << "\n";
+          llvm::errs() << "fname: " << fname << "\n";
+        }
         assert(F);
         fn = "mhlo_main";
         F->setName(fn);
