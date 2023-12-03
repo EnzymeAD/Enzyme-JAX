@@ -62,6 +62,14 @@
 // #include "xla/service/hlo.proto.h"
 #include "xla/service/cpu/backend_config.pb.h"
 
+enum class ABI {
+  Primal,
+  Forward,
+  Augmented,
+  Reverse,
+  Tape
+};
+
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
     llvm::StringRef mhlo_text, std::string& output) {
@@ -79,7 +87,6 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
   mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
                             /*use_tuple_args=*/false, /*return_tuple=*/false);
 
-
   for (auto &computation :
        *hlo_proto.mutable_hlo_module()->mutable_computations()) {
     if (computation.id() != hlo_proto.hlo_module().entry_computation_id())
@@ -93,7 +100,6 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
     instruction.set_backend_config(backend_config.SerializeAsString());
     break;
   }
-  llvm::errs() << " pb: " << hlo_proto.DebugString() << "\n";
 
   xla::XlaComputation xla_computation(hlo_proto.hlo_module());
 
@@ -134,8 +140,8 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
   
   absl::StatusOr<std::unique_ptr<xla::HloModuleConfig>> module_config_or_error =
       xla::GetHloModuleConfig(
-          xla_computation, shape_pointers, xla::ExecutableBuildOptions(),
-          /*(serice) options=*/nullptr, local_client->mutable_backend());
+          xla_computation, shape_pointers, build_options,
+          /*(serice) options=*/&local_client->local_service()->options_, local_client->mutable_backend());
   if (!module_config_or_error.ok()) {
 	throw pybind11::value_error(module_config_or_error.status().ToString());
   }
@@ -156,7 +162,6 @@ std::unique_ptr<xla::LocalExecutable> compile_mhlo_to_llvm_with_xla(
 	throw pybind11::value_error(executable.status().ToString());
   }
 
-  assert(executables.size() == 1);
   auto local_executable = 
 	std::make_unique<xla::LocalExecutable>(
         std::move(executable.value()), local_client->local_service()->mutable_backend(),
@@ -205,7 +210,7 @@ class CpuKernel {
                 llvm::ArrayRef<std::string> out_names,
                 llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                 llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
-                int mode, Language lang) {
+                ABI mode, Language lang) {
     auto llvm_ctx = std::make_unique<llvm::LLVMContext>();
 
     std::string input;
@@ -228,13 +233,12 @@ class CpuKernel {
 
 
     case Language::MHLO:{
-      llvm::errs() << source << "\n";
       local_executable = compile_mhlo_to_llvm_with_xla(source, stringbuf);
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       source = stringbuf;
       auto &assignment = cpu_executable->buffer_assignment();
-      tmpBuf = assignment.temp_allocation_total_size();
       llvm::errs() << assignment.ToString() << "\n";
+      tmpBuf = assignment.temp_allocation_total_size();
       // explicitly fall through
     }
     case Language::LLVM:
@@ -248,29 +252,14 @@ class CpuKernel {
       }
       assert(linkMod);
       if (lang == Language::MHLO) {
-        for (auto &lfn : linkMod->functions()) {
-          if (lfn.empty()) continue;
-          if (lfn.getLinkage() == llvm::Function::InternalLinkage)
-	    continue;
-	  if (fn == "mhlo_main") {
-            std::string err;
-            llvm::raw_string_ostream ess(err);
-	    ess << " Failed to compile mhlo, found multiple functions in module:\n";
-	    ess << *linkMod << "\n";
-	    ess << source << "\n";
-	    throw std::runtime_error(ess.str());
-	  }
-		  fn = "mhlo_main";
-          lfn.setName(fn);
-          lfn.addFnAttr(llvm::Attribute::AlwaysInline);
-        }
-		if (fn != "mhlo_main") {
-        std::string err_str;
-        llvm::raw_string_ostream ss(err_str);
-		ss << " Could not find main function:\n";
-		ss << *linkMod << "\n";
-        throw pybind11::value_error(ss.str());
-		}
+        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+        auto F = linkMod->getFunction(cpu_executable->module_name());
+        assert(F);
+		fn = "mhlo_main";
+        F->setName(fn);
+        F->addFnAttr(llvm::Attribute::AlwaysInline);
+        if (mode != ABI::Primal)
+          F->setLinkage(llvm::Function::InternalLinkage);
       }
       ss << " extern \"C\" void " << fn << "(void* retval, void* run_options, void* params, void* buffer_table, void* status, void* prof_counters);\n\n";
 	  
@@ -466,7 +455,7 @@ class CpuKernel {
       ss << "}\n";
       fn = "abi_wrap";
     }
-    if (mode != 0) {
+    if (mode != ABI::Primal) {
       ss << " void entry_wrap(";
       bool comma = false;
         for (size_t i=0, off=0; i<out_shapes.size(); i++) {
@@ -506,71 +495,71 @@ class CpuKernel {
       ss << "}\n";
       fn = "entry_wrap";
     }
-    if (mode == 4)
+    if (mode == ABI::Tape)
       ss << "extern \"C\" std::size_t entry() {\n";
     else
       ss << "extern \"C\" void entry(void** __restrict__ outs, void** __restrict__ ins) {\n";
     size_t out_off = 0;
     size_t in_off = 0;
 
-    if (mode == 3) {
+    if (mode == ABI::Reverse) {
       ss << " void*& tape = " << "*(void**)ins[" << in_off << "];\n";
       in_off++;
     }
 
     for (size_t i=0; i<out_shapes.size(); i++) {
-      if (mode != 3 && mode != 4) {
+      if (mode != ABI::Reverse && mode != ABI::Tape) {
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& out_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
         out_off++;
       }
-      if (mode == 1) {
+      if (mode == ABI::Forward) {
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
         out_off++;
       }
-      if (mode == 3) {
+      if (mode == ABI::Reverse) {
         ss << " " << make_type(out_names[i], out_shapes[i], true, lang) << "& dout_" << i << " = " << "*(" << make_type(out_names[i], out_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
         in_off++;
       }
     }
 
     for (size_t i=0, off=0; i<in_shapes.size(); i++) {
-      if (mode != 3 && mode != 4) {
+      if (mode != ABI::Reverse && mode != ABI::Tape) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
         in_off++;
       }
-      if (mode == 1) {
+      if (mode == ABI::Forward) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins[" << in_off << "];\n";
         in_off++;
       }
-      if (mode == 3) {
+      if (mode == ABI::Reverse) {
         ss << " " << make_type(in_names[i], in_shapes[i], false, lang) << "& din_" << i << " = " << "*(" << make_type(in_names[i], in_shapes[i], false, lang) << "*)outs[" << out_off << "];\n";
         out_off++;
       }
     }
-    if (mode == 2) {
+    if (mode == ABI::Augmented) {
       ss << " void*& tape = " << "*(void**)outs[" << out_off << "];\n";
       out_off++;
     }
-      if (mode != 4 && tmpBuf != 0) {
+      if (mode != ABI::Tape && tmpBuf != 0) {
         ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off << "];\n";
         out_off++;
       }
       // forward mode, we have undef dtmpbuf
-      if (mode == 1 && tmpBuf != 0) {
+      if (mode == ABI::Forward && tmpBuf != 0) {
         ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off << "];\n";
         out_off++;
       }
       // augmented forward mode, we have nullptr dtmpBuf
-      if (mode == 1 && tmpBuf != 0) {
+      if (mode == ABI::Augmented && tmpBuf != 0) {
         ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
       }
       // reverse mode, we have zero'd
-      if (mode == 1 && tmpBuf != 0) {
+      if (mode == ABI::Reverse && tmpBuf != 0) {
         ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << in_off << "];\n";
         in_off++;
       }
 
-    if (mode == 0) {
+    if (mode == ABI::Primal) {
       num_out = out_shapes.size();
     ss << "  " << fn << "(";
     bool comma = false;
@@ -590,7 +579,7 @@ class CpuKernel {
         comma = true;
     }
     ss << ");\n";
-    } else if (mode == 1) {
+    } else if (mode == ABI::Forward) {
       num_out = 2 * out_shapes.size();
       ss << "  enzyme::__enzyme_fwddiff(" << fn;
       for (size_t i=0; i<out_shapes.size(); i++) {
@@ -607,7 +596,7 @@ class CpuKernel {
           ss << "&din_" << i;
       }
       ss << ");\n";
-    } else if (mode == 2) {
+    } else if (mode == ABI::Augmented) {
       // outs, tapeout
       // ins
       num_out = out_shapes.size() + 1 /*tape*/;
@@ -633,7 +622,7 @@ class CpuKernel {
           ss << ", enzyme_dup, &in_" << i << ", nullptr";
       }
       ss << ");\n";
-    } else if (mode == 3) {
+    } else if (mode == ABI::Reverse) {
       num_out = in_shapes.size();
 
       // d_ins
@@ -666,7 +655,7 @@ class CpuKernel {
           ss << ", enzyme_dup, nullptr, &din_" << i;
       }
       ss << ");\n";
-    } else if (mode == 4) {
+    } else if (mode == ABI::Tape) {
       // outs, tapeout
       // ins
       num_out = out_shapes.size() + 1 /*tape*/;
@@ -719,7 +708,7 @@ class CpuKernel {
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                         llvm::ArrayRef<std::string> in_names,
                         PyObject* pyargv, Language lang) {
-    int mode = 4;
+    auto mode = ABI::Tape;
     auto [mod, llvm_ctx, num_out, tmpBuf] = createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names, pyargv, mode, lang);
     auto lfn = mod->getFunction("entry");
     auto RI = llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
@@ -749,7 +738,7 @@ class CpuKernel {
                         llvm::ArrayRef<std::string> out_names,
                         llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                         llvm::ArrayRef<std::string> in_names,
-                        PyObject* pyargv, int mode, Language lang) {
+                        PyObject* pyargv, ABI mode, Language lang) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     size_t identifier = last_identifier++;
 
@@ -846,11 +835,18 @@ PYBIND11_MODULE(enzyme_call, m) {
     .value("CPP", Language::CPP)
     .value("LLVM", Language::LLVM)
     .value("MHLO", Language::MHLO);
+  
+  pybind11::enum_<ABI>(m, "ABI")
+    .value("Primal", ABI::Primal)
+    .value("Forward", ABI::Forward)
+    .value("Augmented", ABI::Augmented)
+    .value("Reverse", ABI::Reverse)
+    .value("Tape", ABI::Tape);
 
   m.def("create_enzyme_cpu_kernel",
         [](const std::string &source, const std::string &fn, const pybind11::list &py_out_shapes,
           const pybind11::list &py_in_shapes,
-           pybind11::object pyargv, int mode, Language lang) -> std::tuple<size_t, size_t> {
+           pybind11::object pyargv, ABI mode, Language lang) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;

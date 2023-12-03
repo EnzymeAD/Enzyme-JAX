@@ -546,13 +546,9 @@ struct tensor<T, n0, N...>
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-  llvm::errs() << "pre:\n";
-  llvm::errs() << *mod << "\n";
   PB.parsePassPipeline(MPM, "default<O3>");
   MPM.run(*mod, MAM);
   
-  llvm::errs() << "post:\n";
-  llvm::errs() << *mod << "\n";
   return mod;
 }
 

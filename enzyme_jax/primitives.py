@@ -111,22 +111,7 @@ def _enzyme_fwd_abstract_eval(
     lang: enzyme_call.Language,
 ) -> Sequence[jax.core.ShapedArray]:
   del source, fn, args_flat
-
-  # each return is duplicated
-  res = tuple(o for o in out_shapes for _ in range(2))
-  
-  if lang == LANG_MHLO:
-    (in_tree, func) = source
-    avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
-    lowered_func = jax.jit(func).lower(*avals_in)
-    mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    source = str(mhlo)
-
-  tmpSize = enzyme_call.tmp_size(source, lang)
-  if tmpSize != 0:
-    res += (jax.core.ShapedArray((tmpSize,), (jax.numpy.int8)),)
-    res += (jax.core.ShapedArray((tmpSize,), (jax.numpy.int8)),)
-  return res
+  return tuple(o for o in out_shapes for _ in range(2))
 
 def absmaketup(ty):
   tystr = ty.dtype.__str__()
@@ -161,8 +146,6 @@ def _enzyme_aug_abstract_eval(
 
   tapeSize, tmpSize = enzyme_call.tape_and_tmp_size(source, fn, out_shapes, in_shapes, argv, lang)
   res = tuple(prev_out_shapes) + (jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),)
-  if tmpSize != 0:
-    res += (jax.core.ShapedArray((tmpSize,), (jax.numpy.int8)),)
   return res
 
 
@@ -184,20 +167,7 @@ def _enzyme_rev_abstract_eval(
     in_shapes,
     lang: enzyme_call.Language
 ) -> Sequence[jax.core.ShapedArray]:
-
-  res = tuple(jax.core.ShapedArray(shape, dejaxify(tyid)) for (shape, tyid) in in_shapes)
-  
-  if lang == LANG_MHLO:
-    (in_tree, func) = source
-    avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
-    lowered_func = jax.jit(func).lower(*avals_in)
-    mhlo = lowered_func.compiler_ir(dialect='mhlo')
-    source = str(mhlo)
-
-  tmpSize = enzyme_call.tmp_size(source, lang)
-  if tmpSize != 0:
-    res += (jax.core.ShapedArray((tmpSize,), (jax.numpy.int8)),)
-  return res
+  return tuple(jax.core.ShapedArray(shape, dejaxify(tyid)) for (shape, tyid) in in_shapes)
 
 def maketup(ty):
   ty = ir.RankedTensorType(ty)
@@ -270,9 +240,6 @@ def _enzyme_fwd_lowering(
   )
 
   out_shapes = list(map(maketup, out_types[::2]))
-  # todo this
-  if tmpSize != 0:
-    out_shapes = out_shapes[:-1]
 
   in_shapes = list(map(lambda x: maketup(x.type), args_flat[::2]))
 
@@ -290,11 +257,20 @@ def _enzyme_fwd_lowering(
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
   mlir_args = (identifier_op, *args_flat)
+
+  if tmpBuf != 0:
+    sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
+    out_types = out_types + (sa,sa)
+
   custom_call = stablehlo.CustomCallOp(
     out_types, mlir_args, call_target_name="jaxzyme.fwd"
   )
 
-  return custom_call.results
+  results = custom_call.results
+  if tmpBuf != 0:
+    results = results[:-2]
+
+  return results
 
 
 def _enzyme_aug_lowering(
@@ -313,9 +289,6 @@ def _enzyme_aug_lowering(
   )
 
   out_shapes = list(map(maketup, out_types[:len(out_types)-1]))
-  # todo this
-  if tmpSize != 0:
-    out_shapes = out_shapes[:-1]
 
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
@@ -337,7 +310,10 @@ def _enzyme_aug_lowering(
     out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
 
-  return custom_call.results
+  results = custom_call.results
+  if tmpBuf != 0:
+    results = results[:-1]
+  return results
 
 def _enzyme_rev_lowering(
     ctx: jax_mlir.LoweringRuleContext,
@@ -355,8 +331,6 @@ def _enzyme_rev_lowering(
   )
 
   in_shapes = list(map(maketup, in_types))
-  if tmpBuf != 0:
-    in_shapes = in_shapes[:-1]
 
   out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))
 
