@@ -4,26 +4,32 @@ licenses(["notice"])
 
 package(
     default_visibility = ["//:__subpackages__"],
+    features = ["layering_check"],
 )
 
-cc_library(
+pybind_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
     deps = [
-        "@pybind11",
+        "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
+        "@llvm-project//clang:codegen",
         "@llvm-project//clang:driver",
         "@llvm-project//clang:frontend",
         "@llvm-project//clang:frontend_tool",
         "@llvm-project//clang:lex",
+        "@llvm-project//clang:parse",
+        "@llvm-project//clang:sema",
         "@llvm-project//clang:serialization",
-        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:AsmParser",
+        "@llvm-project//llvm:CodeGen",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:Linker",
         "@llvm-project//llvm:OrcJIT",
-        "@enzyme//:EnzymeStatic"
+        "@llvm-project//llvm:Support",
     ],
 )
 
@@ -53,23 +59,26 @@ pybind_library(
         "@tsl//tsl/util:determinism",
 
         # This is similar to xla_binary rule and is needed to make XLA client compile.
-        "@xla//xla:autotuning_proto_cc",
-        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla:autotune_results_proto_cc",
         "@xla//xla:autotune_results_proto_cc_impl",
+        "@xla//xla:autotuning_proto_cc",
+        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla/client",
         "@xla//xla/client:client_library",
+        "@xla//xla/client:executable_build_options",
+        "@xla//xla/client:xla_computation",
+        "@xla//xla/service:buffer_assignment_proto_cc",
+        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service/cpu:cpu_executable",
         "@xla//xla/service/gpu:backend_configs_cc",
         "@xla//xla/service/gpu:backend_configs_cc_impl",
-        "@xla//xla/service:buffer_assignment_proto_cc",
-        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_proto_cc_impl",
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
-        "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -96,11 +105,15 @@ pybind_extension(
     name = "enzyme_call",
     srcs = ["enzyme_call.cc"],
     deps = [
-        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:ExecutionEngine",
+        "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:OrcTargetProcess",
+        "@llvm-project//llvm:Support",
         ":clang_compile",
         ":compile_with_xla",
-        "@com_google_absl//absl/status"
+        "@com_google_absl//absl/status:statusor"
     ],
     visibility = ["//visibility:public"],
 )
