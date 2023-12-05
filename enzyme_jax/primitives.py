@@ -194,19 +194,24 @@ def _enzyme_primal_lowering(
   out_shapes = list(map(maketup, out_types))
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
+  in_args = (*args_flat,)
+
   if lang == LANG_MHLO:
     (in_tree, func) = source
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    in_args = [arg for (i, arg) in enumerate(in_args) if i in kept]
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Primal, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
-  mlir_args = (identifier_op, *args_flat)
+  mlir_args = (identifier_op,) + in_args
 
   if tmpBuf != 0:
     sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))

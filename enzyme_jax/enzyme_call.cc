@@ -94,7 +94,7 @@ public:
     std::string stringbuf;
 
     size_t tmpBuf = 0;
-
+    llvm::StringRef origSource = source;
     switch (lang) {
     case Language::CPP:
       ss << source << "\n";
@@ -104,8 +104,41 @@ public:
       local_executable = compile_mhlo_to_llvm_with_xla(source, stringbuf);
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
-      source = stringbuf;
       auto &assignment = cpu_executable->buffer_assignment();
+      size_t num_in = 0;
+      for (auto &buf2 : assignment.Allocations()) {
+        if (buf2.is_entry_computation_parameter()) {
+          num_in++;
+        }
+      }
+      if (num_in != in_shapes.size()) {
+        std::string err_str;
+        llvm::raw_string_ostream ss(err_str);
+        ss << " Number of mhlo inputs (" << num_in
+           << ") != number of jax inputs (" << in_shapes.size() << "):\n";
+        ss << source << "\n";
+        throw pybind11::value_error(ss.str());
+      }
+      for (size_t i = 0; i < in_shapes.size(); i++) {
+        ssize_t idx = -1;
+        for (auto &buf2 : assignment.Allocations()) {
+          if (!buf2.is_entry_computation_parameter())
+            continue;
+          if (buf2.parameter_number() != i)
+            continue;
+          assert(idx == -1);
+          idx = buf2.index();
+        }
+        if (idx == -1) {
+          std::string err_str;
+          llvm::raw_string_ostream ss(err_str);
+          ss << " Could not find input parameter (" << i
+             << ") as hlo parameter:\n";
+          ss << source << "\n";
+          throw pybind11::value_error(ss.str());
+        }
+      }
+      source = stringbuf;
       tmpBuf = assignment.temp_allocation_total_size();
       // explicitly fall through
     }
@@ -357,8 +390,11 @@ public:
           } else {
             std::string err;
             llvm::raw_string_ostream ess(err);
-            ess << " Failed to compile mhlo, unknown buffer type:\n";
-            ess << buf.ToString() << "\n";
+            ess << " Failed to compile mhlo, unknown buffer type\n";
+            ess << origSource << "\n";
+            ess << source << "\n";
+            ess << local_executable->executable()->module().ToString() << "\n";
+            ess << " unknown buffer type: " << buf.ToString() << "\n";
             throw std::runtime_error(ess.str());
           }
         }
