@@ -194,7 +194,7 @@ def forward(x, config, weights, key_cache, value_cache):
   assert key_cache.shape == (n_layers, pos+1, kv_dim)
   value_cache = jnp.array(values2)
   assert value_cache.shape == (n_layers, pos+1, kv_dim)
-  return logits, key_cache, value_cache
+  return (logits, key_cache, value_cache)
 
 import numpy as np
 
@@ -241,7 +241,7 @@ def partial(func, config):
         return func(x, config, weights, key_cache, value_cache)
     return sfn
 
-pos = 0
+pos = 1
 key_cache = jnp.zeros((n_layers, pos,kv_dim))
 value_cache = jnp.zeros((n_layers, pos,kv_dim))
 
@@ -254,15 +254,15 @@ func = partial(forward, config)
 
 @jax.jit
 def jfunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)
+    return func(x, weights, key_cache, value_cache)[0]
 
 @enzyme_jax.enzyme_jax_ir()
 def efunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)
+    return func(x, weights, key_cache, value_cache)[0]
 
-eres = efunc(x, weights, key_cache, value_cache)[1]
+eres = efunc(x, weights, key_cache, value_cache)
 print("Enzyme primal", eres)
-res = func(x, weights, key_cache, value_cache)[1]
+res = func(x, weights, key_cache, value_cache)
 print("Jax primal", res)
 print (" max error", jnp.max(jnp.abs(eres-res)))
 assert (jnp.abs(eres - res) < 1e-3).all()
@@ -287,12 +287,12 @@ print("Jax fwd", jres)
 @jax.jit
 def jres(x, weights, kc, vc, dx, dkc, dvc):
   primals, f_vjp = jax.vjp(jfunc, x, weights, kc, vc)
-  return f_vjp(dx, dkc, dvc)
+  return f_vjp(dx) #, dkc, dvc)
 
 @jax.jit
 def eres(x, weights, kc, vc, dx, dkc, dvc):
   primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
-  return f_vjp(dx, dkc, dvc)
+  return f_vjp(dx) #, dkc, dvc)
 
 eres = erev(x, weights, key_cache, dx, dkc, dvc)
 print("Enzyme rev", eres)

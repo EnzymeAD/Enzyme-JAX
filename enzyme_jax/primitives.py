@@ -141,6 +141,8 @@ def _enzyme_aug_abstract_eval(
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
 
@@ -175,7 +177,10 @@ def maketup(ty):
   tystr = {'f32':'float','f64':'double','i32':'int32_t','i64':'int64_t'}[tystr]
   return (tystr, ty.shape)
 
-
+def to_jax(ty):
+  tystr = ty.__str__() 
+  return {'f32':jnp.float32,'f64':jnp.float64}[tystr]
+  
 def _enzyme_primal_lowering(
     ctx: jax_mlir.LoweringRuleContext,
     *args_flat: ir.Value,
@@ -203,8 +208,9 @@ def _enzyme_primal_lowering(
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
     kept = lowered_func.compile()._executable._kept_var_idx
-    in_args = [arg for (i, arg) in enumerate(in_args) if i in kept]
+    in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
     in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
+    print(kept, in_args, in_shapes)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Primal, lang)
@@ -246,6 +252,8 @@ def _enzyme_fwd_lowering(
   out_shapes = list(map(maketup, out_types[::2]))
 
   in_shapes = list(map(lambda x: maketup(x.type), args_flat[::2]))
+  
+  in_args = (*args_flat,)
 
   if lang == LANG_MHLO:
     (in_tree, func) = source
@@ -253,13 +261,16 @@ def _enzyme_fwd_lowering(
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    in_args = tuple(arg for (i, arg) in enumerate(in_args) if i//2 in kept)
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Forward, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
-  mlir_args = (identifier_op, *args_flat)
+  mlir_args = (identifier_op,) + in_args
 
   if tmpBuf != 0:
     sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
@@ -295,19 +306,25 @@ def _enzyme_aug_lowering(
 
   in_shapes = list(map(lambda x: maketup(x.type), args_flat))
 
+  in_args = (*args_flat,)
+  
   if lang == LANG_MHLO:
     (in_tree, func) = source
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
+    print(kept, in_args, in_shapes)
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Augmented, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
-  mlir_args = (identifier_op, *args_flat)
+  mlir_args = (identifier_op,) + in_args
   custom_call = stablehlo.CustomCallOp(
     out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
@@ -328,36 +345,65 @@ def _enzyme_rev_lowering(
 ) -> Sequence[ir.Value]:
   del in_shapes
 
-  in_types = tuple(
+  pre_in_types = tuple(
       itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out))
   )
 
-  in_shapes = list(map(maketup, in_types))
+  in_shapes = list(map(maketup, pre_in_types))
+  pre_in_shapes = in_shapes
 
   out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))
+  
+  in_args = (*args_flat,)
 
+  rev_return_types = pre_in_types
+  
+  kept = None
   if lang == LANG_MHLO:
     (in_tree, func) = source
     avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
     lowered_func = jax.jit(func).lower(*avals_in)
     mhlo = lowered_func.compiler_ir(dialect='mhlo')
     source = str(mhlo)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    # in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
+    rev_return_types = [retty for (i, retty) in enumerate(rev_return_types) if i in kept]
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Reverse, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
-  mlir_args = (identifier_op, *args_flat)
+  mlir_args = (identifier_op,) + in_args
+  
   if tmpBuf != 0:
     mlir_args += (stablehlo.ZeroOp(tmpBuf),)
 
-  rev_return_types = in_types
 
   custom_call = stablehlo.CustomCallOp(
     rev_return_types, mlir_args, call_target_name="jaxzyme.rev"
   )
-  return custom_call.results
+  results = custom_call.results
+  if kept != None:
+    print("results", results)
+    results = []
+    cur_idx = 0
+    for i, ty in enumerate(pre_in_types):
+      if i in kept:
+        results.append(custom_call.results[cur_idx])
+        cur_idx += 1
+      else:
+        ty = ir.RankedTensorType(ty)
+        print(type(ty), ty, dir(ty))
+        shape = ty.shape
+        print(type(shape), shape, dir(shape))
+        element_type = ty.element_type
+        print(type(element_type), element_type, dir(element_type))
+        import numpy as np
+        results.append(stablehlo.ConstantOp(ir.DenseElementsAttr.get(np.zeros(shape, dtype=to_jax(element_type)))).results[0])
+    print("results", results)
+  return results
 
 def ffi_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source, fn:str="f", argv: tuple[str]=(), lang:int=LANG_CPP):
   return _enzyme_primal_p.bind(

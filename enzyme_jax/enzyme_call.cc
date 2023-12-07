@@ -246,7 +246,7 @@ public:
 
       ss << " __attribute__((always_inline)) static inline void abi_wrap(";
       bool comma = false;
-      for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+      for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
@@ -259,7 +259,7 @@ public:
         ss << " enzyme::tensor<char, " << tmpBuf << "> & __restrict__ tmpBuf";
         comma = true;
       }
-      for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+      for (size_t i = 0; i < in_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
@@ -341,6 +341,10 @@ public:
           }
         }
         for (auto &buf : assignment.Allocations()) {
+          if (buf.is_thread_local()) {
+            ss << "  char local_" << buf.index() << "[" << buf.size() << "];\n";
+            continue;
+          }
           if (!buf.maybe_live_out())
             continue;
           if (!buf.is_tuple())
@@ -387,6 +391,9 @@ public:
           } else if (buf.is_constant()) {
             ss << " "
                << "(void*)&const_" << buf.index();
+          } else if (buf.is_thread_local()) {
+            ss << " "
+               << "(void*)&local_" << buf.index();
           } else {
             std::string err;
             llvm::raw_string_ostream ess(err);
@@ -400,14 +407,14 @@ public:
         }
       } else {
         comma = false;
-        for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+        for (size_t i = 0; i < out_shapes.size(); i++) {
           if (comma)
             ss << ", ";
           ss << " "
              << "(void*)&out_" << i;
           comma = true;
         }
-        for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+        for (size_t i = 0; i < in_shapes.size(); i++) {
           if (comma)
             ss << ", ";
           ss << " "
@@ -431,7 +438,7 @@ public:
     if (mode != ABI::Primal) {
       ss << " void entry_wrap(";
       bool comma = false;
-      for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+      for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
@@ -444,7 +451,7 @@ public:
         ss << " enzyme::tensor<char, " << tmpBuf << "> & __restrict__ tmpBuf";
         comma = true;
       }
-      for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+      for (size_t i = 0; i < in_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
@@ -454,7 +461,7 @@ public:
       ss << ") {\n";
       ss << "  " << fn << "(";
       comma = false;
-      for (size_t i = 0, off = 0; i < out_shapes.size(); i++) {
+      for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " "
@@ -468,7 +475,7 @@ public:
            << "tmpBuf";
         comma = true;
       }
-      for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+      for (size_t i = 0; i < in_shapes.size(); i++) {
         if (comma)
           ss << ", ";
         ss << " "
@@ -517,7 +524,7 @@ public:
       }
     }
 
-    for (size_t i = 0, off = 0; i < in_shapes.size(); i++) {
+    for (size_t i = 0; i < in_shapes.size(); i++) {
       if (mode != ABI::Reverse && mode != ABI::Tape) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
            << i << " = "
@@ -712,6 +719,8 @@ public:
       // should not free py3+
 #endif
     }
+
+    llvm::errs() << " inp: " << ss.str() << "\n";
 
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));

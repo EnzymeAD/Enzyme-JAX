@@ -30,8 +30,8 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "10b834edcabcaa78750368efc7556da22482c57e"
-XLA_SHA256 = "f5a29a7236b486c2cc185509f2d80faefcaab5c900b822cdda7ba809a930a8b2"
+XLA_COMMIT = "a6e6c1f6a53d4a23451c649110519c7ba8581bf9"
+XLA_SHA256 = "5fe6dfa30621bd50b022a6cab026d6f4cde9883a3e150ce1b6fd52822a57c59a"
 
 http_archive(
     name = "xla",
@@ -70,8 +70,8 @@ http_archive(
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
-JAX_COMMIT = "32a317f7a43440800e1e39e00ed5f2980e088ab1"
-JAX_SHA256 = "6e2147be7360a5c0672b6ba0d654cdb2ac96113b63ef457dfdc76cd50fe69ff1"
+JAX_COMMIT = "f691fe468a8e1f8545f7d624055d58b823ee3201"
+JAX_SHA256 = ""
 
 http_archive(
     name = "jax",

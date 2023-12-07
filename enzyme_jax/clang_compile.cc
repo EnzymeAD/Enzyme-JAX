@@ -571,7 +571,9 @@ struct tensor<T, n0, N...>
 
   ModulePassManager MPM;
   PB.parsePassPipeline(MPM, "default<O3>");
+  llvm::errs() << " pre: " << *mod << "\n";
   MPM.run(*mod, MAM);
+  llvm::errs() << " post: " << *mod << "\n";
 
   return mod;
 }
