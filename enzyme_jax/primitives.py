@@ -33,7 +33,7 @@ def cflags():
   if platform.system() == 'Darwin':
     return ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
   else:
-    return ()
+    return () # '-debug-info-kind=standalone', '-dwarf-version=5', '-debugger-tuning=gdb',)
 
 def _enzyme_primal_impl(
     *args_flat: jax.Array,
@@ -210,7 +210,6 @@ def _enzyme_primal_lowering(
     kept = lowered_func.compile()._executable._kept_var_idx
     in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
     in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
-    print(kept, in_args, in_shapes)
 
   argv = argv + ( "-resource-dir", resource_dir() ) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Primal, lang)
@@ -317,21 +316,28 @@ def _enzyme_aug_lowering(
     kept = lowered_func.compile()._executable._kept_var_idx
     in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
     in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
-    print(kept, in_args, in_shapes)
 
   argv = argv + ( "-resource-dir", resource_dir()) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Augmented, lang)
   identifier_attr = jax_mlir.dense_int_elements([identifier])
   identifier_op = stablehlo.ConstantOp(identifier_attr)
 
+  if tmpBuf != 0:
+    sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
+    out_types = out_types + (sa,)
+
   mlir_args = (identifier_op,) + in_args
   custom_call = stablehlo.CustomCallOp(
     out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
 
+  print(custom_call)
+  print(args_flat)
+  
   results = custom_call.results
   if tmpBuf != 0:
     results = results[:-1]
+  print(results)
   return results
 
 def _enzyme_rev_lowering(
@@ -368,7 +374,7 @@ def _enzyme_rev_lowering(
     kept = lowered_func.compile()._executable._kept_var_idx
     # in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
     in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
-    rev_return_types = [retty for (i, retty) in enumerate(rev_return_types) if i in kept]
+    rev_return_types = tuple(retty for (i, retty) in enumerate(rev_return_types) if i in kept)
 
   argv = tuple(argv) + ( "-resource-dir", resource_dir()) + cflags()
   identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Reverse, lang)
@@ -378,15 +384,18 @@ def _enzyme_rev_lowering(
   mlir_args = (identifier_op,) + in_args
   
   if tmpBuf != 0:
-    mlir_args += (stablehlo.ZeroOp(tmpBuf),)
-
+    sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
+    rev_return_types = rev_return_types + (sa,)
 
   custom_call = stablehlo.CustomCallOp(
     rev_return_types, mlir_args, call_target_name="jaxzyme.rev"
   )
   results = custom_call.results
+  print(custom_call)
+  print(pre_in_shapes)
+  if tmpBuf != 0:
+    results = results[:-1]
   if kept != None:
-    print("results", results)
     results = []
     cur_idx = 0
     for i, ty in enumerate(pre_in_types):
@@ -395,14 +404,11 @@ def _enzyme_rev_lowering(
         cur_idx += 1
       else:
         ty = ir.RankedTensorType(ty)
-        print(type(ty), ty, dir(ty))
         shape = ty.shape
-        print(type(shape), shape, dir(shape))
         element_type = ty.element_type
-        print(type(element_type), element_type, dir(element_type))
         import numpy as np
         results.append(stablehlo.ConstantOp(ir.DenseElementsAttr.get(np.zeros(shape, dtype=to_jax(element_type)))).results[0])
-    print("results", results)
+  print(results)
   return results
 
 def ffi_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source, fn:str="f", argv: tuple[str]=(), lang:int=LANG_CPP):

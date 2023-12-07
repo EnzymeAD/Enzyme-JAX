@@ -84,7 +84,6 @@ public:
 
     std::string input;
     llvm::raw_string_ostream ss(input);
-    size_t num_out;
     ss << "#include <cstdint>\n";
     ss << "#include <enzyme/tensor>\n";
     ss << "#include <enzyme/utils>\n";
@@ -238,9 +237,12 @@ public:
           xla::StringPrinter printer;
           val->literal().PrintWithoutShape(&printer);
           auto str = std::move(printer).ToString();
+          if (shape.size() == 0) ss << "{";
           str = std::regex_replace(str, std::regex("\\{"), "{{");
           str = std::regex_replace(str, std::regex("\\}"), "}}");
-          ss << str << ";\n";
+          ss << str;
+          if (shape.size() == 0) ss << "}";
+          ss << ";\n";
         }
       }
 
@@ -552,7 +554,7 @@ public:
          << "*(void**)outs[" << out_off << "];\n";
       out_off++;
     }
-    if (mode != ABI::Tape && tmpBuf != 0) {
+    if (mode != ABI::Tape && mode != ABI::Reverse && tmpBuf != 0) {
       ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = "
          << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
          << "];\n";
@@ -572,14 +574,16 @@ public:
     }
     // reverse mode, we have zero'd
     if (mode == ABI::Reverse && tmpBuf != 0) {
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
+	  ss << " __builtin_memset(outs[" << out_off << "], 0, " << tmpBuf << ");\n";
       ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
-         << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << in_off
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
          << "];\n";
-      in_off++;
+      out_off++;
     }
 
     if (mode == ABI::Primal) {
-      num_out = out_shapes.size();
       ss << "  " << fn << "(";
       bool comma = false;
       for (size_t i = 0; i < out_shapes.size(); i++) {
@@ -602,7 +606,6 @@ public:
       }
       ss << ");\n";
     } else if (mode == ABI::Forward) {
-      num_out = 2 * out_shapes.size();
       ss << "  enzyme::__enzyme_fwddiff(" << fn;
       for (size_t i = 0; i < out_shapes.size(); i++) {
         ss << ", enzyme_dup, ";
@@ -610,7 +613,7 @@ public:
         ss << "&dout_" << i;
       }
       if (tmpBuf != 0) {
-        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
+        ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         ss << ", enzyme_dup, ";
@@ -621,13 +624,12 @@ public:
     } else if (mode == ABI::Augmented) {
       // outs, tapeout
       // ins
-      num_out = out_shapes.size() + 1 /*tape*/;
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
       for (size_t i = 0; i < out_shapes.size(); i++) {
         ss << ", enzyme_dup";
       }
       if (tmpBuf != 0) {
-        ss << ", enzyme_dup,";
+        ss << ", enzyme_dup";
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         ss << ", enzyme_dup";
@@ -639,14 +641,13 @@ public:
         ss << ", enzyme_dup, &out_" << i << ", nullptr";
       }
       if (tmpBuf != 0) {
-        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
+        ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         ss << ", enzyme_dup, &in_" << i << ", nullptr";
       }
       ss << ");\n";
     } else if (mode == ABI::Reverse) {
-      num_out = in_shapes.size();
 
       // d_ins
       // tape, d_out
@@ -673,7 +674,7 @@ public:
         ss << ", enzyme_dup, nullptr, &dout_" << i;
       }
       if (tmpBuf != 0) {
-        ss << ", enzyme_dup, tmpBuf, dtmpBuf";
+        ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         ss << ", enzyme_dup, nullptr, &din_" << i;
@@ -682,7 +683,6 @@ public:
     } else if (mode == ABI::Tape) {
       // outs, tapeout
       // ins
-      num_out = out_shapes.size() + 1 /*tape*/;
       ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
       for (size_t i = 0; i < out_shapes.size(); i++) {
         ss << ", enzyme_dup";
@@ -720,13 +720,12 @@ public:
 #endif
     }
 
-    llvm::errs() << " inp: " << ss.str() << "\n";
-
+llvm::errs() <<" sourcE:\n" << ss.str() << "\n";
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
-    return std::make_tuple(std::move(mod), std::move(llvm_ctx), num_out,
+    return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
   }
 
@@ -790,7 +789,13 @@ public:
                   [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
                       -> llvm::Expected<
                           std::unique_ptr<llvm::orc::ObjectLayer>> {
-                    return std::make_unique<llvm::orc::ObjectLinkingLayer>(ES);
+    auto obj = std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(
+        ES, []() { return std::make_unique<llvm::SectionMemoryManager>(); });
+                    if (getenv("ENABLE_GDB_LISTENER")) {
+                      auto list = llvm::JITEventListener::createGDBRegistrationListener();
+						obj->registerJITEventListener(*list);  
+                    }
+                    return obj;
                   })
               .setJITTargetMachineBuilder(llvm::orc::JITTargetMachineBuilder(
                   llvm::Triple(mod->getTargetTriple())))

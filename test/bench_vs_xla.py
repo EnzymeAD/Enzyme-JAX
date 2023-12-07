@@ -139,3 +139,31 @@ print("Gradient deadarg success")
 print(timeit.Timer('rev(in0, in1, dout)', globals={'rev':rev, 'in0':in0, 'in1':in1, 'dout':dout}).timeit())
 print(timeit.Timer('rev_plain(in0, in1, dout)', globals={'rev_plain':rev_plain, 'in0':in0, 'in1':in1, 'dout':dout}).timeit())
 
+x = jnp.array(range(50), dtype=jnp.float32) 
+dx = jnp.array([i*i for i in range(50)], dtype=jnp.float32) 
+
+@enzyme_jax_ir()
+def esum(x):
+    return jnp.sum(x)
+
+eres = esum(x)
+assert jnp.abs(eres-50*51/2)<1e-6
+
+@jax.jit
+def sumfwd(in0, din0):
+  return jax.jvp(esum, (in0,), (din0,))
+
+primals, tangents = sumfwd(x, dx)
+assert jnp.abs(primals-50*51/2)<1e-6
+assert jnp.abs(tangents-50*51*101/6)<1e-6
+
+@jax.jit
+def sumrev(in0):
+  primals, f_vjp = jax.vjp(esum, in0)
+  grads = f_vjp(1.0)
+  return primals, grads
+
+primals, grads = sumrev(x)
+assert jnp.abs(primals-50*51/2)<1e-6
+assert (jnp.abs(grads-1) <1e-6).all()
+

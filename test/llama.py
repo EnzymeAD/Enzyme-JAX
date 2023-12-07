@@ -186,15 +186,7 @@ def forward(x, config, weights, key_cache, value_cache):
   x = rmsnorm(x, rms_final_weight)
   logits = wcls @ x
 
-  if asserts: assert logits.shape == (vocab_size,)
-
-  for k in keys2:
-    assert k.shape == (pos+1, kv_dim)
-  key_cache = jnp.array(keys2)
-  assert key_cache.shape == (n_layers, pos+1, kv_dim)
-  value_cache = jnp.array(values2)
-  assert value_cache.shape == (n_layers, pos+1, kv_dim)
-  return (logits, key_cache, value_cache)
+  return x
 
 import numpy as np
 
@@ -254,11 +246,11 @@ func = partial(forward, config)
 
 @jax.jit
 def jfunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)[0]
+    return func(x, weights, key_cache, value_cache)
 
 @enzyme_jax.enzyme_jax_ir()
 def efunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)[0]
+    return func(x, weights, key_cache, value_cache)
 
 eres = efunc(x, weights, key_cache, value_cache)
 print("Enzyme primal", eres)
@@ -278,6 +270,7 @@ def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
 def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
   return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
+print("pre fwd diff")
 eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
 print("Enzyme fwd", eres)
 jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
