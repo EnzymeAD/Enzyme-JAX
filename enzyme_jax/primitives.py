@@ -31,9 +31,12 @@ def cflags():
   import platform
   import os
   if platform.system() == 'Darwin':
-    return ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
+    res =  ('-isysroot', '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk', "-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1", "-internal-isystem", os.path.join(resource_dir(), "include"), "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include", "-internal-externc-isystem", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include", "-fgnuc-version=4.2.1")
   else:
-    return () # '-debug-info-kind=standalone', '-dwarf-version=5', '-debugger-tuning=gdb',)
+    res = ()
+    if os.getenv("ENABLE_GDBLISTENER") is not None:
+      res = res + ('-debug-info-kind=standalone', '-dwarf-version=5', '-debugger-tuning=gdb',)
+  return res
 
 def _enzyme_primal_impl(
     *args_flat: jax.Array,
@@ -331,13 +334,9 @@ def _enzyme_aug_lowering(
     out_types, mlir_args, call_target_name="jaxzyme.aug"
   )
 
-  print(custom_call)
-  print(args_flat)
-  
   results = custom_call.results
   if tmpBuf != 0:
     results = results[:-1]
-  print(results)
   return results
 
 def _enzyme_rev_lowering(
@@ -391,8 +390,6 @@ def _enzyme_rev_lowering(
     rev_return_types, mlir_args, call_target_name="jaxzyme.rev"
   )
   results = custom_call.results
-  print(custom_call)
-  print(pre_in_shapes)
   if tmpBuf != 0:
     results = results[:-1]
   if kept != None:
@@ -408,7 +405,6 @@ def _enzyme_rev_lowering(
         element_type = ty.element_type
         import numpy as np
         results.append(stablehlo.ConstantOp(ir.DenseElementsAttr.get(np.zeros(shape, dtype=to_jax(element_type)))).results[0])
-  print(results)
   return results
 
 def ffi_call(*args, out_shapes: Sequence[jax.core.ShapedArray], source, fn:str="f", argv: tuple[str]=(), lang:int=LANG_CPP):

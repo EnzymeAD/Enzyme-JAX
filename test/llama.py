@@ -278,17 +278,17 @@ print("Jax fwd", jres)
 
 
 @jax.jit
-def jres(x, weights, kc, vc, dx, dkc, dvc):
+def jrev(x, weights, kc, vc, dx, dkc, dvc):
   primals, f_vjp = jax.vjp(jfunc, x, weights, kc, vc)
   return f_vjp(dx) #, dkc, dvc)
 
 @jax.jit
-def eres(x, weights, kc, vc, dx, dkc, dvc):
+def erev(x, weights, kc, vc, dx, dkc, dvc):
   primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
   return f_vjp(dx) #, dkc, dvc)
 
-eres = erev(x, weights, key_cache, dx, dkc, dvc)
+eres = erev(x, weights, key_cache, value_cache, dx, dkc, dvc)
 print("Enzyme rev", eres)
-jres = jrev(x, weights, key_cache, dx, dkc, dvc)
+jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
 print("Jax rev", jres)
 

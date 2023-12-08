@@ -167,7 +167,9 @@ public:
         fn = "mhlo_main";
         F->setName(fn);
         assert(!F->empty());
-        F->addFnAttr(llvm::Attribute::AlwaysInline);
+        for (auto &F2 : *linkMod)
+          if (!F2.empty())
+            F2.addFnAttr(llvm::Attribute::AlwaysInline);
       }
       ss << " extern \"C\" void " << fn
          << "(void* retval, void* run_options, void* params, void* "
@@ -237,16 +239,24 @@ public:
           xla::StringPrinter printer;
           val->literal().PrintWithoutShape(&printer);
           auto str = std::move(printer).ToString();
-          if (shape.size() == 0) ss << "{";
+          if (shape.size() == 0)
+            ss << "{";
           str = std::regex_replace(str, std::regex("\\{"), "{{");
           str = std::regex_replace(str, std::regex("\\}"), "}}");
           ss << str;
-          if (shape.size() == 0) ss << "}";
+          if (shape.size() == 0)
+            ss << "}";
           ss << ";\n";
         }
       }
 
-      ss << " __attribute__((always_inline)) static inline void abi_wrap(";
+      llvm::StringRef abiName = "abi_wrap";
+      if (mode == ABI::Augmented)
+        abiName = "aug_abi_wrap";
+      else if (mode == ABI::Reverse)
+        abiName = "rev_abi_wrap";
+      ss << " __attribute__((always_inline)) static inline void " << abiName
+         << "(";
       bool comma = false;
       for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma)
@@ -435,7 +445,7 @@ public:
       ss << "  " << fn
          << "(nullptr, nullptr, nullptr, buffers, nullptr, nullptr);\n";
       ss << "}\n";
-      fn = "abi_wrap";
+      fn = abiName;
     }
     if (mode != ABI::Primal) {
       ss << " void entry_wrap(";
@@ -569,14 +579,21 @@ public:
     }
     // augmented forward mode, we have nullptr dtmpBuf
     if (mode == ABI::Augmented && tmpBuf != 0) {
+      ss << "#pragma clang diagnostic push\n";
+      ss << "#pragma clang diagnostic ignored \"-Wnull-dereference\"\n";
       ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
          << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
+      ss << "#pragma clang diagnostic pop\n";
     }
     // reverse mode, we have zero'd
     if (mode == ABI::Reverse && tmpBuf != 0) {
+      ss << "#pragma clang diagnostic push\n";
+      ss << "#pragma clang diagnostic ignored \"-Wnull-dereference\"\n";
       ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = "
          << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
-	  ss << " __builtin_memset(outs[" << out_off << "], 0, " << tmpBuf << ");\n";
+      ss << "#pragma clang diagnostic pop\n";
+      ss << " __builtin_memset(outs[" << out_off << "], 0, " << tmpBuf
+         << ");\n";
       ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
          << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
          << "];\n";
@@ -680,6 +697,13 @@ public:
         ss << ", enzyme_dup, nullptr, &din_" << i;
       }
       ss << ");\n";
+      ss << "prevent_stores(";
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        if (i != 0)
+          ss << ", ";
+        ss << "(void*)&dout_" << i;
+      }
+      ss << ");\n";
     } else if (mode == ABI::Tape) {
       // outs, tapeout
       // ins
@@ -720,7 +744,6 @@ public:
 #endif
     }
 
-llvm::errs() <<" sourcE:\n" << ss.str() << "\n";
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
@@ -789,11 +812,14 @@ llvm::errs() <<" sourcE:\n" << ss.str() << "\n";
                   [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
                       -> llvm::Expected<
                           std::unique_ptr<llvm::orc::ObjectLayer>> {
-    auto obj = std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(
-        ES, []() { return std::make_unique<llvm::SectionMemoryManager>(); });
-                    if (getenv("ENABLE_GDB_LISTENER")) {
-                      auto list = llvm::JITEventListener::createGDBRegistrationListener();
-						obj->registerJITEventListener(*list);  
+                    auto obj = std::make_unique<
+                        llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
+                      return std::make_unique<llvm::SectionMemoryManager>();
+                    });
+                    if (getenv("ENABLE_GDBLISTENER")) {
+                      auto list = llvm::JITEventListener::
+                          createGDBRegistrationListener();
+                      obj->registerJITEventListener(*list);
                     }
                     return obj;
                   })

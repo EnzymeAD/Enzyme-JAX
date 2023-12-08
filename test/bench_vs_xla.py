@@ -147,15 +147,26 @@ def esum(x):
     return jnp.sum(x)
 
 eres = esum(x)
-assert jnp.abs(eres-50*51/2)<1e-6
+print(eres)
+assert jnp.abs(eres-50*49/2)<1e-6
 
 @jax.jit
 def sumfwd(in0, din0):
   return jax.jvp(esum, (in0,), (din0,))
 
 primals, tangents = sumfwd(x, dx)
-assert jnp.abs(primals-50*51/2)<1e-6
-assert jnp.abs(tangents-50*51*101/6)<1e-6
+print(primals, tangents)
+assert jnp.abs(primals-50*49/2)<1e-6
+assert jnp.abs(tangents-50*49*99/6)<1e-6
+
+@jax.jit
+def sumrev_p(in0):
+  primals, f_vjp = jax.vjp(jnp.sum, in0)
+  grads = f_vjp(1.0)
+  return primals, grads
+
+primals, grads = sumrev_p(x)
+print(primals, grads)
 
 @jax.jit
 def sumrev(in0):
@@ -164,6 +175,6 @@ def sumrev(in0):
   return primals, grads
 
 primals, grads = sumrev(x)
-assert jnp.abs(primals-50*51/2)<1e-6
-assert (jnp.abs(grads-1) <1e-6).all()
-
+print(primals, grads)
+assert jnp.abs(primals-50*49/2)<1e-6
+assert (jnp.abs(grads[0]-1) <1e-6).all()

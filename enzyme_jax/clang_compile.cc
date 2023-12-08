@@ -74,6 +74,7 @@
 #include <pybind11/pybind11.h>
 
 #include "Enzyme/Enzyme.h"
+#include "Enzyme/Utils.h"
 
 namespace clang {
 namespace driver {
@@ -276,6 +277,7 @@ namespace enzyme {
   template<typename... Args>
   std::size_t __enzyme_augmentsize(Args...);
 }
+extern "C" void prevent_stores(void*, ...);
 extern "C" int enzyme_dup;
 extern "C" int enzyme_const;
 extern "C" int enzyme_dupnoneed;
@@ -572,6 +574,74 @@ struct tensor<T, n0, N...>
   ModulePassManager MPM;
   PB.parsePassPipeline(MPM, "default<O3>");
   MPM.run(*mod, MAM);
+
+  auto F = mod->getFunction("prevent_stores");
+  if (F) {
+    for (const auto user : llvm::make_early_inc_range(F->users())) {
+      auto CI = dyn_cast<CallInst>(user);
+      if (!CI)
+        continue;
+      std::deque<std::pair<llvm::Value *, llvm::Value *>> todo;
+      SmallVector<Value *, 1> cargs;
+      for (auto &arg : CI->args())
+        cargs.push_back(arg);
+      CI->eraseFromParent();
+      for (auto &arg : cargs) {
+        Value *cur = getBaseObject(arg);
+        assert(isa<LoadInst>(cur));
+        for (auto U : cur->users())
+          todo.emplace_back(U, cur);
+      }
+      std::set<std::pair<Value *, Value *>> seen;
+      SmallPtrSet<Instruction *, 32> toErase;
+      while (todo.size()) {
+        auto pair = todo.back();
+        todo.pop_back();
+        auto [cur, prev] = pair;
+        if (seen.count(pair))
+          continue;
+        seen.insert(pair);
+        if (isPointerArithmeticInst(cur)) {
+          for (auto u : cur->users())
+            todo.emplace_back(u, cur);
+          continue;
+        }
+        if (isa<LoadInst>(cur))
+          continue;
+        if (auto MTI = dyn_cast<MemTransferInst>(cur)) {
+          if (MTI->getSource() == prev)
+            continue;
+        }
+        if (auto MS = dyn_cast<MemSetInst>(cur)) {
+          toErase.insert(MS);
+          continue;
+        }
+        if (auto II = dyn_cast<IntrinsicInst>(cur)) {
+          if (II->getIntrinsicID() == llvm::Intrinsic::dbg_value)
+            continue;
+        }
+        if (auto SI = dyn_cast<StoreInst>(cur)) {
+          assert(SI->getPointerOperand() == prev);
+          auto C = dyn_cast<Constant>(SI->getValueOperand());
+          if (auto CF = dyn_cast_or_null<ConstantFP>(C))
+            assert(CF->isZero());
+          else {
+            llvm::errs() << "SI: " << *SI << " C: " << *SI->getValueOperand()
+                         << "\n";
+            assert(0);
+          }
+          toErase.insert(SI);
+          continue;
+        }
+        llvm::errs() << " unsupported value to erase:\n";
+        llvm::errs() << " cur: " << *cur << " prev: " << *prev << "\n";
+        assert(0);
+      }
+      for (auto I : toErase) {
+        I->eraseFromParent();
+      }
+    }
+  }
 
   return mod;
 }
