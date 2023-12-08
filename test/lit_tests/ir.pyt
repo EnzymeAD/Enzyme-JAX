@@ -2,7 +2,7 @@
 
 import jax
 import jax.numpy as jnp
-from enzyme_jax import cpp_call
+from enzyme_ad.jax import cpp_call
 
 def do_something(ones, twos):
     shape = jax.core.ShapedArray(tuple(3 * s for s in ones.shape), ones.dtype)

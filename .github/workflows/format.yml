@@ -4,16 +4,16 @@ on:
   push:
   pull_request:
   merge_group:
-   
+
 jobs:
   build:
     name: Format
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v3
     - uses: DoozyX/clang-format-lint-action@v0.16.2
       with:
-        source: 'enzyme_jax'
+        source: 'src'
         style: 'llvm'
         clangFormatVersion: 16
