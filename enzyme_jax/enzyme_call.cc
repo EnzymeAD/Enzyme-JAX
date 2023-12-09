@@ -43,6 +43,8 @@
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/cpu/cpu_executable.h"
 
+#include "Enzyme/FunctionUtils.h"
+
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
 enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
@@ -168,8 +170,22 @@ public:
         F->setName(fn);
         assert(!F->empty());
         for (auto &F2 : *linkMod)
-          if (!F2.empty())
+          if (!F2.empty()) {
             F2.addFnAttr(llvm::Attribute::AlwaysInline);
+            // Remove invariant_load if we expect enzyme to cache explicitly all
+            // data. Otherwise invariant_load allows Enzyme to assume it need
+            // not cache, and it is illegal for us to pass in nullptr as the
+            // primal (since it may be needed).
+            if (mode == ABI::Augmented || mode == ABI::Reverse ||
+                mode == ABI::Tape) {
+              for (auto &BB : F2)
+                for (auto &I : BB)
+                  if (auto LI = llvm::dyn_cast<llvm::LoadInst>(&I))
+                    if (LI->hasMetadata(llvm::LLVMContext::MD_invariant_load))
+                      LI->setMetadata(llvm::LLVMContext::MD_invariant_load,
+                                      nullptr);
+            }
+          }
       }
       ss << " extern \"C\" void " << fn
          << "(void* retval, void* run_options, void* params, void* "
@@ -910,6 +926,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
+  EnzymeAlwaysInlineDiff.setValue(true);
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)

@@ -620,12 +620,15 @@ struct tensor<T, n0, N...>
           if (II->getIntrinsicID() == llvm::Intrinsic::dbg_value)
             continue;
         }
+        if (isa<ICmpInst>(cur))
+          continue;
         if (auto SI = dyn_cast<StoreInst>(cur)) {
           assert(SI->getPointerOperand() == prev);
           auto C = dyn_cast<Constant>(SI->getValueOperand());
-          if (auto CF = dyn_cast_or_null<ConstantFP>(C))
+          if (C && C->isNullValue()) {
+          } else if (auto CF = dyn_cast_or_null<ConstantFP>(C)) {
             assert(CF->isZero());
-          else {
+          } else {
             llvm::errs() << "SI: " << *SI << " C: " << *SI->getValueOperand()
                          << "\n";
             assert(0);
@@ -633,9 +636,12 @@ struct tensor<T, n0, N...>
           toErase.insert(SI);
           continue;
         }
-        llvm::errs() << " unsupported value to erase:\n";
-        llvm::errs() << " cur: " << *cur << " prev: " << *prev << "\n";
-        assert(0);
+        std::string err_str;
+        llvm::raw_string_ostream ss(err_str);
+        ss << *mod << "\n";
+        ss << " unsupported value to erase:\n";
+        ss << " cur: " << *cur << " prev: " << *prev << "\n";
+        throw pybind11::value_error(ss.str());
       }
       for (auto I : toErase) {
         I->eraseFromParent();

@@ -178,3 +178,22 @@ primals, grads = sumrev(x)
 print(primals, grads)
 assert jnp.abs(primals-50*49/2)<1e-6
 assert (jnp.abs(grads[0]-1) <1e-6).all()
+
+@enzyme_jax_ir()
+def ecache(x):
+    return x * x[0]
+
+@jax.jit
+def cacherev(in0, din0):
+  primals, f_vjp = jax.vjp(ecache, in0)
+  grads = f_vjp(din0)
+  return grads
+
+dim = 288
+
+x = jnp.array(range(dim), dtype=jnp.float32)
+dx = jnp.array(range(dim), dtype=jnp.float32)
+
+grads = cacherev(x, dx)
+assert jnp.abs(grads[0][0]-287*288*(2*287+1)/6)<1e-6
+assert (jnp.abs(grads[0][1:]) <1e-6).all()

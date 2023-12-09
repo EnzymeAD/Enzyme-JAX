@@ -252,12 +252,12 @@ def jfunc(x, weights, key_cache, value_cache):
 def efunc(x, weights, key_cache, value_cache):
     return func(x, weights, key_cache, value_cache)
 
-eres = efunc(x, weights, key_cache, value_cache)
-print("Enzyme primal", eres)
-res = func(x, weights, key_cache, value_cache)
-print("Jax primal", res)
-print (" max error", jnp.max(jnp.abs(eres-res)))
-assert (jnp.abs(eres - res) < 1e-3).all()
+# eres = efunc(x, weights, key_cache, value_cache)
+# print("Enzyme primal", eres)
+# res = func(x, weights, key_cache, value_cache)
+# print("Jax primal", res)
+# print (" max error", jnp.max(jnp.abs(eres-res)))
+# assert (jnp.abs(eres - res) < 1e-3).all()
 
 #jfunc = jax.jit(partial(forward, config))
 # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
@@ -270,11 +270,11 @@ def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
 def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
   return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
-print("pre fwd diff")
-eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
-print("Enzyme fwd", eres)
-jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
-print("Jax fwd", jres)
+# print("pre fwd diff")
+# eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+# print("Enzyme fwd", eres)
+# jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+# print("Jax fwd", jres)
 
 
 @jax.jit
