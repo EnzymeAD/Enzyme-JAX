@@ -612,6 +612,10 @@ struct tensor<T, n0, N...>
           if (MTI->getSource() == prev)
             continue;
         }
+        if (auto CI = dyn_cast<CallInst>(cur))
+          if (auto F = CI->getCalledFunction())
+            if (F->getName() == "memset_pattern16")
+              continue;
         if (auto MS = dyn_cast<MemSetInst>(cur)) {
           toErase.insert(MS);
           continue;
