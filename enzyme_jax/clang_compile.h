@@ -9,10 +9,14 @@
 #ifndef ENZYME_JAX_CLANG_COMPILE_H
 #define ENZYME_JAX_CLANG_COMPILE_H
 
+#include "llvm/IR/Module.h"
 #include <Python.h>
 #include <string>
-#include "llvm/IR/Module.h"
 
-std::unique_ptr<llvm::Module> GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp, llvm::ArrayRef<std::string> pyargv, llvm::LLVMContext*ctx=nullptr, std::unique_ptr<llvm::Module> linkMod=nullptr);
+std::unique_ptr<llvm::Module>
+GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
+               llvm::ArrayRef<std::string> pyargv,
+               llvm::LLVMContext *ctx = nullptr,
+               std::unique_ptr<llvm::Module> linkMod = nullptr);
 
-#endif  // ENZYME_JAX_CLANG_COMPILE_H
+#endif // ENZYME_JAX_CLANG_COMPILE_H
