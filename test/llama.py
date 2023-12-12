@@ -1,7 +1,9 @@
+from absl.testing import absltest
 import jax.numpy as jnp
 import jax.random
 import jax.lax
 import enzyme_ad.jax as enzyme_jax
+import numpy as np
 
 
 def rmsnorm(x, weight):
@@ -213,126 +215,119 @@ def forward(x, config, weights, key_cache, value_cache):
     return x
 
 
-import numpy as np
+class Llama(absltest.TestCase):
+    def test_llama_random(self):
+        config = {
+            "dim": 288,
+            "hidden_dim": 768,
+            "n_layers": 6,
+            "n_heads": 6,
+            "n_kv_heads": 6,
+            "vocab_size": 32000,
+            "seq_len": 256,
+        }
 
-config = {
-    "dim": 288,
-    "hidden_dim": 768,
-    "n_layers": 6,
-    "n_heads": 6,
-    "n_kv_heads": 6,
-    "vocab_size": 32000,
-    "seq_len": 256,
-}
+        n_layers = config["n_layers"]
+        seq_len = config["seq_len"]
+        n_heads = config["n_heads"]
+        dim = config["dim"]
+        n_kv_heads = config["n_kv_heads"]
+        vocab_size = config["vocab_size"]
+        hidden_dim = config["hidden_dim"]
+        kv_dim = dim // n_heads * n_kv_heads
+        head_size = dim // n_heads
 
-n_layers = config["n_layers"]
-seq_len = config["seq_len"]
-n_heads = config["n_heads"]
-dim = config["dim"]
-n_kv_heads = config["n_kv_heads"]
-vocab_size = config["vocab_size"]
-hidden_dim = config["hidden_dim"]
-kv_dim = dim // n_heads * n_kv_heads
-head_size = dim // n_heads
+        key = jax.random.PRNGKey(0)
+        weights = {}
+        dweights = {}
 
-key = jax.random.PRNGKey(0)
-weights = {}
-dweights = {}
+        for name, shape in [
+            ("rms_att_weight", (n_layers, dim)),
+            ("wq", (n_layers, dim, n_heads * head_size)),
+            ("wk", (n_layers, dim, n_kv_heads * head_size)),
+            ("wv", (n_layers, dim, n_kv_heads * head_size)),
+            ("wo", (n_layers, dim, dim)),
+            ("rms_ffn_weight", (n_layers, dim)),
+            ("w1", (n_layers, hidden_dim, dim)),
+            ("w2", (n_layers, dim, hidden_dim)),
+            ("w3", (n_layers, hidden_dim, dim)),
+            ("rms_final_weight", (dim,)),
+            ("wcls", (vocab_size, dim)),
+        ]:
+            key, subkey = jax.random.split(key)
+            key, subkey2 = jax.random.split(key)
+            weights[name] = jax.random.uniform(subkey, shape=shape)
+            dweights[name] = jax.random.uniform(subkey2, shape=shape)
 
-for name, shape in [
-    ("rms_att_weight", (n_layers, dim)),
-    ("wq", (n_layers, dim, n_heads * head_size)),
-    ("wk", (n_layers, dim, n_kv_heads * head_size)),
-    ("wv", (n_layers, dim, n_kv_heads * head_size)),
-    ("wo", (n_layers, dim, dim)),
-    ("rms_ffn_weight", (n_layers, dim)),
-    ("w1", (n_layers, hidden_dim, dim)),
-    ("w2", (n_layers, dim, hidden_dim)),
-    ("w3", (n_layers, hidden_dim, dim)),
-    ("rms_final_weight", (dim,)),
-    ("wcls", (vocab_size, dim)),
-]:
-    key, subkey = jax.random.split(key)
-    key, subkey2 = jax.random.split(key)
-    weights[name] = jax.random.uniform(subkey, shape=shape)
-    dweights[name] = jax.random.uniform(subkey2, shape=shape)
+        key, subkey = jax.random.split(key)
+        x = jax.random.uniform(subkey, shape=(dim,))
+        key, subkey = jax.random.split(key)
+        dx = jax.random.uniform(subkey, shape=(dim,))
 
-key, subkey = jax.random.split(key)
-x = jax.random.uniform(subkey, shape=(dim,))
-key, subkey = jax.random.split(key)
-dx = jax.random.uniform(subkey, shape=(dim,))
+        def partial(func, config):
+            def sfn(x, weights, key_cache, value_cache):
+                return func(x, config, weights, key_cache, value_cache)
 
+            return sfn
 
-def partial(func, config):
-    def sfn(x, weights, key_cache, value_cache):
-        return func(x, config, weights, key_cache, value_cache)
+        pos = 1
+        key_cache = jnp.zeros((n_layers, pos, kv_dim))
+        value_cache = jnp.zeros((n_layers, pos, kv_dim))
 
-    return sfn
+        key, subkey = jax.random.split(key)
+        dkc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
+        key, subkey = jax.random.split(key)
+        dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
 
+        func = partial(forward, config)
 
-pos = 1
-key_cache = jnp.zeros((n_layers, pos, kv_dim))
-value_cache = jnp.zeros((n_layers, pos, kv_dim))
+        @jax.jit
+        def jfunc(x, weights, key_cache, value_cache):
+            return func(x, weights, key_cache, value_cache)
 
-key, subkey = jax.random.split(key)
-dkc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
-key, subkey = jax.random.split(key)
-dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
+        @enzyme_jax.enzyme_jax_ir()
+        def efunc(x, weights, key_cache, value_cache):
+            return func(x, weights, key_cache, value_cache)
 
-func = partial(forward, config)
+        # eres = efunc(x, weights, key_cache, value_cache)
+        # print("Enzyme primal", eres)
+        # res = func(x, weights, key_cache, value_cache)
+        # print("Jax primal", res)
+        # print (" max error", jnp.max(jnp.abs(eres-res)))
+        # assert (jnp.abs(eres - res) < 1e-3).all()
 
+        # jfunc = jax.jit(partial(forward, config))
+        # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
-@jax.jit
-def jfunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)
+        @jax.jit
+        def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+            return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
+        @jax.jit
+        def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+            return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
-@enzyme_jax.enzyme_jax_ir()
-def efunc(x, weights, key_cache, value_cache):
-    return func(x, weights, key_cache, value_cache)
+        # print("pre fwd diff")
+        # eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+        # print("Enzyme fwd", eres)
+        # jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
+        # print("Jax fwd", jres)
 
+        @jax.jit
+        def jrev(x, weights, kc, vc, dx, dkc, dvc):
+            primals, f_vjp = jax.vjp(jfunc, x, weights, kc, vc)
+            return f_vjp(dx)  # , dkc, dvc)
 
-# eres = efunc(x, weights, key_cache, value_cache)
-# print("Enzyme primal", eres)
-# res = func(x, weights, key_cache, value_cache)
-# print("Jax primal", res)
-# print (" max error", jnp.max(jnp.abs(eres-res)))
-# assert (jnp.abs(eres - res) < 1e-3).all()
+        @jax.jit
+        def erev(x, weights, kc, vc, dx, dkc, dvc):
+            primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
+            return f_vjp(dx)  # , dkc, dvc)
 
-# jfunc = jax.jit(partial(forward, config))
-# mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
-
-
-@jax.jit
-def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-    return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
-
-
-@jax.jit
-def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-    return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
-
-
-# print("pre fwd diff")
-# eres = efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
-# print("Enzyme fwd", eres)
-# jres = jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)
-# print("Jax fwd", jres)
-
-
-@jax.jit
-def jrev(x, weights, kc, vc, dx, dkc, dvc):
-    primals, f_vjp = jax.vjp(jfunc, x, weights, kc, vc)
-    return f_vjp(dx)  # , dkc, dvc)
-
-
-@jax.jit
-def erev(x, weights, kc, vc, dx, dkc, dvc):
-    primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
-    return f_vjp(dx)  # , dkc, dvc)
+        eres = erev(x, weights, key_cache, value_cache, dx, dkc, dvc)
+        print("Enzyme rev", eres)
+        jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
+        print("Jax rev", jres)
 
 
-eres = erev(x, weights, key_cache, value_cache, dx, dkc, dvc)
-print("Enzyme rev", eres)
-jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
-print("Jax rev", jres)
+if __name__ == "__main__":
+    absltest.main()
