@@ -25,7 +25,8 @@ LANG_MHLO = enzyme_call.Language.MHLO
 def resource_dir():
   import os
   dn = os.path.dirname(enzyme_call.__file__)
-  return os.path.join(dn, "..", "clang", "staging")
+  res = os.path.join(dn, "..", "..", "clang", "staging")
+  return res
 
 def cflags():
   import platform

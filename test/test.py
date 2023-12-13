@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from enzyme_jax import cpp_call
+from enzyme_ad.jax import cpp_call
 
 @jax.jit
 def do_something(ones):
@@ -46,7 +46,7 @@ print(primals)
 print(grads)
 
 # Test enzyme mlir jit
-from enzyme_jax import enzyme_jax_ir
+from enzyme_ad.jax import enzyme_jax_ir
 
 
 @enzyme_jax_ir()

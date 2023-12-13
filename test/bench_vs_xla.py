@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from enzyme_jax import enzyme_jax_ir
+from enzyme_ad.jax import enzyme_jax_ir
 
 
 @enzyme_jax_ir()

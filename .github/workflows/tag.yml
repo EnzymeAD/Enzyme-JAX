@@ -12,9 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [openstack22]
-    timeout-minutes: 500 
+    timeout-minutes: 500
     steps:
-      - name: add llvm 
+      - name: add llvm
         run: |
             if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
               sudo apt-get update
@@ -36,7 +36,7 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: bazel build :enzyme_jax
+      - run: bazel build :enzyme_ad
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

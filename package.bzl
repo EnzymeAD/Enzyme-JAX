@@ -22,10 +22,6 @@ py_package_lib = struct(
         "deps": attr.label_list(
             doc = "",
         ),
-        "prefix": attr.string(
-            doc = "Prefix",
-            mandatory = True,
-        ),
         "packages": attr.string_list(
             mandatory = False,
             allow_empty = True,
