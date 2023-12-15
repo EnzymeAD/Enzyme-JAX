@@ -2,10 +2,14 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call
 
+
 @jax.jit
 def do_something(ones):
     shape = jax.core.ShapedArray(ones.shape, ones.dtype)
-    a, b = cpp_call(ones, out_shapes=[shape, shape], source="""
+    a, b = cpp_call(
+        ones,
+        out_shapes=[shape, shape],
+        source="""
     template<std::size_t N, std::size_t M>
     void myfn(enzyme::tensor<float, N, M>& out0, enzyme::tensor<float, N, M>& out1, const enzyme::tensor<float, N, M>& in0) {
         for (int j=0; j<N; j++) {
@@ -19,14 +23,21 @@ def do_something(ones):
         }
         }
     }
-    """, fn="myfn")
-    c = cpp_call(a, out_shapes=[jax.core.ShapedArray([4, 4], jnp.float32)], source="""
+    """,
+        fn="myfn",
+    )
+    c = cpp_call(
+        a,
+        out_shapes=[jax.core.ShapedArray([4, 4], jnp.float32)],
+        source="""
     template<typename T1, typename T2>
     void f(T1& out0, const T2& in1) {
     out0 = 56.0f;
     }
-    """)
+    """,
+    )
     return a, b, c
+
 
 ones = jnp.ones((2, 3), jnp.float32)
 x, y, z = do_something(ones)
@@ -35,7 +46,7 @@ print(x)
 print(y)
 print(z)
 
-primals, tangents = jax.jvp(do_something, (ones,), (ones,) )
+primals, tangents = jax.jvp(do_something, (ones,), (ones,))
 print(primals)
 print(tangents)
 
@@ -51,18 +62,24 @@ from enzyme_ad.jax import enzyme_jax_ir
 
 @enzyme_jax_ir()
 def add_one(x: jax.Array, y) -> jax.Array:
-  return x + 1 + y
+    return x + 1 + y
 
 
 # TODO: this currently throws NYI as it is not yet connected to JIT and runtime.
 # But it should print LLVM IR in the process.
-add_one(jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.]))
+add_one(jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0]))
 
-primals, tangents = jax.jvp(add_one, (jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.])), (jnp.array([.1, .2, .3]), jnp.array([50., 70., 110.])) )
+primals, tangents = jax.jvp(
+    add_one,
+    (jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])),
+    (jnp.array([0.1, 0.2, 0.3]), jnp.array([50.0, 70.0, 110.0])),
+)
 print(primals)
 print(tangents)
 
-primals, f_vjp = jax.vjp(add_one, jnp.array([1., 2., 3.]), jnp.array([10., 20., 30.]))
-grads = f_vjp(jnp.array([500., 700., 110.]))
+primals, f_vjp = jax.vjp(
+    add_one, jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])
+)
+grads = f_vjp(jnp.array([500.0, 700.0, 110.0]))
 print(primals)
 print(grads)

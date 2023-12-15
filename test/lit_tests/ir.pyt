@@ -4,10 +4,15 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call
 
+
 def do_something(ones, twos):
     shape = jax.core.ShapedArray(tuple(3 * s for s in ones.shape), ones.dtype)
     shape2 = jax.core.ShapedArray(tuple(2 * s for s in ones.shape), ones.dtype)
-    a, b = cpp_call(ones, twos, out_shapes=[shape, shape2], source="""
+    a, b = cpp_call(
+        ones,
+        twos,
+        out_shapes=[shape, shape2],
+        source="""
     template<std::size_t N3, std::size_t M3, std::size_t N, std::size_t M, std::size_t N2, std::size_t M2, std::size_t N4, std::size_t M4>
     void myfn(enzyme::tensor<float, N, M>& out0, enzyme::tensor<float, N2, M2>& out1, const enzyme::tensor<float, N3, M3>& in0, const enzyme::tensor<float, N4, M4>& in1) {
         for (int j=0; j<N; j++) {
@@ -21,15 +26,20 @@ def do_something(ones, twos):
         }
         }
     }
-    """, fn="myfn")
+    """,
+        fn="myfn",
+    )
     return a, b
+
 
 ones = jnp.ones((2, 3), jnp.float32)
 twos = jnp.ones((5, 7), jnp.float32)
 
+
 @jax.jit
 def fwdmode(a, b, c, d):
-    return jax.jvp(do_something, (a, b), (c,d))
+    return jax.jvp(do_something, (a, b), (c, d))
+
 
 print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="mhlo"))
 
@@ -41,9 +51,11 @@ print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="mhlo"))
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 
+
 @jax.jit
 def f(a, b):
     return jax.vjp(do_something, a, b)
+
 
 print(f.lower(ones, twos).compiler_ir(dialect="mhlo"))
 
@@ -58,10 +70,12 @@ print(f.lower(ones, twos).compiler_ir(dialect="mhlo"))
 x = jnp.ones((6, 9), jnp.float32)
 y = jnp.ones((4, 6), jnp.float32)
 
+
 @jax.jit
 def g(a, b, x, y):
     primals, f_vjp = jax.vjp(do_something, a, b)
     return primals, f_vjp((x, y))
+
 
 # CHECK: module @jit_g attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg2: tensor<6x9xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg3: tensor<4x6xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<2x3xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default"}, tensor<5x7xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default"}) {
