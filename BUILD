@@ -42,6 +42,7 @@ py_wheel(
     deps = ["//src/enzyme_ad/jax:enzyme_jax_internal", ":enzyme_jax_data"],
     strip_path_prefixes = ["src/"],
     requires = [
+        "absl_py >= 2.0.0",
         "jax >= 0.4.21",
         "jaxlib >= 0.4.21",
     ],
