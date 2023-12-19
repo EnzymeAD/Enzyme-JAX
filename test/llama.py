@@ -4,6 +4,7 @@ import jax.random
 import jax.lax
 import enzymead.jax as enzyme_jax
 
+
 def rmsnorm(x, weight):
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
