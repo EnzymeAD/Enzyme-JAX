@@ -9,7 +9,7 @@ languages (Julia, Swift, Fortran, Rust, and even Python)!
 You can use
 
 ```python
-from enzyme_ad.jax import cpp_call
+from enzymead.jax import cpp_call
 
 # Forward-mode C++ AD example
 
@@ -49,13 +49,13 @@ Requirements: `bazel-6.2.1`, `clang++`, `python`, `python-virtualenv`,
 
 Build our extension with:
 ```sh
-# Will create a whl in bazel-bin/enzyme_ad-VERSION-SYSTEM.whl
-bazel build :enzyme_ad
+# Will create a whl in bazel-bin/enzymead-VERSION-SYSTEM.whl
+bazel build :enzymead
 ```
 
 Finally, install the built library with:
 ```sh
-pip install bazel-bin/enzyme_ad-VERSION-SYSTEM.whl
+pip install bazel-bin/enzymead-VERSION-SYSTEM.whl
 ```
 Note that you cannot run code from the root of the git directory. For instance, in the code below, you have to first run `cd test` before running `test.py`.
 

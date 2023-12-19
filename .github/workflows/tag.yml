@@ -36,7 +36,7 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: bazel build :enzyme_ad
+      - run: bazel build :enzymead
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

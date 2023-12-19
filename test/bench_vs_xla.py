@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import enzyme_jax_ir
+from enzymead.jax import enzyme_jax_ir
 from absl.testing import absltest
 import timeit
 

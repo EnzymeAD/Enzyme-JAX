@@ -59,7 +59,7 @@ steps:
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
-      bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
+      bazel --output_user_root=`pwd`/baztmp build :enzymead
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       cd test && python -m pip install "jax[cpu]" && python test.py

@@ -36,8 +36,8 @@ jobs:
           key: bazel-${{ matrix.os }}
       - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          bazel build :enzyme_ad @llvm-project//llvm:FileCheck
-          bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
+          bazel build :enzymead @llvm-project//llvm:FileCheck
+          bazel cquery "allpaths(//src/enzymead/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
           bazel --version
           nm -C $(find bazel-out/ -name enzyme_call.so -type f) | grep ExecutorCache::
       - run: cp bazel-bin/*.whl .
@@ -46,7 +46,7 @@ jobs:
         run: |
           python3 -m pip install --user --force-reinstall "jax[cpu]" *.whl
           cd test
-          nm -C $(python3 -c "from enzyme_ad.jax import enzyme_call; print(enzyme_call.__file__)") | grep ExecutorCache::
+          nm -C $(python3 -c "from enzymead.jax import enzyme_call; print(enzyme_call.__file__)") | grep ExecutorCache::
           python3 test.py
           cd lit_tests
           lit . --verbose

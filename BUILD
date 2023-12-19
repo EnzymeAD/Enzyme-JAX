@@ -11,16 +11,16 @@ package(
 py_package(
     name = "enzyme_jax_data",
     deps = [
-        "//src/enzyme_ad/jax:enzyme_call.so",
+        "//src/enzymead/jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
     # Only include these Python packages.
-    packages = ["@//src/enzyme_ad/jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
+    packages = ["@//src/enzymead/jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
 )
 
 py_wheel(
-    name = "enzyme_ad",
-    distribution = "enzyme_ad",
+    name = "enzymead",
+    distribution = "enzymead",
     summary = "Enzyme automatic differentiation tool.",
     homepage = "https://enzyme.mit.edu/",
     project_urls = {
@@ -39,7 +39,7 @@ py_wheel(
         "@bazel_tools//src/conditions:linux_x86_64": "manylinux2014_x86_64",
         "@bazel_tools//src/conditions:linux_ppc64le": "manylinux2014_ppc64le",
     }),
-    deps = ["//src/enzyme_ad/jax:enzyme_jax_internal", ":enzyme_jax_data"],
+    deps = ["//src/enzymead/jax:enzyme_jax_internal", ":enzyme_jax_data"],
     strip_path_prefixes = ["src/"],
     requires = [
         "absl_py >= 2.0.0",

@@ -2,7 +2,7 @@
 
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call
+from enzymead.jax import cpp_call
 
 
 def do_something(ones, twos):
