@@ -38,8 +38,8 @@ The easiest way to install is using pip.
 
 ```bash
 # The project is available on PyPi and installable like
-# a usual python package (https://pypi.org/project/enzyme-jax/)
-pip install enzyme-jax
+# a usual python package (https://pypi.org/project/enzyme-ad/)
+pip install enzyme-ad
 ```
 
 ## Building from source
