@@ -79,7 +79,6 @@ pybind_library(
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
-        "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
@@ -115,7 +114,8 @@ pybind_extension(
         "@llvm-project//llvm:Support",
         ":clang_compile",
         ":compile_with_xla",
-        "@com_google_absl//absl/status:statusor"
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla/stream_executor:stream_executor_impl",
     ],
     visibility = ["//visibility:public"],
 )

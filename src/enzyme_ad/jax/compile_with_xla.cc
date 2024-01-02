@@ -89,6 +89,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output) {
 
   xla::ExecutableBuildOptions build_options;
   build_options.mutable_debug_options()->set_xla_embed_ir_in_executable(true);
+  // build_options.mutable_debug_options()->set_xla_cpu_use_xla_runtime(true);
 
   if (build_options.device_ordinal() == -1) {
     build_options.set_device_ordinal(local_client->default_device_ordinal());

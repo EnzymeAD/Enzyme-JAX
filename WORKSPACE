@@ -13,8 +13,8 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 
 rules_cc_dependencies()
 
-LLVM_COMMIT = "668865789620f390fbad4d7093ed8ca6eb932c31"
-LLVM_SHA256 = "8d7cbbe492a17656c09af1e79b802303f11cb47d64768760b70d52f11ed4d9da"
+LLVM_COMMIT = "3c92011b600bdf70424e2547594dd461fe411a41"
+LLVM_SHA256 = ""
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
 http_archive(
@@ -30,14 +30,14 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "a6e6c1f6a53d4a23451c649110519c7ba8581bf9"
-XLA_SHA256 = "5fe6dfa30621bd50b022a6cab026d6f4cde9883a3e150ce1b6fd52822a57c59a"
+XLA_COMMIT = "66fbfd3ed8edc25d69bb3b227368b5c645ab3249"
+XLA_SHA256 = ""
 
 http_archive(
     name = "xla",
     sha256 = XLA_SHA256,
     strip_prefix = "xla-" + XLA_COMMIT,
-    urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
+    urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
     patch_args = ["-p1"],
     patches = ["//:patches/xla.patch"],
 )
@@ -60,8 +60,8 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "cbb970161fd41ce55da028f0960a441382b07112"
-ENZYME_SHA256 = "ec0450fdbc7f18cab46492acd3288b8347fa222317f9ff475768f5f10c45478c"
+ENZYME_COMMIT = "bad7df07dd7657c0c6884667d62ad1d9bcfd1d16"
+ENZYME_SHA256 = ""
 
 http_archive(
     name = "enzyme",
