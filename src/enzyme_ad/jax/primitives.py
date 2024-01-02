@@ -22,6 +22,8 @@ LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
 
+xla_runtime = True
+
 
 def resource_dir():
     import os
@@ -179,7 +181,7 @@ def _enzyme_aug_abstract_eval(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     tapeSize, tmpSize = enzyme_call.tape_and_tmp_size(
-        source, fn, out_shapes, in_shapes, argv, lang
+        source, fn, out_shapes, in_shapes, argv, lang, xla_runtime
     )
     res = tuple(prev_out_shapes) + (
         jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),
@@ -253,7 +255,14 @@ def _enzyme_primal_lowering(
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
-        source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Primal, lang
+        source,
+        fn,
+        out_shapes,
+        in_shapes,
+        argv,
+        enzyme_call.ABI.Primal,
+        lang,
+        xla_runtime,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -307,7 +316,14 @@ def _enzyme_fwd_lowering(
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
-        source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Forward, lang
+        source,
+        fn,
+        out_shapes,
+        in_shapes,
+        argv,
+        enzyme_call.ABI.Forward,
+        lang,
+        xla_runtime,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -360,7 +376,14 @@ def _enzyme_aug_lowering(
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
-        source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Augmented, lang
+        source,
+        fn,
+        out_shapes,
+        in_shapes,
+        argv,
+        enzyme_call.ABI.Augmented,
+        lang,
+        xla_runtime,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -420,7 +443,14 @@ def _enzyme_rev_lowering(
 
     argv = tuple(argv) + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
-        source, fn, out_shapes, in_shapes, argv, enzyme_call.ABI.Reverse, lang
+        source,
+        fn,
+        out_shapes,
+        in_shapes,
+        argv,
+        enzyme_call.ABI.Reverse,
+        lang,
+        xla_runtime,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
