@@ -11,12 +11,15 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/client/xla_computation.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/printer.h"
 #include "xla/service/cpu/backend_config.pb.h"
 #include "xla/service/cpu/cpu_executable.h"
@@ -36,9 +39,16 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   context.loadDialect<mlir::arith::ArithDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
+  context.loadDialect<mlir::stablehlo::StablehloDialect>();
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
+
+  mlir::PassManager pm(&context);
+  pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+  if (!mlir::succeeded(pm.run(*parsed_module))) {
+    throw pybind11::value_error("StableHLO => MHLO failed");
+  }
 
   // Convert to XLA Computation.
   xla::HloProto hlo_proto;
