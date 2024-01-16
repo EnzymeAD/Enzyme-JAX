@@ -173,7 +173,7 @@ def _enzyme_aug_abstract_eval(
         (in_tree, func) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
         lowered_func = jax.jit(func).lower(*avals_in)
-        mhlo = lowered_func.compiler_ir(dialect="mhlo")
+        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
@@ -247,7 +247,7 @@ def _enzyme_primal_lowering(
         (in_tree, func) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         lowered_func = jax.jit(func).lower(*avals_in)
-        mhlo = lowered_func.compiler_ir(dialect="mhlo")
+        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
@@ -308,7 +308,7 @@ def _enzyme_fwd_lowering(
         (in_tree, func) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
         lowered_func = jax.jit(func).lower(*avals_in)
-        mhlo = lowered_func.compiler_ir(dialect="mhlo")
+        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if i // 2 in kept)
@@ -368,7 +368,7 @@ def _enzyme_aug_lowering(
         (in_tree, func) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         lowered_func = jax.jit(func).lower(*avals_in)
-        mhlo = lowered_func.compiler_ir(dialect="mhlo")
+        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
@@ -432,7 +432,7 @@ def _enzyme_rev_lowering(
         (in_tree, func) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         lowered_func = jax.jit(func).lower(*avals_in)
-        mhlo = lowered_func.compiler_ir(dialect="mhlo")
+        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
         # in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)

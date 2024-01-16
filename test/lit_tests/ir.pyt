@@ -41,12 +41,12 @@ def fwdmode(a, b, c, d):
     return jax.jvp(do_something, (a, b), (c, d))
 
 
-print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="mhlo"))
+print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_fwdmode attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg2: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg3: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<6x9xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default"}) {
-# CHECK-NEXT:     %0 = mhlo.constant dense<1> : tensor<1xi64>
-# CHECK-NEXT:     %1:4 = mhlo.custom_call @jaxzyme.fwd(%0, %arg0, %arg2, %arg1, %arg3) {backend_config = ""} : (tensor<1xi64>, tensor<2x3xf32>, tensor<2x3xf32>, tensor<5x7xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<6x9xf32>, tensor<4x6xf32>, tensor<4x6xf32>)
+# CHECK-NEXT:     %0 = stablehlo.constant dense<1> : tensor<1xi64>
+# CHECK-NEXT      %1:4 = stablehlo.custom_call @jaxzyme.fwd(%0, %arg0, %arg2, %arg1, %arg3) : (tensor<1xi64>, tensor<2x3xf32>, tensor<2x3xf32>, tensor<5x7xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<6x9xf32>, tensor<4x6xf32>, tensor<4x6xf32>)
 # CHECK-NEXT:     return %1#0, %1#2, %1#1, %1#3 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<6x9xf32>, tensor<4x6xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
@@ -57,12 +57,12 @@ def f(a, b):
     return jax.vjp(do_something, a, b)
 
 
-print(f.lower(ones, twos).compiler_ir(dialect="mhlo"))
+print(f.lower(ones, twos).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_f attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<16xi8> {jax.result_info = "[1][<flat index 0>][0][<flat index 0>][0][0]", mhlo.layout_mode = "default"}, tensor<2x3xf32> {jax.result_info = "[1][<flat index 0>][0][<flat index 0>][0][1]", mhlo.layout_mode = "default"}, tensor<5x7xf32> {jax.result_info = "[1][<flat index 0>][0][<flat index 0>][0][2]", mhlo.layout_mode = "default"}) {
-# CHECK-NEXT:     %0 = mhlo.constant dense<2> : tensor<1xi64>
-# CHECK-NEXT:     %1:3 = mhlo.custom_call @jaxzyme.aug(%0, %arg0, %arg1) {backend_config = ""} : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
+# CHECK-NEXT:     %0 = stablehlo.constant dense<2> : tensor<1xi64>
+# CHECK-NEXT:     %1:3 = stablehlo.custom_call @jaxzyme.aug(%0, %arg0, %arg1) : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
 # CHECK-NEXT:     return %1#0, %1#1, %1#2, %arg0, %arg1 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>, tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
@@ -79,28 +79,28 @@ def g(a, b, x, y):
 
 # CHECK: module @jit_g attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg2: tensor<6x9xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg3: tensor<4x6xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<2x3xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default"}, tensor<5x7xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default"}) {
-# CHECK-NEXT:     %0 = mhlo.constant dense<3> : tensor<1xi64>
-# CHECK-NEXT:     %1:3 = mhlo.custom_call @jaxzyme.aug(%0, %arg0, %arg1) {backend_config = ""} : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
-# CHECK-NEXT:     %2 = mhlo.constant dense<4> : tensor<1xi64>
-# CHECK-NEXT:     %3:2 = mhlo.custom_call @jaxzyme.rev(%2, %1#2, %arg2, %arg3) {backend_config = ""} : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
+# CHECK-NEXT:     %0 = stablehlo.constant dense<3> : tensor<1xi64>
+# CHECK-NEXT:     %1:3 = stablehlo.custom_call @jaxzyme.aug(%0, %arg0, %arg1) : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
+# CHECK-NEXT:     %2 = stablehlo.constant dense<4> : tensor<1xi64>
+# CHECK-NEXT:     %3:2 = stablehlo.custom_call @jaxzyme.rev(%2, %1#2, %arg2, %arg3) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %1#0, %1#1, %3#0, %3#1 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 
-print(g.lower(ones, twos, x, y).compiler_ir(dialect="mhlo"))
+print(g.lower(ones, twos, x, y).compiler_ir(dialect="stablehlo"))
 
 primals, f_vjp = jax.vjp(jax.jit(do_something), ones, twos)
 
-print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="mhlo"))
+print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="stablehlo"))
 # CHECK: module @jit__unnamed_wrapped_function_ attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<6x9xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<4x6xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<2x3xf32> {mhlo.layout_mode = "default"}, tensor<5x7xf32> {mhlo.layout_mode = "default"}) {
-# CHECK-NEXT:     %0 = mhlo.constant dense<[0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63]> : tensor<16xi8>
+# CHECK-NEXT:     %0 = stablehlo.constant dense<[0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63]> : tensor<16xi8>
 # CHECK-NEXT:     %1:2 = call @do_something(%0, %arg0, %arg1) : (tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %1#0, %1#1 : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT:   func.func private @do_something(%arg0: tensor<16xi8>, %arg1: tensor<6x9xf32>, %arg2: tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>) {
-# CHECK-NEXT:     %0 = mhlo.constant dense<6> : tensor<1xi64>
-# CHECK-NEXT:     %1:2 = mhlo.custom_call @jaxzyme.rev(%0, %arg0, %arg1, %arg2) {backend_config = ""} : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
+# CHECK-NEXT:     %0 = stablehlo.constant dense<6> : tensor<1xi64>
+# CHECK-NEXT:     %1:2 = stablehlo.custom_call @jaxzyme.rev(%0, %arg0, %arg1, %arg2) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %1#0, %1#1 : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
