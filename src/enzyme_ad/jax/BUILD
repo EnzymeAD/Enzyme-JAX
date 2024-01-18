@@ -112,6 +112,7 @@ pybind_extension(
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:OrcTargetProcess",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AllPassesAndDialects",
         ":clang_compile",
         ":compile_with_xla",
         "@com_google_absl//absl/status:statusor",

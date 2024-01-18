@@ -38,6 +38,8 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir/InitAllPasses.h"
+
 #include "compile_with_xla.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -81,7 +83,8 @@ public:
                 llvm::ArrayRef<std::string> out_names,
                 llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                 llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
-                ABI mode, Language lang, bool xla_runtime) {
+                ABI mode, Language lang, bool xla_runtime,
+                const std::string &pass_pipeline) {
     auto llvm_ctx = std::make_unique<llvm::LLVMContext>();
 
     std::string input;
@@ -102,8 +105,8 @@ public:
       break;
 
     case Language::MHLO: {
-      local_executable =
-          compile_mhlo_to_llvm_with_xla(source, stringbuf, xla_runtime);
+      local_executable = compile_mhlo_to_llvm_with_xla(
+          source, stringbuf, xla_runtime, pass_pipeline);
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
@@ -830,11 +833,12 @@ public:
                   llvm::ArrayRef<std::string> out_names,
                   llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
                   llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
-                  Language lang, bool xla_runtime) {
+                  Language lang, bool xla_runtime,
+                  const std::string &pass_pipeline) {
     auto mode = ABI::Tape;
     auto [mod, llvm_ctx, num_out, tmpBuf] =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv, mode, lang, xla_runtime);
+                      pyargv, mode, lang, xla_runtime, pass_pipeline);
     auto lfn = mod->getFunction("entry");
     auto RI =
         llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
@@ -846,12 +850,12 @@ public:
   }
 
   static size_t tempSize(llvm::StringRef source, Language lang,
-                         bool xla_runtime) {
+                         bool xla_runtime, const std::string &pass_pipeline) {
     switch (lang) {
     case Language::MHLO: {
       std::string llvm_ir;
-      auto local_executable =
-          compile_mhlo_to_llvm_with_xla(source, llvm_ir, xla_runtime);
+      auto local_executable = compile_mhlo_to_llvm_with_xla(
+          source, llvm_ir, xla_runtime, pass_pipeline);
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
@@ -868,13 +872,13 @@ public:
          llvm::ArrayRef<std::string> out_names,
          llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
          llvm::ArrayRef<std::string> in_names, PyObject *pyargv, ABI mode,
-         Language lang, bool xla_runtime) {
+         Language lang, bool xla_runtime, const std::string &pass_pipeline) {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     size_t identifier = last_identifier++;
 
     auto [mod, llvm_ctx, num_out, tmpBuf] =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv, mode, lang, xla_runtime);
+                      pyargv, mode, lang, xla_runtime, pass_pipeline);
 
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod.get());
@@ -986,6 +990,8 @@ PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllAsmParsers();
   EnzymeAlwaysInlineDiff.setValue(true);
 
+  mlir::registerAllPasses();
+
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
       .value("LLVM", Language::LLVM)
@@ -1002,8 +1008,8 @@ PYBIND11_MODULE(enzyme_call, m) {
         [](const std::string &source, const std::string &fn,
            const pybind11::list &py_out_shapes,
            const pybind11::list &py_in_shapes, pybind11::object pyargv,
-           ABI mode, Language lang,
-           bool xla_runtime) -> std::tuple<size_t, size_t> {
+           ABI mode, Language lang, bool xla_runtime,
+           const std::string &pass_pipeline) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -1039,20 +1045,22 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
                                    in_types, pyargv.ptr(), mode, (Language)lang,
-                                   xla_runtime);
+                                   xla_runtime, pass_pipeline);
         });
 
-  m.def(
-      "tmp_size",
-      [](const std::string &source, Language lang, bool xla_runtime) -> size_t {
-        return CpuKernel::tempSize(source, (Language)lang, xla_runtime);
-      });
+  m.def("tmp_size",
+        [](const std::string &source, Language lang, bool xla_runtime,
+           const std::string &pass_pipeline) -> size_t {
+          return CpuKernel::tempSize(source, (Language)lang, xla_runtime,
+                                     pass_pipeline);
+        });
 
   m.def("tape_and_tmp_size",
         [](const std::string &source, const std::string &fn,
            const pybind11::list &py_out_shapes,
            const pybind11::list &py_in_shapes, pybind11::object pyargv,
-           Language lang, bool xla_runtime) -> std::pair<size_t, size_t> {
+           Language lang, bool xla_runtime,
+           const std::string &pass_pipeline) -> std::pair<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -1086,9 +1094,9 @@ PYBIND11_MODULE(enzyme_call, m) {
               target.push_back(nested_element.cast<int64_t>());
             }
           }
-          return CpuKernel::tapeAndTempSize(fn, source, out_shapes, out_types,
-                                            in_shapes, in_types, pyargv.ptr(),
-                                            (Language)lang, xla_runtime);
+          return CpuKernel::tapeAndTempSize(
+              fn, source, out_shapes, out_types, in_shapes, in_types,
+              pyargv.ptr(), (Language)lang, xla_runtime, pass_pipeline);
         });
 
   m.def("get_cpu_callback", []() {
@@ -1097,9 +1105,11 @@ PYBIND11_MODULE(enzyme_call, m) {
   });
 
   m.def("compile_mhlo_to_llvm_with_xla",
-        [](const std::string &mhlo_text, bool xla_runtime) {
+        [](const std::string &mhlo_text, bool xla_runtime,
+           const std::string &pass_pipeline) {
           std::string llvm_ir;
-          compile_mhlo_to_llvm_with_xla(mhlo_text, llvm_ir, xla_runtime);
+          compile_mhlo_to_llvm_with_xla(mhlo_text, llvm_ir, xla_runtime,
+                                        pass_pipeline);
           return llvm_ir;
         });
 }

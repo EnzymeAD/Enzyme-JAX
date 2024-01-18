@@ -33,7 +33,8 @@
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 std::unique_ptr<xla::LocalExecutable>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
-                              bool xla_runtime) {
+                              bool xla_runtime,
+                              const std::string &pass_pipeline) {
   // Parse MLIR.
   mlir::MLIRContext context;
   context.loadDialect<mlir::arith::ArithDialect>();
@@ -102,6 +103,10 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   build_options.mutable_debug_options()->set_xla_embed_ir_in_executable(true);
   build_options.mutable_debug_options()->set_xla_cpu_use_xla_runtime(
       xla_runtime);
+
+  build_options.mutable_debug_options()
+      ->mutable_xla_backend_extra_options()
+      ->emplace("xla_cpu_experimental_override_pipeline", pass_pipeline);
 
   if (build_options.device_ordinal() == -1) {
     build_options.set_device_ordinal(local_client->default_device_ordinal());
