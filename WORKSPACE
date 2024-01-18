@@ -13,8 +13,8 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 
 rules_cc_dependencies()
 
-LLVM_COMMIT = "67963d384b23a2d46967b8f39ec2df3375731f4f"
-LLVM_SHA256 = "f185059432ff0b7adf9bafa22c1150623ae5355b8694f0078a5a892a69d32355"
+LLVM_COMMIT = "3a82a1c3f6bdc9259cc4641f66fc76d1e171e382"
+LLVM_SHA256 = "c525cdb14bb239695852d696bcd13a6d47e579be18386ba2048515fe7f059153"
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
 http_archive(
@@ -30,7 +30,7 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "3cae13e7a4526c9ba5d5fa8cca74f1b0cb64966b"
+XLA_COMMIT = "28d55494cbaf896e52fff2d9a5255eff19e8c072"
 XLA_SHA256 = ""
 
 http_archive(
