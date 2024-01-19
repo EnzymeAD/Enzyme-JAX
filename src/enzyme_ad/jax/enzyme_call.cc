@@ -39,6 +39,17 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/InitAllPasses.h"
+#include "xla/mlir/backends/cpu/transforms/passes.h"
+#include "xla/mlir/math/transforms/passes.h"
+#include "xla/mlir/memref/transforms/passes.h"
+#include "xla/mlir/runtime/transforms/passes.h"
+#include "xla/mlir_hlo/deallocation/transforms/passes.h"
+#include "xla/mlir_hlo/lhlo/IR/lhlo_ops.h"
+#include "xla/mlir_hlo/lhlo/transforms/passes.h"
+#include "xla/mlir_hlo/lhlo_gpu/IR/lhlo_gpu_ops.h"
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
+
+#include "xla/mlir_hlo/transforms/passes.h"
 
 #include "compile_with_xla.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
@@ -991,6 +1002,25 @@ PYBIND11_MODULE(enzyme_call, m) {
   EnzymeAlwaysInlineDiff.setValue(true);
 
   mlir::registerAllPasses();
+
+  mlir::mhlo::registerAllMhloPasses();
+  xla::cpu::registerCpuTransformsPasses();
+  mlir::hlo::registerLMHLOTransformsPasses();
+  xla::runtime::registerRuntimeTransformsPasses();
+  xla::registerMathTransformsPasses();
+  xla::registerMemrefTransformsPasses();
+
+  mlir::registerShapePasses();
+  mlir::registerConvertShapeToStandardPass();
+  mlir::registerConvertShapeConstraintsPass();
+  mlir::memref::registerResolveShapedTypeResultDims();
+  mlir::registerLinalgPasses();
+  mlir::registerReconcileUnrealizedCastsPass();
+  mlir::registerConversionPasses();
+  mlir::bufferization::registerBufferizationPasses();
+  mlir::registerAsyncPasses();
+  mlir::arith::registerArithPasses();
+  mlir::memref::registerMemRefPasses();
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
