@@ -22,7 +22,157 @@ LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
 
-xla_runtime = True
+
+def xla_runtime(options):
+    return True
+
+
+def pass_pipeline(options):
+    return """
+          inline{default-pipeline=canonicalize max-iterations=4},
+          expand-hlo-tuples{entry-function=main},
+          func.func(mhlo-flatten-tuple),
+          xla-legalize-abi,
+          func.func(mhlo-test-lower-general-dot),
+          func.func(mhlo-broadcast-propagation),
+          cse,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          func.func(xla-sparse-custom-call-to-pack),
+          func.func(legalize-sparse-ops{legalize-to-custom-calls=false}),
+          func.func(chlo-legalize-to-hlo{
+              expand-compositions=true legalize-broadcasts=true}),
+          func.func(mhlo-sparse-rewriting),
+          func.func(mhlo-legalize-control-flow),
+          func.func(mhlo-legalize-dot-general-to-dot),
+          hlo-legalize-to-arithmetic,
+          func.func(xla-legalize-library-ops),
+          func.func(mhlo-expand-ops-simplifier),
+          func.func(hlo-canonicalize-scatter),
+          func.func(hlo-canonicalize-dot),
+          func.func(group-reduction-dimensions{prefer-columns-reductions=true}),
+          func.func(hlo-legalize-to-linalg{enable-primitive-ops=false}),
+          func.func(lower-index-cast),
+          convert-to-signless,
+          func.func(shape-simplification),
+          func.func(shape-to-shape-lowering),
+          convert-shape-to-std,
+          func.func(convert-shape-constraints),
+          cse,
+          resolve-shaped-type-result-dims,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          func.func(linalg-fuse-elementwise-ops),
+          reconcile-unrealized-casts,
+          convert-tensor-to-linalg,
+          func.func(detensorize-scf-ops),
+          func.func(linalg-detensorize{aggressive-mode=true}),
+          eliminate-empty-tensors,
+          func.func(empty-tensor-to-alloc-tensor),
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          func.func(linalg-generalize-named-ops),
+          eliminate-empty-tensors,
+          sparsification-and-bufferization,
+          sparse-storage-specifier-to-llvm,
+          func.func(canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true}),
+          func.func(finalizing-bufferize),
+          func.func(xla-rewrite-realloc-to-alloc),
+          func.func(vectorize-copy),
+          func.func(naive-copy-removal),
+          func.func(convert-linalg-to-loops),
+          cse,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          buffer-results-to-out-params,
+          func.func(promote-buffers-to-stack{
+              max-alloc-size-in-bytes=1024
+              max-rank-of-allocated-memref=1}),
+          func.func(buffer-deallocation),
+          convert-bufferization-to-memref,
+          func.func(xla-remove-copies-to-out-params),
+          cse,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          func.func(convert-complex-to-standard),
+          cse,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          func.func(convert-vector-to-scf{
+              full-unroll=false
+              lower-tensors=false
+              target-rank=1}),
+          func.func(xla-legalize-i1-vector-transfers),
+          func.func(xla-convert-memref-element-cast-to-llvm),
+          async-func-to-async-runtime,
+          xla-rt-export-functions,
+          xla-cpu-to-cpu-runtime,
+          xla-rt-convert-custom-calls,
+          xla-rt-convert-asserts,
+          inline{default-pipeline=canonicalize max-iterations=4},
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          cse,
+          func.func(xla-math-approximation{oplist=all}),
+          func.func(convert-linalg-to-parallel-loops),
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          async-to-async-runtime,
+          xla-rt-move-allocas-to-entry-block,
+          async-runtime-policy-based-ref-counting,
+          func.func(arith-expand{include-bf16=false}),
+          func.func(memref-expand),
+          func.func(expand-strided-metadata),
+          lower-affine,
+          func.func(xla-memref-aligned-allocations{alignment=0}),
+          xla-rt-to-llvm,
+          convert-async-to-llvm,
+          generic-host-to-llvm{enable-avx2=false},
+          reconcile-unrealized-casts,
+          canonicalize{
+              max-iterations=10
+              max-num-rewrites=-1
+              region-simplify=true
+              test-convergence=false
+              top-down=true},
+          cse"""
 
 
 def resource_dir():
@@ -69,6 +219,7 @@ def _enzyme_primal_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -81,6 +232,7 @@ def _enzyme_fwd_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -93,6 +245,7 @@ def _enzyme_aug_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -105,6 +258,7 @@ def _enzyme_shadow_aug_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -117,6 +271,7 @@ def _enzyme_rev_impl(
     argv: Sequence[str],
     in_shapes,
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -129,6 +284,7 @@ def _enzyme_primal_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.core.ShapedArray]:
     # TODO: we may attempt some lightweight parsing of source to extract the
     # result types instead.
@@ -142,6 +298,7 @@ def _enzyme_fwd_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.core.ShapedArray]:
     del source, fn, args_flat
     return tuple(o for o in out_shapes for _ in range(2))
@@ -160,6 +317,7 @@ def _enzyme_aug_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.core.ShapedArray]:
     in_shapes = args_flat
 
@@ -181,7 +339,14 @@ def _enzyme_aug_abstract_eval(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     tapeSize, tmpSize = enzyme_call.tape_and_tmp_size(
-        source, fn, out_shapes, in_shapes, argv, lang, xla_runtime
+        source,
+        fn,
+        out_shapes,
+        in_shapes,
+        argv,
+        lang,
+        xla_runtime(pipeline_options),
+        pass_pipeline(pipeline_options),
     )
     res = tuple(prev_out_shapes) + (
         jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),
@@ -196,6 +361,7 @@ def _enzyme_shadow_aug_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.core.ShapedArray]:
     return out_shapes
 
@@ -207,6 +373,7 @@ def _enzyme_rev_abstract_eval(
     argv: Sequence[str],
     in_shapes,
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[jax.core.ShapedArray]:
     return tuple(
         jax.core.ShapedArray(shape, dejaxify(tyid)) for (shape, tyid) in in_shapes
@@ -233,6 +400,7 @@ def _enzyme_primal_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -262,7 +430,8 @@ def _enzyme_primal_lowering(
         argv,
         enzyme_call.ABI.Primal,
         lang,
-        xla_runtime,
+        xla_runtime(pipeline_options),
+        pass_pipeline(pipeline_options),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -293,6 +462,7 @@ def _enzyme_fwd_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -323,7 +493,8 @@ def _enzyme_fwd_lowering(
         argv,
         enzyme_call.ABI.Forward,
         lang,
-        xla_runtime,
+        xla_runtime(pipeline_options),
+        pass_pipeline(pipeline_options),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -353,6 +524,7 @@ def _enzyme_aug_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -383,7 +555,8 @@ def _enzyme_aug_lowering(
         argv,
         enzyme_call.ABI.Augmented,
         lang,
-        xla_runtime,
+        xla_runtime(pipeline_options),
+        pass_pipeline(pipeline_options),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -411,6 +584,7 @@ def _enzyme_rev_lowering(
     argv: Sequence[str],
     in_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    pipeline_options
 ) -> Sequence[ir.Value]:
     del in_shapes
 
@@ -450,7 +624,8 @@ def _enzyme_rev_lowering(
         argv,
         enzyme_call.ABI.Reverse,
         lang,
-        xla_runtime,
+        xla_runtime(pipeline_options),
+        pass_pipeline(pipeline_options),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -497,9 +672,16 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
+    pipeline_options=None
 ):
     return _enzyme_primal_p.bind(
-        *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes, lang=lang
+        *args,
+        source=source,
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=lang,
+        pipeline_options=pipeline_options
     )
 
 
@@ -509,9 +691,16 @@ def cpp_call(
     source: str,
     fn: str = "f",
     argv: tuple[str] = (),
+    pipeline_options=None
 ):
     return ffi_call(
-        *args, source=source, fn=fn, argv=argv, out_shapes=out_shapes, lang=LANG_CPP
+        *args,
+        source=source,
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=LANG_CPP,
+        pipeline_options=pipeline_options
     )
 
 
@@ -550,6 +739,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         argv=kwargs["argv"],
         out_shapes=kwargs["out_shapes"],
         lang=kwargs["lang"],
+        pipeline_options=kwargs["pipeline_options"]
     )
     res = (shadconv[0::2], shadconv[1::2])
     return res
@@ -640,7 +830,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
-def enzyme_jax_ir(argv=()):
+def enzyme_jax_ir(argv=(), pipeline_options=None):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @jax.jit
         def wrapped(*args: Any):
@@ -657,6 +847,7 @@ def enzyme_jax_ir(argv=()):
                 out_shapes=out_shape_flat,
                 argv=argv,
                 lang=LANG_MHLO,
+                pipeline_options=pipeline_options
             )
             return jax.tree_util.tree_unflatten(out_tree, out_flat)
 
