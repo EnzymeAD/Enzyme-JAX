@@ -27,6 +27,7 @@ LANG_MHLO = enzyme_call.Language.MHLO
 ##    false -> old xla pipeline, internal passes
 ##    string -> new xla pipeline, using passes as specified
 
+
 def xla_runtime(options):
     if type(options) == type(False) and options == False:
         return False
