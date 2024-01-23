@@ -22,13 +22,23 @@ LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
 
+## options
+##    true (default) -> new xla pipeline, default passes
+##    false -> old xla pipeline, internal passes
+##    string -> new xla pipeline, using passes as specified
 
 def xla_runtime(options):
-    return True
+    if type(options) == type(False) and options == False:
+        return False
+    else:
+        return True
 
 
 def pass_pipeline(options):
-    return """
+    if type(options) == type(""):
+        return options
+    else:
+        return """
           inline{default-pipeline=canonicalize max-iterations=4},
           expand-hlo-tuples{entry-function=main},
           func.func(mhlo-flatten-tuple),

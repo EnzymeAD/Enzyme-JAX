@@ -527,6 +527,7 @@ public:
             comma = true;
           }
         }
+        ss << "};\n";
         ss << "  " << fn
            << "(nullptr, nullptr, nullptr, buffers, nullptr, nullptr);\n";
       }
