@@ -216,7 +216,7 @@ class AddOneTwo(absltest.TestCase):
         print(primals, primals_o, primals_p)
         self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
         for i, (t, t_o, t_p) in enumerate(zip(tangents, tangents_o, tangents_p)):
-            print(i, to t_p)
+            print(i, to, t_p)
             self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
             self.assertTrue((jnp.abs(t_o - t_p) < 1e-6).all())
 
