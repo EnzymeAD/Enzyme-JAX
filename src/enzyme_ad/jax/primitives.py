@@ -284,7 +284,7 @@ def _enzyme_rev_impl(
     lang: enzyme_call.Language,
     pipeline_options
 ) -> Sequence[jax.Array]:
-    del args_flat, source, out_shapes
+    del args_flat, source, in_shapes
     raise RuntimeError("must be JIT'ed")
 
 
