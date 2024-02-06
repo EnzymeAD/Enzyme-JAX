@@ -99,6 +99,12 @@ pybind_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Parser",
+
+	# EnzymeMLIR
+        "@enzyme//:EnzymeMLIR",
+       
+        # Mosaic
+	"@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 

@@ -13,8 +13,8 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 
 rules_cc_dependencies()
 
-LLVM_COMMIT = "3a82a1c3f6bdc9259cc4641f66fc76d1e171e382"
-LLVM_SHA256 = "c525cdb14bb239695852d696bcd13a6d47e579be18386ba2048515fe7f059153"
+LLVM_COMMIT = "0f8680b9d87fa9e8839bd8e39ce605d64148ace6"
+LLVM_SHA256 = ""
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
 http_archive(
@@ -30,7 +30,7 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "28d55494cbaf896e52fff2d9a5255eff19e8c072"
+XLA_COMMIT = "c5163ff997d8be8fd32136e25050fa32c67c989f"
 XLA_SHA256 = ""
 
 http_archive(
@@ -60,7 +60,7 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "bad7df07dd7657c0c6884667d62ad1d9bcfd1d16"
+ENZYME_COMMIT = "dc5eaa56b9fbb64aad911ffed27e7a59e88a9b32"
 ENZYME_SHA256 = ""
 
 http_archive(
@@ -70,7 +70,7 @@ http_archive(
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
-JAX_COMMIT = "f691fe468a8e1f8545f7d624055d58b823ee3201"
+JAX_COMMIT = "9a098e922aff62a3b49bd673b9518d97ee599248"
 JAX_SHA256 = ""
 
 http_archive(
