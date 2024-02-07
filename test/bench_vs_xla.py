@@ -4,420 +4,223 @@ from enzyme_ad.jax import enzyme_jax_ir
 from absl.testing import absltest
 import timeit
 
+AllPipelines = [("NewXLAMLIR", enzyme_ad.jax.NewXLAPipeline(mlirad=True)), ("NewXLA", enzyme_ad.jax.NewXLAPipeline()), ("OldXLA", enzyme_ad.jax.OldXLAPipeline())]
+PrimalPipelines = AllPipelines[1:]
+FwdPipelines = AllPipelines
+RevPipelines = AllPipelines[1:]
 
-@enzyme_jax_ir()
-def add_one(x: jax.Array, y) -> jax.Array:
-    return x + 1 + y
+# @jax.jit
+# def fwd_jax(in0, in1, din0, din1):
+#.  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
+def splatjvp(in_fn):
+    def fwd(*args):
+        assert len(args) % 2 == 0
+        return jax.jvp(in_fn, tuple(args[:len(args)/2]), tuple(args[len(args)/2:]))
+    return fwd
 
+# @jax.jit
+# def rev_jax(dout, in0, in1):
+# primals, f_vjp = jax.vjp(add_one_jax, in0, in1)
+# grads = f_vjp(dout)
+# return primals, grads
+def splatvjp(in_fn):
+    def rev(dout, *args):
+        primals, f_vjp = jax.vjp(in_fn, *args)
+        grads = f_vjp(dout)
+        return primals, grads
+    return rev
 
-@enzyme_jax_ir(pipeline_options=False)
-def add_one_old(x: jax.Array, y) -> jax.Array:
-    return x + 1 + y
+class EnzymeJaxTest(absltest.TestCase):
+    def test(self):
+        self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
 
+    def harness(self, name, in_fn, ins, dins, douts):
+        assert len(ins) == len(dins)
+        rfn_jax = jax.jit(in_fn)
 
-@jax.jit
-def add_one_plain(x: jax.Array, y) -> jax.Array:
-    return x + 1 + y
+        aop = rfn_jax(*ins)
 
+        assert len(aop) == len(douts)
 
-@enzyme_jax_ir()
-def add_two(x: jax.Array, z, y) -> jax.Array:
-    return x + y
+        primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
+        primalins = {("in" + str(i)):ins[0] for i in range(len(ins))}
 
+        print(name + " JaX Primal: ",
+            timeit.Timer(
+                primalstr,
+                globals={
+                    "fn": rfn_jax,
+                } + primalins,
+            ).timeit()
+        )
 
-@enzyme_jax_ir(pipeline_options=False)
-def add_two_old(x: jax.Array, z, y) -> jax.Array:
-    return x + y
+        fwd_jax = jax.jit(splatjvp(rfn_jax))
 
+        primals_p, tangents_p = fwd_jax(*(ins+dins))
+        self.assertTrue((jnp.abs(aop - primals_p) < 1e-6).all())
 
-@jax.jit
-def add_two_plain(x: jax.Array, z, y) -> jax.Array:
-    return x + y
+        fwdstr = "fwd(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ", " + (", ".join(["din" + str(i) for i in range(len(dins))])) + ")"
+        fwdins = primalins + {("din" + str(i)):dins[0] for i in range(len(dins))}
+        print(name + " JaX Fwd: ",
+            timeit.Timer(
+                fwdstr,
+                globals={
+                    "fwd": fwd_jax,
+                } + fwdins,
+            ).timeit()
+        )
 
+        assert len(douts) == 1
 
-@jax.jit
-def fwd(in0, in1, din0, din1):
-    return jax.jvp(add_one, (in0, in1), (din0, din1))
+        rev_jax = jax.jit(splatvjp(rfn_jax))
 
+        primals_p, grads_p = rev_jax(dout, *ins)
 
-@jax.jit
-def fwd_old(in0, in1, din0, din1):
-    return jax.jvp(add_one_old, (in0, in1), (din0, din1))
+        self.assertTrue((jnp.abs(aop - primals_p) < 1e-6).all())
 
+        revstr = "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
+        revins = primalins + {"dout":douts[0]}
 
-@jax.jit
-def fwd_plain(in0, in1, din0, din1):
-    return jax.jvp(add_one_plain, (in0, in1), (din0, din1))
+        print(name + " JaX Rev: ",
+            timeit.Timer(
+                revstr,
+                globals={
+                    "rev": rev_jax,
+                } + revins,
+            ).timeit()
+        )
 
-
-@jax.jit
-def fwd2(in0, in1, in2, din0, din1, din2):
-    return jax.jvp(add_two, (in0, in1, in2), (din0, din1, din2))
-
-
-@jax.jit
-def fwd2_old(in0, in1, in2, din0, din1, din2):
-    return jax.jvp(add_two_old, (in0, in1, in2), (din0, din1, din2))
-
-
-@jax.jit
-def fwd2_plain(in0, in1, in2, din0, din1, din2):
-    return jax.jvp(add_two_plain, (in0, in1, in2), (din0, din1, din2))
-
-
-@jax.jit
-def rev(in0, in1, dout):
-    primals, f_vjp = jax.vjp(add_one, in0, in1)
-    grads = f_vjp(dout)
-    return primals, grads
-
-
-@jax.jit
-def rev_old(in0, in1, dout):
-    primals, f_vjp = jax.vjp(add_one_old, in0, in1)
-    grads = f_vjp(dout)
-    return primals, grads
-
-
-@jax.jit
-def rev_plain(in0, in1, dout):
-    primals, f_vjp = jax.vjp(add_one_plain, in0, in1)
-    grads = f_vjp(dout)
-    return primals, grads
-
-
-@jax.jit
-def rev2(in0, in1, in2, dout):
-    primals, f_vjp = jax.vjp(add_two, in0, in1, in2)
-    grads = f_vjp(dout)
-    return primals, grads
-
-
-@jax.jit
-def rev2_old(in0, in1, in2, dout):
-    primals, f_vjp = jax.vjp(add_two_old, in0, in1, in2)
-    grads = f_vjp(dout)
-    return primals, grads
+        for (name, pipeline) in AllPipelines:
+            rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline)(in_fn)
 
 
-@jax.jit
-def rev2_plain(in0, in1, in2, dout):
-    primals, f_vjp = jax.vjp(add_two_plain, in0, in1, in2)
-    grads = f_vjp(dout)
-    return primals, grads
+            if (name, pipeline) in PrimalPipelines:
+                ao = rfn_enzyme(*ins)
+                self.assertTrue((jnp.abs(ao - aop) < 1e-6).all())
 
+                print(name + " EnzymeMLIR(",name,") Primal: ",
+                    timeit.Timer(
+                        primalstr,
+                        globals={
+                            "fn": rfn_enzyme,
+                        } + primalins,
+                    ).timeit()
+                )
 
-class AddOneTwo(absltest.TestCase):
+            if (name, pipeline) in FwdPipelines:
+                fwd_enzyme = jax.jit(splatjvp(rfn_enzyme))
+
+                primals, tangents = fwd_jax(*(ins+dins))
+
+                self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
+
+                for t, t_p in zip(tangents, tangents_p):
+                    self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
+
+                print(name + " EnzymeMLIR(",name,") Fwd: ",
+                    timeit.Timer(
+                        fwdstr,
+                        globals={
+                            "fwd": fwd_enzyme,
+                        } + fwdins,
+                    ).timeit()
+                )
+
+            if (name, pipeline) in RevPipelines:
+                rev_enzyme = jax.jit(splatvjp(rfn_enzyme))
+
+                primals, grads = rev_jax(dout, *ins)
+                self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
+
+                for i, (g, g_p) in enumerate(zip(grads, grads_p)):
+                    print(i, g, g_p)
+                    self.assertTrue((jnp.abs(g - g_p) < 1e-6).all())
+
+                print(name + " EnzymeMLIR(",name,") Rev: ",
+                    timeit.Timer(
+                        revstr,
+                        globals={
+                            "rev": rev_jax,
+                        } + revins,
+                    ).timeit()
+                )
+
+class AddOne(EnzymeJaxTest):
     def setUp(self):
-        self.in0 = jnp.array([1.0, 2.0, 3.0])
-        self.in1 = jnp.array([10.0, 20.0, 30.0])
-        self.in2 = jnp.array([100.0, 200.0, 300.0])
-        self.din0 = jnp.array([0.1, 0.2, 0.3])
-        self.din1 = jnp.array([50.0, 70.0, 110.0])
-        self.din2 = jnp.array([1300.0, 1700.0, 1900.0])
+        self.ins = [
+            jnp.array([1.0, 2.0, 3.0]),
+            jnp.array([10.0, 20.0, 30.0]),
+        ]
+        self.dins = [
+            jnp.array([0.1, 0.2, 0.3]),
+            jnp.array([50.0, 70.0, 110.0]),
+        ]
+        self.douts = [
+            jnp.array([500.0, 700.0, 110.0])
+        ]
+        def add_one(x, y):
+            return x + 1 + y
+        self.fn = add_one
 
-    def test_add_one_primal(self):
-        aop = add_one_plain(self.in0, self.in1)
+        self.name = "add_one"
 
-        ao = add_one(self.in0, self.in1)
-        ao_old = add_one(self.in0, self.in1)
-
-        self.assertTrue((jnp.abs(ao - aop) < 1e-6).all())
-        self.assertTrue((jnp.abs(ao_old - aop) < 1e-6).all())
-
-        # Benchmark.
-        print(
-            timeit.Timer(
-                "add_one(in0, in1)",
-                globals={"add_one": add_one, "in0": self.in0, "in1": self.in1},
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "add_one_old(in0, in1)",
-                globals={"add_one_old": add_one_old, "in0": self.in0, "in1": self.in1},
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "add_one_plain(in0, in1)",
-                globals={
-                    "add_one_plain": add_one_plain,
-                    "in0": self.in0,
-                    "in1": self.in1,
-                },
-            ).timeit()
-        )
-
-    def test_add_two_deadarg(self):
-        atp = add_two_plain(self.in0, self.in1, self.in2)
-
-        at = add_two(self.in0, self.in1, self.in2)
-        ato = add_two_old(self.in0, self.in1, self.in2)
-
-        self.assertTrue((jnp.abs(at - atp) < 1e-6).all())
-        self.assertTrue((jnp.abs(ato - atp) < 1e-6).all())
-
-    def test_add_one_forward(self):
-        primals_p, tangents_p = fwd_plain(self.in0, self.in1, self.din0, self.din1)
-
-        primals, tangents = fwd(self.in0, self.in1, self.din0, self.din1)
-        primals_old, tangents_old = fwd_old(self.in0, self.in1, self.din0, self.din1)
-
-        self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
-        self.assertTrue((jnp.abs(primals_old - primals_p) < 1e-6).all())
-        for t, t_old, t_p in zip(tangents, tangents_old, tangents_p):
-            self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
-            self.assertTrue((jnp.abs(t_old - t_p) < 1e-6).all())
-
-        print(
-            timeit.Timer(
-                "fwd(in0, in1, din0, din1)",
-                globals={
-                    "fwd": fwd,
-                    "in0": self.in0,
-                    "in1": self.in1,
-                    "din0": self.din0,
-                    "din1": self.din1,
-                },
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "fwd_old(in0, in1, din0, din1)",
-                globals={
-                    "fwd_old": fwd_old,
-                    "in0": self.in0,
-                    "in1": self.in1,
-                    "din0": self.din0,
-                    "din1": self.din1,
-                },
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "fwd_plain(in0, in1, din0, din1)",
-                globals={
-                    "fwd_plain": fwd_plain,
-                    "in0": self.in0,
-                    "in1": self.in1,
-                    "din0": self.din0,
-                    "din1": self.din1,
-                },
-            ).timeit()
-        )
-
-    def test_add_two_deadarg_forward(self):
-        primals_p, tangents_p = fwd2_plain(
-            self.in0, self.in1, self.in2, self.din0, self.din1, self.din2
-        )
-
-        primals, tangents = fwd2(
-            self.in0, self.in1, self.in2, self.din0, self.din1, self.din2
-        )
-
-        primals_o, tangents_o = fwd2_old(
-            self.in0, self.in1, self.in2, self.din0, self.din1, self.din2
-        )
-
-        print(primals, primals_o, primals_p)
-        self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
-        for i, (t, t_o, t_p) in enumerate(zip(tangents, tangents_o, tangents_p)):
-            print(i, to, t_p)
-            self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
-            self.assertTrue((jnp.abs(t_o - t_p) < 1e-6).all())
-
-    def test_add_one_reverse(self):
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals_p, grads_p = rev_plain(self.in0, self.in1, dout)
-
-        print(dout)
-        # TODO enzyme will in place 0 the gradient inputs, which may not be expected
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals, grads = rev(self.in0, self.in1, dout)
-
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals_old, grads_old = rev_old(self.in0, self.in1, dout)
-
-        self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
-        self.assertTrue((jnp.abs(primals_old - primals_p) < 1e-6).all())
-        for i, (g, g_old, g_p) in enumerate(zip(grads, grads_old, grads_p)):
-            print(i, g, g_old, g_p)
-            self.assertTrue((jnp.abs(g - g_p) < 1e-6).all())
-            self.assertTrue((jnp.abs(g_old - g_p) < 1e-6).all())
-
-        print(
-            timeit.Timer(
-                "rev(in0, in1, dout)",
-                globals={"rev": rev, "in0": self.in0, "in1": self.in1, "dout": dout},
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "rev_old(in0, in1, dout)",
-                globals={"rev": rev, "in0": self.in0, "in1": self.in1, "dout": dout},
-            ).timeit()
-        )
-        print(
-            timeit.Timer(
-                "rev_plain(in0, in1, dout)",
-                globals={
-                    "rev_plain": rev_plain,
-                    "in0": self.in0,
-                    "in1": self.in1,
-                    "dout": dout,
-                },
-            ).timeit()
-        )
-
-    def test_add_two_deadarg_reverse(self):
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals_p, grads_p = rev2_plain(self.in0, self.in1, self.in2, dout)
-        # TODO enzyme will in place 0 the gradient inputs, which may not be expected
-        print(dout)
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals, grads = rev2(self.in0, self.in1, self.in2, dout)
-
-        dout = jnp.array([500.0, 700.0, 110.0])
-        primals_old, grads_old = rev2_old(self.in0, self.in1, self.in2, dout)
-
-        self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
-        self.assertTrue((jnp.abs(primals_old - primals_p) < 1e-6).all())
-        for i, (g, g_old, g_p) in enumerate(zip(grads, grads_old, grads_p)):
-            print(i, g, g_old, g_p)
-            self.assertTrue((jnp.abs(g - g_p) < 1e-6).all())
-            self.assertTrue((jnp.abs(g_old - g_p) < 1e-6).all())
-
-
-@enzyme_jax_ir()
-def esum(x):
-    return jnp.sum(x)
-
-
-@enzyme_jax_ir(pipeline_options=False)
-def esum_old(x):
-    return jnp.sum(x)
-
-
-@jax.jit
-def sumfwd(in0, din0):
-    return jax.jvp(esum, (in0,), (din0,))
-
-
-@jax.jit
-def sumfwd_old(in0, din0):
-    return jax.jvp(esum_old, (in0,), (din0,))
-
-
-@jax.jit
-def sumrev_p(in0):
-    primals, f_vjp = jax.vjp(jnp.sum, in0)
-    grads = f_vjp(1.0)
-    return primals, grads
-
-
-@jax.jit
-def sumrev(in0):
-    primals, f_vjp = jax.vjp(esum, in0)
-    grads = f_vjp(1.0)
-    return primals, grads
-
-
-@jax.jit
-def sumrev_old(in0):
-    primals, f_vjp = jax.vjp(esum_old, in0)
-    grads = f_vjp(1.0)
-    return primals, grads
-
-
-class Sum(absltest.TestCase):
+class AddTwo(EnzymeJaxTest):
     def setUp(self):
-        self.x = jnp.array(range(50), dtype=jnp.float32)
-        self.dx = jnp.array([i * i for i in range(50)], dtype=jnp.float32)
+        self.ins = [
+            jnp.array([1.0, 2.0, 3.0]),
+            jnp.array([10.0, 20.0, 30.0]),
+            jnp.array([100.0, 200.0, 300.0])
+        ]
+        self.dins = [
+            jnp.array([0.1, 0.2, 0.3]),
+            jnp.array([50.0, 70.0, 110.0]),
+            jnp.array([1300.0, 1700.0, 1900.0])
+        ]
+        self.douts = [
+            jnp.array([500.0, 700.0, 110.0])
+        ]
+        def add_two(x, z, y):
+            return x + y
 
-    def test_primal(self):
-        eres = esum(self.x)
-        print(eres)
-        self.assertTrue(jnp.abs(eres - 50 * 49 / 2) < 1e-6)
-
-    def test_forward(self):
-        primals, tangents = sumfwd(self.x, self.dx)
-        print(primals, tangents)
-        self.assertTrue(jnp.abs(primals - 50 * 49 / 2) < 1e-6)
-        self.assertTrue(jnp.abs(tangents - 50 * 49 * 99 / 6) < 1e-6)
-
-    def test_forward_old(self):
-        primals, tangents = sumfwd_old(self.x, self.dx)
-        print(primals, tangents)
-        self.assertTrue(jnp.abs(primals - 50 * 49 / 2) < 1e-6)
-        self.assertTrue(jnp.abs(tangents - 50 * 49 * 99 / 6) < 1e-6)
-
-    def test_reverse_p(self):
-        primals, grads = sumrev_p(self.x)
-        print(primals, grads)
-
-    def test_reverse(self):
-        primals, grads = sumrev(self.x)
-        print(primals, grads)
-        self.assertTrue(jnp.abs(primals - 50 * 49 / 2) < 1e-6)
-        self.assertTrue((jnp.abs(grads[0] - 1) < 1e-6).all())
-
-    def test_reverse_old(self):
-        primals, grads = sumrev_old(self.x)
-        print(primals, grads)
-        self.assertTrue(jnp.abs(primals - 50 * 49 / 2) < 1e-6)
-        self.assertTrue((jnp.abs(grads[0] - 1) < 1e-6).all())
+        self.fn = add_two
+        self.name = "add_two"
 
 
-@enzyme_jax_ir()
-def ecache(x):
-    return x * x[0]
+class Sum(EnzymeJaxTest):
+    def setUp(self):
+        self.ins = [
+            jnp.array(range(50), dtype=jnp.float32)
+        ]
+        self.dins = [
+            jnp.array([i * i for i in range(50)], dtype=jnp.float32)
+        ]
+        self.douts = [
+            1.0
+        ]
+        def sum(x):
+            return jnp.sum(x)
+
+        self.fn = sum
+        self.name = "sum"
 
 
-@enzyme_jax_ir(pipeline_options=False)
-def ecache_old(x):
-    return x * x[0]
-
-
-@jax.jit
-def cacherev(in0, din0):
-    primals, f_vjp = jax.vjp(ecache, in0)
-    grads = f_vjp(din0)
-    return grads
-
-
-@jax.jit
-def cacherev_old(in0, din0):
-    primals, f_vjp = jax.vjp(ecache_old, in0)
-    grads = f_vjp(din0)
-    return grads
-
-
-class Cache(absltest.TestCase):
-    def test_reverse(self):
+class Cache(EnzymeJaxTest):
+    def setUp(self):
         dim = 288
+        self.ins = [
+            jnp.array(range(dim), dtype=jnp.float32)
+        ]
+        self.dins = [
+            jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
+        ]
+        self.douts = [
+            jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
+        ]
+        def cache(x):
+            return x * x[0]
 
-        x = jnp.array(range(dim), dtype=jnp.float32)
-        dx = jnp.array(range(dim), dtype=jnp.float32)
-
-        grads = cacherev(x, dx)
-        self.assertTrue(
-            jnp.abs(grads[0][0] - (dim - 1) * dim * (2 * (dim - 1) + 1) / 6) < 1e-6
-        )
-        self.assertTrue((jnp.abs(grads[0][1:]) < 1e-6).all())
-
-    def test_reverse_old(self):
-        dim = 288
-
-        x = jnp.array(range(dim), dtype=jnp.float32)
-        dx = jnp.array(range(dim), dtype=jnp.float32)
-
-        grads = cacherev_old(x, dx)
-        self.assertTrue(
-            jnp.abs(grads[0][0] - (dim - 1) * dim * (2 * (dim - 1) + 1) / 6) < 1e-6
-        )
-        self.assertTrue((jnp.abs(grads[0][1:]) < 1e-6).all())
-
+        self.fn = cache
+        self.name = "cache"
 
 if __name__ == "__main__":
     absltest.main()

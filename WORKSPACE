@@ -14,7 +14,7 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 rules_cc_dependencies()
 
 LLVM_COMMIT = "0f8680b9d87fa9e8839bd8e39ce605d64148ace6"
-LLVM_SHA256 = ""
+LLVM_SHA256 = "85216a0eeed8988ad9c8700248597793146831c3a62cf85f4800d7b1df7549a5"
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
 http_archive(
@@ -60,7 +60,7 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "dc5eaa56b9fbb64aad911ffed27e7a59e88a9b32"
+ENZYME_COMMIT = "ed28cb68ccf47b5ff2594421ad62f878be562b03"
 ENZYME_SHA256 = ""
 
 http_archive(

@@ -22,24 +22,35 @@ LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
 
-## options
-##    true (default) -> new xla pipeline, default passes
-##    false -> old xla pipeline, internal passes
-##    string -> new xla pipeline, using passes as specified
+from enum import Enum
 
+class PipelineConfig:
+    # Whether to use the new xla runtime
+    def xla_runtime(self):
+        raise NotImplementedError()
 
-def xla_runtime(options):
-    if type(options) == type(False) and options == False:
+    # Pass pipeline of new runtime
+    def pass_pipeline(self):
+        raise NotImplementedError()
+
+    # MLIR pass pipeline
+    def mlir_ad(self)
+        raise NotImplementedError()
+
+class OldXLAPipeline:
+    def xla_runtime(self):
+        raise False
+
+    def pass_pipeline(self):
+        return ""
+
+    def mlir_ad(self):
         return False
-    else:
-        return True
 
-
-def pass_pipeline(options):
-    if type(options) == type(""):
-        return options
-    else:
-        return """
+class NewXLAPipeline:
+    def __init__(self; passes=None, mlirad=False):
+        if passes is None:
+            passes = """
           inline{default-pipeline=canonicalize max-iterations=4},
           expand-hlo-tuples{entry-function=main},
           func.func(mhlo-flatten-tuple),
@@ -184,6 +195,25 @@ def pass_pipeline(options):
               test-convergence=false
               top-down=true},
           cse"""
+        self.passes = passes
+        self.mlirad = mlirad
+
+    def xla_runtime(self):
+        raise False
+
+    def pass_pipeline(self):
+        return self.passes
+
+    def mlir_ad(self):
+        return self.mlirad
+
+DefaultPipeline = NewXLAPipeline("", True)
+
+def pass_pipeline(options):
+    if type(options) == type(""):
+        return options
+    else:
+        return 
 
 
 def resource_dir():
@@ -356,8 +386,8 @@ def _enzyme_aug_abstract_eval(
         in_shapes,
         argv,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     res = tuple(prev_out_shapes) + (
         jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),
@@ -441,8 +471,8 @@ def _enzyme_primal_lowering(
         argv,
         enzyme_call.ABI.Primal,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -504,8 +534,8 @@ def _enzyme_fwd_lowering(
         argv,
         enzyme_call.ABI.Forward,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -566,8 +596,8 @@ def _enzyme_aug_lowering(
         argv,
         enzyme_call.ABI.Augmented,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -635,8 +665,8 @@ def _enzyme_rev_lowering(
         argv,
         enzyme_call.ABI.Reverse,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -683,7 +713,7 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
-    pipeline_options=None
+    pipeline_options=DefaultPipeline
 ):
     return _enzyme_primal_p.bind(
         *args,
@@ -702,7 +732,7 @@ def cpp_call(
     source: str,
     fn: str = "f",
     argv: tuple[str] = (),
-    pipeline_options=None
+    pipeline_options=DefaultPipeline
 ):
     return ffi_call(
         *args,
@@ -743,15 +773,24 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
     args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
-    shadconv = _enzyme_fwd_p.bind(
-        *args,
-        source=kwargs["source"],
-        fn=kwargs["fn"],
-        argv=kwargs["argv"],
-        out_shapes=kwargs["out_shapes"],
-        lang=kwargs["lang"],
-        pipeline_options=kwargs["pipeline_options"]
-    )
+
+    pipeline_options = kwargs["pipeline_options"]
+
+    shadconv = None
+    if pipeline_options.mlir_ad()
+        act_tup = (",".join(["enzyme_dup" for a in args]))
+        newpasses = "enzyme-wrap{infn=main outfn=main retTy=enzyme_dup argTys="+act_tup+" mode=ForwardMode}," + pipeline_options.pass_pipeline()
+        pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+    else:
+        shadconv = _enzyme_fwd_p.bind(
+            *args,
+            source=kwargs["source"],
+            fn=kwargs["fn"],
+            argv=kwargs["argv"],
+            out_shapes=kwargs["out_shapes"],
+            lang=kwargs["lang"],
+            pipeline_options=kwargs["pipeline_options"]
+        )
     res = (shadconv[0::2], shadconv[1::2])
     return res
 
@@ -841,7 +880,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
-def enzyme_jax_ir(argv=(), pipeline_options=None):
+def enzyme_jax_ir(argv=(), pipeline_options=DefaultPipeline):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @jax.jit
         def wrapped(*args: Any):
