@@ -34,7 +34,7 @@ class PipelineConfig:
         raise NotImplementedError()
 
     # MLIR pass pipeline
-    def mlir_ad(self)
+    def mlir_ad(self):
         raise NotImplementedError()
 
 class OldXLAPipeline:
@@ -48,7 +48,7 @@ class OldXLAPipeline:
         return False
 
 class NewXLAPipeline:
-    def __init__(self; passes=None, mlirad=False):
+    def __init__(self, passes=None, mlirad=False):
         if passes is None:
             passes = """
           inline{default-pipeline=canonicalize max-iterations=4},
@@ -777,10 +777,15 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     pipeline_options = kwargs["pipeline_options"]
 
     shadconv = None
-    if pipeline_options.mlir_ad()
+    if pipeline_options.mlir_ad():
         act_tup = (",".join(["enzyme_dup" for a in args]))
         newpasses = "enzyme-wrap{infn=main outfn=main retTy=enzyme_dup argTys="+act_tup+" mode=ForwardMode}," + pipeline_options.pass_pipeline()
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+        outshapes2 = []
+        for o in kwargs["out_shapes"]:
+            outshapes2.append(o)
+            outshapes2.append(o)
+        shadconv = ffi_call(*args, out_shapes=outshapes2, source=kwargs["source"], fn=kwargs["fn"], argv=kwargs["argv"], lang=kwargs["lang"], pipeline_options=pipeline_options)
     else:
         shadconv = _enzyme_fwd_p.bind(
             *args,

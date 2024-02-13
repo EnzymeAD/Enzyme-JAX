@@ -1,10 +1,10 @@
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import enzyme_jax_ir
+from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline
 from absl.testing import absltest
 import timeit
 
-AllPipelines = [("NewXLAMLIR", enzyme_ad.jax.NewXLAPipeline(mlirad=True)), ("NewXLA", enzyme_ad.jax.NewXLAPipeline()), ("OldXLA", enzyme_ad.jax.OldXLAPipeline())]
+AllPipelines = [("NewXLAMLIR", NewXLAPipeline(mlirad=True)), ("NewXLA", NewXLAPipeline()), ("OldXLA", OldXLAPipeline())]
 PrimalPipelines = AllPipelines[1:]
 FwdPipelines = AllPipelines
 RevPipelines = AllPipelines[1:]
@@ -15,7 +15,7 @@ RevPipelines = AllPipelines[1:]
 def splatjvp(in_fn):
     def fwd(*args):
         assert len(args) % 2 == 0
-        return jax.jvp(in_fn, tuple(args[:len(args)/2]), tuple(args[len(args)/2:]))
+        return jax.jvp(in_fn, tuple(args[:len(args)//2]), tuple(args[len(args)//2:]))
     return fwd
 
 # @jax.jit
@@ -31,7 +31,12 @@ def splatvjp(in_fn):
     return rev
 
 class EnzymeJaxTest(absltest.TestCase):
+    def setUp(self):
+        self.name = None
+
     def test(self):
+        if self.name is None:
+            return
         self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
 
     def harness(self, name, in_fn, ins, dins, douts):
@@ -39,8 +44,7 @@ class EnzymeJaxTest(absltest.TestCase):
         rfn_jax = jax.jit(in_fn)
 
         aop = rfn_jax(*ins)
-
-        assert len(aop) == len(douts)
+        assert 1 == len(douts)
 
         primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         primalins = {("in" + str(i)):ins[0] for i in range(len(ins))}
@@ -50,23 +54,25 @@ class EnzymeJaxTest(absltest.TestCase):
                 primalstr,
                 globals={
                     "fn": rfn_jax,
-                } + primalins,
+                } | primalins,
             ).timeit()
         )
 
         fwd_jax = jax.jit(splatjvp(rfn_jax))
 
         primals_p, tangents_p = fwd_jax(*(ins+dins))
+        print(primals_p)
+        print((jnp.abs(aop - primals_p) < 1e-6).all())
         self.assertTrue((jnp.abs(aop - primals_p) < 1e-6).all())
 
         fwdstr = "fwd(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ", " + (", ".join(["din" + str(i) for i in range(len(dins))])) + ")"
-        fwdins = primalins + {("din" + str(i)):dins[0] for i in range(len(dins))}
+        fwdins = primalins | {("din" + str(i)):dins[0] for i in range(len(dins))}
         print(name + " JaX Fwd: ",
             timeit.Timer(
                 fwdstr,
                 globals={
                     "fwd": fwd_jax,
-                } + fwdins,
+                } | fwdins,
             ).timeit()
         )
 
@@ -74,28 +80,31 @@ class EnzymeJaxTest(absltest.TestCase):
 
         rev_jax = jax.jit(splatvjp(rfn_jax))
 
-        primals_p, grads_p = rev_jax(dout, *ins)
-
+        primals_p, grads_p = rev_jax(*douts, *ins)
+        
+        print(primals_p)
+        print((jnp.abs(aop - primals_p) < 1e-6).all())
         self.assertTrue((jnp.abs(aop - primals_p) < 1e-6).all())
 
         revstr = "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        revins = primalins + {"dout":douts[0]}
+        revins = primalins | {"dout":douts[0]}
 
         print(name + " JaX Rev: ",
             timeit.Timer(
                 revstr,
                 globals={
                     "rev": rev_jax,
-                } + revins,
+                } | revins,
             ).timeit()
         )
 
         for (name, pipeline) in AllPipelines:
             rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline)(in_fn)
 
-
             if (name, pipeline) in PrimalPipelines:
                 ao = rfn_enzyme(*ins)
+                print(aop)
+                print((jnp.abs(aop - aop) < 1e-6).all())
                 self.assertTrue((jnp.abs(ao - aop) < 1e-6).all())
 
                 print(name + " EnzymeMLIR(",name,") Primal: ",
@@ -103,7 +112,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         primalstr,
                         globals={
                             "fn": rfn_enzyme,
-                        } + primalins,
+                        } | primalins,
                     ).timeit()
                 )
 
@@ -122,14 +131,14 @@ class EnzymeJaxTest(absltest.TestCase):
                         fwdstr,
                         globals={
                             "fwd": fwd_enzyme,
-                        } + fwdins,
+                        } | fwdins,
                     ).timeit()
                 )
 
             if (name, pipeline) in RevPipelines:
                 rev_enzyme = jax.jit(splatvjp(rfn_enzyme))
 
-                primals, grads = rev_jax(dout, *ins)
+                primals, grads = rev_enzyme(*douts, *ins)
                 self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
 
                 for i, (g, g_p) in enumerate(zip(grads, grads_p)):
@@ -140,8 +149,8 @@ class EnzymeJaxTest(absltest.TestCase):
                     timeit.Timer(
                         revstr,
                         globals={
-                            "rev": rev_jax,
-                        } + revins,
+                            "rev": rev_enzyme,
+                        } | revins,
                     ).timeit()
                 )
 
