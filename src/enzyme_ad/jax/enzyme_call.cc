@@ -57,6 +57,7 @@
 #include "xla/service/cpu/cpu_executable.h"
 
 #include "Enzyme/FunctionUtils.h"
+#include "Enzyme/MLIR/Passes/Passes.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
@@ -204,6 +205,7 @@ public:
                                       nullptr);
             }
           }
+        llvm::errs() << "linkMod: " << *linkMod << "\n";
       }
       if (xla_runtime) {
         ss << " extern \"C\" void " << fn << "(void* exec";
@@ -831,10 +833,12 @@ public:
 #endif
     }
 
+    llvm::errs() << " str: " << ss.str() << "\n";
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
+    llvm::errs() << " postmod: " << *mod << "\n";
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
   }
@@ -1022,6 +1026,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::registerAsyncPasses();
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
+  mlir::registerenzymePasses();
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)

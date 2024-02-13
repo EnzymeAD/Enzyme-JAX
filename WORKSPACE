@@ -33,13 +33,18 @@ llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 XLA_COMMIT = "c5163ff997d8be8fd32136e25050fa32c67c989f"
 XLA_SHA256 = ""
 
-http_archive(
-    name = "xla",
-    sha256 = XLA_SHA256,
-    strip_prefix = "xla-" + XLA_COMMIT,
-    urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-    patch_args = ["-p1"],
-    patches = ["//:patches/xla.patch"],
+# http_archive(
+#     name = "xla",
+#     sha256 = XLA_SHA256,
+#     strip_prefix = "xla-" + XLA_COMMIT,
+#     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
+#     patch_args = ["-p1"],
+#     patches = ["//:patches/xla.patch"],
+# )
+
+local_repository(
+    name = "xlae",
+    path = "./xla"
 )
 
 PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"
@@ -60,15 +65,21 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "ed28cb68ccf47b5ff2594421ad62f878be562b03"
-ENZYME_SHA256 = ""
+# ENZYME_COMMIT = "ed28cb68ccf47b5ff2594421ad62f878be562b03"
+# ENZYME_SHA256 = ""
+# 
+# http_archive(
+#     name = "enzyme",
+#     sha256 = ENZYME_SHA256,
+#     strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
+#     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
+# )
 
-http_archive(
+local_repository(
     name = "enzyme",
-    sha256 = ENZYME_SHA256,
-    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
-    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
+    path = "../Enzyme/enzyme",
 )
+
 
 JAX_COMMIT = "9a098e922aff62a3b49bd673b9518d97ee599248"
 JAX_SHA256 = ""
