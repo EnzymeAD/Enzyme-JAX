@@ -42,11 +42,6 @@ http_archive(
     patches = ["//:patches/xla.patch"],
 )
 
-local_repository(
-    name = "xla",
-    path = "./xla"
-)
-
 PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"
 PYRULES_SHA256 = "cfa6957832ae0e0c7ee2ccf455a888a291e8419ed8faf45f4420dd7414d5dd96"
 
