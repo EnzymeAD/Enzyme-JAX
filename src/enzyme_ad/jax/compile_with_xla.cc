@@ -31,7 +31,12 @@
 #include "compile_with_xla.h"
 
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
+#include "Implementations/XLADerivatives.h"
 
+void prepareRegistry(mlir::DialectRegistry &registry) {
+  mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
+  mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
+}
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 std::unique_ptr<xla::LocalExecutable>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
@@ -39,7 +44,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                               const std::string &pass_pipeline) {
   // Parse MLIR.
   mlir::DialectRegistry registry;
-  mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
+  prepareRegistry(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<mlir::arith::ArithDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
@@ -132,11 +137,13 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
     throw pybind11::value_error(executor.status().ToString());
   }
 
+  xla::Compiler::CompileOptions opts =  {build_options.device_allocator(), build_options.compile_thread_pool(),
+       build_options.layout_canonicalization_callback()};
+  opts.registry = &registry;
   auto executable = local_client->local_service()->BuildExecutable(
       xla_computation.proto(), std::move(module_config_or_error.value()),
       local_client->mutable_backend(), executor.value(),
-      {build_options.device_allocator(), build_options.compile_thread_pool(),
-       build_options.layout_canonicalization_callback(), &registry},
+      opts,
       build_options.run_backend_only());
   if (!executable.ok()) {
     throw pybind11::value_error(executable.status().ToString());

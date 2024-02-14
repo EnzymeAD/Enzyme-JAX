@@ -796,8 +796,8 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     shadconv = None
     if pipeline_options.mlir_ad():
-        act_tup = (",".join(["enzyme_dup" for a in args]))
-        newpasses = "enzyme-wrap{infn=main outfn=main retTy=enzyme_dup argTys="+act_tup+" mode=ForwardMode}," + pipeline_options.pass_pipeline()
+        act_tup = (",".join(["enzyme_dup" for a in arg_primals]))
+        newpasses = "enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="+act_tup+" mode=ForwardMode}," + pipeline_options.pass_pipeline()
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
         outshapes2 = []
         for o in kwargs["out_shapes"]:

@@ -43,7 +43,7 @@ XLA_SHA256 = ""
 # )
 
 local_repository(
-    name = "xlae",
+    name = "xla",
     path = "./xla"
 )
 

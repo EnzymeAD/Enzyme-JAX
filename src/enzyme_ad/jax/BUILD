@@ -1,4 +1,5 @@
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
+load("@llvm-project//llvm:tblgen.bzl", "gentbl")
 
 licenses(["notice"])
 
@@ -39,11 +40,75 @@ py_library(
     visibility = ["//visibility:public"]
 )
 
+
+gentbl(
+    name = "mhlo-derivatives",
+    tbl_outs = [(
+        "-gen-mlir-derivatives",
+        "Implementations/MHLODerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/MHLODerivatives.td",
+    td_srcs = [
+        "Implementations/MHLODerivatives.td",
+        "Implementations/Common.td",
+    ],
+    deps = [
+        "@enzyme//:enzyme-tblgen",
+    ],
+)
+
+td_library(
+    name = "EnzymeXLAPassesTdFiles",
+    srcs = [
+    ],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "EnzymeXLAPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=enzymexla",
+            ],
+            "Passes/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Passes.td",
+    deps = [":EnzymeXLAPassesTdFiles"],
+)
+
+cc_library(
+    name = "XLADerivatives",
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+        ],
+    ),
+    hdrs = glob([
+        "Implementations/*.h",
+        "Passes/*.h",
+    ]),
+    deps = [
+        ":EnzymeXLAPassesIncGen",
+        ":mhlo-derivatives",
+        "@xla//xla/mlir_hlo",
+        "@enzyme//:EnzymeMLIR",
+    ]
+)
+
 pybind_library(
     name = "compile_with_xla",
     srcs = ["compile_with_xla.cc"],
-    hdrs = ["compile_with_xla.h"],
+    hdrs = glob(["compile_with_xla.h", "Implementations/*.h", "Passes/*.h"]),
     deps = [
+        ":XLADerivatives",
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@tsl//tsl/framework:allocator",
         "@tsl//tsl/framework:allocator_registry_impl",
