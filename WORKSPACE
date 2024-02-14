@@ -30,7 +30,7 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "abe31d7bb7d49807be0acc5da33647ffa759741b"
+XLA_COMMIT = "6ee7005b0dbe29ba0cd077a690db1555ec6de346"
 XLA_SHA256 = ""
 
 http_archive(
@@ -61,7 +61,7 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 pip_install_dependencies()
 
 ENZYME_COMMIT = "9384fe20caec02bd30f302e32f4f1c1f7ccb7d9d"
-ENZYME_SHA256 = ""
+ENZYME_SHA256 = "a0846fab3a2927d84ab5c9a51e539e93a9a7d6c6ec5d87722f24074fefd0c3f8"
 
 http_archive(
     name = "enzyme",
