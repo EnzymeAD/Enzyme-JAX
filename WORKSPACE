@@ -13,8 +13,8 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 
 rules_cc_dependencies()
 
-LLVM_COMMIT = "0f8680b9d87fa9e8839bd8e39ce605d64148ace6"
-LLVM_SHA256 = "85216a0eeed8988ad9c8700248597793146831c3a62cf85f4800d7b1df7549a5"
+LLVM_COMMIT = "5932f3f861f84305bd01050d0af8e0dcb232a8b3"
+LLVM_SHA256 = ""
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
 http_archive(
@@ -30,17 +30,17 @@ http_archive(
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
-XLA_COMMIT = "c5163ff997d8be8fd32136e25050fa32c67c989f"
+XLA_COMMIT = "abe31d7bb7d49807be0acc5da33647ffa759741b"
 XLA_SHA256 = ""
 
-# http_archive(
-#     name = "xla",
-#     sha256 = XLA_SHA256,
-#     strip_prefix = "xla-" + XLA_COMMIT,
-#     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-#     patch_args = ["-p1"],
-#     patches = ["//:patches/xla.patch"],
-# )
+http_archive(
+    name = "xla",
+    sha256 = XLA_SHA256,
+    strip_prefix = "xla-" + XLA_COMMIT,
+    urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
+    patch_args = ["-p1"],
+    patches = ["//:patches/xla.patch"],
+)
 
 local_repository(
     name = "xla",
@@ -65,21 +65,15 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-# ENZYME_COMMIT = "ed28cb68ccf47b5ff2594421ad62f878be562b03"
-# ENZYME_SHA256 = ""
-# 
-# http_archive(
-#     name = "enzyme",
-#     sha256 = ENZYME_SHA256,
-#     strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
-#     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
-# )
+ENZYME_COMMIT = "9384fe20caec02bd30f302e32f4f1c1f7ccb7d9d"
+ENZYME_SHA256 = ""
 
-local_repository(
+http_archive(
     name = "enzyme",
-    path = "../Enzyme/enzyme",
+    sha256 = ENZYME_SHA256,
+    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
+    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
-
 
 JAX_COMMIT = "9a098e922aff62a3b49bd673b9518d97ee599248"
 JAX_SHA256 = ""
