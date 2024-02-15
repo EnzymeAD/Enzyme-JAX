@@ -62,9 +62,8 @@ class LLVMDialect;
 } // end namespace mlir
 
 static void regsiterenzymeXLAPasses() {
-    using namespace mlir;
-    registerArithRaisingPass();
-    registerPrintPass();
+  using namespace mlir;
+  registerArithRaisingPass();
+  registerPrintPass();
 }
 #endif // ENZYMEXLA_PASSES_H
-

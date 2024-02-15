@@ -4,8 +4,9 @@ namespace mlir {
 namespace enzyme {
 void registerMHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 
-static inline void registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
-    registerMHLODialectAutoDiffInterface(registry);
+static inline void
+registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
+  registerMHLODialectAutoDiffInterface(registry);
 }
-}
-}
+} // namespace enzyme
+} // namespace mlir

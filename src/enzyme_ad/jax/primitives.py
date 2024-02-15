@@ -24,6 +24,7 @@ LANG_MHLO = enzyme_call.Language.MHLO
 
 from enum import Enum
 
+
 class PipelineConfig:
     # Whether to use the new xla runtime
     def xla_runtime(self):
@@ -37,6 +38,7 @@ class PipelineConfig:
     def mlir_ad(self):
         raise NotImplementedError()
 
+
 class OldXLAPipeline:
     def xla_runtime(self):
         return False
@@ -46,6 +48,7 @@ class OldXLAPipeline:
 
     def mlir_ad(self):
         return False
+
 
 class NewXLAPipeline:
     def __init__(self, passes=None, mlirad=False):
@@ -208,13 +211,15 @@ class NewXLAPipeline:
     def mlir_ad(self):
         return self.mlirad
 
+
 DefaultPipeline = NewXLAPipeline(None, True)
+
 
 def pass_pipeline(options):
     if type(options) == type(""):
         return options
     else:
-        return 
+        return
 
 
 def resource_dir():
@@ -796,18 +801,33 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     shadconv = None
     if pipeline_options.mlir_ad():
-        act_tup = (",".join(["enzyme_dup" for a in arg_primals]))
-        newpasses = "enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="+act_tup+" mode=ForwardMode}," + \
-             "arith-raise, print," + pipeline_options.pass_pipeline()
+        act_tup = ",".join(["enzyme_dup" for a in arg_primals])
+        newpasses = (
+            "enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
+            + act_tup
+            + " mode=ForwardMode},"
+            + "arith-raise, print,"
+            + pipeline_options.pass_pipeline()
+        )
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
         outshapes2 = []
         for o in kwargs["out_shapes"]:
             outshapes2.append(o)
             outshapes2.append(o)
         (in_tree, in_idx_map, func) = kwargs["source"]
-        avals = {2*k:v for k, v in in_idx_map.items()} | {2*k+1:v for k, v in in_idx_map.items()}
+        avals = {2 * k: v for k, v in in_idx_map.items()} | {
+            2 * k + 1: v for k, v in in_idx_map.items()
+        }
         source = (in_tree, avals, func)
-        shadconv = ffi_call(*args, out_shapes=outshapes2, source=source, fn=kwargs["fn"], argv=kwargs["argv"], lang=kwargs["lang"], pipeline_options=pipeline_options)
+        shadconv = ffi_call(
+            *args,
+            out_shapes=outshapes2,
+            source=source,
+            fn=kwargs["fn"],
+            argv=kwargs["argv"],
+            lang=kwargs["lang"],
+            pipeline_options=pipeline_options
+        )
     else:
         shadconv = _enzyme_fwd_p.bind(
             *args,
@@ -913,7 +933,7 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultPipeline):
         def wrapped(*args: Any):
             args_flat, in_tree = jax.tree_util.tree_flatten(args)
             out_shape = jax.eval_shape(func, *args)
-            in_idxs = {i:i for i in range(len(args_flat))}
+            in_idxs = {i: i for i in range(len(args_flat))}
             out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
             out_shape_flat = [
                 jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat

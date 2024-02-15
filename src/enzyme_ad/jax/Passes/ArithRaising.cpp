@@ -10,14 +10,14 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Passes/PassDetails.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
@@ -28,21 +28,22 @@ using namespace mlir::enzyme;
 using namespace enzyme;
 
 namespace {
-struct ArithRaisingPass
-    : public ArithRaisingPassBase<ArithRaisingPass> {
+struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
 
   void runOnOperation() override {
     auto op = getOperation();
 
     op->walk([](arith::AddFOp addOp) {
       OpBuilder builder(addOp);
-      Value newAddOp = builder.create<mhlo::AddOp>(addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+      Value newAddOp = builder.create<mhlo::AddOp>(
+          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
     op->walk([](arith::AddIOp addOp) {
       OpBuilder builder(addOp);
-      Value newAddOp = builder.create<mhlo::AddOp>(addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+      Value newAddOp = builder.create<mhlo::AddOp>(
+          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
@@ -58,4 +59,3 @@ std::unique_ptr<Pass> createArithRaisingPass() {
 }
 } // namespace enzyme
 } // namespace mlir
-

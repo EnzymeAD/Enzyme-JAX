@@ -137,13 +137,13 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
     throw pybind11::value_error(executor.status().ToString());
   }
 
-  xla::Compiler::CompileOptions opts =  {build_options.device_allocator(), build_options.compile_thread_pool(),
-       build_options.layout_canonicalization_callback()};
+  xla::Compiler::CompileOptions opts = {
+      build_options.device_allocator(), build_options.compile_thread_pool(),
+      build_options.layout_canonicalization_callback()};
   opts.registry = &registry;
   auto executable = local_client->local_service()->BuildExecutable(
       xla_computation.proto(), std::move(module_config_or_error.value()),
-      local_client->mutable_backend(), executor.value(),
-      opts,
+      local_client->mutable_backend(), executor.value(), opts,
       build_options.run_backend_only());
   if (!executable.ok()) {
     throw pybind11::value_error(executable.status().ToString());
