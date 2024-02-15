@@ -15,6 +15,7 @@ PrimalPipelines = AllPipelines[1:]
 FwdPipelines = AllPipelines
 RevPipelines = AllPipelines[1:]
 
+
 # @jax.jit
 # def fwd_jax(in0, in1, din0, din1):
 # .  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
@@ -63,7 +64,13 @@ class EnzymeJaxTest(absltest.TestCase):
 
         print(
             name + " JaX Primal: ",
-            timeit.Timer(primalstr, globals={"fn": rfn_jax,} | primalins,).timeit(),
+            timeit.Timer(
+                primalstr,
+                globals={
+                    "fn": rfn_jax,
+                }
+                | primalins,
+            ).timeit(),
         )
 
         fwd_jax = jax.jit(splatjvp(rfn_jax))
@@ -83,7 +90,13 @@ class EnzymeJaxTest(absltest.TestCase):
         fwdins = primalins | {("din" + str(i)): dins[0] for i in range(len(dins))}
         print(
             name + " JaX Fwd: ",
-            timeit.Timer(fwdstr, globals={"fwd": fwd_jax,} | fwdins,).timeit(),
+            timeit.Timer(
+                fwdstr,
+                globals={
+                    "fwd": fwd_jax,
+                }
+                | fwdins,
+            ).timeit(),
         )
 
         assert len(douts) == 1
@@ -103,10 +116,16 @@ class EnzymeJaxTest(absltest.TestCase):
 
         print(
             name + " JaX Rev: ",
-            timeit.Timer(revstr, globals={"rev": rev_jax,} | revins,).timeit(),
+            timeit.Timer(
+                revstr,
+                globals={
+                    "rev": rev_jax,
+                }
+                | revins,
+            ).timeit(),
         )
 
-        for (name, pipeline) in AllPipelines:
+        for name, pipeline in AllPipelines:
             rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn)
 
             if (name, pipeline) in PrimalPipelines:
@@ -120,7 +139,11 @@ class EnzymeJaxTest(absltest.TestCase):
                     name,
                     ") Primal: ",
                     timeit.Timer(
-                        primalstr, globals={"fn": rfn_enzyme,} | primalins,
+                        primalstr,
+                        globals={
+                            "fn": rfn_enzyme,
+                        }
+                        | primalins,
                     ).timeit(),
                 )
 
@@ -139,7 +162,11 @@ class EnzymeJaxTest(absltest.TestCase):
                     name,
                     ") Fwd: ",
                     timeit.Timer(
-                        fwdstr, globals={"fwd": fwd_enzyme,} | fwdins,
+                        fwdstr,
+                        globals={
+                            "fwd": fwd_enzyme,
+                        }
+                        | fwdins,
                     ).timeit(),
                 )
 
@@ -158,7 +185,11 @@ class EnzymeJaxTest(absltest.TestCase):
                     name,
                     ") Rev: ",
                     timeit.Timer(
-                        revstr, globals={"rev": rev_enzyme,} | revins,
+                        revstr,
+                        globals={
+                            "rev": rev_enzyme,
+                        }
+                        | revins,
                     ).timeit(),
                 )
 

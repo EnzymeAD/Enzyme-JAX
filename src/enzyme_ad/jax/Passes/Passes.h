@@ -33,7 +33,7 @@ class MhloDialect;
 
 namespace stablehlo {
 class StablehloDialect;
-} // end namespace arith
+} // namespace stablehlo
 
 namespace arith {
 class ArithDialect;

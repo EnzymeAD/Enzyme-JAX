@@ -125,41 +125,41 @@ public:
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
       if (!xla_runtime) {
-      size_t num_in = 0;
-      for (auto &buf2 : assignment.Allocations()) {
-        if (buf2.is_entry_computation_parameter()) {
-          num_in++;
-        }
-      }
-      if (num_in != in_shapes.size()) {
-        std::string err_str;
-        llvm::raw_string_ostream ss(err_str);
-        ss << assignment.ToString() << "\n";
-        ss << source << "\n";
-        ss << " Number of mhlo inputs (" << num_in
-           << ") != number of jax inputs (" << in_shapes.size() << "):\n";
-        ss << source << "\n";
-        throw pybind11::value_error(ss.str());
-      }
-      for (size_t i = 0; i < in_shapes.size(); i++) {
-        ssize_t idx = -1;
+        size_t num_in = 0;
         for (auto &buf2 : assignment.Allocations()) {
-          if (!buf2.is_entry_computation_parameter())
-            continue;
-          if (buf2.parameter_number() != i)
-            continue;
-          assert(idx == -1);
-          idx = buf2.index();
+          if (buf2.is_entry_computation_parameter()) {
+            num_in++;
+          }
         }
-        if (idx == -1) {
+        if (num_in != in_shapes.size()) {
           std::string err_str;
           llvm::raw_string_ostream ss(err_str);
-          ss << " Could not find input parameter (" << i
-             << ") as hlo parameter:\n";
+          ss << assignment.ToString() << "\n";
+          ss << source << "\n";
+          ss << " Number of mhlo inputs (" << num_in
+             << ") != number of jax inputs (" << in_shapes.size() << "):\n";
           ss << source << "\n";
           throw pybind11::value_error(ss.str());
         }
-      }
+        for (size_t i = 0; i < in_shapes.size(); i++) {
+          ssize_t idx = -1;
+          for (auto &buf2 : assignment.Allocations()) {
+            if (!buf2.is_entry_computation_parameter())
+              continue;
+            if (buf2.parameter_number() != i)
+              continue;
+            assert(idx == -1);
+            idx = buf2.index();
+          }
+          if (idx == -1) {
+            std::string err_str;
+            llvm::raw_string_ostream ss(err_str);
+            ss << " Could not find input parameter (" << i
+               << ") as hlo parameter:\n";
+            ss << source << "\n";
+            throw pybind11::value_error(ss.str());
+          }
+        }
       }
       source = stringbuf;
       if (xla_runtime)

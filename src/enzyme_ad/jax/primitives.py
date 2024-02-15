@@ -473,17 +473,19 @@ def _enzyme_primal_lowering(
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if in_idx_map[i] in kept)
         orig_shapes = []
         seen = []
-        for (i, shape) in enumerate(in_shapes):
+        for i, shape in enumerate(in_shapes):
             if in_idx_map[i] in seen:
                 continue
             seen.append(in_idx_map[i])
             orig_shapes.append(shape)
         if len(kept) != len(orig_shapes):
-            post = ",".join(["enzyme_dup"]*len(kept))
-            prev = ",".join(["enzyme_dup"]*len(orig_shapes))
+            post = ",".join(["enzyme_dup"] * len(kept))
+            prev = ",".join(["enzyme_dup"] * len(orig_shapes))
             pass_pipeline = pass_pipeline.replace(prev, post)
         # in_shapes = [shape for (i, shape) in enumerate(orig_shapes) if i in kept]
-        in_shapes = [shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept]
+        in_shapes = [
+            shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept
+        ]
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(

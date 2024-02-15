@@ -9,8 +9,8 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #define DEBUG_TYPE "enzyme"
 
@@ -19,12 +19,9 @@ using namespace mlir::enzyme;
 using namespace enzyme;
 
 namespace {
-struct PrintPass
-    : public PrintPassBase<PrintPass> {
+struct PrintPass : public PrintPassBase<PrintPass> {
 
-  void runOnOperation() override {
-    llvm::errs() << *getOperation() << "\n";
-  }
+  void runOnOperation() override { llvm::errs() << *getOperation() << "\n"; }
 };
 
 } // end anonymous namespace
@@ -36,4 +33,3 @@ std::unique_ptr<Pass> createPrintPass() {
 }
 } // namespace enzyme
 } // namespace mlir
-

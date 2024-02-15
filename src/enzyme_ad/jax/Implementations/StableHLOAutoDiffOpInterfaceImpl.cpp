@@ -34,7 +34,8 @@ namespace {
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
-  registry.addExtension(+[](MLIRContext *context, stablehlo::StablehloDialect *) {
-    registerInterfaces(context);
-  });
+  registry.addExtension(
+      +[](MLIRContext *context, stablehlo::StablehloDialect *) {
+        registerInterfaces(context);
+      });
 }

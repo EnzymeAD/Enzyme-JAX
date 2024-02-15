@@ -39,11 +39,11 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
-      newAddOp = builder.create<stablehlo::AddOp>(
-          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+        newAddOp = builder.create<stablehlo::AddOp>(
+            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       else
-      newAddOp = builder.create<mhlo::AddOp>(
-          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+        newAddOp = builder.create<mhlo::AddOp>(
+            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
@@ -52,10 +52,10 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       Value newAddOp;
       if (use_stablehlo)
         newAddOp = builder.create<stablehlo::AddOp>(
-          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       else
         newAddOp = builder.create<mhlo::AddOp>(
-          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
