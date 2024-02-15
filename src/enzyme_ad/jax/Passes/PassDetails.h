@@ -17,8 +17,7 @@
 #ifndef DIALECT_ENZYMEXLA_TRANSFORMS_PASSDETAILS_H
 #define DIALECT_ENZYMEXLA_TRANSFORMS_PASSDETAILS_H
 
-#include "Dialect/Ops.h"
-#include "Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -31,7 +30,7 @@ namespace enzyme {
 class EnzymeDialect;
 
 #define GEN_PASS_CLASSES
-#include "Passes/Passes.h.inc"
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
 } // namespace enzyme
 } // namespace mlir

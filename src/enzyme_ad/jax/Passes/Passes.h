@@ -12,14 +12,13 @@
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-
 namespace mlir {
 class PatternRewriter;
 class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
 std::unique_ptr<Pass> createArithRaisingPass();
+std::unique_ptr<Pass> createPrintPass();
 } // namespace enzyme
 } // namespace mlir
 
@@ -58,9 +57,14 @@ class LLVMDialect;
 }
 
 #define GEN_PASS_REGISTRATION
-#include "Passes/Passes.h.inc"
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
 } // end namespace mlir
 
+static void regsiterenzymeXLAPasses() {
+    using namespace mlir;
+    registerArithRaisingPass();
+    registerPrintPass();
+}
 #endif // ENZYMEXLA_PASSES_H
 

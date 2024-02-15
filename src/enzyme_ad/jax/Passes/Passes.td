@@ -11,13 +11,20 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ArithRaisePass : Pass<"arith-raise"> {
+def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
     "arith::ArithDialect",
     "mhlo::MhloDialect"
   ];
-  let constructor = "mlir::enzyme::createArithRaisePass()";
+  let constructor = "mlir::enzyme::createArithRaisingPass()";
+}
+
+def PrintPass : Pass<"print"> {
+  let summary = "Print the module";
+  let dependentDialects = [
+  ];
+  let constructor = "mlir::enzyme::createPrintPass()";
 }
 
 #endif

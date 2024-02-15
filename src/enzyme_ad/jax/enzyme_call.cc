@@ -59,6 +59,8 @@
 #include "Enzyme/FunctionUtils.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
 enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
@@ -1027,6 +1029,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
   mlir::registerenzymePasses();
+  regsiterenzymeXLAPasses();
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
