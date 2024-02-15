@@ -469,8 +469,6 @@ def _enzyme_primal_lowering(
         lowered_func = jax.jit(func).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
-        print(in_idx_map)
-        print("source", source)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if in_idx_map[i] in kept)
         orig_shapes = []
@@ -483,15 +481,10 @@ def _enzyme_primal_lowering(
         if len(kept) != len(orig_shapes):
             post = ",".join(["enzyme_dup"]*len(kept))
             prev = ",".join(["enzyme_dup"]*len(orig_shapes))
-            pipeline_options = pipeline_options.replace(prev, post)
+            pass_pipeline = pass_pipeline.replace(prev, post)
         # in_shapes = [shape for (i, shape) in enumerate(orig_shapes) if i in kept]
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept]
-        print("in args", in_args)
-        print("in shapes", in_shapes)
 
-    print(pipeline_options)
-    print(pipeline_options.xla_runtime())
-    print(pipeline_options.pass_pipeline())
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
         source,
@@ -502,7 +495,7 @@ def _enzyme_primal_lowering(
         enzyme_call.ABI.Primal,
         lang,
         pipeline_options.xla_runtime(),
-        pass_pipeline(),
+        pass_pipeline,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -516,7 +509,6 @@ def _enzyme_primal_lowering(
     custom_call = stablehlo.CustomCallOp(
         out_types, mlir_args, call_target_name="jaxzyme.primal"
     )
-    print(custom_call)
 
     results = custom_call.results
 
