@@ -532,8 +532,6 @@ struct tensor<T, n0, N...>
     f.setLinkage(Function::LinkageTypes::InternalLinkage);
   }
 
-  llvm::errs() << " postlinkMod: " << *mod << "\n";
-
   PipelineTuningOptions PTO;
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
@@ -654,8 +652,6 @@ struct tensor<T, n0, N...>
       }
     }
   }
-
-  llvm::errs() << " clangcompmod: " << *mod << "\n";
 
   return mod;
 }

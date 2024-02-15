@@ -21,7 +21,7 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 
@@ -29,12 +29,12 @@ using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
-#include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
+#include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 } // namespace
 
-void mlir::enzyme::registerMHLODialectAutoDiffInterface(
+void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
-  registry.addExtension(+[](MLIRContext *context, mhlo::MhloDialect *) {
+  registry.addExtension(+[](MLIRContext *context, stablehlo::StablehloDialect *) {
     registerInterfaces(context);
   });
 }

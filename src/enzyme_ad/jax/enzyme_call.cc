@@ -124,6 +124,7 @@ public:
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
+      if (!xla_runtime) {
       size_t num_in = 0;
       for (auto &buf2 : assignment.Allocations()) {
         if (buf2.is_entry_computation_parameter()) {
@@ -133,6 +134,8 @@ public:
       if (num_in != in_shapes.size()) {
         std::string err_str;
         llvm::raw_string_ostream ss(err_str);
+        ss << assignment.ToString() << "\n";
+        ss << source << "\n";
         ss << " Number of mhlo inputs (" << num_in
            << ") != number of jax inputs (" << in_shapes.size() << "):\n";
         ss << source << "\n";
@@ -156,6 +159,7 @@ public:
           ss << source << "\n";
           throw pybind11::value_error(ss.str());
         }
+      }
       }
       source = stringbuf;
       if (xla_runtime)
@@ -207,7 +211,6 @@ public:
                                       nullptr);
             }
           }
-        llvm::errs() << "linkMod: " << *linkMod << "\n";
       }
       if (xla_runtime) {
         ss << " extern \"C\" void " << fn << "(void* exec";
@@ -835,12 +838,10 @@ public:
 #endif
     }
 
-    llvm::errs() << " str: " << ss.str() << "\n";
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod)
       throw pybind11::value_error("failed to compile C++");
-    llvm::errs() << " postmod: " << *mod << "\n";
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
   }

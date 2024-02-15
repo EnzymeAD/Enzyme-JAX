@@ -1,6 +1,6 @@
 include "Common.td"
 
-class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps> : MLIRDerivative<"mhlo", opName_, patternToMatch, resultOps>;
+class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps> : MLIRDerivative<"stablehlo", opName_, patternToMatch, resultOps>;
 
 class HLOInst<string m> : Inst<m, "mhlo">;
 

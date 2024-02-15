@@ -31,6 +31,10 @@ namespace mhlo {
 class MhloDialect;
 } // end namespace mhlo
 
+namespace stablehlo {
+class StablehloDialect;
+} // end namespace arith
+
 namespace arith {
 class ArithDialect;
 } // end namespace arith

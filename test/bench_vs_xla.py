@@ -4,6 +4,8 @@ from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline
 from absl.testing import absltest
 import timeit
 
+argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+
 AllPipelines = [
     ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
     ("NewXLA", NewXLAPipeline()),
@@ -105,7 +107,7 @@ class EnzymeJaxTest(absltest.TestCase):
         )
 
         for (name, pipeline) in AllPipelines:
-            rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline)(in_fn)
+            rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn)
 
             if (name, pipeline) in PrimalPipelines:
                 ao = rfn_enzyme(*ins)

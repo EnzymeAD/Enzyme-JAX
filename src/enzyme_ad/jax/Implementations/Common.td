@@ -58,12 +58,3 @@ class Inst<string mnemonic, string dialect_>  : Operation</*primal*/1, /*shadow*
 
 def Op {
 }
-
-class MHLOInst<string m> : Inst<m, "mhlo">;
-
-def Add : MHLOInst<"mhlo::AddOp">;
-def Sub : MHLOInst<"mhlo::SubOp">;
-def Neg : MHLOInst<"mhlo::NegOp">;
-def Mul : MHLOInst<"mhlo::MulOp">;
-def Div : MHLOInst<"mhlo::DivOp">;
-def Rem : MHLOInst<"mhlo::RemOp">;

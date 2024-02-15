@@ -19,6 +19,8 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #define DEBUG_TYPE "enzyme"
@@ -33,16 +35,26 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
   void runOnOperation() override {
     auto op = getOperation();
 
-    op->walk([](arith::AddFOp addOp) {
+    op->walk([=](arith::AddFOp addOp) {
       OpBuilder builder(addOp);
-      Value newAddOp = builder.create<mhlo::AddOp>(
+      Value newAddOp;
+      if (use_stablehlo)
+      newAddOp = builder.create<stablehlo::AddOp>(
+          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+      else
+      newAddOp = builder.create<mhlo::AddOp>(
           addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
-    op->walk([](arith::AddIOp addOp) {
+    op->walk([=](arith::AddIOp addOp) {
       OpBuilder builder(addOp);
-      Value newAddOp = builder.create<mhlo::AddOp>(
+      Value newAddOp;
+      if (use_stablehlo)
+        newAddOp = builder.create<stablehlo::AddOp>(
+          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
+      else
+        newAddOp = builder.create<mhlo::AddOp>(
           addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();

@@ -53,6 +53,25 @@ gentbl(
     td_srcs = [
         "Implementations/MHLODerivatives.td",
         "Implementations/Common.td",
+        "Implementations/HLODerivatives.td",
+    ],
+    deps = [
+        "@enzyme//:enzyme-tblgen",
+    ],
+)
+
+gentbl(
+    name = "stablehlo-derivatives",
+    tbl_outs = [(
+        "-gen-mlir-derivatives",
+        "Implementations/StableHLODerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/StableHLODerivatives.td",
+    td_srcs = [
+        "Implementations/StableHLODerivatives.td",
+        "Implementations/Common.td",
+        "Implementations/HLODerivatives.td",
     ],
     deps = [
         "@enzyme//:enzyme-tblgen",
@@ -99,6 +118,8 @@ cc_library(
     deps = [
         ":EnzymeXLAPassesIncGen",
         ":mhlo-derivatives",
+        ":stablehlo-derivatives",
+        "@stablehlo//:stablehlo_ops",
         "@xla//xla/mlir_hlo",
         "@enzyme//:EnzymeMLIR",
     ]

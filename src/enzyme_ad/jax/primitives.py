@@ -54,6 +54,8 @@ class NewXLAPipeline:
     def __init__(self, passes=None, mlirad=False):
         if passes is None:
             passes = """
+          print,
+          stablehlo-legalize-to-hlo,
           inline{default-pipeline=canonicalize max-iterations=4},
           expand-hlo-tuples{entry-function=main},
           func.func(mhlo-flatten-tuple),
@@ -458,6 +460,7 @@ def _enzyme_primal_lowering(
 
     in_args = (*args_flat,)
 
+    pass_pipeline = pipeline_options.pass_pipeline()
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, func) = source
         in_idxs = sorted(set(v for _, v in in_idx_map.items()))
@@ -477,7 +480,12 @@ def _enzyme_primal_lowering(
                 continue
             seen.append(in_idx_map[i])
             orig_shapes.append(shape)
-        in_shapes = [shape for (i, shape) in enumerate(orig_shapes) if i in kept]
+        if len(kept) != len(orig_shapes):
+            post = ",".join(["enzyme_dup"]*len(kept))
+            prev = ",".join(["enzyme_dup"]*len(orig_shapes))
+            pipeline_options = pipeline_options.replace(prev, post)
+        # in_shapes = [shape for (i, shape) in enumerate(orig_shapes) if i in kept]
+        in_shapes = [shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept]
         print("in args", in_args)
         print("in shapes", in_shapes)
 
@@ -494,7 +502,7 @@ def _enzyme_primal_lowering(
         enzyme_call.ABI.Primal,
         lang,
         pipeline_options.xla_runtime(),
-        pipeline_options.pass_pipeline(),
+        pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -803,10 +811,10 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     if pipeline_options.mlir_ad():
         act_tup = ",".join(["enzyme_dup" for a in arg_primals])
         newpasses = (
-            "enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
+            "print,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
             + act_tup
             + " mode=ForwardMode},"
-            + "arith-raise, print,"
+            + "arith-raise{stablehlo=true}, print,"
             + pipeline_options.pass_pipeline()
         )
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())

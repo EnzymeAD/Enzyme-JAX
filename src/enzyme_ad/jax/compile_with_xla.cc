@@ -54,10 +54,12 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
 
+  if (!xla_runtime) {
   mlir::PassManager pm(&context);
   pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
   if (!mlir::succeeded(pm.run(*parsed_module))) {
     throw pybind11::value_error("StableHLO => MHLO failed");
+  }
   }
 
   // Convert to XLA Computation.
