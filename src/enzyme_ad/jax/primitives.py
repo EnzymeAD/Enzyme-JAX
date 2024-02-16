@@ -836,10 +836,10 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         act_tup = ",".join(["enzyme_dup" for a in arg_primals])
         newpasses = (
-            "stablehlo-aggressive-simplification,cse,print,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
+            "func.func(stablehlo-aggressive-simplification),cse,print,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
             + act_tup
             + " mode=ForwardMode},"
-            + "arith-raise{stablehlo=true}, stablehlo-aggressive-simplification, cse, canonicalize, print,"
+            + "arith-raise{stablehlo=true}, func.func(stablehlo-aggressive-simplification), cse, canonicalize, print,"
             + pipeline_options.pass_pipeline()
         )
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
