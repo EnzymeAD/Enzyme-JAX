@@ -60,6 +60,7 @@
 #include "Enzyme/MLIR/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/transforms/Passes.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
@@ -1031,6 +1032,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::memref::registerMemRefPasses();
   mlir::registerenzymePasses();
   regsiterenzymeXLAPasses();
+  mlir::stablehlo::registerPasses();
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
@@ -1143,6 +1145,8 @@ PYBIND11_MODULE(enzyme_call, m) {
     return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
                              "xla._CUSTOM_CALL_TARGET");
   });
+  
+  m.def("run_pass_pipeline", run_pass_pipeline);
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,

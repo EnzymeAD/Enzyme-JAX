@@ -33,10 +33,125 @@
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Implementations/XLADerivatives.h"
 
+#include "mlir/lib/Bindings/Python/IRModule.h"
+#include "mlir/CAPI/IR.h"
+#include "mlir-c/IR.h"
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 }
+
+  
+ /// Returns an unused symbol in `module` for `oldSymbolName` by trying numeric
+ /// suffix in `lastUsedID`.
+ static mlir::StringAttr renameSymbol(llvm::StringRef oldSymName, unsigned &lastUsedID,
+                                mlir::ModuleOp module) {
+using namespace llvm;
+using namespace mlir;
+   SmallString<64> newSymName(oldSymName);
+   newSymName.push_back('_');
+  
+   MLIRContext *ctx = module->getContext();
+  
+   while (true) {
+     auto possible = StringAttr::get(ctx, newSymName + Twine(++lastUsedID));
+     if (!SymbolTable::lookupSymbolIn(module, possible))
+       return possible;
+   }
+  
+ }
+  
+ /// Checks if a symbol with the same name as `op` already exists in `source`.
+ /// If so, renames `op` and updates all its references in `target`.
+ static mlir::LogicalResult updateSymbolAndAllUses(mlir::SymbolOpInterface op,
+                                             mlir::ModuleOp target,
+                                             mlir::ModuleOp source,
+                                             unsigned &lastUsedID) {
+using namespace llvm;
+using namespace mlir;
+   if (!SymbolTable::lookupSymbolIn(source, op.getName()))
+     return success();
+  
+   StringRef oldSymName = op.getName();
+   StringAttr newSymName = renameSymbol(oldSymName, lastUsedID, target);
+  
+   if (failed(SymbolTable::replaceAllSymbolUses(op, newSymName, target)))
+     return op.emitError("unable to update all symbol uses for ")
+            << oldSymName << " to " << newSymName;
+  
+   SymbolTable::setSymbolName(op, newSymName);
+   return success();
+ }
+
+MlirOperation run_pass_pipeline(llvm::StringRef mlir, const std::string &pass_pipeline) {
+using namespace llvm;
+using namespace mlir;
+
+  auto ins = mlir::python::PyThreadContextEntry::getTopOfStack()->getDefaultInsertionPoint();
+  auto blk = unwrap(ins->getBlock().get());
+
+  auto oldMod = blk->getParent()->getParentOfType<mlir::ModuleOp>();
+  // Parse MLIR.
+  mlir::DialectRegistry registry;
+  prepareRegistry(registry);
+  oldMod->getContext()->appendDialectRegistry(registry);
+  mlir::ParserConfig parser_config(oldMod->getContext());
+  mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
+      mlir::parseSourceString<mlir::ModuleOp>(mlir, parser_config);
+
+    mlir::PassManager pm(oldMod->getContext());
+   
+std::string error_message;
+	  llvm::raw_string_ostream error_stream(error_message);
+	  error_stream << "Failed to parse pipeline\n";
+	  mlir::LogicalResult result = mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
+	  if (mlir::failed(result)) {
+		throw pybind11::value_error(error_message);
+	  }
+  if (!mlir::succeeded(pm.run(*parsed_module))) {
+      throw pybind11::value_error("Pipeline failed");
+  }
+
+
+  StringRef entryfn = "main";
+
+   unsigned lastUsedID = 0;
+
+  OpBuilder combinedModuleBuilder(oldMod->getContext());
+   combinedModuleBuilder.setInsertionPointToStart(oldMod.getBody());
+
+  Operation* resultOp = nullptr;
+     for (auto &op : *parsed_module->getBody()) {
+       auto symbolOp = dyn_cast<SymbolOpInterface>(op);
+       if (!symbolOp)
+         continue;
+
+       StringRef oldSymName = symbolOp.getName();
+
+       if (failed(updateSymbolAndAllUses(symbolOp, *parsed_module, oldMod,
+                                         lastUsedID)))
+         throw pybind11::value_error("failed to update all uses");
+  
+       StringRef newSymName = symbolOp.getName();
+       if (oldSymName != newSymName) {
+		if (oldSymName == entryfn) {
+			entryfn = newSymName;
+		}
+		}
+		Operation* const cloned = op.clone();
+		if (newSymName == entryfn) {
+			resultOp = cloned;
+		}
+		combinedModuleBuilder.insert(cloned);
+  }
+
+      SymbolTable::setSymbolVisibility(resultOp,
+                                       SymbolTable::Visibility::Private);
+
+   return wrap(resultOp);
+}
+
 // Compile an MHLO module given as a string to LLVM IR using XLA.
 std::unique_ptr<xla::LocalExecutable>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
@@ -54,12 +169,28 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
 
-  if (!xla_runtime) {
+  llvm::StringRef cur_pipeline = pass_pipeline;
+
     mlir::PassManager pm(&context);
+  if (!xla_runtime) {
     pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
-    if (!mlir::succeeded(pm.run(*parsed_module))) {
+  } else {
+	std::string tofind = "stablehlo-legalize-to-hlo,";
+	auto pos = llvm::StringRef(pass_pipeline).find(tofind);
+	assert(pos != std::string::npos);
+	auto pre = llvm::StringRef(pass_pipeline.data(), pos + tofind.size() - 1);
+    cur_pipeline = llvm::StringRef(pass_pipeline.data() + pos + tofind.size(), pass_pipeline.size() - pos - tofind.size());
+
+   std::string error_message;
+	  llvm::raw_string_ostream error_stream(error_message);
+	  error_stream << "Failed to parse pre stablehlo pipeline\n";
+	  mlir::LogicalResult result = mlir::parsePassPipeline(pre, pm, error_stream);
+	  if (mlir::failed(result)) {
+		throw pybind11::value_error(error_message);
+	  }
+  }
+  if (!mlir::succeeded(pm.run(*parsed_module))) {
       throw pybind11::value_error("StableHLO => MHLO failed");
-    }
   }
 
   // Convert to XLA Computation.

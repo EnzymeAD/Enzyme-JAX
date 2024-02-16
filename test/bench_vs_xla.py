@@ -5,6 +5,7 @@ from absl.testing import absltest
 import timeit
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+number = 1000
 
 AllPipelines = [
     ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
@@ -70,7 +71,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     "fn": rfn_jax,
                 }
                 | primalins,
-            ).timeit(),
+            ).timeit(number) / number,
         )
 
         fwd_jax = jax.jit(splatjvp(rfn_jax))
@@ -96,7 +97,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     "fwd": fwd_jax,
                 }
                 | fwdins,
-            ).timeit(),
+            ).timeit(number) / number,
         )
 
         assert len(douts) == 1
@@ -122,7 +123,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     "rev": rev_jax,
                 }
                 | revins,
-            ).timeit(),
+            ).timeit(number) / number,
         )
 
         for name, pipeline in AllPipelines:
@@ -144,7 +145,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             "fn": rfn_enzyme,
                         }
                         | primalins,
-                    ).timeit(),
+                    ).timeit(number) / number,
                 )
 
             if (name, pipeline) in FwdPipelines:
@@ -167,7 +168,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             "fwd": fwd_enzyme,
                         }
                         | fwdins,
-                    ).timeit(),
+                    ).timeit(number) / number,
                 )
 
             if (name, pipeline) in RevPipelines:
@@ -190,7 +191,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             "rev": rev_enzyme,
                         }
                         | revins,
-                    ).timeit(),
+                    ).timeit(number) / number,
                 )
 
 

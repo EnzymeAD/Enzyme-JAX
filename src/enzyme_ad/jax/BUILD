@@ -186,6 +186,9 @@ pybind_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Parser",
+        
+        "@llvm-project//mlir:MLIRBindingsPythonHeadersAndDeps",
+        "@llvm-project//mlir:MLIRBindingsPythonCore",
 
 	# EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
@@ -209,6 +212,7 @@ pybind_extension(
         ":clang_compile",
         ":compile_with_xla",
         "@com_google_absl//absl/status:statusor",
+        "@stablehlo//:stablehlo_passes",
         "@xla//xla/stream_executor:stream_executor_impl",
     ],
     visibility = ["//visibility:public"],

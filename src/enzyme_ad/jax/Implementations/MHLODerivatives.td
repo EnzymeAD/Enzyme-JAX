@@ -4,11 +4,6 @@ class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps> : M
 
 class HLOInst<string m> : Inst<m, "mhlo">;
 
-def Add : HLOInst<"AddOp">;
-def Sub : HLOInst<"mhlo::SubOp">;
-def Neg : HLOInst<"mhlo::NegOp">;
-def Mul : HLOInst<"mhlo::MulOp">;
-def Div : HLOInst<"mhlo::DivOp">;
-def Rem : HLOInst<"mhlo::RemOp">;
+class HLOReadOnlyIdentityOp<string opName_, list<int> ptrargs_ = [0]> : ReadOnlyIdentityOp<"mhlo", opName_, ptrargs_>;
 
 include "HLODerivatives.td"
