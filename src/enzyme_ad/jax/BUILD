@@ -1,3 +1,4 @@
+load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@llvm-project//llvm:tblgen.bzl", "gentbl")
@@ -41,40 +42,58 @@ py_library(
     visibility = ["//visibility:public"]
 )
 
+symlink_inputs(
+    name = "EnzymeImplementationsCommonTdFiles",
+    rule = td_library,
+    symlinked_inputs = {"srcs": {
+        "Implementations": ["@enzyme//:ImplementationsCommonTdFiles"],
+    }},
+)
 
-gentbl(
+td_library(
+    name = "ImplementationsCommonTdFiles",
+    srcs = [
+        "Implementations/CommonExt.td",
+         ":EnzymeImplementationsCommonTdFiles",
+    ],
+    deps = [
+        ":EnzymeImplementationsCommonTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "mhlo-derivatives",
     tbl_outs = [(
-        "-gen-mlir-derivatives",
+        ["-gen-mlir-derivatives"],
         "Implementations/MHLODerivatives.inc",
     )],
     tblgen = "@enzyme//:enzyme-tblgen",
     td_file = "Implementations/MHLODerivatives.td",
     td_srcs = [
         "Implementations/MHLODerivatives.td",
-        "Implementations/Common.td",
         "Implementations/HLODerivatives.td",
     ],
     deps = [
         "@enzyme//:enzyme-tblgen",
+        ":ImplementationsCommonTdFiles",
     ],
 )
 
-gentbl(
+gentbl_cc_library(
     name = "stablehlo-derivatives",
     tbl_outs = [(
-        "-gen-mlir-derivatives",
+        ["-gen-mlir-derivatives"],
         "Implementations/StableHLODerivatives.inc",
     )],
     tblgen = "@enzyme//:enzyme-tblgen",
     td_file = "Implementations/StableHLODerivatives.td",
     td_srcs = [
         "Implementations/StableHLODerivatives.td",
-        "Implementations/Common.td",
         "Implementations/HLODerivatives.td",
     ],
     deps = [
         "@enzyme//:enzyme-tblgen",
+        ":EnzymeImplementationsCommonTdFiles",
     ],
 )
 
