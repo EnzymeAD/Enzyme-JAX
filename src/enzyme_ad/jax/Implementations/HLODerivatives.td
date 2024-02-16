@@ -12,6 +12,8 @@ def Sin : HLOInst<"SineOp">;
 def Sqrt : HLOInst<"SqrtOp">;
 def Exp : HLOInst<"ExpOp">;
 
+def Dot : HLOInst<"DotGeneralOp">;
+
 
 def CheckedMul : HLOInst<"MulOp">;
 def CheckedDiv : HLOInst<"DivOp">;
@@ -83,6 +85,15 @@ def : HLOReadOnlyIdentityOp<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 def : HLOReadOnlyIdentityOp<"ConcatenateOp">;
 // convert
-// cos
-// sin
-// sqrt
+
+
+def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDimensionNumbersAttr()">;
+def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
+
+def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
+                    [
+                        (Dot (ResultTypes), (DiffeRet), $rhs, (ResultDotDim), (ResultDotPrec)),
+                        (Dot (ResultTypes), $lhs, (DiffeRet), (ResultDotDim), (ResultDotPrec))
+                      ],
+                     (Add (SelectIfActive $lhs, (Dot (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Dot (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
+                  >;
