@@ -238,7 +238,7 @@ class NewXLAPipeline:
         return False
 
 
-DefaultPipeline = OldXLAPipeline() # NewXLAPipeline(None, True)
+DefaultPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
 
 
 def pass_pipeline(options):

@@ -1145,7 +1145,7 @@ PYBIND11_MODULE(enzyme_call, m) {
     return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
                              "xla._CUSTOM_CALL_TARGET");
   });
-  
+
   m.def("run_pass_pipeline", run_pass_pipeline);
 
   m.def("compile_mhlo_to_llvm_with_xla",
