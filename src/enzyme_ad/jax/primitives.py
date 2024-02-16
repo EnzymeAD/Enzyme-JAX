@@ -495,20 +495,12 @@ def _enzyme_primal_lowering(
                 continue
             seen[in_idx_map[i]] = i
             orig_shapes.append(shape)
-        print("orig_shapes", orig_shapes)
-        print("seen", seen)
         avals = [ctx.avals_in[seen[i]] for i in seen]
         avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
-        print("avals_in", avals_in)
-        print("in_idx_map", in_idx_map)
-        print("in_shapes", in_shapes)
-        
-
         lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
-        print("kept", kept)
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if in_idx_map[i] in kept)
         if len(kept) != len(orig_shapes):
             post = ",".join(["enzyme_dup"] * len(kept))
@@ -518,8 +510,6 @@ def _enzyme_primal_lowering(
         in_shapes = [
             shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept
         ]
-        print("post in_shapes", in_shapes)
-
         if pipeline_options.stablehlo_inject():
             fn = enzyme_call.run_pass_pipeline(source, pass_pipeline)
             print(fn)
@@ -845,6 +835,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         act_tup = ",".join(["enzyme_dup" for a in arg_primals])
         newpasses = (
+            "inline{default-pipeline=canonicalize max-iterations=4}," +
             "func.func(stablehlo-aggressive-simplification),cse,print,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
             + act_tup
             + " mode=ForwardMode},"

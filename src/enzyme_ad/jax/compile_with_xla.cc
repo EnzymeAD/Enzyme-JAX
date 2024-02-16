@@ -37,9 +37,12 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/lib/Bindings/Python/IRModule.h"
 
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
+  mlir::func::registerInlinerExtension(registry);
 }
 
 /// Returns an unused symbol in `module` for `oldSymbolName` by trying numeric
