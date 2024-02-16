@@ -6,6 +6,7 @@ import enzyme_ad.jax as enzyme_jax
 import numpy as np
 import timeit
 
+argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 def rmsnorm(x, weight):
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
@@ -29,6 +30,7 @@ def silu(x):
 # Token is token value
 asserts = True
 
+pipeline = enzyme_jax.NewXLAPipeline(mlirad=True)
 
 def forward(x, config, weights, key_cache, value_cache):
     pos = key_cache.shape[1]
@@ -59,6 +61,8 @@ def forward(x, config, weights, key_cache, value_cache):
 
     wo = weights["wo"]
     if asserts:
+        if wo.shape != (n_layers, dim, dim):
+            print(wo.shape, weights, (n_layers, dim, kv_dim, kv_mul, head_size, hidden_dim, n_kv_heads, vocab_size, n_heads, seq_len, n_layers))
         assert wo.shape == (n_layers, dim, dim)
     rms_ffn_weight = weights["rms_ffn_weight"]
     if asserts:
@@ -282,13 +286,9 @@ class Llama(absltest.TestCase):
 
         func = partial(forward, config)
 
-        @jax.jit
-        def jfunc(x, weights, key_cache, value_cache):
-            return func(x, weights, key_cache, value_cache)
+        jfunc = jax.jit(func)
 
-        @enzyme_jax.enzyme_jax_ir()
-        def efunc(x, weights, key_cache, value_cache):
-            return func(x, weights, key_cache, value_cache)
+        efunc = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
 
         eres = efunc(x, weights, key_cache, value_cache)
         print("Enzyme primal", eres)

@@ -155,8 +155,11 @@ class EnzymeJaxTest(absltest.TestCase):
 
                 self.assertTrue((jnp.abs(primals - primals_p) < 1e-6).all())
 
-                for t, t_p in zip(tangents, tangents_p):
-                    self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
+                if len(tangents.shape) == 0:
+                    self.assertTrue((jnp.abs(tangents - tangents_p) < 1e-6).all())
+                else:
+                    for t, t_p in zip(tangents, tangents_p):
+                        self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
 
                 print(
                     name + " EnzymeMLIR(",

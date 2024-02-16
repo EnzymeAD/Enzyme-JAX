@@ -487,21 +487,29 @@ def _enzyme_primal_lowering(
     pass_pipeline = pipeline_options.pass_pipeline()
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, mfunc) = source
-        in_idxs = sorted(set(v for _, v in in_idx_map.items()))
-        avals = [ctx.avals_in[i] for i in in_idxs]
+        
+        orig_shapes = []
+        seen = {}
+        for i, shape in enumerate(in_shapes):
+            if in_idx_map[i] in seen:
+                continue
+            seen[in_idx_map[i]] = i
+            orig_shapes.append(shape)
+        print("orig_shapes", orig_shapes)
+        print("seen", seen)
+        avals = [ctx.avals_in[seen[i]] for i in seen]
         avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
+        print("avals_in", avals_in)
+        print("in_idx_map", in_idx_map)
+        print("in_shapes", in_shapes)
+        
+
         lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
+        print("kept", kept)
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if in_idx_map[i] in kept)
-        orig_shapes = []
-        seen = []
-        for i, shape in enumerate(in_shapes):
-            if in_idx_map[i] in seen:
-                continue
-            seen.append(in_idx_map[i])
-            orig_shapes.append(shape)
         if len(kept) != len(orig_shapes):
             post = ",".join(["enzyme_dup"] * len(kept))
             prev = ",".join(["enzyme_dup"] * len(orig_shapes))
@@ -510,6 +518,7 @@ def _enzyme_primal_lowering(
         in_shapes = [
             shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept
         ]
+        print("post in_shapes", in_shapes)
 
         if pipeline_options.stablehlo_inject():
             fn = enzyme_call.run_pass_pipeline(source, pass_pipeline)
