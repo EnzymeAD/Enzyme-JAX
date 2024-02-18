@@ -62,7 +62,7 @@ steps:
       bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
       cp bazel-bin/*.whl .
       python -m pip install *.whl
-      cd test && python -m pip install "jax[cpu]" && python test.py
+      cd test && python -m pip install "jax[cpu]" && python test.py && python bench_vs_xla.py
     artifact_paths:
       - "*.whl"
 

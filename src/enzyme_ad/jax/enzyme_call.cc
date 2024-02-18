@@ -57,6 +57,10 @@
 #include "xla/service/cpu/cpu_executable.h"
 
 #include "Enzyme/FunctionUtils.h"
+#include "Enzyme/MLIR/Passes/Passes.h"
+
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/transforms/Passes.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
@@ -121,37 +125,41 @@ public:
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
-      size_t num_in = 0;
-      for (auto &buf2 : assignment.Allocations()) {
-        if (buf2.is_entry_computation_parameter()) {
-          num_in++;
-        }
-      }
-      if (num_in != in_shapes.size()) {
-        std::string err_str;
-        llvm::raw_string_ostream ss(err_str);
-        ss << " Number of mhlo inputs (" << num_in
-           << ") != number of jax inputs (" << in_shapes.size() << "):\n";
-        ss << source << "\n";
-        throw pybind11::value_error(ss.str());
-      }
-      for (size_t i = 0; i < in_shapes.size(); i++) {
-        ssize_t idx = -1;
+      if (!xla_runtime) {
+        size_t num_in = 0;
         for (auto &buf2 : assignment.Allocations()) {
-          if (!buf2.is_entry_computation_parameter())
-            continue;
-          if (buf2.parameter_number() != i)
-            continue;
-          assert(idx == -1);
-          idx = buf2.index();
+          if (buf2.is_entry_computation_parameter()) {
+            num_in++;
+          }
         }
-        if (idx == -1) {
+        if (num_in != in_shapes.size()) {
           std::string err_str;
           llvm::raw_string_ostream ss(err_str);
-          ss << " Could not find input parameter (" << i
-             << ") as hlo parameter:\n";
+          ss << assignment.ToString() << "\n";
+          ss << source << "\n";
+          ss << " Number of mhlo inputs (" << num_in
+             << ") != number of jax inputs (" << in_shapes.size() << "):\n";
           ss << source << "\n";
           throw pybind11::value_error(ss.str());
+        }
+        for (size_t i = 0; i < in_shapes.size(); i++) {
+          ssize_t idx = -1;
+          for (auto &buf2 : assignment.Allocations()) {
+            if (!buf2.is_entry_computation_parameter())
+              continue;
+            if (buf2.parameter_number() != i)
+              continue;
+            assert(idx == -1);
+            idx = buf2.index();
+          }
+          if (idx == -1) {
+            std::string err_str;
+            llvm::raw_string_ostream ss(err_str);
+            ss << " Could not find input parameter (" << i
+               << ") as hlo parameter:\n";
+            ss << source << "\n";
+            throw pybind11::value_error(ss.str());
+          }
         }
       }
       source = stringbuf;
@@ -1022,6 +1030,9 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::registerAsyncPasses();
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
+  mlir::registerenzymePasses();
+  regsiterenzymeXLAPasses();
+  mlir::stablehlo::registerPasses();
 
   pybind11::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
@@ -1134,6 +1145,32 @@ PYBIND11_MODULE(enzyme_call, m) {
     return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
                              "xla._CUSTOM_CALL_TARGET");
   });
+
+  m.def("run_pass_pipeline",
+        [](pybind11::object pyoldsyms, const std::string &mlir,
+           const std::string &pass_pipeline) {
+          auto pyargv = pyoldsyms.ptr();
+          std::vector<std::string> oldsyms;
+          assert(PySequence_Check(pyargv));
+          auto sz = PySequence_Size(pyargv);
+          for (Py_ssize_t i = 0; i < sz; ++i) {
+            PyObject *item = PySequence_GetItem(pyargv, i);
+#if PY_VERSION_HEX < 0x03000000
+            auto argv = PyString_AsString(item);
+#else
+      auto argv = PyUnicode_AsUTF8(item);
+#endif
+            Py_DECREF(item);
+            assert(argv);
+            oldsyms.emplace_back(argv);
+#if PY_VERSION_HEX < 0x03000000
+            free(argv);
+#else
+      // should not free py3+
+#endif
+          }
+          return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
+        });
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,

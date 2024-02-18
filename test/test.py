@@ -3,6 +3,8 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call, enzyme_jax_ir
 
+argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+
 
 class EnzymeJax(absltest.TestCase):
     def test_custom_cpp_kernel(self):
@@ -30,6 +32,7 @@ class EnzymeJax(absltest.TestCase):
         }
         """,
                 fn="myfn",
+                argv=argv,
             )
             c = cpp_call(
                 a,
@@ -40,6 +43,7 @@ class EnzymeJax(absltest.TestCase):
           out0 = 56.0f;
         }
         """,
+                argv=argv,
             )
             return a, b, c
 
@@ -62,7 +66,7 @@ class EnzymeJax(absltest.TestCase):
         print(grads)
 
     def test_enzyme_mlir_jit(self):
-        @enzyme_jax_ir()
+        @enzyme_jax_ir(argv=argv)
         def add_one(x: jax.Array, y) -> jax.Array:
             return x + 1 + y
 

@@ -11,7 +11,7 @@ from jax import lax
 from jax.interpreters import mlir as jax_mlir
 from jax.interpreters import ad
 from jaxlib.mlir import ir
-from jaxlib.mlir.dialects import stablehlo
+from jaxlib.mlir.dialects import stablehlo, func
 from jax.lib import xla_client
 
 import jax.numpy as jnp
@@ -22,24 +22,60 @@ LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
 
-## options
-##    true (default) -> new xla pipeline, default passes
-##    false -> old xla pipeline, internal passes
-##    string -> new xla pipeline, using passes as specified
+from enum import Enum
 
 
-def xla_runtime(options):
-    if type(options) == type(False) and options == False:
+class PipelineConfig:
+    # Whether to use the new xla runtime
+    def xla_runtime(self):
+        raise NotImplementedError()
+
+    # Pass pipeline of new runtime
+    def pass_pipeline(self):
+        raise NotImplementedError()
+
+    # MLIR pass pipeline
+    def mlir_ad(self):
+        raise NotImplementedError()
+
+    # Whether to re-inject into stablehloMLIR pass pipeline
+    def stablehlo_inject(self):
+        raise NotImplementedError()
+
+
+class OldXLAPipeline:
+    def xla_runtime(self):
         return False
-    else:
+
+    def pass_pipeline(self):
+        return ""
+
+    def mlir_ad(self):
+        return False
+
+    def stablehlo_inject(self):
+        return False
+
+
+class JaXPipeline:
+    def __init__(self, passes=""):
+        self.passes = passes
+
+    def pass_pipeline(self):
+        return self.passes
+
+    def mlir_ad(self):
+        return True
+
+    def stablehlo_inject(self):
         return True
 
 
-def pass_pipeline(options):
-    if type(options) == type(""):
-        return options
-    else:
-        return """
+class NewXLAPipeline:
+    def __init__(self, passes=None, mlirad=False):
+        if passes is None:
+            passes = """
+          stablehlo-legalize-to-hlo,
           inline{default-pipeline=canonicalize max-iterations=4},
           expand-hlo-tuples{entry-function=main},
           func.func(mhlo-flatten-tuple),
@@ -184,6 +220,31 @@ def pass_pipeline(options):
               test-convergence=false
               top-down=true},
           cse"""
+        assert len(passes) != 0
+        self.passes = passes
+        self.mlirad = mlirad
+
+    def xla_runtime(self):
+        return True
+
+    def pass_pipeline(self):
+        return self.passes
+
+    def mlir_ad(self):
+        return self.mlirad
+
+    def stablehlo_inject(self):
+        return False
+
+
+DefaultPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+
+
+def pass_pipeline(options):
+    if type(options) == type(""):
+        return options
+    else:
+        return
 
 
 def resource_dir():
@@ -339,9 +400,9 @@ def _enzyme_aug_abstract_eval(
     in_shapes = [absmaketup(a) for a in in_shapes]
 
     if lang == LANG_MHLO:
-        (in_tree, func) = source
+        (in_tree, _, mfunc) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
-        lowered_func = jax.jit(func).lower(*avals_in)
+        lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -356,8 +417,8 @@ def _enzyme_aug_abstract_eval(
         in_shapes,
         argv,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     res = tuple(prev_out_shapes) + (
         jax.core.ShapedArray((tapeSize,), (jax.numpy.int8)),
@@ -422,15 +483,49 @@ def _enzyme_primal_lowering(
 
     in_args = (*args_flat,)
 
+    pass_pipeline = pipeline_options.pass_pipeline()
     if lang == LANG_MHLO:
-        (in_tree, func) = source
-        avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
-        lowered_func = jax.jit(func).lower(*avals_in)
+        (in_tree, in_idx_map, mfunc) = source
+
+        orig_shapes = []
+        seen = {}
+        for i, shape in enumerate(in_shapes):
+            if in_idx_map[i] in seen:
+                continue
+            seen[in_idx_map[i]] = i
+            orig_shapes.append(shape)
+        avals = [ctx.avals_in[seen[i]] for i in seen]
+        avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
+        lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
-        in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
-        in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
+        in_args = tuple(arg for (i, arg) in enumerate(in_args) if in_idx_map[i] in kept)
+        if len(kept) != len(orig_shapes):
+            post = ",".join(["enzyme_dup"] * len(kept))
+            prev = ",".join(["enzyme_dup"] * len(orig_shapes))
+            pass_pipeline = pass_pipeline.replace(prev, post)
+        # in_shapes = [shape for (i, shape) in enumerate(orig_shapes) if i in kept]
+        in_shapes = [
+            shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept
+        ]
+        if pipeline_options.stablehlo_inject():
+            ins = ir.InsertionPoint.current
+            mod = ins.block.region.owner.parent
+            fns = []
+            for f in mod.regions[0].blocks[0]:
+                fns.append(f.sym_name.value)
+
+            name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+            nmod = ir.Module.parse(nmod)
+            fn = None
+            for f in nmod.body:
+                mod.regions[0].blocks[0].append(f)
+                if f.sym_name.value == name:
+                    fn = f
+            results = func.CallOp(fn, list(in_args))
+            results = results.results
+            return results
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
     identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
@@ -441,8 +536,8 @@ def _enzyme_primal_lowering(
         argv,
         enzyme_call.ABI.Primal,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pass_pipeline,
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -486,9 +581,9 @@ def _enzyme_fwd_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, func) = source
+        (in_tree, _, mfunc) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
-        lowered_func = jax.jit(func).lower(*avals_in)
+        lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -504,8 +599,8 @@ def _enzyme_fwd_lowering(
         argv,
         enzyme_call.ABI.Forward,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -548,9 +643,9 @@ def _enzyme_aug_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, func) = source
+        (in_tree, _, mfunc) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
-        lowered_func = jax.jit(func).lower(*avals_in)
+        lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -566,8 +661,8 @@ def _enzyme_aug_lowering(
         argv,
         enzyme_call.ABI.Augmented,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -614,9 +709,9 @@ def _enzyme_rev_lowering(
 
     kept = None
     if lang == LANG_MHLO:
-        (in_tree, func) = source
+        (in_tree, _, mfunc) = source
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
-        lowered_func = jax.jit(func).lower(*avals_in)
+        lowered_func = jax.jit(mfunc).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = str(mhlo)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -635,8 +730,8 @@ def _enzyme_rev_lowering(
         argv,
         enzyme_call.ABI.Reverse,
         lang,
-        xla_runtime(pipeline_options),
-        pass_pipeline(pipeline_options),
+        pipeline_options.xla_runtime(),
+        pipeline_options.pass_pipeline(),
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -683,7 +778,7 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
-    pipeline_options=None
+    pipeline_options=DefaultPipeline
 ):
     return _enzyme_primal_p.bind(
         *args,
@@ -702,7 +797,7 @@ def cpp_call(
     source: str,
     fn: str = "f",
     argv: tuple[str] = (),
-    pipeline_options=None
+    pipeline_options=DefaultPipeline
 ):
     return ffi_call(
         *args,
@@ -743,15 +838,53 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     arg_tangents = tuple(make_zero(t, p) for (t, p) in zip(arg_tangents, arg_primals))
     args = tuple(v for t in zip(arg_primals, arg_tangents) for v in t)
-    shadconv = _enzyme_fwd_p.bind(
-        *args,
-        source=kwargs["source"],
-        fn=kwargs["fn"],
-        argv=kwargs["argv"],
-        out_shapes=kwargs["out_shapes"],
-        lang=kwargs["lang"],
-        pipeline_options=kwargs["pipeline_options"]
-    )
+
+    pipeline_options = kwargs["pipeline_options"]
+
+    shadconv = None
+    if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
+        act_tup = ",".join(["enzyme_dup" for a in arg_primals])
+        newpasses = (
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "func.func(stablehlo-aggressive-simplification),cse,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
+            + act_tup
+            + " mode=ForwardMode},"
+            + "arith-raise{stablehlo=true}, func.func(stablehlo-aggressive-simplification), cse, canonicalize"
+        )
+        if pipeline_options.pass_pipeline() != "":
+            newpasses = newpasses + "," + pipeline_options.pass_pipeline()
+        if pipeline_options.stablehlo_inject():
+            pipeline_options = JaXPipeline(newpasses)
+        else:
+            pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+        outshapes2 = []
+        for o in kwargs["out_shapes"]:
+            outshapes2.append(o)
+            outshapes2.append(o)
+        (in_tree, in_idx_map, mfunc) = kwargs["source"]
+        avals = {2 * k: v for k, v in in_idx_map.items()} | {
+            2 * k + 1: v for k, v in in_idx_map.items()
+        }
+        source = (in_tree, avals, mfunc)
+        shadconv = ffi_call(
+            *args,
+            out_shapes=outshapes2,
+            source=source,
+            fn=kwargs["fn"],
+            argv=kwargs["argv"],
+            lang=kwargs["lang"],
+            pipeline_options=pipeline_options
+        )
+    else:
+        shadconv = _enzyme_fwd_p.bind(
+            *args,
+            source=kwargs["source"],
+            fn=kwargs["fn"],
+            argv=kwargs["argv"],
+            out_shapes=kwargs["out_shapes"],
+            lang=kwargs["lang"],
+            pipeline_options=kwargs["pipeline_options"]
+        )
     res = (shadconv[0::2], shadconv[1::2])
     return res
 
@@ -841,19 +974,20 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
-def enzyme_jax_ir(argv=(), pipeline_options=None):
+def enzyme_jax_ir(argv=(), pipeline_options=DefaultPipeline):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @jax.jit
         def wrapped(*args: Any):
             args_flat, in_tree = jax.tree_util.tree_flatten(args)
             out_shape = jax.eval_shape(func, *args)
+            in_idxs = {i: i for i in range(len(args_flat))}
             out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
             out_shape_flat = [
                 jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat
             ]
             out_flat = ffi_call(
                 *args_flat,
-                source=(in_tree, func),
+                source=(in_tree, in_idxs, func),
                 fn="",
                 out_shapes=out_shape_flat,
                 argv=argv,

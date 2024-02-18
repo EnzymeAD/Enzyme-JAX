@@ -48,6 +48,7 @@ jobs:
           cd test
           nm -C $(python3 -c "from enzyme_ad.jax import enzyme_call; print(enzyme_call.__file__)") | grep ExecutorCache::
           python3 test.py
+          python3 bench_vs_xla.py
           cd lit_tests
           lit . --verbose
 
