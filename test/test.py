@@ -5,6 +5,7 @@ from enzyme_ad.jax import cpp_call, enzyme_jax_ir
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
+
 class EnzymeJax(absltest.TestCase):
     def test_custom_cpp_kernel(self):
         @jax.jit
@@ -30,7 +31,8 @@ class EnzymeJax(absltest.TestCase):
           }
         }
         """,
-                fn="myfn", argv=argv
+                fn="myfn",
+                argv=argv,
             )
             c = cpp_call(
                 a,
@@ -40,7 +42,8 @@ class EnzymeJax(absltest.TestCase):
         void f(T1& out0, const T2& in1) {
           out0 = 56.0f;
         }
-        """, argv=argv
+        """,
+                argv=argv,
             )
             return a, b, c
 

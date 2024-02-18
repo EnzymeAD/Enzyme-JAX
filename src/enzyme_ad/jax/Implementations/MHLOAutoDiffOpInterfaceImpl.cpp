@@ -27,6 +27,7 @@
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::mhlo;
 
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"

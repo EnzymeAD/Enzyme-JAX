@@ -8,6 +8,7 @@ import timeit
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
+
 def rmsnorm(x, weight):
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
@@ -31,6 +32,9 @@ def silu(x):
 asserts = True
 
 pipeline = enzyme_jax.NewXLAPipeline(mlirad=True)
+pipeline = enzyme_jax.JaXPipeline()
+pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
+
 
 def forward(x, config, weights, key_cache, value_cache):
     pos = key_cache.shape[1]
@@ -62,7 +66,23 @@ def forward(x, config, weights, key_cache, value_cache):
     wo = weights["wo"]
     if asserts:
         if wo.shape != (n_layers, dim, dim):
-            print(wo.shape, weights, (n_layers, dim, kv_dim, kv_mul, head_size, hidden_dim, n_kv_heads, vocab_size, n_heads, seq_len, n_layers))
+            print(
+                wo.shape,
+                weights,
+                (
+                    n_layers,
+                    dim,
+                    kv_dim,
+                    kv_mul,
+                    head_size,
+                    hidden_dim,
+                    n_kv_heads,
+                    vocab_size,
+                    n_heads,
+                    seq_len,
+                    n_layers,
+                ),
+            )
         assert wo.shape == (n_layers, dim, dim)
     rms_ffn_weight = weights["rms_ffn_weight"]
     if asserts:

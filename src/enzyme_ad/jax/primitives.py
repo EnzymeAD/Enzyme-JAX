@@ -75,7 +75,6 @@ class NewXLAPipeline:
     def __init__(self, passes=None, mlirad=False):
         if passes is None:
             passes = """
-          print,
           stablehlo-legalize-to-hlo,
           inline{default-pipeline=canonicalize max-iterations=4},
           expand-hlo-tuples{entry-function=main},
@@ -487,7 +486,7 @@ def _enzyme_primal_lowering(
     pass_pipeline = pipeline_options.pass_pipeline()
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, mfunc) = source
-        
+
         orig_shapes = []
         seen = {}
         for i, shape in enumerate(in_shapes):
@@ -511,10 +510,21 @@ def _enzyme_primal_lowering(
             shape for (i, shape) in enumerate(in_shapes) if in_idx_map[i] in kept
         ]
         if pipeline_options.stablehlo_inject():
-            fn = enzyme_call.run_pass_pipeline(source, pass_pipeline)
-            print(fn)
-            results = func.CallOp(fn.name, out_types, in_args)
-            print(results)
+            ins = ir.InsertionPoint.current
+            mod = ins.block.region.owner.parent
+            fns = []
+            for f in mod.regions[0].blocks[0]:
+                fns.append(f.sym_name.value)
+
+            name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+            nmod = ir.Module.parse(nmod)
+            fn = None
+            for f in nmod.body:
+                mod.regions[0].blocks[0].append(f)
+                if f.sym_name.value == name:
+                    fn = f
+            results = func.CallOp(fn, list(in_args))
+            results = results.results
             return results
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
@@ -835,14 +845,18 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         act_tup = ",".join(["enzyme_dup" for a in arg_primals])
         newpasses = (
-            "inline{default-pipeline=canonicalize max-iterations=4}," +
-            "func.func(stablehlo-aggressive-simplification),cse,print,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "func.func(stablehlo-aggressive-simplification),cse,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
             + act_tup
             + " mode=ForwardMode},"
-            + "arith-raise{stablehlo=true}, func.func(stablehlo-aggressive-simplification), cse, canonicalize, print,"
-            + pipeline_options.pass_pipeline()
+            + "arith-raise{stablehlo=true}, func.func(stablehlo-aggressive-simplification), cse, canonicalize"
         )
-        pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+        if pipeline_options.pass_pipeline() != "":
+            newpasses = newpasses + "," + pipeline_options.pass_pipeline()
+        if pipeline_options.stablehlo_inject():
+            pipeline_options = JaXPipeline(newpasses)
+        else:
+            pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
         outshapes2 = []
         for o in kwargs["out_shapes"]:
             outshapes2.append(o)

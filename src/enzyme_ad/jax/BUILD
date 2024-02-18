@@ -186,11 +186,8 @@ pybind_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Parser",
-        
-        "@llvm-project//mlir:MLIRBindingsPythonHeadersAndDeps",
-        "@llvm-project//mlir:MLIRBindingsPythonCore",
-
-	# EnzymeMLIR
+	
+    # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
        
         # Mosaic

@@ -14,6 +14,9 @@ def Exp : HLOInst<"ExpOp">;
 
 def Dot : HLOInst<"DotGeneralOp">;
 
+def Compare : HLOInst<"CompareOp">;
+def Select : HLOInst<"SelectOp">;
+
 
 def CheckedMul : HLOInst<"MulOp">;
 def CheckedDiv : HLOInst<"DivOp">;
@@ -80,6 +83,15 @@ def : HLODerivative<"SqrtOp", (Op $x),
                       ]
                   >;
 
+def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+def : HLODerivative<"MaxOp", (Op $x, $y),
+                  [
+                    (Select (Compare $x, $y, (LT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
+                    (Select (Compare $x, $y, (LT)), (DiffeRet), (HLOConstantFP<"0"> $x))
+                  ],
+                  (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
+                  >;
+
 def : HLOReadOnlyIdentityOp<"ReshapeOp">;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
@@ -97,3 +109,5 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                       ],
                      (Add (SelectIfActive $lhs, (Dot (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Dot (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
+
+def : HLORegionTerminatorOp<"ReturnOp">;

@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline
+from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline, JaXPipeline
 from absl.testing import absltest
 import timeit
 
@@ -8,13 +8,14 @@ argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 number = 1000
 
 AllPipelines = [
+    ("JaXPipeline", JaXPipeline()),
     ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
     ("NewXLA", NewXLAPipeline()),
     ("OldXLA", OldXLAPipeline()),
 ]
-PrimalPipelines = AllPipelines[1:]
+PrimalPipelines = AllPipelines
 FwdPipelines = AllPipelines
-RevPipelines = AllPipelines[1:]
+RevPipelines = AllPipelines[2:]
 
 
 # @jax.jit
@@ -71,7 +72,8 @@ class EnzymeJaxTest(absltest.TestCase):
                     "fn": rfn_jax,
                 }
                 | primalins,
-            ).timeit(number) / number,
+            ).timeit(number)
+            / number,
         )
 
         fwd_jax = jax.jit(splatjvp(rfn_jax))
@@ -97,7 +99,8 @@ class EnzymeJaxTest(absltest.TestCase):
                     "fwd": fwd_jax,
                 }
                 | fwdins,
-            ).timeit(number) / number,
+            ).timeit(number)
+            / number,
         )
 
         assert len(douts) == 1
@@ -123,7 +126,8 @@ class EnzymeJaxTest(absltest.TestCase):
                     "rev": rev_jax,
                 }
                 | revins,
-            ).timeit(number) / number,
+            ).timeit(number)
+            / number,
         )
 
         for name, pipeline in AllPipelines:
@@ -145,7 +149,8 @@ class EnzymeJaxTest(absltest.TestCase):
                             "fn": rfn_enzyme,
                         }
                         | primalins,
-                    ).timeit(number) / number,
+                    ).timeit(number)
+                    / number,
                 )
 
             if (name, pipeline) in FwdPipelines:
@@ -171,7 +176,8 @@ class EnzymeJaxTest(absltest.TestCase):
                             "fwd": fwd_enzyme,
                         }
                         | fwdins,
-                    ).timeit(number) / number,
+                    ).timeit(number)
+                    / number,
                 )
 
             if (name, pipeline) in RevPipelines:
@@ -194,7 +200,8 @@ class EnzymeJaxTest(absltest.TestCase):
                             "rev": rev_enzyme,
                         }
                         | revins,
-                    ).timeit(number) / number,
+                    ).timeit(number)
+                    / number,
                 )
 
 

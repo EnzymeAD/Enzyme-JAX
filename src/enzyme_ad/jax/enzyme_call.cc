@@ -1146,7 +1146,31 @@ PYBIND11_MODULE(enzyme_call, m) {
                              "xla._CUSTOM_CALL_TARGET");
   });
 
-  m.def("run_pass_pipeline", run_pass_pipeline);
+  m.def("run_pass_pipeline",
+        [](pybind11::object pyoldsyms, const std::string &mlir,
+           const std::string &pass_pipeline) {
+          auto pyargv = pyoldsyms.ptr();
+          std::vector<std::string> oldsyms;
+          assert(PySequence_Check(pyargv));
+          auto sz = PySequence_Size(pyargv);
+          for (Py_ssize_t i = 0; i < sz; ++i) {
+            PyObject *item = PySequence_GetItem(pyargv, i);
+#if PY_VERSION_HEX < 0x03000000
+            auto argv = PyString_AsString(item);
+#else
+      auto argv = PyUnicode_AsUTF8(item);
+#endif
+            Py_DECREF(item);
+            assert(argv);
+            oldsyms.emplace_back(argv);
+#if PY_VERSION_HEX < 0x03000000
+            free(argv);
+#else
+      // should not free py3+
+#endif
+          }
+          return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
+        });
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,

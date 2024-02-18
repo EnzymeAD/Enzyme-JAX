@@ -3,4 +3,5 @@ from enzyme_ad.jax.primitives import (
     enzyme_jax_ir,
     NewXLAPipeline,
     OldXLAPipeline,
+    JaXPipeline,
 )

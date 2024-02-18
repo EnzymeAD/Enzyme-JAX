@@ -90,18 +90,57 @@ static bool isEligibleForCompactPrint(ReduceOp op) {
 }
 
 template <typename OpTy>
+class AutoDiffReduceCF : public ControlFlowAutoDiffOpInterface::ExternalModel<
+                             AutoDiffReduceCF<OpTy>, OpTy> {
+public:
+  Operation *createWithShadows(Operation *op, OpBuilder &builder,
+                               MGradientUtils *gutils, Operation *original,
+                               ValueRange remappedOperands,
+                               TypeRange rettys) const {
+    return builder.create<OpTy>(original->getLoc(), rettys, remappedOperands,
+                                original->getAttrs());
+  }
+};
+
+template <typename OpTy>
 class AutoDiffReduceFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffReduceFwd<OpTy>, OpTy> {
 public:
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
     auto red = cast<OpTy>(orig);
-    if (!isEligibleForCompactPrint(red))
+    if (!isEligibleForCompactPrint(red)) {
+      orig->emitError() << "Unsupported operation in reduction autodiff(1): "
+                        << *orig << "\n";
       return failure();
+    }
 
     Operation &innerOp = red.getBody().front().front();
-    if (!isa<AddOp>(innerOp))
+
+    if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
+      llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+      llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+      for (auto operand : orig->getOpResults()) {
+        if (!gutils->isConstantValue(operand)) {
+          operandPositionsToShadow.insert(
+              red.getInitValues().getBeginOperandIndex() +
+              operand.getResultNumber());
+          operandPositionsToShadow.insert(
+              red.getInputs().getBeginOperandIndex() +
+              operand.getResultNumber());
+          resultPositionsToShadow.insert(operand.getResultNumber());
+        }
+      }
+      return mlir::enzyme::detail::controlFlowForwardHandler(
+          orig, builder, gutils, operandPositionsToShadow,
+          resultPositionsToShadow);
+    }
+
+    if (!isa<AddOp>(innerOp)) {
+      orig->emitError() << "Unsupported operation in reduction autodiff(2): "
+                        << *orig << "\n";
       return failure();
+    }
 
     Operation *primal = gutils->getNewFromOriginal(orig);
 
@@ -122,19 +161,29 @@ public:
           continue;
         }
       }
-      orig->emitWarning() << "Unsupported constant arg to reduce forward "
-                             "handler(opidx="
-                          << operand.getOperandNumber()
-                          << ", op=" << operand.get() << ")\n";
+      orig->emitError() << "Unsupported constant arg to reduce forward "
+                           "handler(opidx="
+                        << operand.getOperandNumber()
+                        << ", op=" << operand.get() << ")\n";
       return failure();
     }
     Operation *shadow = builder.clone(*orig, map);
 
     Value shadowRes = shadow->getResult(0);
 
+    auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
+    gutils->invertedPointers.erase(innerOp.getResult(0));
+    gutils->erase(invAdd.getDefiningOp());
+    BitVector baToErase(cast<OpTy>(primal).getBody().front().getNumArguments());
+    for (auto ba : red.getBody().front().getArguments()) {
+      auto invBA = cast<BlockArgument>(gutils->invertedPointers.lookup(ba));
+      gutils->invertedPointers.erase(ba);
+      baToErase.set(invBA.getArgNumber());
+    }
+    cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+
     gutils->setDiffe(orig->getResult(0), shadowRes, builder);
     gutils->eraseIfUnused(orig);
-
     return success();
   }
 };
@@ -147,5 +196,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
       +[](MLIRContext *context, stablehlo::StablehloDialect *) {
         registerInterfaces(context);
         ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
       });
 }

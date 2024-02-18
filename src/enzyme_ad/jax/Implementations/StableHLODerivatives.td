@@ -8,6 +8,8 @@ class HLOReadOnlyIdentityOp<string opName_, list<int> ptrargs_ = [0]> : ReadOnly
 
 class HLOControlFlowOp<string opName_, string impl_> : ControlFlowOp<"stablehlo", opName_, impl_>;
 
-class HLOConstantFP<string m> : ConstantFP<m, "stablehlo", "ConstantOp">;
+class HLOConstantFP<string m> : ConstantFP<m, "stablehlo", "ConstantOp", "mlir::ElementsAttr">;
+
+class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"stablehlo", m>;
 
 include "HLODerivatives.td"
