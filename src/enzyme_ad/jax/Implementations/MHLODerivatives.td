@@ -1,4 +1,4 @@
-include "Common.td"
+include "src/enzyme_ad/jax/Implementations/Common.td"
 
 class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps, dag forwardOps=(ForwardFromSummedReverse)> : MLIRDerivative<"mhlo", opName_, patternToMatch, resultOps, forwardOps>;
 
