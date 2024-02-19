@@ -53,7 +53,6 @@ symlink_inputs(
 td_library(
     name = "ImplementationsCommonTdFiles",
     srcs = [
-        "Implementations/CommonExt.td",
          ":EnzymeImplementationsCommonTdFiles",
     ],
     deps = [
