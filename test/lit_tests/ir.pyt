@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call
 
+argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 def do_something(ones, twos):
     shape = jax.core.ShapedArray(tuple(3 * s for s in ones.shape), ones.dtype)
@@ -26,7 +27,7 @@ def do_something(ones, twos):
         }
         }
     }
-    """,
+    """, argv=argv,
         fn="myfn",
     )
     return a, b
