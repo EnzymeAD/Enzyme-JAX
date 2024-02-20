@@ -45,12 +45,7 @@ jobs:
       - name: test
         run: |
           python3 -m pip install --user --force-reinstall "jax[cpu]" *.whl
-          cd test
-          nm -C $(python3 -c "from enzyme_ad.jax import enzyme_call; print(enzyme_call.__file__)") | grep ExecutorCache::
-          python3 test.py
-          python3 bench_vs_xla.py
-          cd lit_tests
-          lit . --verbose
+          bazel test --test_output=errors ...
 
       - name: Upload Build
         uses: actions/upload-artifact@v3
