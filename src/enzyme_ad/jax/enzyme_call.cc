@@ -972,7 +972,6 @@ public:
     void **outs = num_out > 1 ? reinterpret_cast<void **>(out) : &out;
     for (int i = 0; i < num_out; i++) {
       void *data = outs[i];
-      *(void **)(data) = 0;
     }
     auto fn = (void (*)(void **outs, void **ins))addr;
     fn(outs, ins);
