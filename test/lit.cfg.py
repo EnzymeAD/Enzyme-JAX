@@ -34,15 +34,7 @@ config.test_exec_root = os.path.dirname(__file__)
 
 # Tweak the PATH to include the tools dir and the scripts dir.
 base_paths = [
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "..",
-        "bazel-bin",
-        "external",
-        "llvm-project",
-        "llvm",
-    ),
+    config.llvm_tools_dir,
     config.environment["PATH"],
 ]
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
