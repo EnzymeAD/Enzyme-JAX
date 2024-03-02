@@ -15,8 +15,7 @@ AllPipelines = [
 ]
 PrimalPipelines = AllPipelines
 FwdPipelines = AllPipelines
-RevPipelines = AllPipelines[2:]
-
+RevPipelines = AllPipelines
 
 # @jax.jit
 # def fwd_jax(in0, in1, din0, din1):

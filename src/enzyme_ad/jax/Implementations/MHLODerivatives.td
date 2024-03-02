@@ -4,7 +4,7 @@ class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps, dag
 
 class HLOInst<string m> : Inst<m, "mhlo">;
 
-class HLOReadOnlyIdentityOp<string opName_, list<int> ptrargs_ = [0]> : ReadOnlyIdentityOp<"mhlo", opName_, ptrargs_>;
+class HLOReadOnlyIdentityOp<string opName_, list<int> ptrargs_ = [0], dag patternToMatch=(Unimplemented), list<dag> reverse_ = []> : ReadOnlyIdentityOp<"mhlo", opName_, ptrargs_, patternToMatch, reverse_>;
 
 class HLOControlFlowOp<string opName_, string impl_> : ControlFlowOp<"mhlo", opName_, impl_>;
 

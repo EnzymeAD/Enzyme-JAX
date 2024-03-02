@@ -92,9 +92,14 @@ def : HLODerivative<"MaxOp", (Op $x, $y),
                   (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
 
-def : HLOReadOnlyIdentityOp<"ReshapeOp">;
+def Reshape : HLOInst<"ReshapeOp">;
+def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+
 def : HLOReadOnlyIdentityOp<"SliceOp">;
+
+def Reduce : HLOInst<"ReduceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
+
 def : HLOReadOnlyIdentityOp<"ConcatenateOp">;
 // convert
 
