@@ -613,6 +613,7 @@ def _enzyme_primal_lowering(
             else:
                 z = zero(orig_types[v])
                 results2.append(z)
+
         results = tuple(results2)
     else:
         identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
@@ -1087,10 +1088,11 @@ def primal_partial_eval(trace, *args, **kwargs):
     else:
         pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
         
-    (in_tree, in_idx_map, mfunc) = kwargs["source"]
+    (in_tree, in_idx_map, out_idx_map, mfunc) = kwargs["source"]
 
     avals = {k//2: v for k, v in in_idx_map.items() if k % 2 == 0}
-    source = (in_tree, avals, mfunc)
+    outmap2 = {k//2: v for k, v in out_idx_map.items() if k % 2 == 0}
+    source = (in_tree, avals, outmap2, mfunc)
 
     primalret = trace.default_process_primitive(_enzyme_primal_p, primals, {'out_shapes':out_shapes2, 'source':source, 'fn':kwargs['fn'], 'argv':kwargs['argv'], 'lang':kwargs['lang'], 'pipeline_options':pipeline_options})
     return primalret + shadows_known
