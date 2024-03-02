@@ -60,20 +60,19 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "e8ca2b1de3b770c767145d027b357bed97178bb0"
-ENZYME_SHA256 = "dd3789b8e749ed989d7a1a4956880826d9fd2501283dc60be468adec1186e63f"
-
-local_repository(
-    name = "enzyme",
-    path = "../Enzyme/enzyme"
-)
-
-# http_archive(
+ENZYME_COMMIT = "0b621884bc531329095d202f042f6599a86614ec"
+ENZYME_SHA256 = "f9479530b08aeb3ecbf0c420d0e2f222fdf8bcf6c20a218271b365db3a3053ad"
+# local_repository(
 #     name = "enzyme",
-#     sha256 = ENZYME_SHA256,
-#     strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
-#     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
+#     path = "../Enzyme/enzyme"
 # )
+
+http_archive(
+    name = "enzyme",
+    sha256 = ENZYME_SHA256,
+    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
+    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
+)
 
 JAX_COMMIT = "9a098e922aff62a3b49bd673b9518d97ee599248"
 JAX_SHA256 = ""
