@@ -67,17 +67,12 @@ ENZYME_SHA256 = "f9479530b08aeb3ecbf0c420d0e2f222fdf8bcf6c20a218271b365db3a3053a
 #     path = "../Enzyme/enzyme"
 # )
 
-local_repository(
+http_archive(
     name = "enzyme",
-    path = "../Enzyme/enzyme"
+    sha256 = ENZYME_SHA256,
+    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
+    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
-
-# http_archive(
-#     name = "enzyme",
-#     sha256 = ENZYME_SHA256,
-#     strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
-#     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
-# )
 
 JAX_COMMIT = "9a098e922aff62a3b49bd673b9518d97ee599248"
 JAX_SHA256 = ""
