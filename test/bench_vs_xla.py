@@ -17,6 +17,7 @@ PrimalPipelines = AllPipelines
 FwdPipelines = AllPipelines
 RevPipelines = AllPipelines
 
+
 # @jax.jit
 # def fwd_jax(in0, in1, din0, din1):
 # .  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
@@ -257,6 +258,7 @@ class Sum(EnzymeJaxTest):
 
         def nomlir(x):
             return [(name, a) for (name, a) in x if not a.mlir_ad()]
+
         self.revfilter = nomlir
 
         def sum(x):
@@ -272,6 +274,11 @@ class Cache(EnzymeJaxTest):
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+
+        self.revfilter = nomlir
 
         def cache(x):
             return x * x[0]

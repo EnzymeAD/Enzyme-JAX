@@ -24,7 +24,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-
 #define DEBUG_TYPE "enzyme"
 
 using namespace mlir;
@@ -33,24 +32,24 @@ using namespace enzyme;
 
 namespace {
 
-
 struct SliceSimplification final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
                                 PatternRewriter &rewriter) const override {
     auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type) return failure();
-	for (auto sz : type.getShape())
-	  if (sz < 0) return failure();
-	if (op.getOperand().getType() == type) {
-	  rewriter.replaceOp(op, op.getOperand());
-	  return success();
-	}
-	return failure();
+    if (!type)
+      return failure();
+    for (auto sz : type.getShape())
+      if (sz < 0)
+        return failure();
+    if (op.getOperand().getType() == type) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
+    return failure();
   }
 };
-
 
 struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
@@ -96,12 +95,14 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
-	RewritePatternSet patterns(context);
-	patterns.add<SliceSimplification, AddSimplify, SubSimplify>(context);
-    mlir::stablehlo::populateStablehloCanonicalizationPatterns(context, &patterns);
+    RewritePatternSet patterns(context);
+    patterns.add<SliceSimplification, AddSimplify, SubSimplify>(context);
+    mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
+                                                               &patterns);
 
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns), config))) {
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                            config))) {
       signalPassFailure();
     }
   }
