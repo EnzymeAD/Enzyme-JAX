@@ -15,7 +15,7 @@ AllPipelines = [
 ]
 PrimalPipelines = AllPipelines
 FwdPipelines = AllPipelines
-RevPipelines = AllPipelines[2:]
+RevPipelines = AllPipelines
 
 
 # @jax.jit
@@ -46,6 +46,10 @@ def splatvjp(in_fn):
 
 
 class EnzymeJaxTest(absltest.TestCase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.revfilter = lambda x: x
+
     def setUp(self):
         self.name = None
 
@@ -180,7 +184,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     / number,
                 )
 
-            if (name, pipeline) in RevPipelines:
+            if (name, pipeline) in self.revfilter(RevPipelines):
                 rev_enzyme = jax.jit(splatvjp(rfn_enzyme))
 
                 primals, grads = rev_enzyme(*douts, *ins)
@@ -252,6 +256,11 @@ class Sum(EnzymeJaxTest):
         self.dins = [jnp.array([i * i for i in range(50)], dtype=jnp.float32)]
         self.douts = [1.0]
 
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+
+        self.revfilter = nomlir
+
         def sum(x):
             return jnp.sum(x)
 
@@ -265,6 +274,11 @@ class Cache(EnzymeJaxTest):
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+
+        self.revfilter = nomlir
 
         def cache(x):
             return x * x[0]

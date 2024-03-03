@@ -18,6 +18,7 @@ class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
 std::unique_ptr<Pass> createArithRaisingPass();
+std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createPrintPass();
 } // namespace enzyme
 } // namespace mlir
@@ -69,5 +70,6 @@ static void regsiterenzymeXLAPasses() {
   using namespace mlir;
   registerArithRaisingPass();
   registerPrintPass();
+  registerEnzymeHLOOptPass();
 }
 #endif // ENZYMEXLA_PASSES_H

@@ -138,6 +138,7 @@ cc_library(
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_passes",
         "@xla//xla/mlir_hlo",
         "@enzyme//:EnzymeMLIR",
     ]

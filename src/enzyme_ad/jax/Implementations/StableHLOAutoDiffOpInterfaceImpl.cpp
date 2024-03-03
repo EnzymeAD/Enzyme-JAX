@@ -152,8 +152,7 @@ public:
       }
       if (auto iface =
               dyn_cast<AutoDiffTypeInterface>(operand.get().getType())) {
-        if (!iface.requiresShadow()) {
-          // TODO only do if mutable
+        if (!iface.isMutable()) {
           Type retTy = iface.getShadowType();
           auto toret = retTy.cast<AutoDiffTypeInterface>().createNullValue(
               builder, operand.get().getLoc());

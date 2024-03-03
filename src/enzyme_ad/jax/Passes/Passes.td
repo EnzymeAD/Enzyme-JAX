@@ -30,6 +30,14 @@ def ArithRaisingPass : Pass<"arith-raise"> {
     ];
 }
 
+def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
+  let summary = "Optimize stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect"
+  ];
+  let constructor = "mlir::enzyme::createEnzymeHLOOptPass()";
+}
+
 def PrintPass : Pass<"print"> {
   let summary = "Print the module";
   let dependentDialects = [
