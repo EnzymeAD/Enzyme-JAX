@@ -100,7 +100,7 @@ def : HLOReadOnlyIdentityOp<"SliceOp">;
 def Reduce : HLOInst<"ReduceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOReadOnlyIdentityOp<"ConcatenateOp">;
+def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 // convert
 
 

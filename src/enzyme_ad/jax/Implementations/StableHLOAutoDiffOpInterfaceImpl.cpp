@@ -197,25 +197,33 @@ public:
     auto op = cast<BroadcastInDimOp>(orig);
     auto inTy = op.getOperand().getType();
     auto outTy = op.getType();
-    auto zero = gutils->getShadowType(inTy)
-                    .cast<AutoDiffTypeInterface>()
-                    .createNullValue(builder, op.getLoc());
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
 
     SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
                                    op.getBroadcastDimensions().end());
 
+    Value zero = nullptr;
     if (bcastDims.size() == 0 && inTy.getShape().size() == 0) {
       for (size_t i = 0; i < outTy.getShape().size(); i++) {
         bcastDims.push_back(i);
       }
+      zero = gutils->getShadowType(inTy)
+                    .cast<AutoDiffTypeInterface>()
+                    .createNullValue(builder, op.getLoc());
+    } else {
+      SmallVector<int64_t> dims;
+      for (size_t i = 0; i < inTy.getShape().size(); i++) {
+          if (llvm::is_contained(bcastDims, i)) continue;
+          dims.push_back(i);
+      }
+      zero = gutils->getShadowType(RankedTensorType::get(dims, inTy.getElementType()))
+                    .cast<AutoDiffTypeInterface>()
+                    .createNullValue(builder, op.getLoc());
     }
-    assert(outTy.getShape().size() ==
-           inTy.getShape().size() + bcastDims.size());
 
     auto red = builder.create<ReduceOp>(op.getLoc(),
-                                        TypeRange(gutils->getShadowType(inTy)),
+                                        TypeRange(zero.getType()),
                                         inDiffe, zero, bcastDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
@@ -228,7 +236,14 @@ public:
                                          body.getArgument(1));
     bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
 
-    gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
+    llvm::errs() << " red: " << *red << "\n";
+
+    Value res = red->getResult(0);
+    Type resTy =  gutils->getShadowType(op.getOperand().getType());
+    if (res.getType() != resTy)
+        res = builder.create<ReshapeOp>(op.getLoc(), resTy, res);
+
+    gutils->addToDiffe(op.getOperand(), res, builder);
     return success();
   }
 
@@ -396,6 +411,57 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class AutoDiffConcatenateRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffConcatenateRev,
+                                                       ConcatenateOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                MGradientUtilsReverse *gutils,
+                                SmallVector<Value> caches) const {
+    auto op = cast<ConcatenateOp>(orig);
+
+    auto inDiffe = gutils->diffe(op->getResult(0), builder);
+    gutils->zeroDiffe(op->getResult(0), builder);
+
+    auto dim = op.getDimension();
+    for (auto &ope : op->getOpOperands()) { 
+        auto op = ope.get();
+        if (gutils->isConstantValue(op)) continue;
+        auto inTy = gutils->getShadowType(op.getType());
+        SmallVector<int64_t> start;
+        SmallVector<int64_t> limit;
+        SmallVector<int64_t> strides;
+        SmallVector<int64_t> tys;
+        auto RT = inTy.cast<RankedTensorType>();
+        for (auto i=0; i<RT.getShape().size(); i++) {
+            if (i == dim) {
+                tys.push_back(1);
+                start.push_back(ope.getOperandNumber());
+                limit.push_back(ope.getOperandNumber()+1);
+                strides.push_back(1);
+                continue;
+            }
+            tys.push_back(RT.getShape()[i]);
+            start.push_back(0);
+            limit.push_back(RT.getShape()[i]);
+            strides.push_back(1);
+        }
+        auto res = builder.create<SliceOp>(op.getLoc(), RankedTensorType::get(tys, RT.getElementType()), inDiffe, start, limit, strides);
+        auto res2 = builder.create<ReshapeOp>(op.getLoc(), inTy, res);
+        gutils->addToDiffe(op, res2, builder);
+    }
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -408,5 +474,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
+        ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
       });
 }
