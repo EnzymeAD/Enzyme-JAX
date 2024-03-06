@@ -257,7 +257,7 @@ class Sum(EnzymeJaxTest):
         self.douts = [1.0]
 
         def nomlir(x):
-            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
 
         self.revfilter = nomlir
 
@@ -276,7 +276,7 @@ class Cache(EnzymeJaxTest):
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
 
         def nomlir(x):
-            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
 
         self.revfilter = nomlir
 

@@ -60,8 +60,8 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "0b621884bc531329095d202f042f6599a86614ec"
-ENZYME_SHA256 = "f9479530b08aeb3ecbf0c420d0e2f222fdf8bcf6c20a218271b365db3a3053ad"
+ENZYME_COMMIT = "97066352a40b3c66f9a1f41ec1802af255216c0c"
+ENZYME_SHA256 = ""
 # local_repository(
 #     name = "enzyme",
 #     path = "../Enzyme/enzyme"

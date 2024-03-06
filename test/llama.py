@@ -33,7 +33,7 @@ asserts = True
 
 pipeline = enzyme_jax.NewXLAPipeline(mlirad=True)
 pipeline = enzyme_jax.JaXPipeline()
-pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
+# pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
 
 
 def forward(x, config, weights, key_cache, value_cache):

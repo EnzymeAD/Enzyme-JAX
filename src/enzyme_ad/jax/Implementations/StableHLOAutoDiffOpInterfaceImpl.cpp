@@ -187,6 +187,215 @@ public:
   }
 };
 
+class AutoDiffBroadcastInDimRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AutoDiffBroadcastInDimRev, BroadcastInDimOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                MGradientUtilsReverse *gutils,
+                                SmallVector<Value> caches) const {
+    auto op = cast<BroadcastInDimOp>(orig);
+    auto inTy = op.getOperand().getType();
+    auto outTy = op.getType();
+    auto zero = gutils->getShadowType(inTy)
+                    .cast<AutoDiffTypeInterface>()
+                    .createNullValue(builder, op.getLoc());
+    auto inDiffe = gutils->diffe(op, builder);
+    gutils->zeroDiffe(op, builder);
+
+    SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
+                                   op.getBroadcastDimensions().end());
+
+    if (bcastDims.size() == 0 && inTy.getShape().size() == 0) {
+      for (size_t i = 0; i < outTy.getShape().size(); i++) {
+        bcastDims.push_back(i);
+      }
+    }
+    assert(outTy.getShape().size() ==
+           inTy.getShape().size() + bcastDims.size());
+
+    auto red = builder.create<ReduceOp>(op.getLoc(),
+                                        TypeRange(gutils->getShadowType(inTy)),
+                                        inDiffe, zero, bcastDims);
+    red.getBody().push_back(new Block());
+    Block &body = red.getBody().front();
+    OpBuilder bodyBuilder(orig->getContext());
+    bodyBuilder.setInsertionPointToEnd(&body);
+
+    body.addArgument(zero.getType(), op.getLoc());
+    body.addArgument(zero.getType(), op.getLoc());
+    auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
+                                         body.getArgument(1));
+    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
+
+    gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
+class AutoDiffSliceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSliceRev,
+                                                       SliceOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                MGradientUtilsReverse *gutils,
+                                SmallVector<Value> caches) const {
+    auto op = cast<SliceOp>(orig);
+    auto inTy = op.getOperand().getType();
+    auto outTy = op.getType();
+    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
+                                                                   op.getLoc());
+    auto inDiffe = gutils->diffe(op, builder);
+    gutils->zeroDiffe(op, builder);
+
+    Value idxs;
+    {
+      SmallVector<int64_t> concat_data;
+      for (size_t i = 0; i < outTy.getShape().size(); i++) {
+        concat_data.push_back(outTy.getShape()[i]);
+      }
+      concat_data.push_back(1);
+      auto toConcatType =
+          RankedTensorType::get(concat_data, builder.getI32Type());
+      std::vector<Value> inds;
+      size_t idx = 0;
+      for (auto &&[start, limit, stride] : llvm::zip(
+               op.getStartIndices(), op.getLimitIndices(), op.getStrides())) {
+        std::vector<int32_t> data;
+        for (int32_t i = start; i < limit; i += stride) {
+          data.push_back(i);
+        }
+
+        Value ind = builder.create<ConstantOp>(op.getLoc(), RankedTensorType::get({data.size()}, builder.getI32Type()),
+                                               builder.getI32TensorAttr(data));
+
+        auto bcast_ind = builder.getDenseI64ArrayAttr({idx});
+        ind = builder.create<BroadcastInDimOp>(op.getLoc(), toConcatType, ind,
+                                               bcast_ind);
+        inds.push_back(ind);
+        idx++;
+      }
+      idxs = builder.create<ConcatenateOp>(
+          op.getLoc(), inds, builder.getI64IntegerAttr(concat_data.size() - 1));
+    }
+
+    // empty extra index into the slice
+    std::vector<int64_t> update_window_dims;
+    std::vector<int64_t> scatter_dims_to_operand_dims;
+    std::vector<int64_t> inserted_window_dims;
+    for (int i = 0; i < inTy.getShape().size(); i++) {
+      scatter_dims_to_operand_dims.push_back(i);
+      inserted_window_dims.push_back(i);
+    }
+
+    int64_t indexVectorDim = inTy.getShape().size();
+
+    auto dims = ScatterDimensionNumbersAttr::get(
+        builder.getContext(), update_window_dims, inserted_window_dims,
+        scatter_dims_to_operand_dims, indexVectorDim);
+
+    // auto prev = gutils->diffe(op.getOperand(), builder);
+
+    auto red = builder.create<ScatterOp>(
+        op.getLoc(), TypeRange(gutils->getShadowType(inTy)), ValueRange(zero),
+        idxs, ValueRange(inDiffe), dims,
+        /*indices_are_sorted*/ builder.getBoolAttr(true),
+        /*unique_indices*/ builder.getBoolAttr(true));
+    
+    red.getUpdateComputation().push_back(new Block());
+    Block &body = red.getUpdateComputation().front();
+    OpBuilder bodyBuilder(orig->getContext());
+    bodyBuilder.setInsertionPointToEnd(&body);
+
+    auto TT = RankedTensorType::get({}, inTy.getElementType());
+    body.addArgument(TT, op.getLoc());
+    body.addArgument(TT, op.getLoc());
+    /*
+    auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
+                                         body.getArgument(1));
+    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
+    */
+    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(body.getArgument(1)));
+
+    gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
+    // gutils->setDiffe(op.getOperand(), red->getResult(0), builder);
+    
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
+class AutoDiffReduceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceRev,
+                                                       ReduceOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                MGradientUtilsReverse *gutils,
+                                SmallVector<Value> caches) const {
+    auto op = cast<ReduceOp>(orig);
+    if (!isEligibleForCompactPrint(op)) {
+      orig->emitError() << "Unsupported operation in reduction rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    Operation &innerOp = op.getBody().front().front();
+    
+    auto inTy = op->getOperand(0).getType();
+    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
+                                                                   op.getLoc());
+    auto inDiffe = gutils->diffe(op->getResult(0), builder);
+    gutils->zeroDiffe(op->getResult(0), builder);
+    
+    if (isa<AddOp>(innerOp)) {
+        if (!gutils->isConstantValue(op.getInputs()[0])) {
+        Value bcast;
+        
+        if (op->getResult(0).getType().cast<RankedTensorType>().getShape().size() == 0)
+            bcast = builder.create<BroadcastInDimOp>(op.getLoc(), gutils->getShadowType(inTy), inDiffe, builder.getDenseI64ArrayAttr({}));
+        else
+            bcast = builder.create<BroadcastInDimOp>(op.getLoc(), gutils->getShadowType(inTy), inDiffe, op.getDimensions());
+
+        gutils->addToDiffe(op.getInputs()[0], bcast, builder);
+        }
+        if (!gutils->isConstantValue(op.getInitValues()[0])) {
+        gutils->addToDiffe(op.getInitValues()[0], inDiffe, builder);
+        }
+        return success();
+    }
+
+    if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
+    }
+      
+    orig->emitError() << "Unsupported operation in reduction rev autodiff(1): "
+                        << *orig << "\n";
+    return failure();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -196,5 +405,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         registerInterfaces(context);
         ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
+        BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
+        SliceOp::attachInterface<AutoDiffSliceRev>(*context);
+        ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
       });
 }

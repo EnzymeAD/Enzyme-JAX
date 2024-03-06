@@ -933,7 +933,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         act_tup = ",".join(["enzyme_dup" for a in arg_primals])
-        afterad = "arith-raise{stablehlo=true}, enzyme-hlo-opt, cse, canonicalize"
+        afterad = "arith-raise{stablehlo=true}, enzyme-hlo-opt, print, cse, canonicalize"
         newpasses = (
             "inline{default-pipeline=canonicalize max-iterations=4},"
             + "enzyme-hlo-opt,cse,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
@@ -1196,8 +1196,8 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         ad_pass = ad_pass.replace("ForwardMode", "ReverseModeCombined")
         newpasses = (
             prev_passes
-            + ad_pass
-            + ",canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse"
+            + "print," + ad_pass
+            + ",canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse, print"
             + post_passes
         )
 
