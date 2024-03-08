@@ -63,6 +63,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::LLVM::LLVMDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::async::AsyncDialect>();
+  registry.insert<mlir::tensor::TensorDialect>();
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::arith::ArithDialect>();
   registry.insert<mlir::cf::ControlFlowDialect>();

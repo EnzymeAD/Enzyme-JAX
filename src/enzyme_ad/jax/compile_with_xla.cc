@@ -102,6 +102,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   prepareRegistry(registry);
   MLIRContext context(registry);
   context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::tensor::TensorDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
@@ -169,6 +170,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   prepareRegistry(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::tensor::TensorDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();

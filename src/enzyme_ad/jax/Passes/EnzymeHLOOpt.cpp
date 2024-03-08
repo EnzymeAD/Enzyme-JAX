@@ -75,10 +75,77 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       )) {
       start.push_back(pstart + pstep * nstart);
       step.push_back(pstep * nstep);
-      end.push_back(pstart + pstep * nstep * (nend - nstart));
+      end.push_back(pstart + pstep * nstart + pstep * nstep * (nend - nstart));
     }
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, prev.getOperand(), start, end, step);
-    return failure();
+    return success();
+  }
+};
+
+// slice(pad x) -> pad(slice x)
+struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad) return failure();
+
+    SmallVector<int64_t> start;
+    SmallVector<int64_t> end;
+    SmallVector<int64_t> step;
+    
+    SmallVector<int64_t> lpads;
+    SmallVector<int64_t> hpads;
+    SmallVector<int64_t> interiors;
+
+    bool needspad = false;
+    for (auto && [nstart, nend, nstep, lpad, hpad, interior, inshape] : llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(), pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(), pad.getInteriorPadding(), pad.getOperand().getType().getShape()
+      )) {
+        if (nstep != 1) return failure();
+        if (interior != 0) return failure();
+
+        // start of slice starts after end of value being padded
+        if (nstart - lpad >= inshape) {
+            rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(), pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({}));
+            return success();
+        }
+        // slice ends before the start of value being padded
+        if (nend - lpad < inshape) {
+            rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(), pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({}));
+            return success();
+        }
+        if (nstart - lpad < 0) {
+            start.push_back(0);
+            lpads.push_back(lpad - nstart);
+            needspad = true;
+        } else {
+            start.push_back(nstart - lpad);
+            lpads.push_back(0);
+        }
+        if (nend - lpad > inshape) {
+            end.push_back(inshape);
+            hpads.push_back(nend - lpad - inshape);
+            needspad = true;
+        } else {
+            end.push_back(nend - lpad);
+            hpads.push_back(0);
+        }
+
+        step.push_back(1);
+        interiors.push_back(0);
+    }
+    if (needspad) {
+        auto nslice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), pad.getOperand(), start, end, step);
+        rewriter.replaceOpWithNewOp<stablehlo::PadOp>(op, nslice, pad.getPaddingValue(), lpads, hpads, interiors);
+    } {
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, pad.getOperand(), start, end, step);
+    }
+    return success();
   }
 };
 
@@ -357,16 +424,14 @@ struct BroadcastToReshape final : OpRewritePattern<mlir::stablehlo::BroadcastInD
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
+      if (inp.isSplat()) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), mlir::SplatElementsAttr::get(op.getType(), inp.getSplatValue<mlir::Attribute>()));
+        return success();
+      }
       auto inp0 = mlir::stablehlo::evalConstantOp(inp);
       auto out = mlir::stablehlo::evalBroadcastInDimOp(inp0, mlir::stablehlo::Axes(op.getBroadcastDimensions()), op.getType());
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), fromTensor(out));
       return success();
-      /*
-      if (inp.isSplat()) {
-        rewriter.replaceOpWithNewOp<ConstantOp>(op, op.getType(), SplatElementsAttr::get(op.getType().getShape(), inp.getSplatValue<mlir::Attribute>()));
-        return success();
-      }
-      */ 
     }
 
     // Ensure these are sorted
@@ -794,7 +859,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<SliceSlice, AddPad, DotReshapeDot, ConcatConstProp, /*ScatterToPad, */BroadcastToReshape, SliceConcat, SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(context);
+    patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp, /*ScatterToPad, */BroadcastToReshape, SliceConcat, SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
