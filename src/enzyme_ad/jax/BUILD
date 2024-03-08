@@ -145,6 +145,7 @@ cc_library(
         "@stablehlo//:reference_ops",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:ControlFlowInterfaces",
@@ -225,6 +226,7 @@ pybind_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
+        "@llvm-project//mlir:TensorDialect",
 
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",

@@ -310,8 +310,8 @@ class Llama(absltest.TestCase):
 
         efunc = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
 
-        number = 1000
-        if False:
+        number = 100
+        if True:
             eres = efunc(x, weights, key_cache, value_cache)
             print("Enzyme primal", eres)
             res = jfunc(x, weights, key_cache, value_cache)
@@ -348,7 +348,7 @@ class Llama(absltest.TestCase):
         # jfunc = jax.jit(partial(forward, config))
         # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
-        if False:
+        if True:
             @jax.jit
             def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
                 return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))

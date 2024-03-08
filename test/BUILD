@@ -63,3 +63,13 @@ py_test(
     ],
 )
 
+
+py_test(
+    name = "llama",
+    srcs = [
+        "llama.py",
+    ],
+    deps = [
+        "//src/enzyme_ad/jax:enzyme_jax_internal",
+    ],
+)

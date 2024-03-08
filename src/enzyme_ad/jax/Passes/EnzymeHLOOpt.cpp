@@ -18,8 +18,8 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/transforms/Passes.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/transforms/Passes.h"
 
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -64,20 +64,22 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
 
     auto prev = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
-    if (!prev) return failure();
+    if (!prev)
+      return failure();
 
     SmallVector<int64_t> start;
     SmallVector<int64_t> end;
     SmallVector<int64_t> step;
 
-    for (auto && [pstart, pend, pstep, nstart, nend, nstep] : llvm::zip(prev.getStartIndices(), prev.getLimitIndices(), prev.getStrides(),
-      op.getStartIndices(), op.getLimitIndices(), op.getStrides()
-      )) {
+    for (auto &&[pstart, pend, pstep, nstart, nend, nstep] : llvm::zip(
+             prev.getStartIndices(), prev.getLimitIndices(), prev.getStrides(),
+             op.getStartIndices(), op.getLimitIndices(), op.getStrides())) {
       start.push_back(pstart + pstep * nstart);
       step.push_back(pstep * nstep);
       end.push_back(pstart + pstep * nstart + pstep * nstep * (nend - nstart));
     }
-    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, prev.getOperand(), start, end, step);
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, prev.getOperand(),
+                                                    start, end, step);
     return success();
   }
 };
@@ -93,57 +95,71 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
 
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
-    if (!pad) return failure();
+    if (!pad)
+      return failure();
 
     SmallVector<int64_t> start;
     SmallVector<int64_t> end;
     SmallVector<int64_t> step;
-    
+
     SmallVector<int64_t> lpads;
     SmallVector<int64_t> hpads;
     SmallVector<int64_t> interiors;
 
     bool needspad = false;
-    for (auto && [nstart, nend, nstep, lpad, hpad, interior, inshape] : llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(), pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(), pad.getInteriorPadding(), pad.getOperand().getType().getShape()
-      )) {
-        if (nstep != 1) return failure();
-        if (interior != 0) return failure();
+    for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape] :
+         llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
+                   pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+                   pad.getInteriorPadding(),
+                   pad.getOperand().getType().getShape())) {
+      if (nstep != 1)
+        return failure();
+      if (interior != 0)
+        return failure();
 
-        // start of slice starts after end of value being padded
-        if (nstart - lpad >= inshape) {
-            rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(), pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({}));
-            return success();
-        }
-        // slice ends before the start of value being padded
-        if (nend - lpad < inshape) {
-            rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(), pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({}));
-            return success();
-        }
-        if (nstart - lpad < 0) {
-            start.push_back(0);
-            lpads.push_back(lpad - nstart);
-            needspad = true;
-        } else {
-            start.push_back(nstart - lpad);
-            lpads.push_back(0);
-        }
-        if (nend - lpad > inshape) {
-            end.push_back(inshape);
-            hpads.push_back(nend - lpad - inshape);
-            needspad = true;
-        } else {
-            end.push_back(nend - lpad);
-            hpads.push_back(0);
-        }
+      // start of slice starts after end of value being padded
+      if (nstart - lpad >= inshape) {
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), pad.getPaddingValue(),
+            rewriter.getDenseI64ArrayAttr({}));
+        return success();
+      }
+      // slice ends before the start of value being padded
+      if (nend - lpad < inshape) {
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), pad.getPaddingValue(),
+            rewriter.getDenseI64ArrayAttr({}));
+        return success();
+      }
+      if (nstart - lpad < 0) {
+        start.push_back(0);
+        lpads.push_back(lpad - nstart);
+        needspad = true;
+      } else {
+        start.push_back(nstart - lpad);
+        lpads.push_back(0);
+      }
+      if (nend - lpad > inshape) {
+        end.push_back(inshape);
+        hpads.push_back(nend - lpad - inshape);
+        needspad = true;
+      } else {
+        end.push_back(nend - lpad);
+        hpads.push_back(0);
+      }
 
-        step.push_back(1);
-        interiors.push_back(0);
+      step.push_back(1);
+      interiors.push_back(0);
     }
     if (needspad) {
-        auto nslice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), pad.getOperand(), start, end, step);
-        rewriter.replaceOpWithNewOp<stablehlo::PadOp>(op, nslice, pad.getPaddingValue(), lpads, hpads, interiors);
-    } {
-        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, pad.getOperand(), start, end, step);
+      auto nslice = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), pad.getOperand(), start, end, step);
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          op, nslice, pad.getPaddingValue(), lpads, hpads, interiors);
+    }
+    {
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, pad.getOperand(),
+                                                      start, end, step);
     }
     return success();
   }
@@ -159,12 +175,13 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
 
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
-    if (!concat) return failure();
-
+    if (!concat)
+      return failure();
 
     auto dim = concat.getDimension();
 
-    if (op.getStrides()[dim] != 1) return failure();
+    if (op.getStrides()[dim] != 1)
+      return failure();
 
     SmallVector<Value> postConcat;
     size_t curdim = 0;
@@ -179,13 +196,18 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
         curdim += nextdim;
         continue;
       }
-      SmallVector<int64_t> nstart(op.getStartIndices().begin(), op.getStartIndices().end());
-      SmallVector<int64_t> nend(op.getLimitIndices().begin(), op.getLimitIndices().end());
+      SmallVector<int64_t> nstart(op.getStartIndices().begin(),
+                                  op.getStartIndices().end());
+      SmallVector<int64_t> nend(op.getLimitIndices().begin(),
+                                op.getLimitIndices().end());
       nstart[dim] -= curdim;
-      if (nstart[dim] < 0) nstart[dim] = 0;
+      if (nstart[dim] < 0)
+        nstart[dim] = 0;
       nend[dim] -= curdim;
-      if (nend[dim] > nextdim) nend[dim] = nextdim;
-      auto subslice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), v, nstart, nend, op.getStrides());
+      if (nend[dim] > nextdim)
+        nend[dim] = nextdim;
+      auto subslice = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), v, nstart, nend, op.getStrides());
       postConcat.push_back(subslice);
       curdim += nextdim;
     }
@@ -194,52 +216,53 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
-
 DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   auto type = inp.getType();
   auto elemType = type.getElementType();
 
-
   if (elemType.isF32()) {
-    auto floatValues = ArrayRef((float*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((float *)inp.getData(), inp.getNumElements());
     return DenseFPElementsAttr::get(type, floatValues);
   }
 
   if (elemType.isF64()) {
-    auto floatValues = ArrayRef((double*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((double *)inp.getData(), inp.getNumElements());
     return DenseFPElementsAttr::get(type, floatValues);
   }
 
   if (elemType.isSignlessInteger(8)) {
-    auto floatValues = ArrayRef((int8_t*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((int8_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isSignlessInteger(16)) {
-    auto floatValues = ArrayRef((int16_t*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((int16_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isSignlessInteger(32)) {
-    auto floatValues = ArrayRef((int32_t*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((int32_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isSignlessInteger(64)) {
-    auto floatValues = ArrayRef((int64_t*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((int64_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isUnsignedInteger(8)) {
-    auto floatValues = ArrayRef((uint8_t*)inp.getData(), inp.getNumElements());
+    auto floatValues = ArrayRef((uint8_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isUnsignedInteger(16)) {
-    auto floatValues = ArrayRef((uint16_t*)inp.getData(), inp.getNumElements());
+    auto floatValues =
+        ArrayRef((uint16_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isUnsignedInteger(32)) {
-    auto floatValues = ArrayRef((uint32_t*)inp.getData(), inp.getNumElements());
+    auto floatValues =
+        ArrayRef((uint32_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isUnsignedInteger(64)) {
-    auto floatValues = ArrayRef((uint64_t*)inp.getData(), inp.getNumElements());
+    auto floatValues =
+        ArrayRef((uint64_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
 
@@ -247,17 +270,24 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
 }
 
 /*
-%22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) -> tensor<288xf32>
+%22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision =
+[DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) -> tensor<288xf32>
 %27 = stablehlo.reshape %22 : (tensor<288xf32>) -> tensor<144x2xf32>
-%28 = stablehlo.dot_general %6, %27, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
+%28 = stablehlo.dot_general %6, %27, batching_dims = [0] x [0], contracting_dims
+= [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>,
+tensor<144x2xf32>) -> tensor<144x2xf32>
 
 should become
 
 %a21 = stablehlo.reshape %21 : (tensor<288xf32>) -> tensor<144x2xf32>
 
-%22 = stablehlo.dot_general %a21, %16, batching_dims = [1] x [], contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] : (tensor<144x2x288xf32>, tensor<288xf32>) -> tensor<2x144xf32>
+%22 = stablehlo.dot_general %a21, %16, batching_dims = [1] x [],
+contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] :
+(tensor<144x2x288xf32>, tensor<288xf32>) -> tensor<2x144xf32>
 
-%28 = stablehlo.dot_general %6, %22, batching_dims = [0] x [1], contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
+%28 = stablehlo.dot_general %6, %22, batching_dims = [0] x [1], contracting_dims
+= [2] x [0], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>,
+tensor<144x2xf32>) -> tensor<144x2xf32>
 
 TODO
 */
@@ -275,11 +305,11 @@ struct DotReshapeDot final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-
 /*
 
-    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] : (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
-    %1193 = arith.addf %1191, %1192 : tensor<2xf32>
+    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
+   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191, %1192
+   : tensor<2xf32>
 
 */
 struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
@@ -291,9 +321,9 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
     if (!type)
       return failure();
 
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       if (auto lhs = op->getOperand(i).getDefiningOp<stablehlo::PadOp>()) {
-        auto rhs = op->getOperand(1-i);
+        auto rhs = op->getOperand(1 - i);
 
         if (!matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
           continue;
@@ -306,14 +336,18 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
             break;
           }
         }
-        if (!legal) continue;
+        if (!legal)
+          continue;
 
         ssize_t padidx = -1;
 
         SmallVector<size_t> idxs;
-        for (auto &&[low, high, dim] : llvm::zip(lhs.getEdgePaddingLow(), lhs.getEdgePaddingHigh(), type.getShape())) {
+        for (auto &&[low, high, dim] :
+             llvm::zip(lhs.getEdgePaddingLow(), lhs.getEdgePaddingHigh(),
+                       type.getShape())) {
           padidx++;
-          if (low == 0 && high == 0) continue;
+          if (low == 0 && high == 0)
+            continue;
           idxs.push_back(padidx);
         }
 
@@ -322,35 +356,39 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
           SmallVector<int64_t> starts(type.getShape().size(), 0);
-          SmallVector<int64_t> limits(type.getShape().begin(), type.getShape().end());
+          SmallVector<int64_t> limits(type.getShape().begin(),
+                                      type.getShape().end());
 
           SmallVector<Value, 1> vals;
 
           if (lhs.getEdgePaddingLow()[idx] != 0) {
-          starts[idx] = 0;
-          limits[idx] = lhs.getEdgePaddingLow()[idx];
-          auto prevSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
-          vals.push_back(prevSlice);
+            starts[idx] = 0;
+            limits[idx] = lhs.getEdgePaddingLow()[idx];
+            auto prevSlice = rewriter.create<stablehlo::SliceOp>(
+                op.getLoc(), rhs, starts, limits, strides);
+            vals.push_back(prevSlice);
           }
 
           starts[idx] = lhs.getEdgePaddingLow()[idx];
           limits[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
 
-          auto midSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
-          auto mid = rewriter.create<stablehlo::AddOp>(op.getLoc(), midSlice, lhs.getOperand());
+          auto midSlice = rewriter.create<stablehlo::SliceOp>(
+              op.getLoc(), rhs, starts, limits, strides);
+          auto mid = rewriter.create<stablehlo::AddOp>(op.getLoc(), midSlice,
+                                                       lhs.getOperand());
           vals.push_back(mid);
 
           if (lhs.getEdgePaddingHigh()[idx] != 0) {
-          starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
-          limits[idx] = type.getShape()[idx];
-          auto postSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
-          vals.push_back(postSlice);
+            starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
+            limits[idx] = type.getShape()[idx];
+            auto postSlice = rewriter.create<stablehlo::SliceOp>(
+                op.getLoc(), rhs, starts, limits, strides);
+            vals.push_back(postSlice);
           }
 
           rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, vals, idx);
           return success();
         }
-
       }
     }
 
@@ -358,7 +396,8 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
-struct ConcatConstProp final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+struct ConcatConstProp final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
@@ -373,22 +412,23 @@ struct ConcatConstProp final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> 
     }
 
     {
-        SmallVector<Value> subconcat;
-        bool changed = false;
-        for (auto v : op->getOperands()) {
-            if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>())
-                if (c2.getDimension() == op.getDimension()) {
-                    for (auto v2 : c2->getOperands())
-                        subconcat.push_back(v2);
-                    changed = true;
-                    continue;
-                }
-            subconcat.push_back(v);
-        }
-        if (changed) {
-            rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, subconcat, op.getDimension());
-            return success();
-        }
+      SmallVector<Value> subconcat;
+      bool changed = false;
+      for (auto v : op->getOperands()) {
+        if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>())
+          if (c2.getDimension() == op.getDimension()) {
+            for (auto v2 : c2->getOperands())
+              subconcat.push_back(v2);
+            changed = true;
+            continue;
+          }
+        subconcat.push_back(v);
+      }
+      if (changed) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+            op, subconcat, op.getDimension());
+        return success();
+      }
     }
 
     SmallVector<DenseElementsAttr> constants;
@@ -396,7 +436,8 @@ struct ConcatConstProp final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> 
     bool legal = true;
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i) {
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
-      if (!constants[i]) legal = false;
+      if (!constants[i])
+        legal = false;
     }
 
     if (legal) {
@@ -404,15 +445,18 @@ struct ConcatConstProp final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> 
       SmallVector<stablehlo::Tensor> inps;
       for (auto &c : constants)
         inps.push_back(mlir::stablehlo::evalConstantOp(c));
-      auto out = mlir::stablehlo::evalConcatenateOp(inps, op.getDimension(), op.getType());
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), fromTensor(out));
+      auto out = mlir::stablehlo::evalConcatenateOp(inps, op.getDimension(),
+                                                    op.getType());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                         fromTensor(out));
       return success();
     }
     return failure();
   }
 };
 
-struct BroadcastToReshape final : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+struct BroadcastToReshape final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
@@ -425,18 +469,25 @@ struct BroadcastToReshape final : OpRewritePattern<mlir::stablehlo::BroadcastInD
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
       if (inp.isSplat()) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), mlir::SplatElementsAttr::get(op.getType(), inp.getSplatValue<mlir::Attribute>()));
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(),
+            mlir::SplatElementsAttr::get(op.getType(),
+                                         inp.getSplatValue<mlir::Attribute>()));
         return success();
       }
       auto inp0 = mlir::stablehlo::evalConstantOp(inp);
-      auto out = mlir::stablehlo::evalBroadcastInDimOp(inp0, mlir::stablehlo::Axes(op.getBroadcastDimensions()), op.getType());
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), fromTensor(out));
+      auto out = mlir::stablehlo::evalBroadcastInDimOp(
+          inp0, mlir::stablehlo::Axes(op.getBroadcastDimensions()),
+          op.getType());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                         fromTensor(out));
       return success();
     }
 
     // Ensure these are sorted
     for (auto en : llvm::enumerate(op.getBroadcastDimensions())) {
-      if (en.index() == 0) continue;
+      if (en.index() == 0)
+        continue;
       if (op.getBroadcastDimensions()[en.index() - 1] >= en.value()) {
         return failure();
       }
@@ -444,7 +495,7 @@ struct BroadcastToReshape final : OpRewritePattern<mlir::stablehlo::BroadcastInD
 
     // Check that no new data is added
     for (auto en : llvm::enumerate(op.getType().getShape())) {
-      ssize_t idx=-1;
+      ssize_t idx = -1;
       for (auto en2 : llvm::enumerate(op.getBroadcastDimensions())) {
         if (en2.value() == en.index())
           idx = en2.index();
@@ -455,11 +506,13 @@ struct BroadcastToReshape final : OpRewritePattern<mlir::stablehlo::BroadcastInD
         }
         continue;
       }
-      if (en.value() != 1) return failure();
+      if (en.value() != 1)
+        return failure();
     }
 
     // replace with reshape
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), op.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      op.getOperand());
     return success();
   }
 };
@@ -594,15 +647,18 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-        APFloat res2(a);
-        res2.add(b, llvm::RoundingMode::NearestTiesToEven);
-        return res2;
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a,
+                   const APFloat &b) -> std::optional<APFloat> {
+                  APFloat res2(a);
+                  res2.add(b, llvm::RoundingMode::NearestTiesToEven);
+                  return res2;
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -630,21 +686,23 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-        APFloat res2(a);
-        res2.subtract(b, llvm::RoundingMode::NearestTiesToEven);
-        return res2;
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a,
+                   const APFloat &b) -> std::optional<APFloat> {
+                  APFloat res2(a);
+                  res2.subtract(b, llvm::RoundingMode::NearestTiesToEven);
+                  return res2;
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
   }
 };
-
 
 struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
   using OpRewritePattern<mlir::stablehlo::NegOp>::OpRewritePattern;
@@ -657,13 +715,15 @@ struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = mlir::constFoldUnaryOpConditional <FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a) -> std::optional<APFloat> {
-        return -a;
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+    if (auto res =
+            mlir::constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType,
+                                              void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  return -a;
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -690,15 +750,18 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-        APFloat res2(a);
-        res2.multiply(b, llvm::RoundingMode::NearestTiesToEven);
-        return res2;
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a,
+                   const APFloat &b) -> std::optional<APFloat> {
+                  APFloat res2(a);
+                  res2.multiply(b, llvm::RoundingMode::NearestTiesToEven);
+                  return res2;
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -721,15 +784,18 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-        APFloat res2(a);
-        res2.divide(b, llvm::RoundingMode::NearestTiesToEven);
-        return res2;
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a,
+                   const APFloat &b) -> std::optional<APFloat> {
+                  APFloat res2(a);
+                  res2.divide(b, llvm::RoundingMode::NearestTiesToEven);
+                  return res2;
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -747,20 +813,22 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-        if (a.getSizeInBits(a.getSemantics()) == 64 &&
-            b.getSizeInBits(b.getSemantics()) == 64)
-          return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
+    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType,
+                                                void>(
+            constants,
+            [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+              if (a.getSizeInBits(a.getSemantics()) == 64 &&
+                  b.getSizeInBits(b.getSemantics()) == 64)
+                return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
 
-        if (a.getSizeInBits(a.getSemantics()) == 32 &&
-            b.getSizeInBits(b.getSemantics()) == 32)
-          return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
-        return {};
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+              if (a.getSizeInBits(a.getSemantics()) == 32 &&
+                  b.getSizeInBits(b.getSemantics()) == 32)
+                return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
+              return {};
+            })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -778,18 +846,19 @@ struct CosSimplify : public OpRewritePattern<mlir::stablehlo::CosineOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a) -> std::optional<APFloat> {
-        if (a.getSizeInBits(a.getSemantics()) == 64)
-          return APFloat(cos(a.convertToDouble()));
+    if (auto res =
+            constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  if (a.getSizeInBits(a.getSemantics()) == 64)
+                    return APFloat(cos(a.convertToDouble()));
 
-        if (a.getSizeInBits(a.getSemantics()) == 32)
-          return APFloat(cosf(a.convertToFloat()));
-        return {};
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+                  if (a.getSizeInBits(a.getSemantics()) == 32)
+                    return APFloat(cosf(a.convertToFloat()));
+                  return {};
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -807,18 +876,19 @@ struct SinSimplify : public OpRewritePattern<mlir::stablehlo::SineOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a) -> std::optional<APFloat> {
-        if (a.getSizeInBits(a.getSemantics()) == 64)
-          return APFloat(sin(a.convertToDouble()));
+    if (auto res =
+            constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  if (a.getSizeInBits(a.getSemantics()) == 64)
+                    return APFloat(sin(a.convertToDouble()));
 
-        if (a.getSizeInBits(a.getSemantics()) == 32)
-          return APFloat(sinf(a.convertToFloat()));
-        return {};
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+                  if (a.getSizeInBits(a.getSemantics()) == 32)
+                    return APFloat(sinf(a.convertToFloat()));
+                  return {};
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -836,18 +906,19 @@ struct SqrtSimplify : public OpRewritePattern<mlir::stablehlo::SqrtOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-      constants,
-      [](const APFloat &a) -> std::optional<APFloat> {
-        if (a.getSizeInBits(a.getSemantics()) == 64)
-          return APFloat(sqrt(a.convertToDouble()));
+    if (auto res =
+            constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  if (a.getSizeInBits(a.getSemantics()) == 64)
+                    return APFloat(sqrt(a.convertToDouble()));
 
-        if (a.getSizeInBits(a.getSemantics()) == 32)
-          return APFloat(sqrtf(a.convertToFloat()));
-        return {};
-      })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), res.cast<ElementsAttr>());
-      return success(); 
+                  if (a.getSizeInBits(a.getSemantics()) == 32)
+                    return APFloat(sqrtf(a.convertToFloat()));
+                  return {};
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -859,7 +930,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp, /*ScatterToPad, */BroadcastToReshape, SliceConcat, SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(context);
+    patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp,
+                 /*ScatterToPad, */ BroadcastToReshape, SliceConcat,
+                 SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify,
+                 AddSimplify, SubSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, PowSimplify>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 

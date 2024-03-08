@@ -1196,8 +1196,8 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         ad_pass = ad_pass.replace("ForwardMode", "ReverseModeCombined")
         newpasses = (
             prev_passes
-            + "print," + ad_pass
-            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse, print"
+            + ad_pass
+            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse"
             + post_passes
         )
 
