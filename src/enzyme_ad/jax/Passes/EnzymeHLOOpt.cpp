@@ -173,33 +173,40 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
         SmallVector<size_t> idxs;
         for (auto &&[low, high, dim] : llvm::zip(lhs.getEdgePaddingLow(), lhs.getEdgePaddingHigh(), type.getShape())) {
           padidx++;
-          if (low == 0 && high == dim) continue;
-          idxs.push_back(padidx-1);
+          if (low == 0 && high == 0) continue;
+          idxs.push_back(padidx);
         }
 
-        if (idxs.size() == 0) {
+        if (idxs.size() == 1) {
           auto idx = idxs[0];
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
           SmallVector<int64_t> starts(type.getShape().size(), 0);
           SmallVector<int64_t> limits(type.getShape().begin(), type.getShape().end());
 
-          starts[idx] = lhs.getEdgePaddingLow()[idx];
-          limits[idx] = type.getShape()[idx] - lhs.getEdgePaddingLow()[idx];
+          SmallVector<Value, 1> vals;
 
-          auto midSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
-
+          if (lhs.getEdgePaddingLow()[idx] != 0) {
           starts[idx] = 0;
           limits[idx] = lhs.getEdgePaddingLow()[idx];
           auto prevSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
+          vals.push_back(prevSlice);
+          }
 
-          starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingLow()[idx];
+          starts[idx] = lhs.getEdgePaddingLow()[idx];
+          limits[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
+
+          auto midSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
+          auto mid = rewriter.create<stablehlo::AddOp>(op.getLoc(), midSlice, lhs.getOperand());
+          vals.push_back(mid);
+
+          if (lhs.getEdgePaddingHigh()[idx] != 0) {
+          starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
           limits[idx] = 0;
           auto postSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
+          vals.push_back(postSlice);
+          }
 
-          auto mid = rewriter.create<stablehlo::AddOp>(op.getLoc(), midSlice, lhs.getOperand());
-
-          Value vals[3] = {prevSlice, mid, postSlice};
           rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, vals, idx);
           return success();
         }
