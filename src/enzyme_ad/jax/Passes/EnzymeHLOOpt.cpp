@@ -202,7 +202,7 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
 
           if (lhs.getEdgePaddingHigh()[idx] != 0) {
           starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
-          limits[idx] = 0;
+          limits[idx] = type.getShape()[idx];
           auto postSlice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), rhs, starts, limits, strides);
           vals.push_back(postSlice);
           }
