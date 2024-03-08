@@ -329,5 +329,52 @@ class ActivityMismatch(EnzymeJaxTest):
         self.fn = f
         self.name = "activitymismatch"
 
+class GenDot(EnzymeJaxTest):
+    def setUp(self):
+        dim = 12
+        self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
+        self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = [jnp.array([i * i for i in range(2*dim)], dtype=jnp.float32).reshape((2, dim))]
+
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"]
+
+        self.revfilter = nomlir
+
+        def f(x):
+            k = jnp.ones((dim, dim)) @ x
+            k_tmp = jnp.reshape(k, (2, dim // 2))
+
+            toconv2 = jnp.ones((2, dim // 2, dim // 2))
+            k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
+
+            kcl = jnp.zeros((1, dim))
+            
+            h = jnp.reshape(k, (1, dim))
+            kcl = jnp.append(kcl, h, axis=0)
+            return kcl
+
+        self.fn = f
+        self.name = "GenDot"
+
+
+class Concat(EnzymeJaxTest):
+    def setUp(self):
+        dim = 12
+        self.ins = [jnp.array(range(dim), dtype=jnp.float32), 10*jnp.array(range(dim), dtype=jnp.float32)]
+        self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32), jnp.array([i * i *i / 3. for i in range(dim)], dtype=jnp.float32)]
+        self.douts = [jnp.array([i * i for i in range(2*dim)], dtype=jnp.float32)]
+
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"]
+
+        self.revfilter = nomlir
+
+        def f(x, y):
+            return jnp.concat([x, y], axis=None)
+
+        self.fn = f
+        self.name = "Concat"
+
 if __name__ == "__main__":
     absltest.main()

@@ -39,7 +39,7 @@ http_archive(
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
     patch_args = ["-p1"],
-    patches = ["//:patches/xla.patch"],
+    patches = ["//:patches/xla.patch", "//:patches/xla2.patch", ],
 )
 
 PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"

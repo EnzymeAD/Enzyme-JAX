@@ -11,21 +11,21 @@ argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 def rmsnorm(x, weight):
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
-    return x # weight * x * ss
+    return weight * x * ss
 
 
 def softmax(x):
-    # max_val = jnp.max(x)
-    # x = jnp.exp(x - max_val)
-    return x # / sum(x)
+    max_val = jnp.max(x)
+    x = jnp.exp(x - max_val)
+    return x / sum(x)
 
 
 def sigmoid(x):
-    return 1 # / (1 + jnp.exp(-x))
+    return 1 / (1 + jnp.exp(-x))
 
 
 def silu(x):
-    return x # * sigmoid(x)
+    return x * sigmoid(x)
 
 
 # Token is token value
@@ -134,7 +134,7 @@ def forward(x, config, weights, key_cache, value_cache):
         fcr = jnp.cos(val)
         fci = jnp.sin(val)
 
-        rotM = jnp.array([[0.0, -1.0], [1., 0.]])
+        rotM = jnp.array([[fcr, -fci], [fci, fcr]])
         toconv.append(rotM)
     toconv2 = toconv[: kv_dim // 2] + [jnp.eye(2)] * (dim // 2 - kv_dim // 2)
 
@@ -143,20 +143,99 @@ def forward(x, config, weights, key_cache, value_cache):
 
     keys2 = []
     values2 = []
-    k = wk[0, :, :] @ x
-    
-    k_tmp = jnp.reshape(k, (dim // 2, 2))
+    for l in range(n_layers):
+        xb = rmsnorm(x, rms_att_weight[l, :])
+        if asserts:
+            assert xb.shape == (dim,)
 
-    # dim == head_size * n_heads
+        q = wq[l, :, :] @ xb
+        if asserts:
+            assert q.shape == (dim,)
 
-    # Batched gemv
-    k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
+        k = wk[l, :, :] @ xb
+        if asserts:
+            assert q.shape == (kv_dim,)
 
-    key_cache_l = key_cache[0, :, :]
-    h = jnp.reshape(k, (1, dim))
-    key_cache_l = jnp.append(key_cache_l, h, axis=0)
+        v = wv[l, :, :] @ xb
+        if asserts:
+            assert q.shape == (kv_dim,)
 
-    x = key_cache_l
+        q_tmp = jnp.reshape(q, (dim // 2, 2))
+        k_tmp = jnp.reshape(k, (dim // 2, 2))
+
+        # dim == head_size * n_heads
+
+        # Batched gemv
+        k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
+        q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (dim,))
+
+        key_cache_l = key_cache[l, :, :]
+        key_cache_l = jnp.append(key_cache_l, jnp.reshape(k, (1, dim)), axis=0)
+        value_cache_l = value_cache[l, :, :]
+        value_cache_l = jnp.append(value_cache_l, jnp.reshape(v, (1, dim)), axis=0)
+        keys2.append(key_cache_l)
+        values2.append(value_cache_l)
+
+        xbs2 = []
+        for h in range(n_heads):
+            q2 = q[head_size * h : head_size * (h + 1)]
+            if asserts:
+                assert q2.shape == (head_size,)
+
+            # For kv_mul consecutive heads, they share the same kv cache
+            # reshape key_cache last dim from (kv_dim,) to (kv_mul, head_size)
+            # generalized einsum reducing the last dim, the rest are batch
+            att = []
+
+            key_index = h // kv_mul
+
+            att = jnp.einsum(
+                "ij,j->i",
+                key_cache_l[:, key_index * head_size : (key_index + 1) * head_size],
+                q2,
+            )
+
+            att = att / jnp.sqrt(head_size)
+
+            att = softmax(att)
+
+            x_tmp = jnp.einsum(
+                "ij,i->j",
+                value_cache_l[:, key_index * head_size : (key_index + 1) * head_size],
+                att,
+            )
+
+            xbs2.append(x_tmp)
+
+        # Todo right concat
+        xb = jnp.concatenate(xbs2, axis=None)
+
+        xb2 = wo[l, :, :] @ xb
+        if asserts:
+            assert xb2.shape == (dim,)
+
+        x += xb2
+
+        # Rmsnorm and feedforward swiglu
+
+        xb = rmsnorm(x, rms_ffn_weight[l, :])
+
+        # Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # first calculate self.w1(x) and self.w3(x)
+
+        hb = w1[l, :, :] @ xb
+        hb2 = w3[l, :, :] @ xb
+
+        hb = silu(hb)
+
+        hb = hb * hb2
+
+        xb = w2[l, :, :] @ hb
+
+        x += xb
+
+    x = rmsnorm(x, rms_final_weight)
+    logits = wcls @ x
 
     return x
 
@@ -164,12 +243,11 @@ def forward(x, config, weights, key_cache, value_cache):
 class Llama(absltest.TestCase):
     def test_llama_random(self):
         config = {
-            "dim": 2,
+            "dim": 288,
             "hidden_dim": 768,
-            "n_layers": 1,
-            # "n_heads": 6,
-            "n_heads": 1,
-            "n_kv_heads": 1,
+            "n_layers": 6,
+            "n_heads": 6,
+            "n_kv_heads": 6,
             "vocab_size": 32000,
             "seq_len": 256,
         }
@@ -232,89 +310,91 @@ class Llama(absltest.TestCase):
 
         efunc = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
 
-        eres = efunc(x, weights, key_cache, value_cache)
-        print("Enzyme primal", eres)
-        res = jfunc(x, weights, key_cache, value_cache)
-        print("Jax primal", res)
-        print(" max error", jnp.max(jnp.abs(eres - res)))
-        assert (jnp.abs(eres - res) < 1e-3).all()
-
         number = 1000
-        print(
-            "Enzyme primal",
-            timeit.Timer(
-                "efunc(x, weights, key_cache, value_cache)",
-                globals={
-                    "efunc": efunc,
-                    "x": x,
-                    "weights": weights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
-        print(
-            "JaX primal",
-            timeit.Timer(
-                "jfunc(x, weights, key_cache, value_cache)",
-                globals={
-                    "jfunc": jfunc,
-                    "x": x,
-                    "weights": weights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
+        if False:
+            eres = efunc(x, weights, key_cache, value_cache)
+            print("Enzyme primal", eres)
+            res = jfunc(x, weights, key_cache, value_cache)
+            print("Jax primal", res)
+            print(" max error", jnp.max(jnp.abs(eres - res)))
+            assert (jnp.abs(eres - res) < 1e-3).all()
+
+            print(
+                "Enzyme primal",
+                timeit.Timer(
+                    "efunc(x, weights, key_cache, value_cache)",
+                    globals={
+                        "efunc": efunc,
+                        "x": x,
+                        "weights": weights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
+            print(
+                "JaX primal",
+                timeit.Timer(
+                    "jfunc(x, weights, key_cache, value_cache)",
+                    globals={
+                        "jfunc": jfunc,
+                        "x": x,
+                        "weights": weights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
         # jfunc = jax.jit(partial(forward, config))
         # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
-        @jax.jit
-        def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-            return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+        if False:
+            @jax.jit
+            def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+                return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
-        @jax.jit
-        def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-            return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+            @jax.jit
+            def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+                return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
-        eres = efwd(
-            x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
-        )
-        print("Enzyme fwd", eres)
-        jres = jfwd(
-            x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
-        )
-        print("Jax fwd", jres)
-        print(
-            "Enzyme fwd",
-            timeit.Timer(
-                "efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
-                globals={
-                    "efwd": efwd,
-                    "x": x,
-                    "dx": dx,
-                    "weights": weights,
-                    "dweights": dweights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
-        print(
-            "JaX fwd",
-            timeit.Timer(
-                "jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
-                globals={
-                    "jfwd": jfwd,
-                    "x": x,
-                    "dx": dx,
-                    "weights": weights,
-                    "dweights": dweights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
+            eres = efwd(
+                x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
+            )
+            print("Enzyme fwd", eres)
+            jres = jfwd(
+                x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
+            )
+            print("Jax fwd", jres)
+            print(
+                "Enzyme fwd",
+                timeit.Timer(
+                    "efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
+                    globals={
+                        "efwd": efwd,
+                        "x": x,
+                        "dx": dx,
+                        "weights": weights,
+                        "dweights": dweights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
+            print(
+                "JaX fwd",
+                timeit.Timer(
+                    "jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
+                    globals={
+                        "jfwd": jfwd,
+                        "x": x,
+                        "dx": dx,
+                        "weights": weights,
+                        "dweights": dweights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
 
         @jax.jit
         def jrev(x, weights, kc, vc, dx, dkc, dvc):
@@ -326,10 +406,16 @@ class Llama(absltest.TestCase):
             primals, f_vjp = jax.vjp(efunc, x, weights, kc, vc)
             return f_vjp(dx)  # , dkc, dvc)
 
-        eres = erev(x, weights, key_cache, value_cache, res, dkc, dvc)
+        eres = erev(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Enzyme rev", eres)
-        jres = jrev(x, weights, key_cache, value_cache, res, dkc, dvc)
+        jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax rev", jres)
+
+        jrev2 = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=enzyme_jax.JaXPipeline("inline{default-pipeline=canonicalize max-iterations=4},"
+            + "canonicalize,cse,print,enzyme-hlo-opt,cse,print"))(jrev)
+
+        jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
+        print("Jax2 rev", jres2)
 
         print(
             "Enzyme rev",
@@ -353,6 +439,22 @@ class Llama(absltest.TestCase):
                 "jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
                     "jrev": jrev,
+                    "x": x,
+                    "weights": weights,
+                    "key_cache": key_cache,
+                    "value_cache": value_cache,
+                    "dx": dx,
+                    "dkc": dkc,
+                    "dvc": dvc,
+                },
+            ).timeit(number),
+        )
+        print(
+            "JaX2 rev",
+            timeit.Timer(
+                "jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)",
+                globals={
+                    "jrev2": jrev2,
                     "x": x,
                     "weights": weights,
                     "key_cache": key_cache,

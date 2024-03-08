@@ -203,28 +203,19 @@ public:
     SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
                                    op.getBroadcastDimensions().end());
 
-    Value zero = nullptr;
-    if (bcastDims.size() == 0 && inTy.getShape().size() == 0) {
-      for (size_t i = 0; i < outTy.getShape().size(); i++) {
-        bcastDims.push_back(i);
-      }
-      zero = gutils->getShadowType(inTy)
-                    .cast<AutoDiffTypeInterface>()
-                    .createNullValue(builder, op.getLoc());
-    } else {
-      SmallVector<int64_t> dims;
-      for (size_t i = 0; i < inTy.getShape().size(); i++) {
-          if (llvm::is_contained(bcastDims, i)) continue;
-          dims.push_back(i);
-      }
-      zero = gutils->getShadowType(RankedTensorType::get(dims, inTy.getElementType()))
-                    .cast<AutoDiffTypeInterface>()
-                    .createNullValue(builder, op.getLoc());
+    SmallVector<int64_t> newDims;
+    for (auto en : llvm::enumerate(outTy.getShape())) {
+      if (llvm::is_contained(bcastDims, en.index())) continue;
+      newDims.push_back(en.index());
     }
+
+    Value zero = gutils->getShadowType(inTy)
+                    .cast<AutoDiffTypeInterface>()
+                    .createNullValue(builder, op.getLoc());
 
     auto red = builder.create<ReduceOp>(op.getLoc(),
                                         TypeRange(zero.getType()),
-                                        inDiffe, zero, bcastDims);
+                                        inDiffe, zero, newDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
     OpBuilder bodyBuilder(orig->getContext());
@@ -235,8 +226,6 @@ public:
     auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
                                          body.getArgument(1));
     bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
-
-    llvm::errs() << " red: " << *red << "\n";
 
     Value res = red->getResult(0);
     Type resTy =  gutils->getShadowType(op.getOperand().getType());
@@ -271,6 +260,25 @@ public:
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
 
+    SmallVector<int64_t> starts;
+    SmallVector<int64_t> edge_padding_high;
+    SmallVector<int64_t> interior_padding;
+    for (auto &&[start, limit, stride, dim] : llvm::zip(
+               op.getStartIndices(), op.getLimitIndices(), op.getStrides(), inTy.getShape())) {
+      starts.push_back(start);
+      edge_padding_high.push_back(dim - limit);
+      interior_padding.push_back(stride - 1);
+    }
+
+
+    auto zeroPad = RankedTensorType::get({}, inTy.getElementType()).cast<AutoDiffTypeInterface>().createNullValue(builder,
+                                                                   op.getLoc());
+    auto red = builder.create<stablehlo::PadOp>(op.getLoc(), inDiffe, zeroPad, builder.getDenseI64ArrayAttr(starts), builder.getDenseI64ArrayAttr(edge_padding_high), builder.getDenseI64ArrayAttr(interior_padding));
+
+    gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
+    return success();
+    #if 0
+
     Value idxs;
     {
       SmallVector<int64_t> concat_data;
@@ -288,11 +296,10 @@ public:
         for (int32_t i = start; i < limit; i += stride) {
           data.push_back(i);
         }
-
-        Value ind = builder.create<ConstantOp>(op.getLoc(), RankedTensorType::get({data.size()}, builder.getI32Type()),
+        Value ind = builder.create<ConstantOp>(op.getLoc(), RankedTensorType::get({(int64_t)data.size()}, builder.getI32Type()),
                                                builder.getI32TensorAttr(data));
 
-        auto bcast_ind = builder.getDenseI64ArrayAttr({idx});
+        auto bcast_ind = builder.getDenseI64ArrayAttr({(int64_t)idx});
         ind = builder.create<BroadcastInDimOp>(op.getLoc(), toConcatType, ind,
                                                bcast_ind);
         inds.push_back(ind);
@@ -344,6 +351,7 @@ public:
     // gutils->setDiffe(op.getOperand(), red->getResult(0), builder);
     
     return success();
+    #endif
   }
 
   SmallVector<Value> cacheValues(Operation *orig,
@@ -371,20 +379,31 @@ public:
 
     Operation &innerOp = op.getBody().front().front();
     
-    auto inTy = op->getOperand(0).getType();
+    auto inTy = op->getOperand(0).getType().cast<RankedTensorType>();
     auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
                                                                    op.getLoc());
     auto inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
     
+      SmallVector<int64_t> toBroadcast;
+      {
+        size_t idx=0;
+      for (auto en : llvm::enumerate(inTy.getShape())) {
+        if (llvm::is_contained(op.getDimensions(), en.index())) {
+          // reduced op
+          continue;
+        }
+        toBroadcast.push_back(idx);
+        idx++;
+      }
+      }
+
     if (isa<AddOp>(innerOp)) {
         if (!gutils->isConstantValue(op.getInputs()[0])) {
         Value bcast;
+
         
-        if (op->getResult(0).getType().cast<RankedTensorType>().getShape().size() == 0)
-            bcast = builder.create<BroadcastInDimOp>(op.getLoc(), gutils->getShadowType(inTy), inDiffe, builder.getDenseI64ArrayAttr({}));
-        else
-            bcast = builder.create<BroadcastInDimOp>(op.getLoc(), gutils->getShadowType(inTy), inDiffe, op.getDimensions());
+        bcast = builder.create<BroadcastInDimOp>(op.getLoc(), gutils->getShadowType(inTy), inDiffe, builder.getDenseI64ArrayAttr(toBroadcast));
 
         gutils->addToDiffe(op.getInputs()[0], bcast, builder);
         }
@@ -395,6 +414,34 @@ public:
     }
 
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
+      // TODO: technically we should invert the order here to pick the last value (or divide by count) if multiple are the same as the
+      // result
+      auto ores = gutils->getNewFromOriginal(op->getResult(0));
+
+      if (!gutils->isConstantValue(op.getInputs()[0])) {
+        auto oprev = gutils->getNewFromOriginal(op.getInputs()[0]);
+        auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
+        auto bc = builder.create<BroadcastInDimOp>(op.getLoc(), oprev.getType(), ores, attr);
+
+        auto cmp = builder.create<CompareOp>(op.getLoc(), bc, oprev, ComparisonDirection::EQ);
+
+        auto bc2 = builder.create<BroadcastInDimOp>(op.getLoc(), oprev.getType(), inDiffe, attr);
+
+        auto res = builder.create<SelectOp>(op.getLoc(), cmp, bc2, zero);
+        gutils->addToDiffe(op.getInputs()[0], res, builder);
+      }
+      if (!gutils->isConstantValue(op.getInitValues()[0])) {
+        auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
+
+        auto zeroI = inDiffe.getType().cast<AutoDiffTypeInterface>().createNullValue(builder,
+                                                                   op.getLoc());
+
+        auto cmp = builder.create<CompareOp>(op.getLoc(), ores, oprev, ComparisonDirection::EQ);
+
+        auto res = builder.create<SelectOp>(op.getLoc(), cmp, inDiffe, zeroI);
+        gutils->addToDiffe(op.getInitValues()[0], res, builder);
+      }
+      return success();
     }
       
     orig->emitError() << "Unsupported operation in reduction rev autodiff(1): "
@@ -424,9 +471,9 @@ public:
     gutils->zeroDiffe(op->getResult(0), builder);
 
     auto dim = op.getDimension();
+    size_t startDim = 0;
     for (auto &ope : op->getOpOperands()) { 
         auto op = ope.get();
-        if (gutils->isConstantValue(op)) continue;
         auto inTy = gutils->getShadowType(op.getType());
         SmallVector<int64_t> start;
         SmallVector<int64_t> limit;
@@ -434,18 +481,19 @@ public:
         SmallVector<int64_t> tys;
         auto RT = inTy.cast<RankedTensorType>();
         for (auto i=0; i<RT.getShape().size(); i++) {
+            tys.push_back(RT.getShape()[i]);
             if (i == dim) {
-                tys.push_back(1);
-                start.push_back(ope.getOperandNumber());
-                limit.push_back(ope.getOperandNumber()+1);
+                start.push_back(startDim);
+                limit.push_back(startDim + RT.getShape()[i]);
+                startDim += RT.getShape()[i];
                 strides.push_back(1);
                 continue;
             }
-            tys.push_back(RT.getShape()[i]);
             start.push_back(0);
             limit.push_back(RT.getShape()[i]);
             strides.push_back(1);
         }
+        if (gutils->isConstantValue(op)) continue;
         auto res = builder.create<SliceOp>(op.getLoc(), RankedTensorType::get(tys, RT.getElementType()), inDiffe, start, limit, strides);
         auto res2 = builder.create<ReshapeOp>(op.getLoc(), inTy, res);
         gutils->addToDiffe(op, res2, builder);

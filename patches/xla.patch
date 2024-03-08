@@ -16,3 +16,38 @@
  )
  
  cc_library(
+
+--- a/xla/mlir/backends/cpu/transforms/BUILD
++++ b/xla/mlir/backends/cpu/transforms/BUILD
+@@ -4,7 +4,7 @@ load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
+ 
+ package(
+     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+-    default_visibility = ["//xla:internal"],
++    default_visibility = ["//xla:friends"],
+     licenses = ["notice"],
+ )
+ 
+ gentbl_cc_library(
+
+--- a/xla/mlir/memref/BUILD
++++ b/xla/mlir/memref/BUILD
+@@ -1,6 +1,7 @@
+ package_group(
+     name = "friends",
+     packages = [
++        "public",
+         "//xla/mlir/...",
+         # copybara:uncomment_begin(google-only)
+         # # TODO(ezhulenev): Clean up dependencies that are leforvers from Autofusion project.
+
+--- a/xla/mlir/math/BUILD
++++ b/xla/mlir/math/BUILD
+@@ -1,6 +1,7 @@
+ package_group(
+     name = "friends",
+     packages = [
++        "public",
+         "//xla/mlir/...",
+         # copybara:uncomment_begin(google-only)
+         # # TODO(ezhulenev): Clean up dependencies that are leforvers from Autofusion project.

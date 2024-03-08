@@ -18,6 +18,35 @@ py_package(
     packages = ["@//src/enzyme_ad/jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
 )
 
+cc_binary(
+    name = "enzymexlamlir-opt",
+    srcs = ["//src/enzyme_ad/jax:enzymexlamlir-opt.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/enzyme_ad/jax:XLADerivatives",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AllPassesAndDialects",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:ConversionPasses",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Transforms",
+    ],
+)
+
 py_wheel(
     name = "enzyme_ad",
     distribution = "enzyme_ad",
