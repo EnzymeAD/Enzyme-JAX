@@ -412,7 +412,7 @@ class Llama(absltest.TestCase):
         print("Jax rev", jres)
 
         jrev2 = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=enzyme_jax.JaXPipeline("inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,print,enzyme-hlo-opt,cse,print"))(jrev)
+            + "canonicalize,cse,enzyme-hlo-opt,cse"))(jrev)
 
         jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax2 rev", jres2)

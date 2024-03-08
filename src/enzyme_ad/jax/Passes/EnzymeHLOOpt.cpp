@@ -54,6 +54,34 @@ struct SliceSimplification final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto prev = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!prev) return failure();
+
+    SmallVector<int64_t> start;
+    SmallVector<int64_t> end;
+    SmallVector<int64_t> step;
+
+    for (auto && [pstart, pend, pstep, nstart, nend, nstep] : llvm::zip(prev.getStartIndices(), prev.getLimitIndices(), prev.getStrides(),
+      op.getStartIndices(), op.getLimitIndices(), op.getStrides()
+      )) {
+      start.push_back(pstart + pstep * nstart);
+      step.push_back(pstep * nstep);
+      end.push_back(pstart + pstep * nstep * (nend - nstart));
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, prev.getOperand(), start, end, step);
+    return failure();
+  }
+};
+
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -766,7 +794,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<AddPad, DotReshapeDot, ConcatConstProp, /*ScatterToPad, */BroadcastToReshape, SliceConcat, SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(context);
+    patterns.add<SliceSlice, AddPad, DotReshapeDot, ConcatConstProp, /*ScatterToPad, */BroadcastToReshape, SliceConcat, SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
