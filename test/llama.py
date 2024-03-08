@@ -349,6 +349,7 @@ class Llama(absltest.TestCase):
         # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
         if True:
+
             @jax.jit
             def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
                 return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
@@ -411,8 +412,13 @@ class Llama(absltest.TestCase):
         jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax rev", jres)
 
-        jrev2 = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=enzyme_jax.JaXPipeline("inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"))(jrev)
+        jrev2 = enzyme_jax.enzyme_jax_ir(
+            argv=argv,
+            pipeline_options=enzyme_jax.JaXPipeline(
+                "inline{default-pipeline=canonicalize max-iterations=4},"
+                + "canonicalize,cse,enzyme-hlo-opt,cse"
+            ),
+        )(jrev)
 
         jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax2 rev", jres2)

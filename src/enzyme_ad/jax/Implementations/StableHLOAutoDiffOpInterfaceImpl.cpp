@@ -203,27 +203,36 @@ public:
     SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
                                    op.getBroadcastDimensions().end());
 
-    SmallVector<int64_t> newDims;
-    SmallVector<int64_t> reduceShape;
+    SmallVector<int64_t> reducedDims;
+    SmallVector<int64_t> iterShape;
     for (auto en : llvm::enumerate(outTy.getShape())) {
-      if (llvm::is_contained(bcastDims, en.index())) {
-        if (en.value() != 1) {
-          newDims.push_back(en.index());
+      ssize_t bcastIdx = -1;
+      for (auto en2 : llvm::enumerate(bcastDims)) {
+        if (en2.value() == en.index()) {
+          bcastIdx = en2.index();
+          break;
+        }
+      }
+      if (bcastIdx != -1) {
+        if (en.value() != inTy.getShape()[bcastIdx]) {
+          reducedDims.push_back(en.index());
+          assert(inTy.getShape()[bcastIdx] == 1);
+        } else {
+          iterShape.push_back(inTy.getShape()[bcastIdx]);
         }
         continue;
       }
-      reduceShape.push_back(en.value());
-      newDims.push_back(en.index());
+      reducedDims.push_back(en.index());
     }
 
-    auto reduceTy = RankedTensorType::get(reduceShape, inTy.getElementType());
+    auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
 
     Value zero = gutils->getShadowType(reduceTy)
                      .cast<AutoDiffTypeInterface>()
                      .createNullValue(builder, op.getLoc());
 
     auto red = builder.create<ReduceOp>(op.getLoc(), TypeRange(zero.getType()),
-                                        inDiffe, zero, newDims);
+                                        inDiffe, zero, reducedDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
     OpBuilder bodyBuilder(orig->getContext());
