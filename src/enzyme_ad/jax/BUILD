@@ -136,6 +136,12 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
     ]),
+    copts = [
+        "-Werror=unused-variable",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+        "-Werror=unused-result",
+    ],
     deps = [
         ":EnzymeXLAPassesIncGen",
         ":mhlo-derivatives",
