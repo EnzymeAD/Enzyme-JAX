@@ -41,13 +41,3 @@
          # copybara:uncomment_begin(google-only)
          # # TODO(ezhulenev): Clean up dependencies that are leforvers from Autofusion project.
 
---- a/xla/mlir/math/BUILD
-+++ b/xla/mlir/math/BUILD
-@@ -1,6 +1,7 @@
- package_group(
-     name = "friends",
-     packages = [
-+        "public",
-         "//xla/mlir/...",
-         # copybara:uncomment_begin(google-only)
-         # # TODO(ezhulenev): Clean up dependencies that are leforvers from Autofusion project.

@@ -40,13 +40,10 @@
 
 #include "mlir/InitAllPasses.h"
 #include "xla/mlir/backends/cpu/transforms/passes.h"
-#include "xla/mlir/math/transforms/passes.h"
 #include "xla/mlir/memref/transforms/passes.h"
 #include "xla/mlir/runtime/transforms/passes.h"
 #include "xla/mlir_hlo/deallocation/transforms/passes.h"
-#include "xla/mlir_hlo/lhlo/IR/lhlo_ops.h"
 #include "xla/mlir_hlo/lhlo/transforms/passes.h"
-#include "xla/mlir_hlo/lhlo_gpu/IR/lhlo_gpu_ops.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 
 #include "xla/mlir_hlo/transforms/passes.h"
@@ -1015,7 +1012,6 @@ PYBIND11_MODULE(enzyme_call, m) {
   xla::cpu::registerCpuTransformsPasses();
   mlir::hlo::registerLMHLOTransformsPasses();
   xla::runtime::registerRuntimeTransformsPasses();
-  xla::registerMathTransformsPasses();
   xla::registerMemrefTransformsPasses();
 
   mlir::registerShapePasses();
