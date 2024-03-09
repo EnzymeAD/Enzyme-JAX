@@ -271,8 +271,6 @@ public:
                                          SmallVector<Value> caches) const {
     auto op = cast<SliceOp>(orig);
     auto inTy = op.getOperand().getType();
-    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
-                                                                   op.getLoc());
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
 
@@ -300,6 +298,8 @@ public:
 #if 0
 
     auto outTy = op.getType();
+    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
+                                                                   op.getLoc());
     Value idxs;
     {
       SmallVector<int64_t> concat_data;
