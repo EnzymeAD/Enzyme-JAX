@@ -96,11 +96,8 @@ class NewXLAPipeline:
               region-simplify=true
               test-convergence=false
               top-down=true},
-          func.func(xla-sparse-custom-call-to-pack),
-          func.func(legalize-sparse-ops{legalize-to-custom-calls=false}),
           func.func(chlo-legalize-to-hlo{
               expand-compositions=true legalize-broadcasts=true}),
-          func.func(mhlo-sparse-rewriting),
           func.func(mhlo-legalize-control-flow),
           func.func(mhlo-legalize-dot-general-to-dot),
           hlo-legalize-to-arithmetic,
@@ -200,7 +197,6 @@ class NewXLAPipeline:
               test-convergence=false
               top-down=true},
           cse,
-          func.func(xla-math-approximation{oplist=all}),
           func.func(convert-linalg-to-parallel-loops),
           canonicalize{
               max-iterations=10

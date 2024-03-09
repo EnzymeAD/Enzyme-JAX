@@ -18,6 +18,22 @@ FwdPipelines = AllPipelines
 RevPipelines = AllPipelines
 
 
+def no_newxla(x):
+    return [(name, a) for (name, a) in x if name != "NewXLAMLIR" and name != "NewXLA"]
+
+
+def no_newxlamlir(x):
+    return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
+
+
+def justjax(x):
+    return [
+        (name, a)
+        for (name, a) in x
+        if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
+    ]
+
+
 # @jax.jit
 # def fwd_jax(in0, in1, din0, din1):
 # .  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
@@ -48,6 +64,8 @@ def splatvjp(in_fn):
 class EnzymeJaxTest(absltest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.primfilter = lambda x: x
+        self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
 
     def setUp(self):
@@ -134,10 +152,10 @@ class EnzymeJaxTest(absltest.TestCase):
             / number,
         )
 
-        for name, pipeline in AllPipelines:
+        for pname, pipeline in AllPipelines:
             rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn)
 
-            if (name, pipeline) in PrimalPipelines:
+            if (pname, pipeline) in self.primfilter(PrimalPipelines):
                 ao = rfn_enzyme(*ins)
                 print(aop)
                 print((jnp.abs(aop - aop) < 1e-6).all())
@@ -145,7 +163,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
                 print(
                     name + " EnzymeMLIR(",
-                    name,
+                    pname,
                     ") Primal: ",
                     timeit.Timer(
                         primalstr,
@@ -157,7 +175,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     / number,
                 )
 
-            if (name, pipeline) in FwdPipelines:
+            if (pname, pipeline) in self.fwdfilter(FwdPipelines):
                 fwd_enzyme = jax.jit(splatjvp(rfn_enzyme))
 
                 primals, tangents = fwd_jax(*(ins + dins))
@@ -172,7 +190,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
                 print(
                     name + " EnzymeMLIR(",
-                    name,
+                    pname,
                     ") Fwd: ",
                     timeit.Timer(
                         fwdstr,
@@ -184,7 +202,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     / number,
                 )
 
-            if (name, pipeline) in self.revfilter(RevPipelines):
+            if (pname, pipeline) in self.revfilter(RevPipelines):
                 rev_enzyme = jax.jit(splatvjp(rfn_enzyme))
 
                 primals, grads = rev_enzyme(*douts, *ins)
@@ -196,7 +214,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
                 print(
                     name + " EnzymeMLIR(",
-                    name,
+                    pname,
                     ") Rev: ",
                     timeit.Timer(
                         revstr,
@@ -223,6 +241,10 @@ class AddOne(EnzymeJaxTest):
 
         def add_one(x, y):
             return x + 1 + y
+
+        self.primfilter = no_newxla
+        self.fwdfilter = no_newxla
+        self.revfilter = no_newxla
 
         self.fn = add_one
 
@@ -256,11 +278,6 @@ class Sum(EnzymeJaxTest):
         self.dins = [jnp.array([i * i for i in range(50)], dtype=jnp.float32)]
         self.douts = [1.0]
 
-        def nomlir(x):
-            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
-
-        self.revfilter = nomlir
-
         def sum(x):
             return jnp.sum(x)
 
@@ -275,10 +292,9 @@ class Cache(EnzymeJaxTest):
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
 
-        def nomlir(x):
-            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
-
-        self.revfilter = nomlir
+        self.primfilter = no_newxla
+        self.fwdfilter = no_newxla
+        self.revfilter = no_newxla
 
         def cache(x):
             return x * x[0]
@@ -296,10 +312,9 @@ class Slicing(EnzymeJaxTest):
         ]
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
 
-        def nomlir(x):
-            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
-
-        self.revfilter = nomlir
+        self.primfilter = no_newxla
+        self.fwdfilter = no_newxla
+        self.revfilter = no_newxla
 
         def slicing(x):
             return x[0, 0:1, 0] * jnp.ones((3,))
@@ -319,14 +334,9 @@ class ActivityMismatch(EnzymeJaxTest):
             )
         ]
 
-        def nomlir(x):
-            return [
-                (name, a)
-                for (name, a) in x
-                if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
-            ]
-
-        self.revfilter = nomlir
+        self.primfilter = no_newxla
+        self.fwdfilter = no_newxla
+        self.revfilter = justjax
 
         def f(x):
             toconv2 = jnp.ones((dim, dim))
@@ -358,7 +368,11 @@ class GenDot(EnzymeJaxTest):
                 if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
             ]
 
-        self.revfilter = nomlir
+        self.primfilter = no_newxla
+        self.fwdfilter = no_newxla
+        # No new xla runs but gets wrong answer
+        # self.revfilter = no_newxla
+        self.revfilter = justjax
 
         def f(x):
             k = jnp.ones((dim, dim)) @ x
