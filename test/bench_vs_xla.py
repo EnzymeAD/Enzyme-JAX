@@ -257,7 +257,7 @@ class Sum(EnzymeJaxTest):
         self.douts = [1.0]
 
         def nomlir(x):
-            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
 
         self.revfilter = nomlir
 
@@ -276,7 +276,7 @@ class Cache(EnzymeJaxTest):
         self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
 
         def nomlir(x):
-            return [(name, a) for (name, a) in x if not a.mlir_ad()]
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
 
         self.revfilter = nomlir
 
@@ -285,6 +285,125 @@ class Cache(EnzymeJaxTest):
 
         self.fn = cache
         self.name = "cache"
+
+
+class Slicing(EnzymeJaxTest):
+    def setUp(self):
+        dim = 3
+        self.ins = [jnp.array(range(dim), dtype=jnp.float32).reshape(1, dim, 1)]
+        self.dins = [
+            jnp.array([i * i for i in range(dim)], dtype=jnp.float32).reshape(1, dim, 1)
+        ]
+        self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+
+        def nomlir(x):
+            return [(name, a) for (name, a) in x if name != "NewXLAMLIR"]
+
+        self.revfilter = nomlir
+
+        def slicing(x):
+            return x[0, 0:1, 0] * jnp.ones((3,))
+
+        self.fn = slicing
+        self.name = "slicing"
+
+
+class ActivityMismatch(EnzymeJaxTest):
+    def setUp(self):
+        dim = 12
+        self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
+        self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = [
+            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
+                (2, dim)
+            )
+        ]
+
+        def nomlir(x):
+            return [
+                (name, a)
+                for (name, a) in x
+                if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
+            ]
+
+        self.revfilter = nomlir
+
+        def f(x):
+            toconv2 = jnp.ones((dim, dim))
+            k = jnp.einsum("jk,k->j", toconv2, x)
+            kcl = jnp.zeros((1, dim))
+            h = jnp.reshape(k, (1, dim))
+            kcl = jnp.append(kcl, h, axis=0)
+            return kcl
+
+        self.fn = f
+        self.name = "activitymismatch"
+
+
+class GenDot(EnzymeJaxTest):
+    def setUp(self):
+        dim = 12
+        self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
+        self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = [
+            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
+                (2, dim)
+            )
+        ]
+
+        def nomlir(x):
+            return [
+                (name, a)
+                for (name, a) in x
+                if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
+            ]
+
+        self.revfilter = nomlir
+
+        def f(x):
+            k = jnp.ones((dim, dim)) @ x
+            k_tmp = jnp.reshape(k, (2, dim // 2))
+
+            toconv2 = jnp.ones((2, dim // 2, dim // 2))
+            k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
+
+            kcl = jnp.zeros((1, dim))
+
+            h = jnp.reshape(k, (1, dim))
+            kcl = jnp.append(kcl, h, axis=0)
+            return kcl
+
+        self.fn = f
+        self.name = "GenDot"
+
+
+class Concat(EnzymeJaxTest):
+    def setUp(self):
+        dim = 12
+        self.ins = [
+            jnp.array(range(dim), dtype=jnp.float32),
+            10 * jnp.array(range(dim), dtype=jnp.float32),
+        ]
+        self.dins = [
+            jnp.array([i * i for i in range(dim)], dtype=jnp.float32),
+            jnp.array([i * i * i / 3.0 for i in range(dim)], dtype=jnp.float32),
+        ]
+        self.douts = [jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)]
+
+        def nomlir(x):
+            return [
+                (name, a)
+                for (name, a) in x
+                if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
+            ]
+
+        self.revfilter = nomlir
+
+        def f(x, y):
+            return jnp.concat([x, y], axis=None)
+
+        self.fn = f
+        self.name = "Concat"
 
 
 if __name__ == "__main__":

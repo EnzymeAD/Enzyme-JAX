@@ -39,7 +39,7 @@ http_archive(
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
     patch_args = ["-p1"],
-    patches = ["//:patches/xla.patch"],
+    patches = ["//:patches/xla.patch", "//:patches/xla2.patch", ],
 )
 
 PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"
@@ -60,12 +60,8 @@ load("@rules_python//python/pip_install:repositories.bzl", "pip_install_dependen
 
 pip_install_dependencies()
 
-ENZYME_COMMIT = "0b621884bc531329095d202f042f6599a86614ec"
-ENZYME_SHA256 = "f9479530b08aeb3ecbf0c420d0e2f222fdf8bcf6c20a218271b365db3a3053ad"
-# local_repository(
-#     name = "enzyme",
-#     path = "../Enzyme/enzyme"
-# )
+ENZYME_COMMIT = "0a129ae7e45114a08f281e50632b9f967fae8396"
+ENZYME_SHA256 = "715982efd0a0ef8038e8ad35047e9c1941eb3f9cb038883342969b0bcc8915ad"
 
 http_archive(
     name = "enzyme",

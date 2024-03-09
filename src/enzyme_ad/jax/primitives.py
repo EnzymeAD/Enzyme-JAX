@@ -613,6 +613,7 @@ def _enzyme_primal_lowering(
             else:
                 z = zero(orig_types[v])
                 results2.append(z)
+
         results = tuple(results2)
     else:
         identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
@@ -1116,6 +1117,70 @@ def primal_partial_eval(trace, *args, **kwargs):
 pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
 
 
+def primal_partial_eval(trace, *args, **kwargs):
+    pipeline_options = kwargs["pipeline_options"]
+    if (
+        not pipeline_options.mlir_ad()
+        or kwargs["lang"] != LANG_MHLO
+        or pipeline_options.ad_level() == 0
+    ):
+        return trace.default_process_primitive(_enzyme_primal_p, args, kwargs)
+
+    assert len(args) % 2 == 0
+    nr_primals = len(args) // 2
+    primals, tangents = args[0::2], args[1::2]
+    all_primals_known = all(p.is_known() for p in primals)
+    some_tangents_unknown = any(not t.is_known() for t in tangents)
+
+    if not (all_primals_known and some_tangents_unknown):
+        return trace.default_process_primitive(_enzyme_primal_p, args, kwargs)
+
+    shadow_aug_args = primals + tangents
+
+    out_shapes = kwargs["out_shapes"]
+    out_shapes2 = out_shapes[: len(out_shapes) // 2]
+    del kwargs["out_shapes"]
+
+    shadows_known = trace.default_process_primitive(
+        _enzyme_shadow_aug_p, shadow_aug_args, kwargs | {"out_shapes": out_shapes2}
+    )
+
+    passes = pipeline_options.pass_pipeline()
+    start = passes.rindex("enzyme-wrap{")
+    prev_passes = passes[:start]
+    end = passes.index("}", start)
+    post_passes = passes[end + 1 :]
+    newpasses = prev_passes + post_passes[1:]
+
+    if pipeline_options.stablehlo_inject():
+        pipeline_options = JaXPipeline(newpasses)
+    else:
+        pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+
+    (in_tree, in_idx_map, out_idx_map, mfunc) = kwargs["source"]
+
+    avals = {k // 2: v for k, v in in_idx_map.items() if k % 2 == 0}
+    outmap2 = {k // 2: v for k, v in out_idx_map.items() if k % 2 == 0}
+    source = (in_tree, avals, outmap2, mfunc)
+
+    primalret = trace.default_process_primitive(
+        _enzyme_primal_p,
+        primals,
+        {
+            "out_shapes": out_shapes2,
+            "source": source,
+            "fn": kwargs["fn"],
+            "argv": kwargs["argv"],
+            "lang": kwargs["lang"],
+            "pipeline_options": pipeline_options,
+        },
+    )
+    return primalret + shadows_known
+
+
+pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
+
+
 def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
     pipeline_options = kwargs["pipeline_options"]
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
@@ -1132,7 +1197,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         newpasses = (
             prev_passes
             + ad_pass
-            + ",canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse"
+            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse"
             + post_passes
         )
 

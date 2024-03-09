@@ -3,6 +3,7 @@ load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@llvm-project//llvm:tblgen.bzl", "gentbl")
 
+exports_files(["enzymexlamlir-opt.cpp"])
 licenses(["notice"])
 
 package(
@@ -29,10 +30,12 @@ pybind_library(
         "@llvm-project//llvm:AsmParser",
         "@llvm-project//llvm:CodeGen",
         "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:MC",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:Linker",
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:TargetParser",
     ],
 )
 
@@ -139,6 +142,16 @@ cc_library(
         ":stablehlo-derivatives",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:reference_ops",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:CommonFolders",
+        "@llvm-project//mlir:Transforms",
         "@xla//xla/mlir_hlo",
         "@enzyme//:EnzymeMLIR",
     ]
@@ -174,6 +187,9 @@ pybind_library(
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/client:xla_computation",
+        "@xla//xla/service:service",
+        "@xla//xla/service:local_service",
+        "@xla//xla/service:local_service_utils",
         "@xla//xla/service:buffer_assignment_proto_cc",
         "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service/cpu:cpu_executable",
@@ -191,6 +207,8 @@ pybind_library(
         "@xla//xla:xla_proto_cc",
         "@xla//xla:xla_proto_cc_impl",
 
+        "@stablehlo//:stablehlo_ops",
+
         # Make CPU target available to XLA.
         "@xla//xla/service:cpu_plugin",
 
@@ -198,16 +216,28 @@ pybind_library(
         "@xla//xla/mlir_hlo",
         "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
 
+        "@xla//xla/hlo/ir:hlo",
+
         # This is necessary for XLA protobufs to link
         "@com_google_protobuf//:protobuf",
 
         # MLIR dialects and parser.
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FuncExtensions",
+        "@llvm-project//mlir:TensorDialect",
+
         "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
 	
+        "@xla//xla/mlir_hlo:all_passes",
+        "@xla//xla:printer",
+
     # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+
+        "@com_google_absl//absl/status:statusor",
        
         # Mosaic
 	"@jax//jaxlib/mosaic:tpu_dialect",
@@ -230,6 +260,19 @@ pybind_extension(
         "@com_google_absl//absl/status:statusor",
         "@stablehlo//:stablehlo_passes",
         "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/mlir/backends/cpu/transforms:passes",
+        "@xla//xla/mlir/memref/transforms:passes",
+        "@xla//xla/mlir/math/transforms:passes",
+        "@xla//xla/mlir/runtime/transforms:passes",
+        "@xla//xla/mlir_hlo:deallocation_passes",
+        "@xla//xla/mlir_hlo:lhlo",
+        "@xla//xla/mlir_hlo:lhlo_gpu",
+        "@xla//xla/mlir_hlo:all_passes",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/service/cpu:cpu_executable",
+        "@enzyme//:EnzymeStatic",
+        "@enzyme//:EnzymeMLIR",
+
     ],
     visibility = ["//visibility:public"],
 )

@@ -33,7 +33,7 @@ asserts = True
 
 pipeline = enzyme_jax.NewXLAPipeline(mlirad=True)
 pipeline = enzyme_jax.JaXPipeline()
-pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
+# pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
 
 
 def forward(x, config, weights, key_cache, value_cache):
@@ -310,89 +310,92 @@ class Llama(absltest.TestCase):
 
         efunc = enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
 
-        eres = efunc(x, weights, key_cache, value_cache)
-        print("Enzyme primal", eres)
-        res = jfunc(x, weights, key_cache, value_cache)
-        print("Jax primal", res)
-        print(" max error", jnp.max(jnp.abs(eres - res)))
-        assert (jnp.abs(eres - res) < 1e-3).all()
+        number = 100
+        if True:
+            eres = efunc(x, weights, key_cache, value_cache)
+            print("Enzyme primal", eres)
+            res = jfunc(x, weights, key_cache, value_cache)
+            print("Jax primal", res)
+            print(" max error", jnp.max(jnp.abs(eres - res)))
+            assert (jnp.abs(eres - res) < 1e-3).all()
 
-        number = 1000
-        print(
-            "Enzyme primal",
-            timeit.Timer(
-                "efunc(x, weights, key_cache, value_cache)",
-                globals={
-                    "efunc": efunc,
-                    "x": x,
-                    "weights": weights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
-        print(
-            "JaX primal",
-            timeit.Timer(
-                "jfunc(x, weights, key_cache, value_cache)",
-                globals={
-                    "jfunc": jfunc,
-                    "x": x,
-                    "weights": weights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
+            print(
+                "Enzyme primal",
+                timeit.Timer(
+                    "efunc(x, weights, key_cache, value_cache)",
+                    globals={
+                        "efunc": efunc,
+                        "x": x,
+                        "weights": weights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
+            print(
+                "JaX primal",
+                timeit.Timer(
+                    "jfunc(x, weights, key_cache, value_cache)",
+                    globals={
+                        "jfunc": jfunc,
+                        "x": x,
+                        "weights": weights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
         # jfunc = jax.jit(partial(forward, config))
         # mlir = jax.jit(partial(forward, config)).lower(1, weights, key_cache, value_cache).compiler_ir(dialect="mhlo")
 
-        @jax.jit
-        def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-            return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+        if True:
 
-        @jax.jit
-        def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
-            return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+            @jax.jit
+            def jfwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+                return jax.jvp(jfunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
 
-        eres = efwd(
-            x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
-        )
-        print("Enzyme fwd", eres)
-        jres = jfwd(
-            x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
-        )
-        print("Jax fwd", jres)
-        print(
-            "Enzyme fwd",
-            timeit.Timer(
-                "efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
-                globals={
-                    "efwd": efwd,
-                    "x": x,
-                    "dx": dx,
-                    "weights": weights,
-                    "dweights": dweights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
-        print(
-            "JaX fwd",
-            timeit.Timer(
-                "jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
-                globals={
-                    "jfwd": jfwd,
-                    "x": x,
-                    "dx": dx,
-                    "weights": weights,
-                    "dweights": dweights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                },
-            ).timeit(number),
-        )
+            @jax.jit
+            def efwd(x, dx, weights, dweights, kc, dkc, vc, dvc):
+                return jax.jvp(efunc, (x, weights, kc, vc), (x, weights, dkc, dvc))
+
+            eres = efwd(
+                x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
+            )
+            print("Enzyme fwd", eres)
+            jres = jfwd(
+                x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache
+            )
+            print("Jax fwd", jres)
+            print(
+                "Enzyme fwd",
+                timeit.Timer(
+                    "efwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
+                    globals={
+                        "efwd": efwd,
+                        "x": x,
+                        "dx": dx,
+                        "weights": weights,
+                        "dweights": dweights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
+            print(
+                "JaX fwd",
+                timeit.Timer(
+                    "jfwd(x, dx, weights, dweights, key_cache, key_cache, value_cache, value_cache)",
+                    globals={
+                        "jfwd": jfwd,
+                        "x": x,
+                        "dx": dx,
+                        "weights": weights,
+                        "dweights": dweights,
+                        "key_cache": key_cache,
+                        "value_cache": value_cache,
+                    },
+                ).timeit(number),
+            )
 
         @jax.jit
         def jrev(x, weights, kc, vc, dx, dkc, dvc):
@@ -408,6 +411,17 @@ class Llama(absltest.TestCase):
         print("Enzyme rev", eres)
         jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax rev", jres)
+
+        jrev2 = enzyme_jax.enzyme_jax_ir(
+            argv=argv,
+            pipeline_options=enzyme_jax.JaXPipeline(
+                "inline{default-pipeline=canonicalize max-iterations=4},"
+                + "canonicalize,cse,enzyme-hlo-opt,cse"
+            ),
+        )(jrev)
+
+        jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
+        print("Jax2 rev", jres2)
 
         print(
             "Enzyme rev",
@@ -431,6 +445,22 @@ class Llama(absltest.TestCase):
                 "jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
                     "jrev": jrev,
+                    "x": x,
+                    "weights": weights,
+                    "key_cache": key_cache,
+                    "value_cache": value_cache,
+                    "dx": dx,
+                    "dkc": dkc,
+                    "dvc": dvc,
+                },
+            ).timeit(number),
+        )
+        print(
+            "JaX2 rev",
+            timeit.Timer(
+                "jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)",
+                globals={
+                    "jrev2": jrev2,
                     "x": x,
                     "weights": weights,
                     "key_cache": key_cache,
