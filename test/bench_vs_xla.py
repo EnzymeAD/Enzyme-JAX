@@ -420,5 +420,44 @@ class Concat(EnzymeJaxTest):
         self.name = "Concat"
 
 
+class ValueAndGrad(absltest.TestCase):
+    def setUp(self):
+        pass
+
+    def test(self):
+        def f(x, y):
+            return (jnp.sum(x * y[0] + y[1]), y)
+
+        filt = justjax
+
+        for pname, pipeline in filt(AllPipelines):
+            args = (
+                3 * jnp.ones((1,), dtype=jnp.float32),
+                (
+                    5 * jnp.ones((1,), dtype=jnp.float64),
+                    7 * jnp.ones((1,), dtype=jnp.int32),
+                ),
+            )
+
+            g = jax.value_and_grad(
+                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f),
+                has_aux=True,
+                allow_int=True,
+            )
+            g2 = jax.value_and_grad(f, has_aux=True, allow_int=True)
+
+            res = g(*args)
+            res2 = g2(*args)
+
+            name = "valueandgrad"
+            print(name + " JaX(", pname, "): ", res2)
+            print(name + " EnzymeMLIR(", pname, "): ", res)
+            self.assertTrue((jnp.abs(res[0][0] - res2[0][0]) < 1e-6).all())
+            self.assertTrue((jnp.abs(res[0][1][0] - res2[0][1][0]) < 1e-6).all())
+            self.assertTrue((jnp.abs(res[0][1][1] - res2[0][1][1]) < 1e-6).all())
+
+            self.assertTrue((jnp.abs(res[1] - res2[1]) < 1e-6).all())
+
+
 if __name__ == "__main__":
     absltest.main()

@@ -384,7 +384,7 @@ def _enzyme_fwd_abstract_eval(
 
 def absmaketup(ty):
     tystr = ty.dtype.__str__()
-    tystr = {"float32": "float", "float64": "double"}[tystr]
+    tystr = {"float32": "float", "float64": "double", "int32": "int32_t"}[tystr]
     return (tystr, ty.shape)
 
 
@@ -470,11 +470,20 @@ def to_jax(ty):
     return {"f32": jnp.float32, "f64": jnp.float64}[tystr]
 
 
-def activity_from_pipeline(pass_pipeline):
+def arg_activity_from_pipeline(pass_pipeline):
     start = pass_pipeline.index("argTys=")
     end = pass_pipeline.index(" ", start)
     acts = pass_pipeline[start + len("argTys=") : end].split(",")
     pre_act = pass_pipeline[: start + len("argTys=")]
+    post_act = pass_pipeline[end:]
+    return pre_act, acts, post_act
+
+
+def ret_activity_from_pipeline(pass_pipeline):
+    start = pass_pipeline.index("retTys=")
+    end = pass_pipeline.index(" ", start)
+    acts = pass_pipeline[start + len("retTys=") : end].split(",")
+    pre_act = pass_pipeline[: start + len("retTys=")]
     post_act = pass_pipeline[end:]
     return pre_act, acts, post_act
 
@@ -533,7 +542,7 @@ def _enzyme_primal_lowering(
         )
         if len(kept) != len(orig_shapes):
             if "argTys=" in pass_pipeline:
-                pre_act, acts, post_act = activity_from_pipeline(pass_pipeline)
+                pre_act, acts, post_act = arg_activity_from_pipeline(pass_pipeline)
                 acts2 = [act for (i, act) in enumerate(acts) if i in kept]
                 pass_pipeline = pre_act + ",".join(acts2) + post_act
 
@@ -924,8 +933,6 @@ xla_client.register_custom_call_target(
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
-    print("arg_tan", arg_tangents)
-    print("kwargs", kwargs)
 
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
@@ -952,13 +959,17 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
                 args.append(s)
 
         args = tuple(args)
-        act_tup = ",".join(act_tup)
+        arg_act_tup = ",".join(act_tup)
 
+        outshapes = kwargs["out_shapes"]
+        ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
         afterad = "arith-raise{stablehlo=true}, enzyme-hlo-opt, cse, canonicalize"
         newpasses = (
             "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "enzyme-hlo-opt,cse,enzyme-wrap{infn=main outfn= retTy=enzyme_dup argTys="
-            + act_tup
+            + "enzyme-hlo-opt,cse,enzyme-wrap{infn=main outfn= retTys="
+            + ret_act_tup
+            + " argTys="
+            + arg_act_tup
             + " mode=ForwardMode},"
             + afterad
         )
@@ -976,7 +987,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         else:
             pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
         outshapes2 = []
-        for o in kwargs["out_shapes"]:
+        for o in outshapes:
             outshapes2.append(o)
             outshapes2.append(o)
         out_idx_map2 = {2 * k: v for k, v in out_idx_map.items()} | {
@@ -1074,9 +1085,6 @@ pe.custom_partial_eval_rules[_enzyme_fwd_p] = fwd_partial_eval
 
 
 def primal_partial_eval(trace, *args, **kwargs):
-    print("trace ", trace)
-    print("args", args)
-    print("kwargs", kwargs)
     pipeline_options = kwargs["pipeline_options"]
     if (
         not pipeline_options.mlir_ad()
@@ -1085,7 +1093,7 @@ def primal_partial_eval(trace, *args, **kwargs):
     ):
         return trace.default_process_primitive(_enzyme_primal_p, args, kwargs)
 
-    _, acts, _ = activity_from_pipeline(pipeline_options.pass_pipeline())
+    _, acts, _ = arg_activity_from_pipeline(pipeline_options.pass_pipeline())
 
     (in_tree, in_idx_map, out_idx_map, mfunc) = kwargs["source"]
 
@@ -1108,7 +1116,7 @@ def primal_partial_eval(trace, *args, **kwargs):
     shadow_aug_args = primals + tangents
 
     out_shapes = kwargs["out_shapes"]
-    out_shapes2 = out_shapes[: len(out_shapes) // 2]
+    out_shapes2 = out_shapes[::2]
     del kwargs["out_shapes"]
 
     shadows_known = trace.default_process_primitive(
@@ -1142,7 +1150,11 @@ def primal_partial_eval(trace, *args, **kwargs):
             "pipeline_options": pipeline_options,
         },
     )
-    return primalret + shadows_known
+    outs = []
+    for p, s in zip(primalret, shadows_known):
+        outs.append(p)
+        outs.append(s)
+    return tuple(outs)
 
 
 pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
@@ -1159,10 +1171,27 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         post_passes = passes[end + 1 :]
         ad_pass = passes[start : end + 1]
 
-        _, acts, _ = activity_from_pipeline(ad_pass)
+        _, acts, _ = arg_activity_from_pipeline(ad_pass)
 
         ad_pass = ad_pass.replace("enzyme_dup", "enzyme_out")
         ad_pass = ad_pass.replace("ForwardMode", "ReverseModeCombined")
+
+        shadow_rets2 = tuple(
+            sret for (i, sret) in enumerate(shadow_rets) if acts[i] == "enzyme_dup"
+        )
+        preret, _, postret = ret_activity_from_pipeline(ad_pass)
+
+        shadow_rets2 = []
+        ret_act = []
+        for i, shad in enumerate(shadow_rets):
+            if type(shad) is ad.Zero:
+                ret_act.append("enzyme_const")
+            else:
+                ret_act.append("enzyme_out")
+                shadow_rets2.append(shad)
+        shadow_rets2 = tuple(shadow_rets2)
+        ad_pass = preret + ",".join(ret_act) + postret
+
         newpasses = (
             prev_passes
             + ad_pass
@@ -1179,24 +1208,33 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
         prim_args = prim_args[: len(acts)]
 
+        primal_in_shapes = tuple(
+            jax.core.ShapedArray(a.shape, a.dtype) for a in prim_args
+        )
+        out_shapes2 = [
+            shape
+            for (i, shape) in enumerate(primal_in_shapes)
+            if acts[i] == "enzyme_dup"
+        ]
+
         avals = {}
+        outmap = {}
         argidx = 0
+        outidx = 0
         for idx, v in enumerate(acts):
             avals[idx] = in_idx_map[argidx]
+            if v == "enzyme_dup":
+                outmap[outidx] = in_idx_map[argidx]
+                outidx += 1
             argidx += 1
             if v == "enzyme_dup":
                 argidx += 1
 
-        outmap = avals
-
-        primal_in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
-        primal_in_shapes = tuple(
-            jax.core.ShapedArray(a.shape, a.dtype) for a in prim_args
-        )
-        out_shapes2 = primal_in_shapes  # out_shapes[:len(out_shapes)/2] +
         source = (in_tree, avals, outmap, mfunc)
+
+        assert len(outmap) == len(out_shapes2)
         shadconv = _enzyme_primal_p.bind(
-            *(prim_args + tuple(shadow_rets)),
+            *(prim_args + tuple(shadow_rets2)),
             out_shapes=out_shapes2,
             source=source,
             fn=kwargs["fn"],
