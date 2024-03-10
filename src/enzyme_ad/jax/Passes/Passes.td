@@ -37,6 +37,22 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
     "tensor::TensorDialect"
   ];
   let constructor = "mlir::enzyme::createEnzymeHLOOptPass()";
+  let options = [
+    Option<
+      /*C++ variable name=*/"all_finite",
+      /*CLI argument=*/"all_finite",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to raise to assume all variables are finite"
+    >,
+    Option<
+      /*C++ variable name=*/"no_nan",
+      /*CLI argument=*/"no_nan",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to raise to assume no variables are nan"
+    >
+    ];
 }
 
 def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {

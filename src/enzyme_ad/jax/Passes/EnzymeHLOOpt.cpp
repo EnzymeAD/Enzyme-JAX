@@ -1544,6 +1544,40 @@ template <typename T> struct BinBroadcastSplat final : OpRewritePattern<T> {
   }
 };
 
+struct AllFinite : public OpRewritePattern<mlir::stablehlo::IsFiniteOp> {
+  using OpRewritePattern<mlir::stablehlo::IsFiniteOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IsFiniteOp op,
+                                PatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op.getType(), makeAttr(op.getType(), 1).cast<ElementsAttr>());
+    return success();
+  }
+};
+
+struct NoNan : public OpRewritePattern<mlir::stablehlo::CompareOp> {
+  using OpRewritePattern<mlir::stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getLhs() == op.getRhs()) {
+      if (op.getComparisonDirection() ==
+          mlir::stablehlo::ComparisonDirection::EQ) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), makeAttr(op.getType(), 1).cast<ElementsAttr>());
+        return success();
+      }
+      if (op.getComparisonDirection() ==
+          mlir::stablehlo::ComparisonDirection::NE) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), makeAttr(op.getType(), 0).cast<ElementsAttr>());
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -1561,6 +1595,10 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              BinBroadcastSplat<stablehlo::SubtractOp>,
              BinBroadcastSplat<stablehlo::DivOp>,
              BinBroadcastSplat<stablehlo::MulOp>>(context);
+    if (all_finite)
+      patterns.add<AllFinite>(context);
+    if (no_nan || all_finite)
+      patterns.add<NoNan>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
