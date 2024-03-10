@@ -465,9 +465,18 @@ def maketup(ty):
     return (tystr, ty.shape)
 
 
-def to_jax(ty):
-    tystr = ty.__str__()
-    return {"f32": jnp.float32, "f64": jnp.float64}[tystr]
+def make_mlir_zero(ty):
+    from jax._src.interpreters import mlir
+
+    if type(ty) != mlir.ir.RankedTensorType:
+        ty = jax_mlir.dtype_to_ir_type(ty)
+    elty = ty.element_type
+    elem = (
+        ir.FloatAttr.get(elty, 0.0)
+        if type(elty) != ir.IntegerType
+        else ir.IntegerAttr.get(elty, 0)
+    )
+    return stablehlo.ConstantOp(ir.DenseElementsAttr.get_splat(ty, elem)).results[0]
 
 
 def arg_activity_from_pipeline(pass_pipeline):
@@ -610,11 +619,6 @@ def _enzyme_primal_lowering(
                 print(tmpBuf, out_shapes, "\n", results, "\n", str(custom_call))
             assert len(results) == len(out_shapes)
 
-        def zero(ty):
-            from jax._src.interpreters import mlir
-
-            return mlir.ir_constant(jnp.zeros(ty.shape, dtype=to_jax(ty.element_type)))
-
         results2 = []
         residx = 0
         for k in sorted(out_idx_map):
@@ -623,7 +627,7 @@ def _enzyme_primal_lowering(
                 results2.append(results[residx])
                 residx += 1
             else:
-                z = zero(orig_types[v])
+                z = make_mlir_zero(orig_types[v])
                 results2.append(z)
 
         results = tuple(results2)
@@ -857,18 +861,7 @@ def _enzyme_rev_lowering(
                 results.append(custom_call.results[cur_idx])
                 cur_idx += 1
             else:
-                ty = ir.RankedTensorType(ty)
-                shape = ty.shape
-                element_type = ty.element_type
-                import numpy as np
-
-                results.append(
-                    stablehlo.ConstantOp(
-                        ir.DenseElementsAttr.get(
-                            np.zeros(shape, dtype=to_jax(element_type))
-                        )
-                    ).results[0]
-                )
+                results.append(make_mlir_zero(ty))
     return results
 
 
