@@ -39,6 +39,15 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let constructor = "mlir::enzyme::createEnzymeHLOOptPass()";
 }
 
+def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
+  let summary = "Unroll stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect"
+  ];
+  let constructor = "mlir::enzyme::createEnzymeHLOUnrollPass()";
+}
+
 def PrintPass : Pass<"print"> {
   let summary = "Print the module";
   let dependentDialects = [
