@@ -461,7 +461,14 @@ def _enzyme_rev_abstract_eval(
 def maketup(ty):
     ty = ir.RankedTensorType(ty)
     tystr = ty.element_type.__str__()
-    tystr = {"f32": "float", "f64": "double", "i32": "int32_t", "i64": "int64_t"}[tystr]
+    tystr = {
+        "f32": "float",
+        "f64": "double",
+        "i32": "int32_t",
+        "i64": "int64_t",
+        "ui32": "uint32_t",
+        "ui64": "uint64_t",
+    }[tystr]
     return (tystr, ty.shape)
 
 
