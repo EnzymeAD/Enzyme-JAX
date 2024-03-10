@@ -33,7 +33,8 @@ def ArithRaisingPass : Pass<"arith-raise"> {
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
   let dependentDialects = [
-    "stablehlo::StablehloDialect"
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect"
   ];
   let constructor = "mlir::enzyme::createEnzymeHLOOptPass()";
 }

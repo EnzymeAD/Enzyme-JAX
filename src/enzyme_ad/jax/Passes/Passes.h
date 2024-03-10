@@ -32,6 +32,10 @@ namespace mhlo {
 class MhloDialect;
 } // end namespace mhlo
 
+namespace tensor {
+class TensorDialect;
+} // namespace tensor
+
 namespace stablehlo {
 class StablehloDialect;
 } // namespace stablehlo
