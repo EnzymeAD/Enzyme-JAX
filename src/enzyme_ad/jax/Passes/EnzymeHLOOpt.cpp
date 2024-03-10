@@ -158,6 +158,104 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto dyn = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dyn)
+      return failure();
+
+    // Try to use the updated value
+    {
+      SmallVector<int64_t> start;
+      SmallVector<int64_t> end;
+      SmallVector<int64_t> step;
+
+      bool legal = true;
+      for (auto &&[nstart, nend, nstep, update_start, update_size] : llvm::zip(
+               op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
+               dyn.getStartIndices(), dyn.getUpdate().getType().getShape())) {
+        DenseIntElementsAttr startattr;
+        if (!matchPattern(update_start, m_Constant(&startattr))) {
+          legal = false;
+          break;
+        }
+        int64_t startv = (*startattr.begin()).getSExtValue();
+        if (startv < 0) {
+          legal = false;
+          break;
+        }
+
+        // see if the slice is exclusively inside the update.
+
+        // slice starts below insertion
+        if (nstart < startv) {
+          legal = false;
+          break;
+        }
+
+        // slice ends after insertion
+        if (nend > startv + update_size) {
+          legal = false;
+          break;
+        }
+
+        start.push_back(nstart - startv);
+        end.push_back(nend - startv);
+        step.push_back(nstep);
+      }
+
+      if (legal) {
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, dyn.getUpdate(),
+                                                        start, end, step);
+        return success();
+      }
+    }
+
+    // Try proving that there can be no overlap
+    {
+      bool no_overlap = false;
+
+      for (auto &&[nstart, nend, nstep, update_start, update_size] : llvm::zip(
+               op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
+               dyn.getStartIndices(), dyn.getUpdate().getType().getShape())) {
+        DenseIntElementsAttr startattr;
+        if (!matchPattern(update_start, m_Constant(&startattr))) {
+          continue;
+        }
+
+        int64_t startv = (*startattr.begin()).getSExtValue();
+        // slice ends below insertion
+        if (nend <= startv) {
+          no_overlap = true;
+          break;
+        }
+
+        // slice starts after insertion end
+        if (nstart >= startv + update_size) {
+          no_overlap = true;
+          break;
+        }
+      }
+
+      if (no_overlap) {
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+            op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
+            op.getStrides());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 // slice(pad x) -> pad(slice x)
 struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1359,17 +1457,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns
-        .add<DynamicSliceToStatic, DynamicUpdateSliceElim, SlicePad, SliceSlice,
-             AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-             /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
-             ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
-             SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, AndSimplify,
-             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
-             BinBroadcastSplat<stablehlo::AddOp>,
-             BinBroadcastSplat<stablehlo::SubtractOp>,
-             BinBroadcastSplat<stablehlo::DivOp>,
-             BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<DynamicSliceToStatic, DynamicUpdateSliceElim,
+                 SliceOfDynamicUpdate, SlicePad, SliceSlice, AddPad,
+                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
+                 ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
+                 SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
+                 AndSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
