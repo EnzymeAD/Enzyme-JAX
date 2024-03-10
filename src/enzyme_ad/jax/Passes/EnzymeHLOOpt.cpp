@@ -1330,6 +1330,24 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
       return success();
     }
 
+    // pow(X, 0.5) -> sqrt(X)
+    {
+      DenseFPElementsAttr rhs;
+      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+        bool allHalf = true;
+        for (auto v : rhs) {
+          if (!v.isExactlyValue(0.5)) {
+            allHalf = false;
+            break;
+          }
+        }
+        if (allHalf) {
+          rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
+          return success();
+        }
+      }
+    }
+
     return failure();
   }
 };
