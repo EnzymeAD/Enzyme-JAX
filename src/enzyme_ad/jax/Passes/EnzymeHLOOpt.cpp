@@ -34,6 +34,16 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace enzyme;
 
+template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
+  if (auto TT = dyn_cast<RankedTensorType>(elemType))
+    return SplatElementsAttr::get(
+        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
+  if (isa<FloatType>(elemType))
+    return FloatAttr::get(elemType, val);
+  else
+    return IntegerAttr::get(elemType, val);
+}
+
 namespace {
 
 struct SliceSimplification final : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -236,18 +246,19 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
       if (inpTy.getShape()[idx] != 1)
         return failure();
     }
-    assert(op.getInitValues()[0].getType() == op.getResult(0).getType());
 
     auto reshaped = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), op.getInitValues()[0].getType(), op.getInputs()[0]);
+        op.getLoc(), op.getResult(0).getType(), op.getInputs()[0]);
 
     Operation &innerOp = op.getBody().front().front();
 
-    Value vals[2] = {op.getInitValues()[0], reshaped};
+    auto bcast = rewriter.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(), reshaped.getType(), op.getInitValues()[0],
+        rewriter.getDenseI64ArrayAttr({}));
+    Value vals[2] = {bcast, reshaped};
     auto res = rewriter.create(
         op.getLoc(), innerOp.getName().getIdentifier(), ValueRange(vals),
         TypeRange(op->getResult(0).getType()), innerOp.getAttrs(), {}, {});
-    assert(res->getResult(0).getType() == op->getResult(0).getType());
 
     rewriter.replaceOp(op, res);
     return success();
@@ -276,11 +287,28 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     Value prev = op.getInitValues()[0];
 
+    Operation &innerOp = op.getBody().front().front();
+
+    Value identity = nullptr;
+    if (isa<stablehlo::AddOp>(&innerOp)) {
+      identity = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), prev.getType(),
+          cast<ElementsAttr>(makeAttr(prev.getType(), 0)));
+    } else if (isa<stablehlo::MaxOp>(&innerOp) ||
+               isa<stablehlo::MinOp>(&innerOp))
+      identity = prev;
+    else {
+      return failure();
+    }
+
     for (auto v : concat.getOperands()) {
       IRMapping map;
-      map.map(op.getInitValues()[0], prev);
+      map.map(op.getInitValues()[0], identity);
       map.map(op.getInputs()[0], v);
-      prev = rewriter.clone(*op, map)->getResult(0);
+      auto next = rewriter.clone(*op, map)->getResult(0);
+      map.map(innerOp.getOperand(0), prev);
+      map.map(innerOp.getOperand(1), next);
+      prev = rewriter.clone(innerOp, map)->getResult(0);
     }
 
     rewriter.replaceOp(op, prev);
