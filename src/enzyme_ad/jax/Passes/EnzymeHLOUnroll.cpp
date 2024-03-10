@@ -97,12 +97,11 @@ struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
 
     auto iters = (*limit.begin()) - (*start.begin());
 
-    IRMapping operandMap;
-
     SmallVector<Value> results(op.getOperands().begin(),
                                op.getOperands().end());
 
     for (size_t iter = 0; iter < iters.getSExtValue(); iter++) {
+      IRMapping operandMap;
       operandMap.map(loopBodyBlock->getArguments(), results);
 
       Block::iterator srcBlockEnd = std::prev(loopBodyBlock->end(), 2);
