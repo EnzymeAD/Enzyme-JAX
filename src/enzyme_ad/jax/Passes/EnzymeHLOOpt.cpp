@@ -165,6 +165,129 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// From
+// https://github.com/openxla/stablehlo/blob/5d1a9c892500c2e9fecbfedfa66ffe84ff1caf7b/stablehlo/dialect/StablehloOps.cpp#L1498C1-L1532C1
+bool hasSameOperandAndResultTypes(Operation &op) {
+  Type expected;
+  if (op.getNumResults() != 0)
+    expected = op.getResult(0).getType();
+  if (op.getNumOperands() != 0)
+    expected = op.getOperand(0).getType();
+  if (!expected)
+    return false;
+
+  auto typeMatch = [&](Type actual) { return actual == expected; };
+  return llvm::all_of(op.getOperandTypes(), typeMatch) &&
+         llvm::all_of(op.getResultTypes(), typeMatch);
+}
+
+static bool isEligibleForCompactPrint(stablehlo::ReduceOp op) {
+  // Check E1.
+  auto &block = op.getBody().front();
+  if (!hasSingleElement(block.without_terminator()))
+    return false;
+
+  Operation &innerOp = *block.begin();
+
+  // Check E2.
+  if (innerOp.getDialect() != op->getDialect())
+    return false;
+
+  if (innerOp.getNumOperands() != 2 ||
+      !innerOp.hasTrait<mlir::OpTrait::OneResult>() ||
+      !hasSameOperandAndResultTypes(innerOp) ||
+      !innerOp.hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+      !innerOp.hasTrait<mlir::OpTrait::ZeroRegions>())
+    return false;
+
+  // Check E3.
+  if (op.getInputs().empty())
+    return false;
+
+  auto elemType =
+      op.getInputs()[0].getType().cast<ShapedType>().getElementType();
+  auto expectedInnerOpType = RankedTensorType::get(/*shape=*/{}, elemType);
+  if (innerOp.getOperands()[0].getType() != expectedInnerOpType)
+    return false;
+
+  // Check E4.
+  if (!llvm::equal(block.getArguments(), innerOp.getOperands()))
+    return false;
+
+  // Check E5.
+  auto retOp = dyn_cast<stablehlo::ReturnOp>(block.getTerminator());
+  if (!retOp)
+    return false;
+
+  return llvm::equal(innerOp.getResults(), retOp.getOperands());
+}
+
+struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1)
+      return failure();
+    if (!isEligibleForCompactPrint(op))
+      return failure();
+    auto inpTy = op.getInputs()[0].getType().cast<RankedTensorType>();
+    for (auto idx : op.getDimensions()) {
+      if (inpTy.getShape()[idx] != 1)
+        return failure();
+    }
+
+    auto reshaped = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), op.getInitValues()[0].getType(), op.getInputs()[0]);
+
+    Operation &innerOp = op.getBody().front().front();
+
+    IRMapping map;
+    map.map(innerOp.getOperand(0), op.getInitValues()[0]);
+    map.map(innerOp.getOperand(1), reshaped);
+    auto res = rewriter.clone(innerOp, map)->getResult(0);
+
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
+struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1)
+      return failure();
+
+    auto concat = op.getInputs()[0].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    auto dim = concat.getDimension();
+
+    if (!llvm::is_contained(op.getDimensions(), dim))
+      return failure();
+
+    if (!isEligibleForCompactPrint(op))
+      return failure();
+
+    Operation &innerOp = op.getBody().front().front();
+
+    Value prev = op.getInitValues()[0];
+
+    for (auto v : concat.getOperands()) {
+      IRMapping map;
+      map.map(op.getInitValues()[0], prev);
+      map.map(op.getInputs()[0], v);
+      prev = rewriter.clone(*op, map)->getResult(0);
+    }
+
+    rewriter.replaceOp(op, prev);
+    return success();
+  }
+};
+
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -394,6 +517,42 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
     }
 
     return failure();
+  }
+};
+
+struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() == 1 &&
+        op->getOperand(0).getType() == op.getType()) {
+      rewriter.replaceOp(op, op->getOperand(0));
+      return success();
+    }
+    SmallVector<Value> vals;
+    bool changed = false;
+    for (auto v : op->getOperands()) {
+      if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (c2.getDimension() == op.getDimension()) {
+          for (auto v2 : c2->getOperands())
+            vals.push_back(v2);
+          changed = true;
+          continue;
+        }
+      }
+      if (v.getType().cast<RankedTensorType>().getShape()[op.getDimension()] ==
+          0) {
+        changed = true;
+        continue;
+      }
+      vals.push_back(v);
+    }
+    if (!changed)
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(),
+                                                          vals);
+    return success();
   }
 };
 
@@ -932,10 +1091,12 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp,
-                 /*ScatterToPad, */ BroadcastToReshape, SliceConcat,
-                 SliceSimplification, CosSimplify, SinSimplify, SqrtSimplify,
-                 AddSimplify, SubSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify>(context);
+                 ConcatFuse,
+                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
+                 ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
+                 SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
+                 NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(
+        context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 

@@ -22,7 +22,7 @@ execute_external = platform.system() != "Windows"
 config.test_format = lit.formats.ShTest(execute_external)
 
 # suffixes: A list of file extensions to treat as test files.
-config.suffixes = [".pyt"]
+config.suffixes = [".pyt", ".mlir"]
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -35,6 +35,7 @@ config.test_exec_root = os.path.dirname(__file__)
 # Tweak the PATH to include the tools dir and the scripts dir.
 base_paths = [
     config.llvm_tools_dir,
+    config.enzymexla_tools_dir,
     config.environment["PATH"],
 ]
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
