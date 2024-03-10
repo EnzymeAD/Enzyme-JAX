@@ -236,16 +236,18 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
       if (inpTy.getShape()[idx] != 1)
         return failure();
     }
+    assert(op.getInitValues()[0].getType() == op.getResult(0).getType());
 
     auto reshaped = rewriter.create<stablehlo::ReshapeOp>(
         op.getLoc(), op.getInitValues()[0].getType(), op.getInputs()[0]);
 
     Operation &innerOp = op.getBody().front().front();
 
-    IRMapping map;
-    map.map(innerOp.getOperand(0), op.getInitValues()[0]);
-    map.map(innerOp.getOperand(1), reshaped);
-    auto res = rewriter.clone(innerOp, map)->getResult(0);
+    Value vals[2] = {op.getInitValues()[0], reshaped};
+    auto res = rewriter.create(
+        op.getLoc(), innerOp.getName().getIdentifier(), ValueRange(vals),
+        TypeRange(op->getResult(0).getType()), innerOp.getAttrs(), {}, {});
+    assert(res.getType() == op->getResult(0).getType());
 
     rewriter.replaceOp(op, res);
     return success();
@@ -271,8 +273,6 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     if (!isEligibleForCompactPrint(op))
       return failure();
-
-    Operation &innerOp = op.getBody().front().front();
 
     Value prev = op.getInitValues()[0];
 
@@ -624,7 +624,8 @@ struct BroadcastToReshape final
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
-
+    assert(op.getBroadcastDimensions().size() ==
+           op.getOperand().getType().getShape().size());
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
@@ -1085,6 +1086,34 @@ struct SqrtSimplify : public OpRewritePattern<mlir::stablehlo::SqrtOp> {
   }
 };
 
+template <typename T> struct BinBroadcastSplat final : OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    for (int i = 0; i < 2; i++) {
+      mlir::Value opi = op->getOperand(i);
+      if (auto broadcast = opi.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        SplatElementsAttr other;
+        if (matchPattern(op->getOperand(1 - i), m_Constant(&other))) {
+          IRMapping map;
+          mlir::Value vals[2];
+          vals[i] = broadcast.getOperand();
+          vals[1 - i] = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), broadcast.getOperand().getType(),
+              other.resizeSplat(broadcast.getOperand().getType()));
+          auto pushed = rewriter.create<T>(op.getLoc(), vals[0], vals[1]);
+          map.map(broadcast.getOperand(), pushed->getResult(0));
+          auto bc2 = rewriter.clone(*broadcast, map);
+          rewriter.replaceOp(op, bc2);
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -1095,8 +1124,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
                  SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
-                 NegateSimplify, MulSimplify, DivSimplify, PowSimplify>(
-        context);
+                 NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
+                 BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
