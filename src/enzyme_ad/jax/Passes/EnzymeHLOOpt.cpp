@@ -95,6 +95,42 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+struct DynamicSliceToStatic final
+    : OpRewritePattern<mlir::stablehlo::DynamicSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    SmallVector<int64_t> starts;
+    SmallVector<int64_t> ends;
+    SmallVector<int64_t> steps;
+    for (auto &&[start, size, shape] :
+         llvm::zip(op.getStartIndices(), op.getSliceSizes(),
+                   op.getOperand().getType().getShape())) {
+
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(start, m_Constant(&startattr))) {
+        return failure();
+      }
+      int64_t startv = (*startattr.begin()).getSExtValue();
+      if (startv < 0)
+        return failure();
+      if (startv + size > shape)
+        return failure();
+      starts.push_back(startv);
+      ends.push_back(startv + size);
+      steps.push_back(1);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+        op, op.getType(), op.getOperand(), starts, ends, steps);
+    return success();
+  }
+};
+
 // slice(pad x) -> pad(slice x)
 struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1296,8 +1332,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<SlicePad, SliceSlice, AddPad, PadSimplify, DotReshapeDot,
-                 ConcatConstProp, ConcatFuse,
+    patterns.add<DynamicSliceToStatic, SlicePad, SliceSlice, AddPad,
+                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
                  SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
