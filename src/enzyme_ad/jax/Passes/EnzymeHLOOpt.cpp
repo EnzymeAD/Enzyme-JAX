@@ -520,6 +520,42 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() == 1 &&
+        op->getOperand(0).getType() == op.getType()) {
+      rewriter.replaceOp(op, op->getOperand(0));
+      return success();
+    }
+    SmallVector<Value> vals;
+    bool changed = false;
+    for (auto v : op->getOperands()) {
+      if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (c2.getDimension() == op.getDimension()) {
+          for (auto v2 : c2->getOperands())
+            vals.push_back(v2);
+          changed = true;
+          continue;
+        }
+      }
+      if (v.getType().cast<RankedTensorType>().getShape()[op.getDimension()] ==
+          0) {
+        changed = true;
+        continue;
+      }
+      vals.push_back(v);
+    }
+    if (!changed)
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(),
+                                                          vals);
+    return success();
+  }
+};
+
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1055,6 +1091,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp,
+                 ConcatFuse,
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
                  SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
