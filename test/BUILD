@@ -1,5 +1,5 @@
 load("@rules_python//python:py_test.bzl", "py_test")
-load("@llvm-project//llvm:lit_test.bzl", "package_path", "lit_test")
+load("@llvm-project//llvm:lit_test.bzl", "lit_test", "package_path")
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 
 expand_template(
@@ -30,8 +30,8 @@ exports_files(
         data = [
             ":lit.cfg.py",
             ":lit_site_cfg_py",
-            "//src/enzyme_ad/jax:enzyme_jax_internal",
             "//:enzymexlamlir-opt",
+            "//src/enzyme_ad/jax:enzyme_jax_internal",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
@@ -40,7 +40,8 @@ exports_files(
     )
     for src in glob(
         [
-            "**/*.pyt", "**/*.mlir",
+            "**/*.pyt",
+            "**/*.mlir",
         ],
     )
 ]
@@ -64,7 +65,6 @@ py_test(
         "//src/enzyme_ad/jax:enzyme_jax_internal",
     ],
 )
-
 
 py_test(
     name = "llama",
