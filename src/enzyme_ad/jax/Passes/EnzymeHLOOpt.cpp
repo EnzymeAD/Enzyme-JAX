@@ -457,6 +457,27 @@ struct DotReshapeDot final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
+struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
+                                PatternRewriter &rewriter) const override {
+
+    for (auto &&[low, high, inner] :
+         llvm::zip(op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
+                   op.getInteriorPadding())) {
+      if (low != 0)
+        return failure();
+      if (high != 0)
+        return failure();
+      if (inner != 0)
+        return failure();
+    }
+    rewriter.replaceOp(op, op.getOperand());
+    return success();
+  }
+};
+
 /*
 
     %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
@@ -925,12 +946,26 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
                                 PatternRewriter &rewriter) const final {
 
+    // 0 * x -> x
     if (matchPattern(op.getLhs(), m_AnyZeroFloat())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
-    if (matchPattern(op.getLhs(), m_AnyZeroFloat())) {
+    // x * 0 -> x
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat())) {
       rewriter.replaceOp(op, op.getRhs());
+      return success();
+    }
+
+    // 1 * x -> x
+    if (matchPattern(op.getLhs(), m_OneFloat())) {
+      rewriter.replaceOp(op, op.getRhs());
+      return success();
+    }
+
+    // x * 1 -> x
+    if (matchPattern(op.getRhs(), m_OneFloat())) {
+      rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
@@ -963,7 +998,14 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
                                 PatternRewriter &rewriter) const final {
 
+    // 0 / x -> 0 [assume non nan here]
     if (matchPattern(op.getLhs(), m_AnyZeroFloat())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    // x / 1 -> x
+    if (matchPattern(op.getRhs(), m_OneFloat())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
@@ -1147,8 +1189,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<SlicePad, SliceSlice, AddPad, DotReshapeDot, ConcatConstProp,
-                 ConcatFuse,
+    patterns.add<SlicePad, SliceSlice, AddPad, PadSimplify, DotReshapeDot,
+                 ConcatConstProp, ConcatFuse,
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
                  SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
