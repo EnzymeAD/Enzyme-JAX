@@ -462,6 +462,7 @@ def maketup(ty):
     ty = ir.RankedTensorType(ty)
     tystr = ty.element_type.__str__()
     tystr = {
+        "bf16": "bfloat16",
         "f32": "float",
         "f64": "double",
         "i32": "int32_t",
