@@ -128,9 +128,6 @@ struct EnzymeHLOUnrollPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<WhileUnroll>(context);
-    mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
-                                                               &patterns);
-
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
