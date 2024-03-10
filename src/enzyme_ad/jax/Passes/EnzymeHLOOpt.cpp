@@ -267,6 +267,7 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   }
 
   assert(0);
+  return {};
 }
 
 /*
