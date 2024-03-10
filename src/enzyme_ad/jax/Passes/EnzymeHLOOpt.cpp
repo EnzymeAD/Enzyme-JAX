@@ -940,6 +940,58 @@ struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
   }
 };
 
+struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
+  using OpRewritePattern<mlir::stablehlo::AndOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp op,
+                                PatternRewriter &rewriter) const final {
+
+    // false & x -> x
+    for (auto v : op.getOperands()) {
+      if (matchPattern(v, m_Zero())) {
+        rewriter.replaceOp(op, v);
+        return success();
+      }
+    }
+
+    // true & x -> x
+    for (int i = 0; i < 2; i++) {
+      if (matchPattern(op.getOperand(i), m_One())) {
+        rewriter.replaceOp(op, op.getOperand(1 - i));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
+  using OpRewritePattern<mlir::stablehlo::OrOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::OrOp op,
+                                PatternRewriter &rewriter) const final {
+
+    // true | x -> x
+    for (auto v : op.getOperands()) {
+      if (matchPattern(v, m_One())) {
+        rewriter.replaceOp(op, v);
+        return success();
+      }
+    }
+
+    // false | x -> x
+    for (int i = 0; i < 2; i++) {
+      if (matchPattern(op.getOperand(i), m_Zero())) {
+        rewriter.replaceOp(op, op.getOperand(1 - i));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
@@ -1194,8 +1246,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
                  SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
-                 NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
-                 BinBroadcastSplat<stablehlo::AddOp>,
+                 AndSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>>(context);
