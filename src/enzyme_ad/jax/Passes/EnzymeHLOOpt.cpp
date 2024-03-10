@@ -26,6 +26,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "mlir/Dialect/CommonFolders.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 
 #define DEBUG_TYPE "enzyme"
 
@@ -156,8 +157,7 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
           op.getLoc(), pad.getOperand(), start, end, step);
       rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
           op, nslice, pad.getPaddingValue(), lpads, hpads, interiors);
-    }
-    {
+    } else {
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, pad.getOperand(),
                                                       start, end, step);
     }
