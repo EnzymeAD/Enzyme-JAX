@@ -141,7 +141,7 @@ struct DynamicUpdateSliceElim final
     if (!type)
       return failure();
 
-    if (op.getOperand().getType() != type)
+    if (op.getUpdate().getType() != type)
       return failure();
 
     for (auto start : op.getStartIndices()) {
