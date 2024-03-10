@@ -131,6 +131,33 @@ struct DynamicSliceToStatic final
   }
 };
 
+struct DynamicUpdateSliceElim final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    if (op.getOperand().getType() != type)
+      return failure();
+
+    for (auto start : op.getStartIndices()) {
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(start, m_Constant(&startattr))) {
+        return failure();
+      }
+      int64_t startv = (*startattr.begin()).getSExtValue();
+      if (startv != 0)
+        return failure();
+    }
+    rewriter.replaceOp(op, op.getUpdate());
+    return success();
+  }
+};
+
 // slice(pad x) -> pad(slice x)
 struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1332,16 +1359,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<DynamicSliceToStatic, SlicePad, SliceSlice, AddPad,
-                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
-                 ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
-                 SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
-                 AndSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns
+        .add<DynamicSliceToStatic, DynamicUpdateSliceElim, SlicePad, SliceSlice,
+             AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+             /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
+             ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
+             SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, AndSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
+             BinBroadcastSplat<stablehlo::AddOp>,
+             BinBroadcastSplat<stablehlo::SubtractOp>,
+             BinBroadcastSplat<stablehlo::DivOp>,
+             BinBroadcastSplat<stablehlo::MulOp>>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
