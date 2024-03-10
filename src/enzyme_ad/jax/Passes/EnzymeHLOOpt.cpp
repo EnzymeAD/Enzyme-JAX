@@ -158,6 +158,80 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct DynamicUpdateToConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    SmallVector<size_t> mismatches;
+    size_t idx = 0;
+    for (auto &&[start, update_size, res_size] :
+         llvm::zip(op.getStartIndices(), op.getUpdate().getType().getShape(),
+                   op.getType().getShape())) {
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(start, m_Constant(&startattr))) {
+        return failure();
+      }
+      int64_t startv = (*startattr.begin()).getSExtValue();
+      if (startv < 0)
+        return failure();
+
+      if (startv + update_size > res_size)
+        return failure();
+
+      if (startv == 0 && update_size == res_size) {
+        idx++;
+        continue;
+      }
+      mismatches.push_back(idx);
+      idx++;
+    }
+
+    if (mismatches.size() != 1)
+      return failure();
+    auto dim = mismatches[0];
+
+    DenseIntElementsAttr startattr;
+    if (!matchPattern(op.getStartIndices()[0], m_Constant(&startattr))) {
+      return failure();
+    }
+    int64_t startv = (*startattr.begin()).getSExtValue();
+
+    SmallVector<Value> toConcat;
+
+    if (startv != 0) {
+      SmallVector<int64_t> starts(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> ends(op.getType().getShape().begin(),
+                                op.getType().getShape().end());
+      SmallVector<int64_t> steps(op.getType().getShape().size(), 1);
+      ends[dim] = startv;
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(), starts, ends, steps));
+    }
+    toConcat.push_back(op.getUpdate());
+    auto update_size = op.getUpdate().getType().getShape()[dim];
+    auto res_size = op.getType().getShape()[dim];
+    if (startv + update_size != res_size) {
+      SmallVector<int64_t> starts(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> ends(op.getType().getShape().begin(),
+                                op.getType().getShape().end());
+      SmallVector<int64_t> steps(op.getType().getShape().size(), 1);
+      starts[dim] = startv + update_size;
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(), starts, ends, steps));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(),
+                                                          toConcat, dim);
+    return success();
+  }
+};
+
 struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1475,17 +1549,18 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<DynamicSliceToStatic, DynamicUpdateSliceElim,
-                 SliceOfDynamicUpdate, SlicePad, SliceSlice, AddPad,
-                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
-                 ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
-                 SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
-                 AndSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns
+        .add<DynamicSliceToStatic, DynamicUpdateSliceElim,
+             DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad, SliceSlice,
+             AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+             /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
+             ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
+             SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, AndSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
+             BinBroadcastSplat<stablehlo::AddOp>,
+             BinBroadcastSplat<stablehlo::SubtractOp>,
+             BinBroadcastSplat<stablehlo::DivOp>,
+             BinBroadcastSplat<stablehlo::MulOp>>(context);
     mlir::stablehlo::populateStablehloCanonicalizationPatterns(context,
                                                                &patterns);
 
