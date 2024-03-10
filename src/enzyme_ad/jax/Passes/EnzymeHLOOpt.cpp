@@ -578,8 +578,8 @@ struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
     }
     if (!changed)
       return failure();
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(),
-                                                          vals);
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        op, op.getType(), vals, op.getDimensionAttr());
     return success();
   }
 };
