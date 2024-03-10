@@ -3,6 +3,7 @@ load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 
 exports_files(["enzymexlamlir-opt.cpp"])
+
 licenses(["notice"])
 
 package(
@@ -29,9 +30,9 @@ pybind_library(
         "@llvm-project//llvm:AsmParser",
         "@llvm-project//llvm:CodeGen",
         "@llvm-project//llvm:Core",
-        "@llvm-project//llvm:MC",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:Linker",
+        "@llvm-project//llvm:MC",
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
@@ -40,8 +41,11 @@ pybind_library(
 
 py_library(
     name = "enzyme_jax_internal",
-    srcs = ["primitives.py", "__init__.py"],
-    visibility = ["//visibility:public"]
+    srcs = [
+        "__init__.py",
+        "primitives.py",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 symlink_inputs(
@@ -55,7 +59,7 @@ symlink_inputs(
 td_library(
     name = "ImplementationsCommonTdFiles",
     srcs = [
-         ":EnzymeImplementationsCommonTdFiles",
+        ":EnzymeImplementationsCommonTdFiles",
     ],
     deps = [
         ":EnzymeImplementationsCommonTdFiles",
@@ -75,8 +79,8 @@ gentbl_cc_library(
         "Implementations/HLODerivatives.td",
     ],
     deps = [
-        "@enzyme//:enzyme-tblgen",
         ":ImplementationsCommonTdFiles",
+        "@enzyme//:enzyme-tblgen",
     ],
 )
 
@@ -93,8 +97,8 @@ gentbl_cc_library(
         "Implementations/HLODerivatives.td",
     ],
     deps = [
-        "@enzyme//:enzyme-tblgen",
         ":EnzymeImplementationsCommonTdFiles",
+        "@enzyme//:enzyme-tblgen",
     ],
 )
 
@@ -145,27 +149,31 @@ cc_library(
         ":EnzymeXLAPassesIncGen",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:CommonFolders",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:Transforms",
+        "@stablehlo//:reference_ops",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
-        "@stablehlo//:reference_ops",
-        "@llvm-project//mlir:ArithDialect",
-        "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:TensorDialect",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:FunctionInterfaces",
-        "@llvm-project//mlir:ControlFlowInterfaces",
-        "@llvm-project//mlir:Support",
-        "@llvm-project//mlir:CommonFolders",
-        "@llvm-project//mlir:Transforms",
         "@xla//xla/mlir_hlo",
-        "@enzyme//:EnzymeMLIR",
-    ]
+    ],
 )
 
 pybind_library(
     name = "compile_with_xla",
     srcs = ["compile_with_xla.cc"],
-    hdrs = glob(["compile_with_xla.h", "Implementations/*.h", "Passes/*.h"]),
+    hdrs = glob([
+        "compile_with_xla.h",
+        "Implementations/*.h",
+        "Passes/*.h",
+    ]),
     deps = [
         ":XLADerivatives",
         # This is similar to xla_binary rule and is needed to make XLA client compile.
@@ -192,7 +200,7 @@ pybind_library(
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/client:xla_computation",
-        "@xla//xla/service:service",
+        "@xla//xla/service",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
         "@xla//xla/service:buffer_assignment_proto_cc",
@@ -211,7 +219,6 @@ pybind_library(
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
         "@xla//xla:xla_proto_cc_impl",
-
         "@stablehlo//:stablehlo_ops",
 
         # Make CPU target available to XLA.
@@ -220,7 +227,6 @@ pybind_library(
         # MHLO stuff.
         "@xla//xla/mlir_hlo",
         "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
-
         "@xla//xla/hlo/ir:hlo",
 
         # This is necessary for XLA protobufs to link
@@ -232,27 +238,30 @@ pybind_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:TensorDialect",
-
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
-	
         "@xla//xla/mlir_hlo:all_passes",
         "@xla//xla:printer",
 
-    # EnzymeMLIR
+        # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
-
         "@com_google_absl//absl/status:statusor",
-       
+
         # Mosaic
-	"@jax//jaxlib/mosaic:tpu_dialect",
+        "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 
 pybind_extension(
     name = "enzyme_call",
     srcs = ["enzyme_call.cc"],
+    visibility = ["//visibility:public"],
     deps = [
+        ":clang_compile",
+        ":compile_with_xla",
+        "@com_google_absl//absl/status:statusor",
+        "@enzyme//:EnzymeMLIR",
+        "@enzyme//:EnzymeStatic",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IRReader",
@@ -260,22 +269,15 @@ pybind_extension(
         "@llvm-project//llvm:OrcTargetProcess",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllPassesAndDialects",
-        ":clang_compile",
-        ":compile_with_xla",
-        "@com_google_absl//absl/status:statusor",
         "@stablehlo//:stablehlo_passes",
-        "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/hlo/ir:hlo",
         "@xla//xla/mlir/backends/cpu/transforms:passes",
         "@xla//xla/mlir/memref/transforms:passes",
         "@xla//xla/mlir/runtime/transforms:passes",
+        "@xla//xla/mlir_hlo:all_passes",
         "@xla//xla/mlir_hlo:deallocation_passes",
         "@xla//xla/mlir_hlo:lhlo",
-        "@xla//xla/mlir_hlo:all_passes",
-        "@xla//xla/hlo/ir:hlo",
         "@xla//xla/service/cpu:cpu_executable",
-        "@enzyme//:EnzymeStatic",
-        "@enzyme//:EnzymeMLIR",
-
+        "@xla//xla/stream_executor:stream_executor_impl",
     ],
-    visibility = ["//visibility:public"],
 )

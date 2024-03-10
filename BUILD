@@ -10,12 +10,15 @@ package(
 
 py_package(
     name = "enzyme_jax_data",
+    # Only include these Python packages.
+    packages = [
+        "@//src/enzyme_ad/jax:enzyme_call.so",
+        "@llvm-project//clang:builtin_headers_gen",
+    ],
     deps = [
         "//src/enzyme_ad/jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
-    # Only include these Python packages.
-    packages = ["@//src/enzyme_ad/jax:enzyme_call.so", "@llvm-project//clang:builtin_headers_gen"],
 )
 
 cc_binary(
@@ -49,17 +52,11 @@ cc_binary(
 
 py_wheel(
     name = "enzyme_ad",
+    author = "Enzyme Authors",
+    author_email = "wmoses@mit.edu, zinenko@google.com",
     distribution = "enzyme_ad",
-    summary = "Enzyme automatic differentiation tool.",
     homepage = "https://enzyme.mit.edu/",
-    project_urls = {
-        "GitHub": "https://github.com/EnzymeAD/Enzyme-JAX/",
-    },
-    author="Enzyme Authors",
-    license="LLVM",
-    author_email="wmoses@mit.edu, zinenko@google.com",
-    python_tag = "py3",
-    version = "0.0.6",
+    license = "LLVM",
     platform = select({
         "@bazel_tools//src/conditions:windows_x64": "win_amd64",
         "@bazel_tools//src/conditions:darwin_arm64": "macosx_11_0_arm64",
@@ -68,11 +65,20 @@ py_wheel(
         "@bazel_tools//src/conditions:linux_x86_64": "manylinux2014_x86_64",
         "@bazel_tools//src/conditions:linux_ppc64le": "manylinux2014_ppc64le",
     }),
-    deps = ["//src/enzyme_ad/jax:enzyme_jax_internal", ":enzyme_jax_data"],
-    strip_path_prefixes = ["src/"],
+    project_urls = {
+        "GitHub": "https://github.com/EnzymeAD/Enzyme-JAX/",
+    },
+    python_tag = "py3",
     requires = [
         "absl_py >= 2.0.0",
         "jax >= 0.4.21",
         "jaxlib >= 0.4.21",
+    ],
+    strip_path_prefixes = ["src/"],
+    summary = "Enzyme automatic differentiation tool.",
+    version = "0.0.6",
+    deps = [
+        ":enzyme_jax_data",
+        "//src/enzyme_ad/jax:enzyme_jax_internal",
     ],
 )
