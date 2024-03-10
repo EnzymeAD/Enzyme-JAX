@@ -247,7 +247,7 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
     auto res = rewriter.create(
         op.getLoc(), innerOp.getName().getIdentifier(), ValueRange(vals),
         TypeRange(op->getResult(0).getType()), innerOp.getAttrs(), {}, {});
-    assert(res->getType() == op->getResult(0).getType());
+    assert(res->getResult(0).getType() == op->getResult(0).getType());
 
     rewriter.replaceOp(op, res);
     return success();
