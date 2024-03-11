@@ -916,7 +916,7 @@ _enzyme_primal_p = jax.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
 _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
-jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering, platform="cpu")
+jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
 xla_client.register_custom_call_target(
     "jaxzyme.primal", enzyme_call.get_cpu_callback(), platform="cpu"
