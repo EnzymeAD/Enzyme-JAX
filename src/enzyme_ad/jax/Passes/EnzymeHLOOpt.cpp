@@ -629,6 +629,12 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   auto type = inp.getType();
   auto elemType = type.getElementType();
 
+  if (elemType.isBF16()) {
+    auto floatValues =
+        ArrayRef((char *)inp.getData(), 2 * inp.getNumElements());
+    return DenseFPElementsAttr::getFromRawBuffer(type, floatValues);
+  }
+
   if (elemType.isF32()) {
     auto floatValues = ArrayRef((float *)inp.getData(), inp.getNumElements());
     return DenseFPElementsAttr::get(type, floatValues);
