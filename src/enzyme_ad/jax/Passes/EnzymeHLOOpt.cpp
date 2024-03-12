@@ -46,7 +46,7 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
 
 namespace {
 
-struct SliceSimplification final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+struct NoopSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
@@ -500,6 +500,29 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
+struct ConvertConcat final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
+                                PatternRewriter &rewriter) const override {
+    auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    SmallVector<Value> newvals;
+    for (auto v : concat.getOperands()) {
+      newvals.push_back(rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(),
+          RankedTensorType::get(v.getType().cast<RankedTensorType>().getShape(),
+                                op.getType().getElementType()),
+          v));
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        op, newvals, concat.getDimension());
+    return success();
+  }
+};
+
 struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -910,24 +933,6 @@ struct BroadcastToReshape final
       return failure();
     assert(op.getBroadcastDimensions().size() ==
            op.getOperand().getType().getShape().size());
-    DenseElementsAttr inp;
-    matchPattern(op->getOperand(0), m_Constant(&inp));
-    if (inp) {
-      if (inp.isSplat()) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(),
-            mlir::SplatElementsAttr::get(op.getType(),
-                                         inp.getSplatValue<mlir::Attribute>()));
-        return success();
-      }
-      auto inp0 = mlir::stablehlo::evalConstantOp(inp);
-      auto out = mlir::stablehlo::evalBroadcastInDimOp(
-          inp0, mlir::stablehlo::Axes(op.getBroadcastDimensions()),
-          op.getType());
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
-                                                         fromTensor(out));
-      return success();
-    }
 
     // Ensure these are sorted
     for (auto en : llvm::enumerate(op.getBroadcastDimensions())) {
@@ -1426,6 +1431,175 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
   }
 };
 
+struct IotaSimplify : public OpRewritePattern<mlir::stablehlo::IotaOp> {
+  using OpRewritePattern<mlir::stablehlo::IotaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IotaOp op,
+                                PatternRewriter &rewriter) const final {
+    size_t size = 1;
+    for (auto sz : op.getType().getShape())
+      size *= sz;
+    if (size >= 100000)
+      return failure();
+
+    auto out = mlir::stablehlo::evalIotaOp(op.getIotaDimension(), op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(out));
+    return success();
+  }
+};
+
+struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
+  using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
+                                PatternRewriter &rewriter) const final {
+    DenseElementsAttr inp;
+    matchPattern(op->getOperand(0), m_Constant(&inp));
+    if (inp) {
+      stablehlo::Tensor ten;
+      RankedTensorType ty = op.getType();
+      if (inp.isSplat()) {
+        ten = stablehlo::makeTensor(inp.resizeSplat(
+            RankedTensorType::get({}, inp.getType().getElementType())));
+        ty = RankedTensorType::get({}, op.getType().getElementType());
+      } else {
+        ten = mlir::stablehlo::evalConstantOp(inp);
+      }
+      auto out = fromTensor(mlir::stablehlo::evalConvertOp(ten, ty));
+      if (inp.isSplat())
+        out = out.resizeSplat(op.getType());
+
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const final {
+    DenseElementsAttr inp;
+    matchPattern(op->getOperand(0), m_Constant(&inp));
+    if (inp) {
+      DenseElementsAttr out;
+      if (inp.isSplat()) {
+        out = inp.resizeSplat(op.getType());
+      } else {
+        auto ten = mlir::stablehlo::evalConstantOp(inp);
+        out = fromTensor(mlir::stablehlo::evalSliceOp(
+            ten, stablehlo::Sizes(op.getStartIndices()),
+            stablehlo::Sizes(op.getStrides()), op.getType()));
+      }
+
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct BroadcastInDimSimplify
+    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const final {
+    DenseElementsAttr inp;
+    matchPattern(op->getOperand(0), m_Constant(&inp));
+    if (inp) {
+      DenseElementsAttr out;
+      if (inp.isSplat()) {
+        out = inp.resizeSplat(op.getType());
+      } else {
+        auto ten = mlir::stablehlo::evalConstantOp(inp);
+        out = fromTensor(mlir::stablehlo::evalBroadcastInDimOp(
+            ten, mlir::stablehlo::Axes(op.getBroadcastDimensions()),
+            op.getType()));
+      }
+
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const final {
+    DenseElementsAttr inp;
+    matchPattern(op->getOperand(0), m_Constant(&inp));
+    if (inp) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(),
+          inp.isSplat() ? inp.resizeSplat(inp.getType())
+                        : inp.reshape(op.getType()));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
+  using OpRewritePattern<mlir::stablehlo::MaxOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::MaxOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getOperand(0) == op.getOperand(1)) {
+      rewriter.replaceOp(op, op.getOperand(0));
+      return success();
+    }
+    SmallVector<Attribute> constants;
+    constants.assign(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a, const APFloat &b)
+                    -> std::optional<APFloat> { return (a > b) ? a : b; })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+  }
+};
+
+struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
+  using OpRewritePattern<mlir::stablehlo::MinOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::MinOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getOperand(0) == op.getOperand(1)) {
+      rewriter.replaceOp(op, op.getOperand(0));
+      return success();
+    }
+    SmallVector<Attribute> constants;
+    constants.assign(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if (auto res =
+            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants,
+                [](const APFloat &a, const APFloat &b)
+                    -> std::optional<APFloat> { return (a < b) ? a : b; })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+  }
+};
+
 struct CosSimplify : public OpRewritePattern<mlir::stablehlo::CosineOp> {
   using OpRewritePattern<mlir::stablehlo::CosineOp>::OpRewritePattern;
 
@@ -1583,18 +1757,19 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns
-        .add<DynamicSliceToStatic, DynamicUpdateSliceElim,
-             DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad, SliceSlice,
-             AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-             /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
-             ReduceConcat, SliceConcat, SliceSimplification, CosSimplify,
-             SinSimplify, SqrtSimplify, AddSimplify, SubSimplify, AndSimplify,
-             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
-             BinBroadcastSplat<stablehlo::AddOp>,
-             BinBroadcastSplat<stablehlo::SubtractOp>,
-             BinBroadcastSplat<stablehlo::DivOp>,
-             BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<
+        ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
+        DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad, SliceSlice,
+        AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+        /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, IotaSimplify,
+        ConvertSimplify, ReshapeSimplify, BroadcastInDimSimplify, SliceSimplify,
+        ReduceConcat, SliceConcat, NoopSlice, CosSimplify, SinSimplify,
+        SqrtSimplify, AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
+        MinSimplify, OrSimplify, NegateSimplify, MulSimplify, DivSimplify,
+        PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>>(context);
     if (all_finite)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite)
