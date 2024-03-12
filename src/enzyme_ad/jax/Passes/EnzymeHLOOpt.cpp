@@ -1572,6 +1572,7 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
           op, op.getType(), res.cast<ElementsAttr>());
       return success();
     }
+    return failure();
   }
 };
 
@@ -1597,6 +1598,7 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
           op, op.getType(), res.cast<ElementsAttr>());
       return success();
     }
+    return failure();
   }
 };
 
