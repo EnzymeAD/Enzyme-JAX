@@ -51,6 +51,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Whether to raise to assume no variables are nan"
+    >,
+    Option<
+      /*C++ variable name=*/"max_constant_expansion",
+      /*CLI argument=*/"max_constant_expansion",
+      /*type=*/"size_t",
+      /*default=*/"1024",
+      /*description=*/"Maximum size to expand constants into"
     >
     ];
 }
