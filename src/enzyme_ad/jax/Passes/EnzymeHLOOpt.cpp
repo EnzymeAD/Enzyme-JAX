@@ -833,6 +833,59 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+template <typename T>
+struct ConcatPushBinop final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 2)
+      return failure();
+
+    SmallVector<Value> lhs;
+    SmallVector<Value> rhs;
+
+    SmallVector<Type> converts;
+
+    for (auto v : op.getOperands()) {
+      if (auto t = v.getDefiningOp<stablehlo::ConvertOp>()) {
+        converts.push_back(
+            t.getType().cast<RankedTensorType>().getElementType());
+        v = t.getOperand();
+      } else
+        converts.push_back(nullptr);
+      if (auto t = v.getDefiningOp<T>()) {
+        lhs.push_back(t->getOperand(0));
+        rhs.push_back(t->getOperand(1));
+      } else
+        return failure();
+    }
+
+    Type typeconvert = converts[0];
+    for (auto c : converts)
+      if (c != typeconvert)
+        return failure();
+
+    auto lhs2 = rewriter.create<stablehlo::ConcatenateOp>(op.getLoc(), lhs,
+                                                          op.getDimension());
+    auto rhs2 = rewriter.create<stablehlo::ConcatenateOp>(op.getLoc(), rhs,
+                                                          op.getDimension());
+
+    Value res2 = rewriter.create<T>(op.getLoc(), lhs2, rhs2);
+
+    if (typeconvert)
+      res2 = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(),
+          RankedTensorType::get(
+              res2.getType().cast<RankedTensorType>().getShape(), typeconvert),
+          res2);
+
+    rewriter.replaceOp(op, res2);
+    return success();
+  }
+};
+
 struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1769,6 +1822,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
         DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad, SliceSlice,
         AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, IotaSimplify,
         ConvertSimplify, ReshapeSimplify, BroadcastInDimSimplify, SliceSimplify,
         ReduceConcat, SliceConcat, NoopSlice, CosSimplify, SinSimplify,
