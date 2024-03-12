@@ -1600,7 +1600,7 @@ struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (inp) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, op.getType(),
-          inp.isSplat() ? inp.resizeSplat(inp.getType())
+          inp.isSplat() ? inp.resizeSplat(op.getType())
                         : inp.reshape(op.getType()));
       return success();
     }
