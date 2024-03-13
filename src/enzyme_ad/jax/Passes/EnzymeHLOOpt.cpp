@@ -849,9 +849,9 @@ struct ConcatAppendingReshape final
     size_t frontSize = 0;
     for (auto v : op.getOperands()) {
       if (auto t = v.getDefiningOp<stablehlo::ConvertOp>()) {
-        converts.push_back(
-            t.getType().cast<RankedTensorType>().getElementType());
         v = t.getOperand();
+        converts.push_back(
+            v.getType().cast<RankedTensorType>().getElementType());
       } else
         converts.push_back(nullptr);
       if (auto t = v.getDefiningOp<stablehlo::ReshapeOp>()) {
@@ -906,11 +906,8 @@ struct ConcatAppendingReshape final
         lhs2);
 
     if (typeconvert)
-      res2 = rewriter.create<stablehlo::ConvertOp>(
-          op.getLoc(),
-          RankedTensorType::get(
-              res2.getType().cast<RankedTensorType>().getShape(), typeconvert),
-          res2);
+      res2 = rewriter.create<stablehlo::ConvertOp>(op.getLoc(), op.getType(),
+                                                   res2);
 
     rewriter.replaceOp(op, res2);
     return success();
