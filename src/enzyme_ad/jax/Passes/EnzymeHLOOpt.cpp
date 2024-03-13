@@ -833,6 +833,90 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+struct ConcatAppendingReshape final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 2)
+      return failure();
+
+    SmallVector<Value> lhs;
+
+    SmallVector<Type> converts;
+
+    size_t frontSize = 0;
+    for (auto v : op.getOperands()) {
+      if (auto t = v.getDefiningOp<stablehlo::ConvertOp>()) {
+        converts.push_back(
+            t.getType().cast<RankedTensorType>().getElementType());
+        v = t.getOperand();
+      } else
+        converts.push_back(nullptr);
+      if (auto t = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        lhs.push_back(t->getOperand(0));
+
+        auto prevshape = t.getOperand().getType().getShape();
+        auto postshape = t.getType().getShape();
+        if (prevshape.size() + 1 != postshape.size())
+          return failure();
+        if (postshape[0] != 1)
+          return failure();
+
+        frontSize += prevshape[0];
+
+        for (auto en : llvm::enumerate(prevshape)) {
+          if (en.value() != postshape[1 + en.index()])
+            return failure();
+        }
+
+      } else
+        return failure();
+    }
+
+    Type typeconvert = converts[0];
+    for (auto c : converts)
+      if (c != typeconvert)
+        return failure();
+
+    RankedTensorType nextType = op.getType();
+    auto nextDim = op.getDimension();
+    if (nextDim == 0) {
+      SmallVector<int64_t> nextShape(nextType.getShape().begin() + 1,
+                                     nextType.getShape().end());
+
+      nextShape[0] = frontSize;
+      nextType = RankedTensorType::get(
+          nextShape, typeconvert ? typeconvert : nextType.getElementType());
+      nextDim = 0;
+    } else {
+      nextType = RankedTensorType::get(nextType.getShape().drop_front(),
+                                       typeconvert ? typeconvert
+                                                   : nextType.getElementType());
+      nextDim--;
+    }
+    auto lhs2 = rewriter.create<stablehlo::ConcatenateOp>(op.getLoc(), nextType,
+                                                          lhs, nextDim);
+
+    Value res2 = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(op.getType().getShape(),
+                              nextType.getElementType()),
+        lhs2);
+
+    if (typeconvert)
+      res2 = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(),
+          RankedTensorType::get(
+              res2.getType().cast<RankedTensorType>().getShape(), typeconvert),
+          res2);
+
+    rewriter.replaceOp(op, res2);
+    return success();
+  }
+};
+
 template <typename T>
 struct ConcatPushBinop final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -1835,10 +1919,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
-                 DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
-                 SliceSlice, AddPad, PadSimplify, DotReshapeDot,
-                 ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
+    patterns.add<ConcatAppendingReshape, ConvertConcat, DynamicSliceToStatic,
+                 DynamicUpdateSliceElim, DynamicUpdateToConcat,
+                 SliceOfDynamicUpdate, SlicePad, SliceSlice, AddPad,
+                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+                 ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>,
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ConvertSimplify, ReshapeSimplify, SliceSimplify, ReduceConcat,
