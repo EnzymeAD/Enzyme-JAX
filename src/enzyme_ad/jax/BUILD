@@ -219,6 +219,11 @@ pybind_library(
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
         "@xla//xla:xla_proto_cc_impl",
+        "@xla//xla/service/cpu:cpu_compiler_pure",
+        "@xla//xla/service:compiler",
+        "@xla//xla/service:hlo_module_util",
+        "@xla//xla/service:hlo_proto_util",
+        "@xla//xla:statusor",
         "@stablehlo//:stablehlo_ops",
 
         # Make CPU target available to XLA.
