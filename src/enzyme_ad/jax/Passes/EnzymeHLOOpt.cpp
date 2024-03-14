@@ -1594,6 +1594,46 @@ struct IotaSimplify : public OpRewritePattern<mlir::stablehlo::IotaOp> {
   }
 };
 
+struct ConcatToPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getNumOperands() < 2)
+      return failure();
+
+    for (unsigned ind : {(unsigned int)0, op.getNumOperands() - 1}) {
+      DenseElementsAttr inp;
+      if (!matchPattern(op->getOperand(ind), m_Constant(&inp)))
+        continue;
+      if (!inp.isSplat())
+        continue;
+
+      auto subconcat = rewriter.create<stablehlo::ConcatenateOp>(
+          op.getLoc(),
+          (ind == 0) ? op.getOperands().drop_front()
+                     : op.getOperands().drop_back(),
+          op.getDimension());
+
+      SmallVector<int64_t> low(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> high(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> interior(op.getType().getShape().size(), 0);
+      if (ind == 0)
+        low[op.getDimension()] = inp.getType().getShape()[op.getDimension()];
+      else
+        high[op.getDimension()] = inp.getType().getShape()[op.getDimension()];
+      auto type0 = RankedTensorType::get({}, inp.getType().getElementType());
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          op, op.getType(), subconcat,
+          rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type0,
+                                                 inp.resizeSplat(type0)),
+          low, high, interior);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
 
@@ -2056,11 +2096,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConcatAppendingReshape, ConvertConcat, DynamicSliceToStatic,
-                 DynamicUpdateSliceElim, DynamicUpdateToConcat,
-                 SliceOfDynamicUpdate, SlicePad, SliceSlice, AddPad,
-                 PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 ConcatPushBinop<stablehlo::AddOp>,
+    patterns.add<ConcatToPad, ConcatAppendingReshape, ConvertConcat,
+                 DynamicSliceToStatic, DynamicUpdateSliceElim,
+                 DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
+                 SliceSlice, AddPad, PadSimplify, DotReshapeDot,
+                 ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>,
                  /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
                  ConvertSimplify, ReshapeSimplify, SliceSimplify, ReduceConcat,
