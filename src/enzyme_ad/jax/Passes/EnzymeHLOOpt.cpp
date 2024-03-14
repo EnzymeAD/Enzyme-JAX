@@ -1911,6 +1911,146 @@ struct NoNan : public OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
+struct TransposeTranspose
+    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const final {
+    if (auto definingTranspose =
+            op.getOperand().getDefiningOp<mlir::stablehlo::TransposeOp>()) {
+      llvm::ArrayRef<int64_t> thisPermutation = op.getPermutation();
+      llvm::ArrayRef<int64_t> prevPermutation =
+          definingTranspose.getPermutation();
+
+      SmallVector<int64_t> newPermutation;
+      newPermutation.resize(thisPermutation.size());
+      for (unsigned i = 0, e = thisPermutation.size(); i != e; ++i) {
+        newPermutation[i] = prevPermutation[thisPermutation[i]];
+      }
+
+      rewriter.modifyOpInPlace(op, [&]() {
+        op.setPermutation(newPermutation);
+        op.setOperand(definingTranspose.getOperand());
+      });
+
+      return success();
+    }
+    return rewriter.notifyMatchFailure(op, "not a transpose(transpose)");
+  }
+};
+
+struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
+  using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
+                                PatternRewriter &rewriter) const final {
+    auto resultType = op.getResult().getType().cast<TensorType>();
+    auto operandType = op.getOperand().getType().cast<TensorType>();
+    if (!resultType.hasStaticShape() || !operandType.hasStaticShape())
+      return failure();
+    if (resultType.getNumElements() * resultType.getElementTypeBitWidth() >=
+        operandType.getNumElements() * operandType.getElementTypeBitWidth())
+      return failure();
+
+    auto transpose =
+        op.getOperand().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
+      return failure();
+
+    auto newConvert = rewriter.create<stablehlo::ConvertOp>(
+        op.getLoc(), transpose.getOperand(), resultType.getElementType());
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        transpose.getLoc(), newConvert.getResult(), transpose.getPermutation());
+    rewriter.replaceOp(op, newTranspose);
+    rewriter.eraseOp(transpose);
+
+    return success();
+  }
+};
+
+struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
+  using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+    // TODO: min/max can also be an option since they are dropped
+    if (!isa<stablehlo::AddOp>(op.getRegion().getBlocks().front().front())) {
+      return rewriter.notifyMatchFailure(op, "only add is currently supported");
+    }
+
+    Value input = op.getInputs()[0];
+    auto inputType = input.getType().cast<TensorType>();
+    auto broadcast = input.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>();
+    if (!broadcast) {
+      return rewriter.notifyMatchFailure(op,
+                                         "input source is not a broadcast op");
+    }
+
+    // If any of the dimensions that are being reduced was initially
+    // broadcasted, we can multiply the result with the dimension instead.
+    ArrayRef<int64_t> broadcastDims = broadcast.getBroadcastDimensions();
+    SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
+    auto broadcastSourceType =
+        broadcast.getOperand().getType().cast<TensorType>();
+    for (int64_t reductionDim : op.getDimensions()) {
+      if (inputType.isDynamicDim(reductionDim))
+        continue;
+      auto it = llvm::find(broadcastDims, reductionDim);
+      if (it == broadcastDims.end()) {
+        broadcastFromNothingDims.push_back(reductionDim);
+        continue;
+      }
+      size_t originalDim = std::distance(broadcastDims.begin(), it);
+      if (broadcastSourceType.getDimSize(originalDim) == 1 &&
+          inputType.getDimSize(reductionDim) != 1) {
+        broadcastFromOneDims.push_back(reductionDim);
+      }
+    }
+    if (broadcastFromNothingDims.empty() && broadcastFromOneDims.empty())
+      return rewriter.notifyMatchFailure(op, "no dimensions to remove");
+
+    int64_t size = 1;
+    for (int64_t dim : broadcastFromNothingDims) {
+      size *= inputType.getDimSize(dim);
+    }
+    for (int64_t dim : broadcastFromOneDims) {
+      size *= inputType.getDimSize(dim);
+    }
+
+    int64_t numRemoved = 0;
+    SmallVector<int64_t> newReduceDimensions;
+    llvm::sort(broadcastFromNothingDims);
+    for (int64_t reductionDim : op.getDimensions()) {
+      if (llvm::is_contained(broadcastFromNothingDims, reductionDim)) {
+        numRemoved++;
+        continue;
+      }
+      newReduceDimensions.push_back(reductionDim - numRemoved);
+    }
+
+    auto newReduction = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), op->getResultTypes(), ValueRange{broadcast.getOperand()},
+        op.getInitValues(), newReduceDimensions);
+    newReduction.getRegion().takeBody(op.getRegion());
+
+    auto newResultType = newReduction.getResult(0).getType().cast<TensorType>();
+    auto constantInt = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(),
+        makeAttr(newResultType.clone(rewriter.getI64Type()), size));
+    auto converted = rewriter.create<stablehlo::ConvertOp>(
+        op.getLoc(), constantInt, newResultType.getElementType());
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
+                                                  converted.getResult());
+
+    return success();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -1930,7 +2070,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+                 BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
+                 TransposeConvert, BroadcastReduce>(context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
