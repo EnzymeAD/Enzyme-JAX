@@ -859,6 +859,8 @@ struct ConcatAppendingReshape final
 
         auto prevshape = t.getOperand().getType().getShape();
         auto postshape = t.getType().getShape();
+        if (prevshape.size() == 0)
+          return failure();
         if (prevshape.size() + 1 != postshape.size())
           return failure();
         if (postshape[0] != 1)
