@@ -574,7 +574,8 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
-struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
+struct FullReduceReshapeOrTranspose final
+    : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
@@ -586,7 +587,8 @@ struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
     if (op.getDimensions().size() != inpTy.getShape().size())
       return failure();
 
-    SmallVector<stablehlo::ReshapeOp> reshapes;
+    RankedTensorType changeType = nullptr;
+    SmallVector<Operation *> reshapeOrTransposes;
     DenseMap<Operation *, int> toclone;
     {
       SmallVector<Value> todo = {op.getInputs()[0]};
@@ -596,10 +598,23 @@ struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
         if (!curOp)
           return failure();
         if (auto rs = dyn_cast<stablehlo::ReshapeOp>(curOp)) {
-          reshapes.push_back(rs);
-          if (reshapes[0].getOperand().getType().getShape() !=
-              rs.getOperand().getType().getShape())
-            return failure();
+          if (changeType != nullptr) {
+            if (rs.getOperand().getType() != changeType)
+              return failure();
+          } else {
+            changeType = rs.getOperand().getType();
+          }
+          reshapeOrTransposes.push_back(rs);
+          continue;
+        }
+        if (auto rs = dyn_cast<stablehlo::TransposeOp>(curOp)) {
+          if (changeType != nullptr) {
+            if (rs.getOperand().getType() != changeType)
+              return failure();
+          } else {
+            changeType = rs.getOperand().getType();
+          }
+          reshapeOrTransposes.push_back(rs);
           continue;
         }
         if (!curOp->hasTrait<mlir::OpTrait::Elementwise>())
@@ -614,9 +629,9 @@ struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     IRMapping map;
     SmallVector<Operation *> todo;
-    for (auto reshape : reshapes) {
-      map.map(reshape, reshape.getOperand());
-      for (auto u : reshape.getResult().getUsers()) {
+    for (auto reshape : reshapeOrTransposes) {
+      map.map(reshape->getResult(0), reshape->getOperand(0));
+      for (auto u : reshape->getResult(0).getUsers()) {
         if (toclone.contains(u)) {
           toclone[u]--;
           if (toclone[u] == 0) {
@@ -635,8 +650,7 @@ struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
       auto res =
           rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
-                          TypeRange(reshapes[0].getOperand().getType()),
-                          cur->getAttrs(), {}, {});
+                          TypeRange(changeType), cur->getAttrs(), {}, {});
 
       map.map(cur->getResult(0), res->getResult(0));
 
@@ -652,9 +666,7 @@ struct FullReduceReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
     }
 
     SmallVector<int64_t> newReduceDimensions;
-    for (size_t i = 0,
-                end = reshapes[0].getOperand().getType().getShape().size();
-         i < end; i++)
+    for (size_t i = 0, end = changeType.getShape().size(); i < end; i++)
       newReduceDimensions.push_back(i);
 
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
@@ -2286,22 +2298,23 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<
-        FullReduceReshape, ConcatToPad, ConcatAppendingReshape, ReshapeIota,
-        ReshapePad, ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
-        DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad, SliceSlice,
-        AddPad, PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
-        ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
-        CosSimplify, SinSimplify, SqrtSimplify, AddSimplify, SubSimplify,
-        AndSimplify, MaxSimplify, MinSimplify, OrSimplify, NegateSimplify,
-        MulSimplify, DivSimplify, PowSimplify,
-        BinBroadcastSplat<stablehlo::AddOp>,
-        BinBroadcastSplat<stablehlo::SubtractOp>,
-        BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-        TransposeConvert, BroadcastReduce>(context);
+    patterns.add<FullReduceReshapeOrTranspose, ConcatToPad,
+                 ConcatAppendingReshape, ReshapeIota, ReshapePad, ConvertConcat,
+                 DynamicSliceToStatic, DynamicUpdateSliceElim,
+                 DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
+                 SliceSlice, AddPad, PadSimplify, DotReshapeDot,
+                 ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatPushBinop<stablehlo::MulOp>,
+                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
+                 ConvertSimplify, ReshapeSimplify, SliceSimplify, ReduceConcat,
+                 SliceConcat, NoopSlice, CosSimplify, SinSimplify, SqrtSimplify,
+                 AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
+                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
+                 TransposeConvert, BroadcastReduce>(context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
