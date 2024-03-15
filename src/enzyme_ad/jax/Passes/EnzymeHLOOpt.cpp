@@ -831,6 +831,14 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
                                 PatternRewriter &rewriter) const override {
 
+    if (matchPattern(op.getOperand(), m_AnyZeroFloat())) {
+      if (matchPattern(op.getPaddingValue(), m_AnyZeroFloat())) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+        return success();
+      }
+    }
+
     for (auto &&[low, high, inner] :
          llvm::zip(op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
                    op.getInteriorPadding())) {
