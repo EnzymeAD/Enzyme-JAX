@@ -2368,8 +2368,35 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
         dimensionNumbers.getLhsContractingDimensions();
     auto otherContractingDimensions =
         dimensionNumbers.getRhsContractingDimensions();
-    if (otherIsLHS)
+
+    auto padBatchDimensions = dimensionNumbers.getLhsBatchingDimensions();
+    auto otherBatchDimensions = dimensionNumbers.getRhsBatchingDimensions();
+
+    SmallVector<int64_t> padResultDimensions;
+    for (size_t i = 0, end = op.getLhs().getType().getShape().size(); i < end;
+         i++) {
+      if (llvm::is_contained(dimensionNumbers.getLhsContractingDimensions(), i))
+        continue;
+      if (llvm::is_contained(dimensionNumbers.getLhsBatchingDimensions(), i))
+        continue;
+      padResultDimensions.push_back(i);
+    }
+
+    SmallVector<int64_t> otherResultDimensions;
+    for (size_t i = 0, end = op.getRhs().getType().getShape().size(); i < end;
+         i++) {
+      if (llvm::is_contained(dimensionNumbers.getRhsContractingDimensions(), i))
+        continue;
+      if (llvm::is_contained(dimensionNumbers.getRhsBatchingDimensions(), i))
+        continue;
+      otherResultDimensions.push_back(i);
+    }
+
+    if (otherIsLHS) {
       std::swap(padContractingDimensions, otherContractingDimensions);
+      std::swap(padBatchDimensions, otherBatchDimensions);
+      std::swap(padResultDimensions, otherResultDimensions);
+    }
 
     // Need to figure out which dimension(s) to slice. For this purpose,
     // look the pairs of contracting dimensions.
@@ -2386,35 +2413,118 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
       otherDimsToSlice.emplace_back(otherDim, low, high, interior);
     }
 
-    if (otherDimsToSlice.empty()) {
+    SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>> resultDimsToPad;
+    SmallVector<int64_t> resultShape;
+
+    {
+      size_t resultidx = 0;
+      for (auto &&[padDim, otherDim] :
+           llvm::zip(padBatchDimensions, otherBatchDimensions)) {
+        // If padding along the dim, mark the corresponding other dim for
+        // slicing.
+        int64_t low = pad.getEdgePaddingLow()[padDim];
+        int64_t high = pad.getEdgePaddingHigh()[padDim];
+        int64_t interior = pad.getInteriorPadding()[padDim];
+        auto padSize = pad.getOperand()
+                           .getType()
+                           .cast<RankedTensorType>()
+                           .getShape()[padDim];
+        resultShape.push_back(padSize);
+        if (low == 0 && high == 0 && interior == 0) {
+          resultidx++;
+          continue;
+        }
+        otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+        resultDimsToPad.emplace_back(resultidx, low, high, interior);
+        resultidx++;
+      }
+
+      if (otherIsLHS) {
+        for (auto dim : otherResultDimensions) {
+          resultidx++;
+          resultShape.push_back(
+              otherArg.getType().cast<RankedTensorType>().getShape()[dim]);
+        }
+      }
+
+      for (auto padDim : padResultDimensions) {
+        int64_t low = pad.getEdgePaddingLow()[padDim];
+        int64_t high = pad.getEdgePaddingHigh()[padDim];
+        int64_t interior = pad.getInteriorPadding()[padDim];
+        auto padSize = pad.getOperand()
+                           .getType()
+                           .cast<RankedTensorType>()
+                           .getShape()[padDim];
+        resultShape.push_back(padSize);
+        if (low == 0 && high == 0 && interior == 0) {
+          resultidx++;
+          continue;
+        }
+
+        resultDimsToPad.emplace_back(resultidx, low, high, interior);
+        resultidx++;
+      }
+
+      if (!otherIsLHS) {
+        for (auto dim : otherResultDimensions) {
+          resultidx++;
+          resultShape.push_back(
+              otherArg.getType().cast<RankedTensorType>().getShape()[dim]);
+        }
+      }
+    }
+
+    if (otherDimsToSlice.empty() && resultDimsToPad.empty()) {
       return rewriter.notifyMatchFailure(op,
                                          "contracting dimensions not padded");
     }
 
-    SmallVector<int64_t> sliceLow, sliceHigh, sliceStride;
-    for (auto &&[pos, size] :
-         llvm::enumerate(otherArg.getType().cast<TensorType>().getShape())) {
-      auto it = llvm::find_if(
-          otherDimsToSlice, [&](auto &tup) { return std::get<0>(tup) == pos; });
-      if (it == otherDimsToSlice.end()) {
-        sliceLow.push_back(0);
-        sliceHigh.push_back(size);
-        sliceStride.push_back(1);
-        continue;
+    Value nextOtherArg = otherArg;
+    if (!otherDimsToSlice.empty()) {
+      SmallVector<int64_t> sliceLow, sliceHigh, sliceStride;
+      for (auto &&[pos, size] :
+           llvm::enumerate(otherArg.getType().cast<TensorType>().getShape())) {
+        auto it = llvm::find_if(otherDimsToSlice, [&](auto &tup) {
+          return std::get<0>(tup) == pos;
+        });
+        if (it == otherDimsToSlice.end()) {
+          sliceLow.push_back(0);
+          sliceHigh.push_back(size);
+          sliceStride.push_back(1);
+          continue;
+        }
+
+        sliceLow.push_back(std::get<1>(*it));
+        sliceHigh.push_back(size - std::get<2>(*it));
+        sliceStride.push_back(std::get<3>(*it) + 1);
       }
 
-      sliceLow.push_back(std::get<1>(*it));
-      sliceHigh.push_back(size - std::get<2>(*it));
-      sliceStride.push_back(std::get<3>(*it) + 1);
+      auto slice = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), otherArg, sliceLow, sliceHigh, sliceStride);
+      nextOtherArg = slice.getResult();
     }
 
-    auto slice = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), otherArg, sliceLow, sliceHigh, sliceStride);
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, op.getResult().getType(),
-        otherIsLHS ? slice.getResult() : pad.getOperand(),
-        otherIsLHS ? pad.getOperand() : slice.getResult(),
+    Value res = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, op.getType().getElementType()),
+        otherIsLHS ? nextOtherArg : pad.getOperand(),
+        otherIsLHS ? pad.getOperand() : nextOtherArg,
         op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr());
+
+    if (!resultDimsToPad.empty()) {
+      SmallVector<int64_t> low(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> high(op.getType().getShape().size(), 0);
+      SmallVector<int64_t> interior(op.getType().getShape().size(), 0);
+      for (auto &&[idx, lval, hval, ival] : resultDimsToPad) {
+        low[idx] = lval;
+        high[idx] = hval;
+        interior[idx] = ival;
+      }
+      res = rewriter.create<stablehlo::PadOp>(op.getLoc(), op.getType(), res,
+                                              pad.getPaddingValue(), low, high,
+                                              interior);
+    }
+    rewriter.replaceOp(op, res);
     return success();
   }
 };
