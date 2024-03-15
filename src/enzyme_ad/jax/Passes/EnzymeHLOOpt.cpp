@@ -2292,29 +2292,44 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
+template <typename OpTy>
+static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
+                                            stablehlo::PadOp &pad,
+                                            Value &otherArg,
+                                            bool &isOtherArgLHS) {
+  pad = op.getLhs().template getDefiningOp<stablehlo::PadOp>();
+  otherArg = op.getRhs();
+  isOtherArgLHS = false;
+  if (!pad) {
+    pad = op.getRhs().template getDefiningOp<stablehlo::PadOp>();
+    otherArg = op.getLhs();
+    isOtherArgLHS = true;
+  }
+  if (!pad)
+    return rewriter.notifyMatchFailure(op, "operands not produced by pad");
+  if (!llvm::hasSingleElement(pad->getUsers()))
+    return rewriter.notifyMatchFailure(op, "pad has multiple users");
+
+  DenseFPElementsAttr paddingValue;
+  if (!matchPattern(pad.getPaddingValue(), m_Constant(&paddingValue)))
+    return rewriter.notifyMatchFailure(op, "padding value not a constant");
+  if (!paddingValue.isSplat())
+    return rewriter.notifyMatchFailure(op, "padding value not a splat");
+  if (!paddingValue.getSplatValue<FloatAttr>().getValue().isZero())
+    return rewriter.notifyMatchFailure(op, "padding value not zero");
+  return success();
+}
+
 struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
                                 PatternRewriter &rewriter) const final {
-    stablehlo::PadOp pad = op.getLhs().getDefiningOp<stablehlo::PadOp>();
-    Value otherArg = op.getRhs();
-    if (!pad) {
-      pad = op.getRhs().getDefiningOp<stablehlo::PadOp>();
-      otherArg = op.getLhs();
-    }
-    if (!pad)
-      return rewriter.notifyMatchFailure(op, "operands not produced by pad");
-    if (!llvm::hasSingleElement(pad->getUsers()))
-      return rewriter.notifyMatchFailure(op, "pad has multiple users");
-
-    DenseFPElementsAttr paddingValue;
-    if (!matchPattern(pad.getPaddingValue(), m_Constant(&paddingValue)))
-      return rewriter.notifyMatchFailure(op, "padding value not a constant");
-    if (!paddingValue.isSplat())
-      return rewriter.notifyMatchFailure(op, "padding value not a splat");
-    if (!paddingValue.getSplatValue<FloatAttr>().getValue().isZero())
-      return rewriter.notifyMatchFailure(op, "padding value not zero");
+    stablehlo::PadOp pad;
+    Value otherArg;
+    bool otherIsLHS;
+    if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
+      return failure();
 
     auto otherArgType = otherArg.getType().cast<TensorType>();
     SmallVector<int64_t> limitDims = llvm::to_vector(otherArgType.getShape());
@@ -2343,6 +2358,72 @@ struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
   }
 };
 
+struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
+  using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
+                                PatternRewriter &rewriter) const final {
+    stablehlo::PadOp pad;
+    Value otherArg;
+    bool otherIsLHS;
+    if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
+      return failure();
+
+    auto dimensionNumbers = op.getDotDimensionNumbers();
+    auto padContractingDimensions =
+        dimensionNumbers.getLhsContractingDimensions();
+    auto otherContractingDimensions =
+        dimensionNumbers.getRhsContractingDimensions();
+    if (otherIsLHS)
+      std::swap(padContractingDimensions, otherContractingDimensions);
+
+    // Need to figure out which dimension(s) to slice. For this purpose,
+    // look the pairs of contracting dimensions.
+    SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>>
+        otherDimsToSlice;
+    for (auto &&[padDim, otherDim] :
+         llvm::zip(padContractingDimensions, otherContractingDimensions)) {
+      // If padding along the dim, mark the corresponding other dim for slicing.
+      int64_t low = pad.getEdgePaddingLow()[padDim];
+      int64_t high = pad.getEdgePaddingHigh()[padDim];
+      int64_t interior = pad.getInteriorPadding()[padDim];
+      if (low == 0 && high == 0 && interior == 0) continue;
+      otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+    }
+
+    if (otherDimsToSlice.empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "contracting dimensions not padded");
+    }
+
+    SmallVector<int64_t> sliceLow, sliceHigh, sliceStride;
+    for (auto &&[pos, size] :
+         llvm::enumerate(otherArg.getType().cast<TensorType>().getShape())) {
+      auto it = llvm::find_if(
+          otherDimsToSlice, [&](auto &tup) { return std::get<0>(tup) == pos; });
+      if (it == otherDimsToSlice.end()) {
+        sliceLow.push_back(0);
+        sliceHigh.push_back(size);
+        sliceStride.push_back(1);
+        continue;
+      }
+
+      sliceLow.push_back(std::get<1>(*it));
+      sliceHigh.push_back(size - std::get<2>(*it));
+      sliceStride.push_back(std::get<3>(*it) + 1);
+    }
+
+    auto slice = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), otherArg, sliceLow, sliceHigh, sliceStride);
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, op.getResult().getType(),
+        otherIsLHS ? slice.getResult() : pad.getOperand(),
+        otherIsLHS ? pad.getOperand() : slice.getResult(),
+        op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -2364,7 +2445,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-                 TransposeConvert, BroadcastReduce, PadMultiply>(context);
+                 TransposeConvert, BroadcastReduce, PadMultiply, PadDotGeneral>(
+        context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
