@@ -29,6 +29,14 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
+static int64_t to_i64(int64_t x) { return x; }
+static int64_t to_i64(llvm::APInt x) { return x.getSExtValue(); }
+
+static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
+                                          llvm::ArrayRef<int64_t> vals) {
+  return builder.getDenseI64ArrayAttr(vals);
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
@@ -295,84 +303,6 @@ public:
 
     gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
     return success();
-#if 0
-
-    auto outTy = op.getType();
-    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
-                                                                   op.getLoc());
-    Value idxs;
-    {
-      SmallVector<int64_t> concat_data;
-      for (size_t i = 0; i < outTy.getShape().size(); i++) {
-        concat_data.push_back(outTy.getShape()[i]);
-      }
-      concat_data.push_back(1);
-      auto toConcatType =
-          RankedTensorType::get(concat_data, builder.getI32Type());
-      std::vector<Value> inds;
-      size_t idx = 0;
-      for (auto &&[start, limit, stride] : llvm::zip(
-               op.getStartIndices(), op.getLimitIndices(), op.getStrides())) {
-        std::vector<int32_t> data;
-        for (int32_t i = start; i < limit; i += stride) {
-          data.push_back(i);
-        }
-        Value ind = builder.create<ConstantOp>(op.getLoc(), RankedTensorType::get({(int64_t)data.size()}, builder.getI32Type()),
-                                               builder.getI32TensorAttr(data));
-
-        auto bcast_ind = builder.getDenseI64ArrayAttr({(int64_t)idx});
-        ind = builder.create<BroadcastInDimOp>(op.getLoc(), toConcatType, ind,
-                                               bcast_ind);
-        inds.push_back(ind);
-        idx++;
-      }
-      idxs = builder.create<ConcatenateOp>(
-          op.getLoc(), inds, builder.getI64IntegerAttr(concat_data.size() - 1));
-    }
-
-    // empty extra index into the slice
-    std::vector<int64_t> update_window_dims;
-    std::vector<int64_t> scatter_dims_to_operand_dims;
-    std::vector<int64_t> inserted_window_dims;
-    for (int i = 0; i < inTy.getShape().size(); i++) {
-      scatter_dims_to_operand_dims.push_back(i);
-      inserted_window_dims.push_back(i);
-    }
-
-    int64_t indexVectorDim = inTy.getShape().size();
-
-    auto dims = ScatterDimensionNumbersAttr::get(
-        builder.getContext(), update_window_dims, inserted_window_dims,
-        scatter_dims_to_operand_dims, indexVectorDim);
-
-    // auto prev = gutils->diffe(op.getOperand(), builder);
-
-    auto red = builder.create<ScatterOp>(
-        op.getLoc(), TypeRange(gutils->getShadowType(inTy)), ValueRange(zero),
-        idxs, ValueRange(inDiffe), dims,
-        /*indices_are_sorted*/ builder.getBoolAttr(true),
-        /*unique_indices*/ builder.getBoolAttr(true));
-    
-    red.getUpdateComputation().push_back(new Block());
-    Block &body = red.getUpdateComputation().front();
-    OpBuilder bodyBuilder(orig->getContext());
-    bodyBuilder.setInsertionPointToEnd(&body);
-
-    auto TT = RankedTensorType::get({}, inTy.getElementType());
-    body.addArgument(TT, op.getLoc());
-    body.addArgument(TT, op.getLoc());
-    /*
-    auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
-                                         body.getArgument(1));
-    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
-    */
-    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(body.getArgument(1)));
-
-    gutils->addToDiffe(op.getOperand(), red->getResult(0), builder);
-    // gutils->setDiffe(op.getOperand(), red->getResult(0), builder);
-    
-    return success();
-#endif
   }
 
   SmallVector<Value> cacheValues(Operation *orig,

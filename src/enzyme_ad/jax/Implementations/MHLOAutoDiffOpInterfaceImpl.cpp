@@ -29,6 +29,14 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::mhlo;
 
+static int64_t to_i64(int64_t x) { return x; }
+static int64_t to_i64(llvm::APInt x) { return x.getSExtValue(); }
+
+static mlir::DenseIntElementsAttr getI64Attr(OpBuilder &builder,
+                                             llvm::ArrayRef<int64_t> vals) {
+  return builder.getI64VectorAttr(vals);
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace

@@ -1,4 +1,3 @@
-
 def Add : HLOInst<"AddOp">;
 def Sub : HLOInst<"SubtractOp">;
 def Neg : HLOInst<"NegOp">;
@@ -96,12 +95,37 @@ def Transpose : HLOInst<"TransposeOp">;
 def Reshape : HLOInst<"ReshapeOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
+def Slice : HLOInst<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 
 def Reduce : HLOInst<"ReduceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
+
+def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getEdgePaddingLow();
+}]>;
+
+def PadToSliceLimit : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> limits;
+  for (auto &&[high, dim] : llvm::zip(op.getEdgePaddingHigh(), op.getType().getShape()))
+    limits.push_back(to_i64(dim - high));
+  getI64Attr(builder, limits);
+}]>;
+
+def PadToSliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> strides;
+  for (auto interior : op.getInteriorPadding())
+    strides.push_back(to_i64(interior + 1));
+  getI64Attr(builder, strides);
+}]>;
+
+def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
+  (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
+  (AssertingInactiveArg)
+]>;
+
 // convert
 
 
