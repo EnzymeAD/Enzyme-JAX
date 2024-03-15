@@ -2292,6 +2292,57 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
+struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
+  using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const final {
+    stablehlo::PadOp pad = op.getLhs().getDefiningOp<stablehlo::PadOp>();
+    Value otherArg = op.getRhs();
+    if (!pad) {
+      pad = op.getRhs().getDefiningOp<stablehlo::PadOp>();
+      otherArg = op.getLhs();
+    }
+    if (!pad)
+      return rewriter.notifyMatchFailure(op, "operands not produced by pad");
+    if (!llvm::hasSingleElement(pad->getUsers()))
+      return rewriter.notifyMatchFailure(op, "pad has multiple users");
+
+    DenseFPElementsAttr paddingValue;
+    if (!matchPattern(pad.getPaddingValue(), m_Constant(&paddingValue)))
+      return rewriter.notifyMatchFailure(op, "padding value not a constant");
+    if (!paddingValue.isSplat())
+      return rewriter.notifyMatchFailure(op, "padding value not a splat");
+    if (!paddingValue.getSplatValue<FloatAttr>().getValue().isZero())
+      return rewriter.notifyMatchFailure(op, "padding value not zero");
+
+    auto otherArgType = otherArg.getType().cast<TensorType>();
+    SmallVector<int64_t> limitDims = llvm::to_vector(otherArgType.getShape());
+    for (auto &&[limit, pad] : llvm::zip(limitDims, pad.getEdgePaddingHigh())) {
+      limit -= pad;
+    }
+    SmallVector<int64_t> interior = llvm::to_vector(pad.getInteriorPadding());
+    for (int64_t &value : interior) {
+      value += 1;
+    }
+
+    auto slice = rewriter.create<stablehlo::SliceOp>(
+        pad.getLoc(), otherArg, pad.getEdgePaddingLow(), limitDims, interior);
+    bool otherIsLHS = otherArg == op.getLhs();
+    auto mul = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), otherIsLHS ? slice.getResult() : pad.getOperand(),
+        otherIsLHS ? pad.getOperand() : slice.getResult());
+    auto newPad = rewriter.create<stablehlo::PadOp>(
+        pad.getLoc(), mul.getResult(), pad.getPaddingValue(),
+        pad.getEdgePaddingLowAttr(), pad.getEdgePaddingHighAttr(),
+        pad.getInteriorPaddingAttr());
+    rewriter.replaceOp(op, newPad);
+    rewriter.eraseOp(pad);
+
+    return success();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -2313,7 +2364,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-                 TransposeConvert, BroadcastReduce>(context);
+                 TransposeConvert, BroadcastReduce, PadMultiply>(context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
