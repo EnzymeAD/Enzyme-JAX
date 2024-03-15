@@ -872,6 +872,63 @@ struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    size_t curiotaidx = 0;
+    size_t iotadim = 0;
+    SmallVector<int64_t> lows;
+    SmallVector<int64_t> highs;
+    SmallVector<int64_t> interiors;
+
+    SmallVector<int64_t> inner_shape;
+    for (auto en : llvm::enumerate(op.getType().getShape())) {
+      if (en.value() == 1) {
+        lows.push_back(0);
+        highs.push_back(0);
+        interiors.push_back(0);
+        inner_shape.push_back(1);
+        continue;
+      }
+
+      if (curiotaidx == pad.getType().getShape().size())
+        return failure();
+
+      auto ival = pad.getType().getShape()[curiotaidx];
+      while (ival == 1 && curiotaidx < pad.getType().getShape().size()) {
+        assert(pad.getEdgePaddingLow()[curiotaidx] == 0);
+        assert(pad.getEdgePaddingHigh()[curiotaidx] == 0);
+        assert(pad.getInteriorPadding()[curiotaidx] == 0);
+        curiotaidx++;
+        ival = pad.getType().getShape()[curiotaidx];
+      }
+      if (en.value() == ival) {
+        lows.push_back(pad.getEdgePaddingLow()[curiotaidx]);
+        highs.push_back(pad.getEdgePaddingHigh()[curiotaidx]);
+        interiors.push_back(pad.getInteriorPadding()[curiotaidx]);
+        inner_shape.push_back(
+            pad.getOperand().getType().getShape()[curiotaidx]);
+        curiotaidx++;
+        continue;
+      }
+      return failure();
+    }
+    auto inner = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(inner_shape, op.getType().getElementType()),
+        pad.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, inner, pad.getPaddingValue(), lows, highs, interiors);
+    return success();
+  }
+};
+
 struct ConcatAppendingReshape final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2137,7 +2194,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConcatToPad, ConcatAppendingReshape, ReshapeIota,
+    patterns.add<ConcatToPad, ConcatAppendingReshape, ReshapeIota, ReshapePad,
                  ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
                  DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
                  SliceSlice, AddPad, PadSimplify, DotReshapeDot,
