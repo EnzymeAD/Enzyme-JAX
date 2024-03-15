@@ -833,6 +833,45 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    size_t curiotaidx = 0;
+    size_t iotadim = 0;
+    for (auto en : llvm::enumerate(op.getType().getShape())) {
+      if (en.value() == 1)
+        continue;
+
+      if (curiotaidx == iota.getType().getShape().size())
+        return failure();
+      auto ival = iota.getType().getShape()[curiotaidx];
+      while (ival == 1 && curiotaidx < iota.getType().getShape().size()) {
+        if (curiotaidx == iota.getIotaDimension()) {
+          return failure();
+        }
+        curiotaidx++;
+        ival = iota.getType().getShape()[curiotaidx];
+      }
+      if (en.value() == ival) {
+        if (curiotaidx == iota.getIotaDimension()) {
+          iotadim = en.index();
+        }
+        curiotaidx++;
+        continue;
+      }
+      return failure();
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), iotadim);
+    return success();
+  }
+};
+
 struct ConcatAppendingReshape final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2098,8 +2137,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConcatToPad, ConcatAppendingReshape, ConvertConcat,
-                 DynamicSliceToStatic, DynamicUpdateSliceElim,
+    patterns.add<ConcatToPad, ConcatAppendingReshape, ReshapeIota,
+                 ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
                  DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
                  SliceSlice, AddPad, PadSimplify, DotReshapeDot,
                  ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
