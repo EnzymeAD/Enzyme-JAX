@@ -986,7 +986,6 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     size_t curiotaidx = 0;
-    size_t iotadim = 0;
     SmallVector<int64_t> lows;
     SmallVector<int64_t> highs;
     SmallVector<int64_t> interiors;
