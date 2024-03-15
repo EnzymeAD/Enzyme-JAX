@@ -2310,12 +2310,7 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   if (!llvm::hasSingleElement(pad->getUsers()))
     return rewriter.notifyMatchFailure(op, "pad has multiple users");
 
-  DenseFPElementsAttr paddingValue;
-  if (!matchPattern(pad.getPaddingValue(), m_Constant(&paddingValue)))
-    return rewriter.notifyMatchFailure(op, "padding value not a constant");
-  if (!paddingValue.isSplat())
-    return rewriter.notifyMatchFailure(op, "padding value not a splat");
-  if (!paddingValue.getSplatValue<FloatAttr>().getValue().isZero())
+  if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
     return rewriter.notifyMatchFailure(op, "padding value not zero");
   return success();
 }
@@ -2343,7 +2338,6 @@ struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
 
     auto slice = rewriter.create<stablehlo::SliceOp>(
         pad.getLoc(), otherArg, pad.getEdgePaddingLow(), limitDims, interior);
-    bool otherIsLHS = otherArg == op.getLhs();
     auto mul = rewriter.create<stablehlo::MulOp>(
         op.getLoc(), otherIsLHS ? slice.getResult() : pad.getOperand(),
         otherIsLHS ? pad.getOperand() : slice.getResult());
@@ -2387,7 +2381,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
       int64_t low = pad.getEdgePaddingLow()[padDim];
       int64_t high = pad.getEdgePaddingHigh()[padDim];
       int64_t interior = pad.getInteriorPadding()[padDim];
-      if (low == 0 && high == 0 && interior == 0) continue;
+      if (low == 0 && high == 0 && interior == 0)
+        continue;
       otherDimsToSlice.emplace_back(otherDim, low, high, interior);
     }
 
