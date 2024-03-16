@@ -1207,7 +1207,7 @@ template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
         RankedTensorType::get(
             val.getType().template cast<RankedTensorType>().getShape(),
             op.getType().getElementType()),
-        padval);
+        val);
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
         op, val2, padval2, pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
