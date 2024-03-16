@@ -2506,6 +2506,46 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   return success();
 }
 
+struct MulConstPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
+  using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const final {
+    for (int i = 0; i < 2; i++) {
+      DenseElementsAttr inp;
+      if (!matchPattern(op->getOperand(i), m_Constant(&inp)))
+        continue;
+      if (!inp.isSplat())
+        continue;
+
+      auto pad = op->getOperand(1 - i).getDefiningOp<stablehlo::PadOp>();
+      if (!pad)
+        continue;
+
+      auto pval = pad.getPaddingValue();
+      auto pval2 = rewriter.create<stablehlo::MulOp>(
+          op.getLoc(), pval,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), pval.getType(),
+              inp.resizeSplat(pval.getType().cast<ShapedType>())));
+
+      auto val = pad.getOperand();
+      auto val2 = rewriter.create<stablehlo::MulOp>(
+          op.getLoc(), val,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), val.getType(),
+              inp.resizeSplat(val.getType().cast<ShapedType>())));
+
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          op, val2, pval2, pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+          pad.getInteriorPadding());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct MulPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
@@ -2767,8 +2807,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad, PadSimplify,
-        DotReshapeDot, ConcatConstProp, ConcatFuse,
+        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, MulConstPad, DivPad,
+        PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
         UnaryPadPush<stablehlo::ExpOp>, TransposePad,
