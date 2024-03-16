@@ -2546,6 +2546,50 @@ template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
   }
 };
 
+template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+    for (int i = 0; i < 2; i++) {
+      auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
+      if (!pad1)
+        continue;
+      auto op2 = op->getOperand(1 - i).template getDefiningOp<T>();
+      if (!op2)
+        continue;
+
+      for (int j = 0; j < 2; j++) {
+        auto pad2 =
+            op2->getOperand(j).template getDefiningOp<stablehlo::PadOp>();
+        if (!pad2)
+          continue;
+
+        if (pad1.getEdgePaddingLow() != pad2.getEdgePaddingLow())
+          continue;
+
+        if (pad1.getEdgePaddingHigh() != pad2.getEdgePaddingHigh())
+          continue;
+
+        if (pad1.getInteriorPadding() != pad2.getInteriorPadding())
+          continue;
+
+        auto pval = rewriter.create<T>(pad2.getLoc(), pad1.getPaddingValue(),
+                                       pad2.getPaddingValue());
+        auto val = rewriter.create<T>(pad2.getLoc(), pad1.getOperand(),
+                                      pad2.getOperand());
+
+        auto npad = rewriter.create<stablehlo::PadOp>(
+            op.getLoc(), val, pval, pad1.getEdgePaddingLow(),
+            pad1.getEdgePaddingHigh(), pad1.getInteriorPadding());
+
+        rewriter.replaceOpWithNewOp<T>(op, op2->getOperand(1 - j), npad);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 struct MulPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
@@ -2810,6 +2854,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
         BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
         BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
+        BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
         PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
