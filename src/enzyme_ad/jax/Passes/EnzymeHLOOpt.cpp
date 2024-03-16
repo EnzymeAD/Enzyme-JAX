@@ -2552,6 +2552,97 @@ template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
     for (int i = 0; i < 2; i++) {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
+
+      DenseElementsAttr inp1;
+      if (!pad1) {
+        if (!matchPattern(op->getOperand(i), m_Constant(&inp1)))
+          continue;
+        if (!inp1.isSplat())
+          continue;
+      }
+
+      auto op2 = op->getOperand(1 - i).template getDefiningOp<T>();
+      if (!op2)
+        continue;
+
+      for (int j = 0; j < 2; j++) {
+        auto pad2 =
+            op2->getOperand(j).template getDefiningOp<stablehlo::PadOp>();
+
+        DenseElementsAttr inp2;
+        if (!pad2) {
+          if (!matchPattern(op2->getOperand(j), m_Constant(&inp2)))
+            continue;
+          if (!inp2.isSplat())
+            continue;
+        }
+
+        if (pad1 && pad2) {
+          if (pad1.getEdgePaddingLow() != pad2.getEdgePaddingLow())
+            continue;
+
+          if (pad1.getEdgePaddingHigh() != pad2.getEdgePaddingHigh())
+            continue;
+
+          if (pad1.getInteriorPadding() != pad2.getInteriorPadding())
+            continue;
+        }
+        if (inp1 && inp2)
+          continue;
+
+        auto p1val =
+            pad1 ? pad1.getPaddingValue()
+                 : rewriter.create<stablehlo::ConstantOp>(
+                       op.getLoc(), pad2.getPaddingValue().getType(),
+                       inp1.resizeSplat(pad2.getPaddingValue()
+                                            .getType()
+                                            .template cast<ShapedType>()));
+        auto p2val =
+            pad2 ? pad2.getPaddingValue()
+                 : rewriter.create<stablehlo::ConstantOp>(
+                       op.getLoc(), pad1.getPaddingValue().getType(),
+                       inp2.resizeSplat(pad1.getPaddingValue()
+                                            .getType()
+                                            .template cast<ShapedType>()));
+
+        auto pval = rewriter.create<T>(op.getLoc(), p1val, p2val);
+
+        auto o1val =
+            pad1 ? pad1.getOperand()
+                 : rewriter.create<stablehlo::ConstantOp>(
+                       op.getLoc(), pad2.getOperand().getType(),
+                       inp1.resizeSplat(pad2.getOperand()
+                                            .getType()
+                                            .template cast<ShapedType>()));
+        auto o2val =
+            pad2 ? pad2.getOperand()
+                 : rewriter.create<stablehlo::ConstantOp>(
+                       op.getLoc(), pad1.getOperand().getType(),
+                       inp2.resizeSplat(pad1.getOperand()
+                                            .getType()
+                                            .template cast<ShapedType>()));
+
+        auto val = rewriter.create<T>(op.getLoc(), o1val, o2val);
+
+        auto npad = rewriter.create<stablehlo::PadOp>(
+            op.getLoc(), val, pval, (pad1 ? pad1 : pad2).getEdgePaddingLow(),
+            (pad1 ? pad1 : pad2).getEdgePaddingHigh(),
+            (pad1 ? pad1 : pad2).getInteriorPadding());
+
+        rewriter.replaceOpWithNewOp<T>(op, op2->getOperand(1 - j), npad);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
+template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+    for (int i = 0; i < 2; i++) {
+      auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad1)
         continue;
       auto op2 = op->getOperand(1 - i).template getDefiningOp<T>();
