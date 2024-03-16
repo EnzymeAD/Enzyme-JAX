@@ -330,6 +330,37 @@ struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// slice(transpose x) -> transpose(slice x)
+struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto transpose = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> start;
+    SmallVector<int64_t> end;
+    SmallVector<int64_t> step;
+    for (auto ind : transpose.getPermutation()) {
+      start.push_back(op.getStartIndices()[ind]);
+      end.push_back(op.getLimitIndices()[ind]);
+      step.push_back(op.getStrides()[ind]);
+    }
+
+    auto newslice = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), transpose.getOperand(), start, end, step);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+        op, newslice, transpose.getPermutation());
+    return success();
+  }
+};
+
 // slice(pad x) -> pad(slice x)
 struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2942,7 +2973,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
+        SliceTranspose, SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
         BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
         BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
         BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
