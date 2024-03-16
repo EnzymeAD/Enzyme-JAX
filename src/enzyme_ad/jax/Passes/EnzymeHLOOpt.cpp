@@ -500,6 +500,71 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
+struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
+  using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+    // TODO: min/max can also be an option since they are dropped
+    if (!isa<stablehlo::AddOp>(op.getRegion().getBlocks().front().front())) {
+      return rewriter.notifyMatchFailure(op, "only add is currently supported");
+    }
+
+    Value input = op.getInputs()[0];
+    auto inputType = input.getType().cast<TensorType>();
+    auto pad = input.getDefiningOp<mlir::stablehlo::PadOp>();
+    if (!pad) {
+      return rewriter.notifyMatchFailure(op, "input source is not a pad op");
+    }
+
+    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
+      return failure();
+
+    SmallVector<int64_t> shape;
+
+    SmallVector<int64_t> low;
+    SmallVector<int64_t> high;
+    SmallVector<int64_t> inner;
+    bool needsPostPad = false;
+    for (auto en : llvm::enumerate(
+             pad.getOperand().getType().cast<RankedTensorType>().getShape())) {
+      if (llvm::is_contained(op.getDimensions(), en.index()))
+        continue;
+      shape.push_back(en.value());
+      low.push_back(pad.getEdgePaddingLow()[en.index()]);
+      high.push_back(pad.getEdgePaddingHigh()[en.index()]);
+      inner.push_back(pad.getInteriorPadding()[en.index()]);
+      needsPostPad = true;
+    }
+
+    auto newReduction = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(),
+        TypeRange(RankedTensorType::get(
+            shape,
+            op->getResultTypes()[0].cast<RankedTensorType>().getElementType())),
+        ValueRange(pad.getOperand()), op.getInitValues(), op.getDimensions());
+    newReduction.getRegion().takeBody(op.getRegion());
+
+    Value res = newReduction->getResult(0);
+    if (needsPostPad) {
+      auto ctype = RankedTensorType::get(
+          {}, res.getType().cast<RankedTensorType>().getElementType());
+      res = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), res,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), ctype, makeAttr(ctype, 0).cast<ElementsAttr>()),
+          low, high, inner);
+    }
+
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
 struct ConvertConcat final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2703,7 +2768,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SlicePad, SliceSlice, AddPad, MulPad, DivPad, PadSimplify,
+        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad, PadSimplify,
         DotReshapeDot, ConcatConstProp, ConcatFuse,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
