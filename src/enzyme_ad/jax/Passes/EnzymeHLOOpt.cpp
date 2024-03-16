@@ -2442,7 +2442,7 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   return success();
 }
 
-struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
+struct MulPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
@@ -2466,6 +2466,45 @@ struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
     auto slice = rewriter.create<stablehlo::SliceOp>(
         pad.getLoc(), otherArg, pad.getEdgePaddingLow(), limitDims, interior);
     auto mul = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), otherIsLHS ? slice.getResult() : pad.getOperand(),
+        otherIsLHS ? pad.getOperand() : slice.getResult());
+    auto newPad = rewriter.create<stablehlo::PadOp>(
+        pad.getLoc(), mul.getResult(), pad.getPaddingValue(),
+        pad.getEdgePaddingLowAttr(), pad.getEdgePaddingHighAttr(),
+        pad.getInteriorPaddingAttr());
+    rewriter.replaceOp(op, newPad);
+
+    return success();
+  }
+};
+
+struct DivPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
+  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
+                                PatternRewriter &rewriter) const final {
+    stablehlo::PadOp pad;
+    Value otherArg;
+    bool otherIsLHS;
+    if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
+      return failure();
+
+    if (otherIsLHS)
+      return failure();
+
+    auto otherArgType = otherArg.getType().cast<TensorType>();
+    SmallVector<int64_t> limitDims = llvm::to_vector(otherArgType.getShape());
+    for (auto &&[limit, pad] : llvm::zip(limitDims, pad.getEdgePaddingHigh())) {
+      limit -= pad;
+    }
+    SmallVector<int64_t> interior = llvm::to_vector(pad.getInteriorPadding());
+    for (int64_t &value : interior) {
+      value += 1;
+    }
+
+    auto slice = rewriter.create<stablehlo::SliceOp>(
+        pad.getLoc(), otherArg, pad.getEdgePaddingLow(), limitDims, interior);
+    auto mul = rewriter.create<stablehlo::DivOp>(
         op.getLoc(), otherIsLHS ? slice.getResult() : pad.getOperand(),
         otherIsLHS ? pad.getOperand() : slice.getResult());
     auto newPad = rewriter.create<stablehlo::PadOp>(
@@ -2664,11 +2703,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SlicePad, SliceSlice, AddPad, PadSimplify, DotReshapeDot,
-        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
-        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
-        TransposePad,
+        SlicePad, SliceSlice, AddPad, MulPad, DivPad, PadSimplify,
+        DotReshapeDot, ConcatConstProp, ConcatFuse,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
+        UnaryPadPush<stablehlo::ExpOp>, TransposePad,
         /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
         ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
         CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
@@ -2678,7 +2717,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-        TransposeConvert, BroadcastReduce, PadMultiply, PadDotGeneral>(context);
+        TransposeConvert, BroadcastReduce, PadDotGeneral>(context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
