@@ -2506,11 +2506,10 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   return success();
 }
 
-struct MulConstPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
-  using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
+template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
     for (int i = 0; i < 2; i++) {
       DenseElementsAttr inp;
       if (!matchPattern(op->getOperand(i), m_Constant(&inp)))
@@ -2518,23 +2517,24 @@ struct MulConstPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
       if (!inp.isSplat())
         continue;
 
-      auto pad = op->getOperand(1 - i).getDefiningOp<stablehlo::PadOp>();
+      auto pad =
+          op->getOperand(1 - i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad)
         continue;
 
       auto pval = pad.getPaddingValue();
-      auto pval2 = rewriter.create<stablehlo::MulOp>(
-          op.getLoc(), pval,
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), pval.getType(),
-              inp.resizeSplat(pval.getType().cast<ShapedType>())));
+      auto pval_cst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), pval.getType(),
+          inp.resizeSplat(pval.getType().template cast<ShapedType>()));
+      auto pval2 = rewriter.create<T>(op.getLoc(), (i == 0) ? pval_cst : pval,
+                                      (i == 0) ? pval : pval_cst);
 
       auto val = pad.getOperand();
-      auto val2 = rewriter.create<stablehlo::MulOp>(
-          op.getLoc(), val,
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), val.getType(),
-              inp.resizeSplat(val.getType().cast<ShapedType>())));
+      auto val_cst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), val.getType(),
+          inp.resizeSplat(val.getType().template cast<ShapedType>()));
+      auto val2 = rewriter.create<T>(op.getLoc(), (i == 0) ? val_cst : val,
+                                     (i == 0) ? val : val_cst);
 
       rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
           op, val2, pval2, pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
@@ -2807,7 +2807,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, MulConstPad, DivPad,
+        SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
+        BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
+        BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
         PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
