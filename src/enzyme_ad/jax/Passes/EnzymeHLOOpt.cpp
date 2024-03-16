@@ -2473,7 +2473,6 @@ struct PadMultiply : public OpRewritePattern<mlir::stablehlo::MulOp> {
         pad.getEdgePaddingLowAttr(), pad.getEdgePaddingHighAttr(),
         pad.getInteriorPaddingAttr());
     rewriter.replaceOp(op, newPad);
-    rewriter.eraseOp(pad);
 
     return success();
   }
