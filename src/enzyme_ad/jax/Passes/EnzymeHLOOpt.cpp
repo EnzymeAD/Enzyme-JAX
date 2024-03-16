@@ -1123,6 +1123,65 @@ struct ConcatAppendingReshape final
   }
 };
 
+template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    auto padval = pad.getPaddingValue();
+    auto padval2 = rewriter.create<T>(
+        op.getLoc(), RankedTensorType::get({}, op.getType().getElementType()),
+        padval);
+
+    auto val = pad.getOperand();
+    auto val2 = rewriter.create<T>(
+        op.getLoc(),
+        RankedTensorType::get(
+            val.getType().template cast<RankedTensorType>().getShape(),
+            op.getType().getElementType()),
+        padval);
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, val2, padval2, pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+        pad.getInteriorPadding());
+    return success();
+  }
+};
+
+struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    auto padval = pad.getPaddingValue();
+
+    auto val = pad.getOperand();
+    auto val2 = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), val,
+                                                        op.getPermutation());
+
+    SmallVector<int64_t> low;
+    SmallVector<int64_t> high;
+    SmallVector<int64_t> inner;
+    for (auto idx : op.getPermutation()) {
+      low.push_back(pad.getEdgePaddingLow()[idx]);
+      high.push_back(pad.getEdgePaddingHigh()[idx]);
+      inner.push_back(pad.getInteriorPadding()[idx]);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(op, val2, padval, low, high,
+                                                  inner);
+    return success();
+  }
+};
+
 template <typename T>
 struct ConcatPushBinop final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -2098,6 +2157,66 @@ struct SqrtSimplify : public OpRewritePattern<mlir::stablehlo::SqrtOp> {
   }
 };
 
+struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TanhOp op,
+                                PatternRewriter &rewriter) const final {
+
+    SmallVector<Attribute> constants;
+    constants.assign(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+
+    if (auto res =
+            constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  if (a.getSizeInBits(a.getSemantics()) == 64)
+                    return APFloat(tanh(a.convertToDouble()));
+
+                  if (a.getSizeInBits(a.getSemantics()) == 32)
+                    return APFloat(tanhf(a.convertToFloat()));
+                  return {};
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ExpSimplify : public OpRewritePattern<mlir::stablehlo::ExpOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ExpOp op,
+                                PatternRewriter &rewriter) const final {
+
+    SmallVector<Attribute> constants;
+    constants.assign(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+
+    if (auto res =
+            constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
+                constants, [](const APFloat &a) -> std::optional<APFloat> {
+                  if (a.getSizeInBits(a.getSemantics()) == 64)
+                    return APFloat(exp(a.convertToDouble()));
+
+                  if (a.getSizeInBits(a.getSemantics()) == 32)
+                    return APFloat(expf(a.convertToFloat()));
+                  return {};
+                })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 template <typename T> struct BinBroadcastSplat final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -2542,24 +2661,25 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<FullReduceReshapeOrTranspose, ConcatToPad,
-                 ConcatAppendingReshape, ReshapeIota, ReshapePad, ConvertConcat,
-                 DynamicSliceToStatic, DynamicUpdateSliceElim,
-                 DynamicUpdateToConcat, SliceOfDynamicUpdate, SlicePad,
-                 SliceSlice, AddPad, PadSimplify, DotReshapeDot,
-                 ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>,
-                 /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape,
-                 ConvertSimplify, ReshapeSimplify, SliceSimplify, ReduceConcat,
-                 SliceConcat, NoopSlice, CosSimplify, SinSimplify, SqrtSimplify,
-                 AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
-                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify, BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-                 TransposeConvert, BroadcastReduce, PadMultiply, PadDotGeneral>(
-        context);
+    patterns.add<
+        FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
+        ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
+        DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SlicePad, SliceSlice, AddPad, PadSimplify, DotReshapeDot,
+        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
+        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+        TransposePad,
+        /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
+        ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
+        CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
+        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
+        BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
+        TransposeConvert, BroadcastReduce, PadMultiply, PadDotGeneral>(context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
