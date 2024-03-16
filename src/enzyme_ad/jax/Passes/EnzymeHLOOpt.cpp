@@ -2315,8 +2315,8 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   }
   if (!pad)
     return rewriter.notifyMatchFailure(op, "operands not produced by pad");
-  if (!llvm::hasSingleElement(pad->getUsers()))
-    return rewriter.notifyMatchFailure(op, "pad has multiple users");
+  // if (!llvm::hasSingleElement(pad->getUsers()))
+  //  return rewriter.notifyMatchFailure(op, "pad has multiple users");
 
   if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
     return rewriter.notifyMatchFailure(op, "padding value not zero");

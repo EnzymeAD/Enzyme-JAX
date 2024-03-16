@@ -37,3 +37,19 @@ func.func @pad_dot_general_lhs(%4 : tensor<1x3x1024x4xbf16>, %6: tensor<1x8x3x10
 // CHECK-NEXT:    return %2 : tensor<1024x2048xbf16>
 // CHECK-NEXT:  }
 
+  func.func @pad_dot_general4(%arg0: tensor<4x1024xbf16>, %arg1: tensor<1048x4xbf16>, %arg2: tensor<4x1024xbf16>) -> (tensor<1024x2048xbf16>, tensor<1024x2048xbf16>) {
+	%143 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+	%1428 = stablehlo.pad %arg1, %143, low = [1000, 0], high = [0, 0], interior = [0, 0] : (tensor<1048x4xbf16>, tensor<bf16>) -> tensor<2048x4xbf16>
+	%1523 = stablehlo.dot_general %arg0, %1428, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<2048x4xbf16>) -> tensor<1024x2048xbf16>
+	%1524 = stablehlo.dot_general %arg2, %1428, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<2048x4xbf16>) -> tensor<1024x2048xbf16>
+    return %1523, %1524 : tensor<1024x2048xbf16>, tensor<1024x2048xbf16>
+  }
+
+// CHECK:  func.func @pad_dot_general4(%arg0: tensor<4x1024xbf16>, %arg1: tensor<1048x4xbf16>, %arg2: tensor<4x1024xbf16>) -> (tensor<1024x2048xbf16>, tensor<1024x2048xbf16>) {
+// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %1 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
+// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
+// CHECK-NEXT:    %3 = stablehlo.dot_general %arg2, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
+// CHECK-NEXT:    %4 = stablehlo.pad %3, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
+// CHECK-NEXT:    return %2, %4 : tensor<1024x2048xbf16>, tensor<1024x2048xbf16>
+// CHECK-NEXT:  }
