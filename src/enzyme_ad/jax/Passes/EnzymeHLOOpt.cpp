@@ -515,7 +515,6 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     }
 
     Value input = op.getInputs()[0];
-    auto inputType = input.getType().cast<TensorType>();
     auto pad = input.getDefiningOp<mlir::stablehlo::PadOp>();
     if (!pad) {
       return rewriter.notifyMatchFailure(op, "input source is not a pad op");
