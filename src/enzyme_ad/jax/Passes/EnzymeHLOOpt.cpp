@@ -330,6 +330,67 @@ struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// slice(broadcast x) -> broadcast(slice x)
+struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+
+    SmallVector<int64_t> nbcast_idx;
+
+    auto preShape = bcast.getOperand().getType().cast<RankedTensorType>();
+    SmallVector<int64_t> in_start(preShape.getShape().size(), 0);
+    SmallVector<int64_t> in_end(preShape.getShape().begin(),
+                                preShape.getShape().end());
+    SmallVector<int64_t> in_stride(preShape.getShape().size(), 1);
+
+    bool innerSlice = false;
+
+    size_t outidx = 0;
+    for (auto &&[start, end, step, indim, outdim] :
+         llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
+                   bcast.getType().getShape(), op.getType().getShape())) {
+      ssize_t idx = -1;
+      for (auto en : llvm::enumerate(bcast.getBroadcastDimensions())) {
+        if (en.value() == outidx) {
+          idx = en.index();
+          break;
+        }
+      }
+
+      nbcast_idx.push_back(outdim);
+      if (idx == -1) {
+        // being broadcast just resize the outshape
+      } else {
+        // slice the inner shape
+        in_start[idx] = start;
+        in_end[idx] = end;
+        in_stride[idx] = step;
+        innerSlice = true;
+      }
+
+      outidx++;
+    }
+
+    Value tobcast = bcast.getOperand();
+    if (innerSlice)
+      tobcast = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), tobcast, in_start, in_end, in_stride);
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), tobcast, bcast.getBroadcastDimensions());
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2973,14 +3034,15 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
         ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
         DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceTranspose, SlicePad, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
-        BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
-        BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
-        BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
-        PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
-        UnaryPadPush<stablehlo::ExpOp>, TransposePad,
+        SliceTranspose, SlicePad, SliceBroadcast, ReducePad, SliceSlice, AddPad,
+        MulPad, DivPad, BinopConstPad<stablehlo::AddOp>,
+        BinopConstPad<stablehlo::SubtractOp>, BinopConstPad<stablehlo::MulOp>,
+        BinopConstPad<stablehlo::DivOp>, BinopBinopPadPad<stablehlo::AddOp>,
+        BinopBinopPadPad<stablehlo::MulOp>, PadSimplify, DotReshapeDot,
+        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
+        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+        TransposePad,
         /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
         ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
         CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
