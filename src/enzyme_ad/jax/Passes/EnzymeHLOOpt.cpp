@@ -2634,6 +2634,85 @@ struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   }
 };
 
+struct TransposeDotReorder
+    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const final {
+
+    auto dot = op.getOperand().getDefiningOp<mlir::stablehlo::DotGeneralOp>();
+    if (!dot || !llvm::hasSingleElement(dot->getUsers()))
+      return failure();
+
+    auto perm = op.getPermutation();
+    auto dimensionNumbers = dot.getDotDimensionNumbers();
+
+    size_t permidx = 0;
+
+    for (size_t bidx = 0,
+                end = dimensionNumbers.getLhsBatchingDimensions().size();
+         bidx < end; bidx++) {
+      if (perm[permidx] != bidx)
+        return failure();
+      permidx++;
+    }
+
+    size_t numLHSResults =
+        dot.getLhs().getType().getShape().size() -
+        dimensionNumbers.getLhsBatchingDimensions().size() -
+        dimensionNumbers.getLhsContractingDimensions().size();
+
+    {
+      size_t residx = 0;
+      for (size_t ridx = 0, end = dot.getRhs().getType().getShape().size();
+           ridx < end; ridx++) {
+        if (llvm::is_contained(dimensionNumbers.getRhsBatchingDimensions(),
+                               ridx))
+          continue;
+        if (llvm::is_contained(dimensionNumbers.getRhsContractingDimensions(),
+                               ridx))
+          continue;
+        if (perm[permidx] !=
+            dimensionNumbers.getLhsBatchingDimensions().size() + numLHSResults +
+                residx)
+          return failure();
+        permidx++;
+        residx++;
+      }
+    }
+
+    {
+      size_t residx = 0;
+      for (size_t lidx = 0, end = dot.getLhs().getType().getShape().size();
+           lidx < end; lidx++) {
+        if (llvm::is_contained(dimensionNumbers.getLhsBatchingDimensions(),
+                               lidx))
+          continue;
+        if (llvm::is_contained(dimensionNumbers.getLhsContractingDimensions(),
+                               lidx))
+          continue;
+        if (perm[permidx] !=
+            dimensionNumbers.getLhsBatchingDimensions().size() + residx)
+          return failure();
+        permidx++;
+        residx++;
+      }
+    }
+
+    auto ndim = stablehlo::DotDimensionNumbersAttr::get(
+        dimensionNumbers.getContext(),
+        dimensionNumbers.getRhsBatchingDimensions(),
+        dimensionNumbers.getLhsBatchingDimensions(),
+        dimensionNumbers.getRhsContractingDimensions(),
+        dimensionNumbers.getLhsContractingDimensions());
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, op.getType(), dot.getRhs(), dot.getLhs(), ndim,
+        dot.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
   using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
 
@@ -3237,11 +3316,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<
-        ConvertConvertFloat, FullReduceReshapeOrTranspose, ConcatToPad,
-        ConcatAppendingReshape, ReshapeIota, ReshapePad, ConvertConcat,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, DynamicUpdateToConcat,
-        SliceOfDynamicUpdate, SliceTranspose, SlicePad, SliceBroadcast,
-        ReducePad, SliceSlice, AddPad, MulPad, DivPad,
+        TransposeDotReorder, ConvertConvertFloat, FullReduceReshapeOrTranspose,
+        ConcatToPad, ConcatAppendingReshape, ReshapeIota, ReshapePad,
+        ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
+        DynamicUpdateToConcat, SliceOfDynamicUpdate, SliceTranspose, SlicePad,
+        SliceBroadcast, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
         BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
         BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
         BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
