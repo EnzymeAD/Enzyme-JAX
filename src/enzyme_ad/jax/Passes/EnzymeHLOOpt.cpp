@@ -391,6 +391,14 @@ struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+SmallVector<int64_t> invertPermutation(ArrayRef<int64_t> perm) {
+  SmallVector<int64_t> res(perm.size(), 0);
+  for (auto en : llvm::enumerate(perm)) {
+    res[en.value()] = en.index();
+  }
+  return res;
+}
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -408,7 +416,7 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     SmallVector<int64_t> start;
     SmallVector<int64_t> end;
     SmallVector<int64_t> step;
-    for (auto ind : transpose.getPermutation()) {
+    for (auto ind : invertPermutation(transpose.getPermutation())) {
       start.push_back(op.getStartIndices()[ind]);
       end.push_back(op.getLimitIndices()[ind]);
       step.push_back(op.getStrides()[ind]);
