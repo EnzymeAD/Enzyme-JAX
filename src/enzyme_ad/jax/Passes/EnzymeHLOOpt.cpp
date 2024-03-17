@@ -47,7 +47,7 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
 namespace {
 
 class ReshapeDimMapping {
- public:
+public:
   void addMapping(int64_t left, int64_t right) {
     mapping.push_back(std::make_pair(left, right));
   }
@@ -55,7 +55,8 @@ class ReshapeDimMapping {
   SmallVector<int64_t> getMappingFromResultDim(int64_t dim) const {
     SmallVector<int64_t> result;
     for (auto &[left, right] : mapping) {
-      if (left == dim) result.push_back(right);
+      if (left == dim)
+        result.push_back(right);
     }
     return result;
   }
@@ -63,7 +64,8 @@ class ReshapeDimMapping {
   SmallVector<int64_t> getMappingFromOperandDim(int64_t dim) const {
     SmallVector<int64_t> result;
     for (auto &[left, right] : mapping) {
-      if (right == dim) result.push_back(left);
+      if (right == dim)
+        result.push_back(left);
     }
     return result;
   }
@@ -71,7 +73,8 @@ class ReshapeDimMapping {
   bool isOnlySplitting() const {
     llvm::SmallDenseSet<int64_t> keys;
     for (auto &[left, right] : mapping) {
-      if (!std::get<1>(keys.insert(left))) return false;
+      if (!std::get<1>(keys.insert(left)))
+        return false;
     }
     return true;
   }
@@ -82,14 +85,14 @@ class ReshapeDimMapping {
     }
   }
 
- private:
+private:
   // Left is result dim, right is operand dim.
   SmallVector<std::pair<int64_t, int64_t>> mapping;
 };
 
 // Analyze if a reshape is clearly merging or splitting dimensions.
-std::optional<ReshapeDimMapping> tryFindReshapeDimMapping(
-    stablehlo::ReshapeOp op) {
+std::optional<ReshapeDimMapping>
+tryFindReshapeDimMapping(stablehlo::ReshapeOp op) {
   ReshapeDimMapping mapping;
   int64_t lhsPos = 0;
   int64_t rhsPos = 0;
@@ -104,22 +107,26 @@ std::optional<ReshapeDimMapping> tryFindReshapeDimMapping(
       int64_t product = lhsShape[lhsPos];
       mapping.addMapping(lhsPos, rhsPos);
       while (product < rhsShape[rhsPos]) {
-        if (++lhsPos >= lhsShape.size()) break;
+        if (++lhsPos >= lhsShape.size())
+          break;
         product *= lhsShape[lhsPos];
         mapping.addMapping(lhsPos, rhsPos);
       }
-      if (product != rhsShape[rhsPos]) return std::nullopt;
+      if (product != rhsShape[rhsPos])
+        return std::nullopt;
     } else {
       // Potential one-to-many mapping.
       assert(lhsShape[lhsPos] > rhsShape[rhsPos]);
       int64_t product = rhsShape[rhsPos];
       mapping.addMapping(lhsPos, rhsPos);
       while (product < lhsShape[lhsPos]) {
-        if (++rhsPos >= rhsShape.size()) break;
+        if (++rhsPos >= rhsShape.size())
+          break;
         product *= rhsShape[rhsPos];
         mapping.addMapping(lhsPos, rhsPos);
       }
-      if (product != lhsShape[rhsPos]) return std::nullopt;
+      if (product != lhsShape[rhsPos])
+        return std::nullopt;
     }
     ++lhsPos;
     ++rhsPos;
