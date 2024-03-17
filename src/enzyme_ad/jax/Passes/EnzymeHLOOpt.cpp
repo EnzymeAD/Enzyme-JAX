@@ -781,6 +781,31 @@ struct ConvertConcat final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
   }
 };
 
+struct ConvertConvertFloat final
+    : OpRewritePattern<mlir::stablehlo::ConvertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
+                                PatternRewriter &rewriter) const override {
+    auto conv0 = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!conv0)
+      return failure();
+
+    auto prev = conv0.getOperand();
+    if (prev.getType().getElementType().isa<FloatType>() &&
+        op.getType().getElementType().isa<FloatType>() &&
+        conv0.getType().getElementType().isa<FloatType>()) {
+      if (prev.getType() == op.getType()) {
+        rewriter.replaceOp(op, prev);
+        return success();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(), prev);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -3198,18 +3223,18 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<
-        FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
-        ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
-        DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceTranspose, SlicePad, SliceBroadcast, ReducePad, SliceSlice, AddPad,
-        MulPad, DivPad, BinopConstPad<stablehlo::AddOp>,
-        BinopConstPad<stablehlo::SubtractOp>, BinopConstPad<stablehlo::MulOp>,
-        BinopConstPad<stablehlo::DivOp>, BinopBinopPadPad<stablehlo::AddOp>,
-        BinopBinopPadPad<stablehlo::MulOp>, PadSimplify, DotReshapeDot,
-        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
-        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
-        TransposePad,
+        ConvertConvertFloat, FullReduceReshapeOrTranspose, ConcatToPad,
+        ConcatAppendingReshape, ReshapeIota, ReshapePad, ConvertConcat,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, DynamicUpdateToConcat,
+        SliceOfDynamicUpdate, SliceTranspose, SlicePad, SliceBroadcast,
+        ReducePad, SliceSlice, AddPad, MulPad, DivPad,
+        BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
+        BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
+        BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
+        PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
+        UnaryPadPush<stablehlo::ExpOp>, TransposePad,
         /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
         ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
         CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
