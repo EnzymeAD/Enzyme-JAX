@@ -432,6 +432,9 @@ struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (!bcast)
       return failure();
 
+    if (!llvm::hasSingleElement(bcast->getUsers()))
+      return failure();
+
     SmallVector<int64_t> nbcast_idx;
 
     auto preShape = bcast.getOperand().getType().cast<RankedTensorType>();
@@ -924,6 +927,17 @@ struct FullReduceReshapeOrTranspose final
         }
       }
     }
+    for (auto pair : toclone) {
+      for (auto u : pair.first->getResult(0).getUsers()) {
+        if (u == op)
+          continue;
+        if (llvm::is_contained(reshapeOrTransposes, u))
+          continue;
+        if (toclone.contains(u))
+          continue;
+        return failure();
+      }
+    }
     while (todo.size()) {
       auto cur = todo.pop_back_val();
 
@@ -1279,6 +1293,8 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                 PatternRewriter &rewriter) const override {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
+      return failure();
+    if (!llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
     size_t curiotaidx = 0;
@@ -3160,6 +3176,10 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
     bool otherIsLHS;
     if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
       return failure();
+
+    for (auto u : pad->getUsers())
+      if (!isa<stablehlo::DotGeneralOp>(u))
+        return failure();
 
     auto dimensionNumbers = op.getDotDimensionNumbers();
     auto padContractingDimensions =
