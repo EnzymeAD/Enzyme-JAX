@@ -46,6 +46,94 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
 
 namespace {
 
+class ReshapeDimMapping {
+public:
+  void addMapping(int64_t left, int64_t right) {
+    mapping.push_back(std::make_pair(left, right));
+  }
+
+  SmallVector<int64_t> getMappingFromResultDim(int64_t dim) const {
+    SmallVector<int64_t> result;
+    for (auto &[left, right] : mapping) {
+      if (left == dim)
+        result.push_back(right);
+    }
+    return result;
+  }
+
+  SmallVector<int64_t> getMappingFromOperandDim(int64_t dim) const {
+    SmallVector<int64_t> result;
+    for (auto &[left, right] : mapping) {
+      if (right == dim)
+        result.push_back(left);
+    }
+    return result;
+  }
+
+  bool isOnlySplitting() const {
+    llvm::SmallDenseSet<int64_t> keys;
+    for (auto &[left, right] : mapping) {
+      if (!std::get<1>(keys.insert(left)))
+        return false;
+    }
+    return true;
+  }
+
+  void dump() const {
+    for (auto &[left, right] : mapping) {
+      llvm::outs() << left << " -> " << right << "\n";
+    }
+  }
+
+private:
+  // Left is result dim, right is operand dim.
+  SmallVector<std::pair<int64_t, int64_t>> mapping;
+};
+
+// Analyze if a reshape is clearly merging or splitting dimensions.
+std::optional<ReshapeDimMapping>
+tryFindReshapeDimMapping(stablehlo::ReshapeOp op) {
+  ReshapeDimMapping mapping;
+  int64_t lhsPos = 0;
+  int64_t rhsPos = 0;
+  auto rhsShape = op.getOperand().getType().cast<TensorType>().getShape();
+  auto lhsShape = op.getResult().getType().cast<TensorType>().getShape();
+  while (lhsPos < lhsShape.size() && rhsPos < rhsShape.size()) {
+    if (lhsShape[lhsPos] == rhsShape[rhsPos]) {
+      // Nice 1-to-1 mapping.
+      mapping.addMapping(lhsPos, rhsPos);
+    } else if (lhsShape[lhsPos] < rhsShape[rhsPos]) {
+      // Potential many-to-one mapping.
+      int64_t product = lhsShape[lhsPos];
+      mapping.addMapping(lhsPos, rhsPos);
+      while (product < rhsShape[rhsPos]) {
+        if (++lhsPos >= lhsShape.size())
+          break;
+        product *= lhsShape[lhsPos];
+        mapping.addMapping(lhsPos, rhsPos);
+      }
+      if (product != rhsShape[rhsPos])
+        return std::nullopt;
+    } else {
+      // Potential one-to-many mapping.
+      assert(lhsShape[lhsPos] > rhsShape[rhsPos]);
+      int64_t product = rhsShape[rhsPos];
+      mapping.addMapping(lhsPos, rhsPos);
+      while (product < lhsShape[lhsPos]) {
+        if (++rhsPos >= rhsShape.size())
+          break;
+        product *= rhsShape[rhsPos];
+        mapping.addMapping(lhsPos, rhsPos);
+      }
+      if (product != lhsShape[rhsPos])
+        return std::nullopt;
+    }
+    ++lhsPos;
+    ++rhsPos;
+  };
+  return mapping;
+}
+
 struct NoopSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -3039,6 +3127,71 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
+struct ReshapeToSlice : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const final {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape) {
+      return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
+    }
+    std::optional<ReshapeDimMapping> mapping =
+        tryFindReshapeDimMapping(reshape);
+    if (!mapping) {
+      return rewriter.notifyMatchFailure(
+          reshape, "reshape is not clearly merging or splitting dimensions");
+    }
+    if (!mapping->isOnlySplitting()) {
+      // TODO: it may still be possible to handle this depending on the slice
+      // configuration.
+      return rewriter.notifyMatchFailure(reshape,
+                                         "reshape is merging dimensions");
+    }
+
+    auto sliceOperandType = op.getOperand().getType().cast<TensorType>();
+    SmallVector<bool> notSlicedDims;
+    notSlicedDims.reserve(sliceOperandType.getRank());
+    for (auto [start, limit, stride, dim] :
+         llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
+                   sliceOperandType.getShape())) {
+      notSlicedDims.push_back(start == 0 && limit == dim && stride == 1);
+    }
+
+    auto reshapeOperandType = reshape.getOperand().getType().cast<TensorType>();
+    SmallVector<int64_t> starts, limits, strides;
+    for (auto [i, dim] : llvm::enumerate(reshapeOperandType.getShape())) {
+      SmallVector<int64_t> resultDims = mapping->getMappingFromOperandDim(i);
+      if (llvm::hasSingleElement(resultDims)) {
+        // Keep existing.
+        starts.push_back(op.getStartIndices()[resultDims[0]]);
+        limits.push_back(op.getLimitIndices()[resultDims[0]]);
+        strides.push_back(op.getStrides()[resultDims[0]]);
+        continue;
+      }
+
+      if (!llvm::all_of(resultDims,
+                        [&](int64_t dim) { return notSlicedDims[dim]; })) {
+        return rewriter.notifyMatchFailure(reshape,
+                                           "split dimension is also sliced");
+      }
+
+      // It's a full slice of the original dimension.
+      starts.push_back(0);
+      limits.push_back(reshapeOperandType.getDimSize(i));
+      strides.push_back(1);
+    }
+
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        op->getLoc(), reshape.getOperand(), starts, limits, strides);
+    auto newReshape = rewriter.create<stablehlo::ReshapeOp>(
+        reshape->getLoc(), op.getResult().getType(), newSlice.getResult());
+    rewriter.replaceOp(op, newReshape);
+
+    return success();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -3066,7 +3219,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-        TransposeConvert, BroadcastReduce, PadDotGeneral>(context);
+        TransposeConvert, BroadcastReduce, PadDotGeneral, ReshapeToSlice>(
+        context);
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
                                                        context);
     if (all_finite)
