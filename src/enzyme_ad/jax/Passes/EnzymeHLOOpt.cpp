@@ -370,11 +370,17 @@ struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       if (idx == -1) {
         // being broadcast just resize the outshape
       } else {
+        auto preShapeIdx = preShape.getShape()[idx];
+
         // slice the inner shape
-        in_start[idx] = start;
-        in_end[idx] = end;
-        in_stride[idx] = step;
-        innerSlice = true;
+        if (preShapeIdx == indim) {
+          in_start[idx] = start;
+          in_end[idx] = end;
+          in_stride[idx] = step;
+          innerSlice = true;
+        } else if (preShapeIdx != 1) {
+          return failure();
+        }
       }
 
       outidx++;
