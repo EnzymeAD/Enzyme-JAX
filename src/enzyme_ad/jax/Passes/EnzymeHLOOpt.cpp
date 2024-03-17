@@ -931,9 +931,14 @@ struct FullReduceReshapeOrTranspose final
       for (auto op : cur->getOperands())
         vals.push_back(map.lookup(op));
 
+      auto changeType2 = RankedTensorType::get(changeType.getShape(),
+                                               cur->getResult(0)
+                                                   .getType()
+                                                   .cast<RankedTensorType>()
+                                                   .getElementType());
       auto res =
           rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
-                          TypeRange(changeType), cur->getAttrs(), {}, {});
+                          TypeRange(changeType2), cur->getAttrs(), {}, {});
 
       map.map(cur->getResult(0), res->getResult(0));
 
