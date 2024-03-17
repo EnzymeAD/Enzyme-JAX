@@ -15,3 +15,16 @@ func.func @transpose2(%arg: tensor<2x3x4xf32>) -> tensor<3x2x4xf32> {
   %1 = stablehlo.transpose %0, dims = [2, 1, 0] : (tensor<4x2x3xf32>) -> tensor<3x2x4xf32>
   return %1 : tensor<3x2x4xf32>
 }
+
+// CHECK:  func.func @transpose3(%arg0: tensor<2x3x4xf32>) -> (tensor<4x2x3xf32>, tensor<3x2x4xbf16>) {
+// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<2x3x4xf32>) -> tensor<4x2x3xf32>
+// CHECK-NEXT:    %1 = stablehlo.convert %arg0 : (tensor<2x3x4xf32>) -> tensor<2x3x4xbf16>
+// CHECK-NEXT:    %2 = stablehlo.transpose %1, dims = [1, 0, 2] : (tensor<2x3x4xbf16>) -> tensor<3x2x4xbf16>
+// CHECK-NEXT:    return %0, %2 : tensor<4x2x3xf32>, tensor<3x2x4xbf16>
+// CHECK-NEXT:  }
+func.func @transpose3(%arg: tensor<2x3x4xf32>) -> (tensor<4x2x3xf32>, tensor<3x2x4xbf16>) {
+  %0 = stablehlo.transpose %arg, dims = [2, 0, 1] : (tensor<2x3x4xf32>) -> tensor<4x2x3xf32>
+  %conv = stablehlo.convert %0 : (tensor<4x2x3xf32>) -> tensor<4x2x3xbf16>
+  %1 = stablehlo.transpose %conv, dims = [2, 1, 0] : (tensor<4x2x3xbf16>) -> tensor<3x2x4xbf16>
+  return %0, %1 : tensor<4x2x3xf32>, tensor<3x2x4xbf16>
+}

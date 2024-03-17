@@ -2568,26 +2568,40 @@ struct TransposeTranspose
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
                                 PatternRewriter &rewriter) const final {
-    if (auto definingTranspose =
-            op.getOperand().getDefiningOp<mlir::stablehlo::TransposeOp>()) {
-      llvm::ArrayRef<int64_t> thisPermutation = op.getPermutation();
-      llvm::ArrayRef<int64_t> prevPermutation =
-          definingTranspose.getPermutation();
+    auto operand = op.getOperand();
 
-      SmallVector<int64_t> newPermutation;
-      newPermutation.resize(thisPermutation.size());
-      for (unsigned i = 0, e = thisPermutation.size(); i != e; ++i) {
-        newPermutation[i] = prevPermutation[thisPermutation[i]];
-      }
+    auto convertOp = operand.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    if (convertOp) {
+      operand = convertOp.getOperand();
+    }
 
+    auto definingTranspose =
+        operand.getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (!definingTranspose)
+      return rewriter.notifyMatchFailure(op, "not a transpose(transpose)");
+
+    llvm::ArrayRef<int64_t> thisPermutation = op.getPermutation();
+    llvm::ArrayRef<int64_t> prevPermutation =
+        definingTranspose.getPermutation();
+
+    SmallVector<int64_t> newPermutation;
+    newPermutation.resize(thisPermutation.size());
+    for (unsigned i = 0, e = thisPermutation.size(); i != e; ++i) {
+      newPermutation[i] = prevPermutation[thisPermutation[i]];
+    }
+
+    if (!convertOp) {
       rewriter.modifyOpInPlace(op, [&]() {
         op.setPermutation(newPermutation);
         op.setOperand(definingTranspose.getOperand());
       });
-
-      return success();
+    } else {
+      auto midPerm = rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), definingTranspose.getOperand(), newPermutation);
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(),
+                                                        midPerm);
     }
-    return rewriter.notifyMatchFailure(op, "not a transpose(transpose)");
+    return success();
   }
 };
 
