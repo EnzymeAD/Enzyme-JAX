@@ -125,7 +125,7 @@ tryFindReshapeDimMapping(stablehlo::ReshapeOp op) {
         product *= rhsShape[rhsPos];
         mapping.addMapping(lhsPos, rhsPos);
       }
-      if (product != lhsShape[rhsPos])
+      if (product != lhsShape[lhsPos])
         return std::nullopt;
     }
     ++lhsPos;
