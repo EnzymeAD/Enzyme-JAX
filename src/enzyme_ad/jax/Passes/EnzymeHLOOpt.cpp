@@ -2731,6 +2731,65 @@ struct TransposeDotReorder
   }
 };
 
+struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp dot,
+                                PatternRewriter &rewriter) const final {
+
+    auto dim = dot.getDotDimensionNumbers();
+    size_t numLHSResults = dot.getLhs().getType().getShape().size() -
+                           dim.getLhsBatchingDimensions().size() -
+                           dim.getLhsContractingDimensions().size();
+
+    size_t numRHSResults = dot.getRhs().getType().getShape().size() -
+                           dim.getRhsBatchingDimensions().size() -
+                           dim.getRhsContractingDimensions().size();
+
+    auto lhs_trans = dot.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (lhs_trans && numLHSResults != 1)
+      return failure();
+    auto rhs_trans = dot.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (rhs_trans && numRHSResults != 1)
+      return failure();
+    if (!lhs_trans && !rhs_trans)
+      return failure();
+
+    SmallVector<int64_t> lhsBatch(dim.getLhsBatchingDimensions().begin(),
+                                  dim.getLhsBatchingDimensions().end());
+    SmallVector<int64_t> rhsBatch(dim.getRhsBatchingDimensions().begin(),
+                                  dim.getRhsBatchingDimensions().end());
+
+    SmallVector<int64_t> lhsContract(dim.getLhsContractingDimensions().begin(),
+                                     dim.getLhsContractingDimensions().end());
+    SmallVector<int64_t> rhsContract(dim.getRhsContractingDimensions().begin(),
+                                     dim.getRhsContractingDimensions().end());
+
+    if (lhs_trans) {
+      for (auto &dim : lhsBatch)
+        dim = lhs_trans.getPermutation()[dim];
+      for (auto &dim : lhsContract)
+        dim = lhs_trans.getPermutation()[dim];
+    }
+
+    if (rhs_trans) {
+      for (auto &dim : rhsBatch)
+        dim = rhs_trans.getPermutation()[dim];
+      for (auto &dim : rhsContract)
+        dim = rhs_trans.getPermutation()[dim];
+    }
+
+    auto ndim = stablehlo::DotDimensionNumbersAttr::get(
+        dim.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        dot, dot.getType(), lhs_trans ? lhs_trans.getOperand() : dot.getLhs(),
+        rhs_trans ? rhs_trans.getOperand() : dot.getRhs(), ndim,
+        dot.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
   using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
 
@@ -3334,18 +3393,19 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns.add<
-        TransposeDotReorder, ConvertConvertFloat, FullReduceReshapeOrTranspose,
-        ConcatToPad, ConcatAppendingReshape, ReshapeIota, ReshapePad,
-        ConvertConcat, DynamicSliceToStatic, DynamicUpdateSliceElim,
-        DynamicUpdateToConcat, SliceOfDynamicUpdate, SliceTranspose, SlicePad,
-        SliceBroadcast, ReducePad, SliceSlice, AddPad, MulPad, DivPad,
-        BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
-        BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>,
-        BinopBinopPadPad<stablehlo::AddOp>, BinopBinopPadPad<stablehlo::MulOp>,
-        PadSimplify, DotReshapeDot, ConcatConstProp, ConcatFuse,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        UnaryPadPush<stablehlo::ConvertOp>, UnaryPadPush<stablehlo::TanhOp>,
-        UnaryPadPush<stablehlo::ExpOp>, TransposePad,
+        TransposeDotReorder, DotTranspose, ConvertConvertFloat,
+        FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
+        ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
+        DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SliceTranspose, SlicePad, SliceBroadcast, ReducePad, SliceSlice, AddPad,
+        MulPad, DivPad, BinopConstPad<stablehlo::AddOp>,
+        BinopConstPad<stablehlo::SubtractOp>, BinopConstPad<stablehlo::MulOp>,
+        BinopConstPad<stablehlo::DivOp>, BinopBinopPadPad<stablehlo::AddOp>,
+        BinopBinopPadPad<stablehlo::MulOp>, PadSimplify, DotReshapeDot,
+        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
+        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+        TransposePad,
         /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
         ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
         CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
