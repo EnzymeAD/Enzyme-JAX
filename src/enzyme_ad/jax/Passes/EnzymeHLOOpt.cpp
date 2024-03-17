@@ -845,6 +845,11 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
       return failure();
     }
 
+    if (prev.getType() != op.getResultTypes()[0]) {
+      prev = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), op.getResultTypes()[0], prev, ArrayRef<int64_t>());
+    }
+
     for (auto v : concat.getOperands()) {
       IRMapping map;
       map.map(op.getInitValues()[0], identity);
@@ -852,9 +857,15 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
       auto next = rewriter.clone(*op, map)->getResult(0);
       map.map(innerOp.getOperand(0), prev);
       map.map(innerOp.getOperand(1), next);
-      prev = rewriter.clone(innerOp, map)->getResult(0);
+      Value vals[] = {prev, next};
+      prev =
+          rewriter
+              .create(innerOp.getLoc(), innerOp.getName().getIdentifier(), vals,
+                      TypeRange(prev.getType()), innerOp.getAttrs(), {}, {})
+              ->getResult(0);
     }
 
+    assert(op.getResultTypes()[0] == prev.getType());
     rewriter.replaceOp(op, prev);
     return success();
   }
