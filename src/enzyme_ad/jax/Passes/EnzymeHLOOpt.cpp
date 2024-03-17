@@ -2641,7 +2641,15 @@ struct TransposeDotReorder
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
                                 PatternRewriter &rewriter) const final {
 
-    auto dot = op.getOperand().getDefiningOp<mlir::stablehlo::DotGeneralOp>();
+    auto operand = op.getOperand();
+    auto convert = operand.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    if (convert) {
+      operand = convert.getOperand();
+      if (!llvm::hasSingleElement(convert->getUsers()))
+        return failure();
+    }
+
+    auto dot = operand.getDefiningOp<mlir::stablehlo::DotGeneralOp>();
     if (!dot || !llvm::hasSingleElement(dot->getUsers()))
       return failure();
 
@@ -2706,9 +2714,19 @@ struct TransposeDotReorder
         dimensionNumbers.getLhsBatchingDimensions(),
         dimensionNumbers.getRhsContractingDimensions(),
         dimensionNumbers.getLhsContractingDimensions());
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, op.getType(), dot.getRhs(), dot.getLhs(), ndim,
-        dot.getPrecisionConfigAttr());
+    if (!convert) {
+      rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+          op, op.getType(), dot.getRhs(), dot.getLhs(), ndim,
+          dot.getPrecisionConfigAttr());
+    } else {
+      auto middot = rewriter.create<stablehlo::DotGeneralOp>(
+          op.getLoc(),
+          RankedTensorType::get(op.getType().getShape(),
+                                dot.getType().getElementType()),
+          dot.getRhs(), dot.getLhs(), ndim, dot.getPrecisionConfigAttr());
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(),
+                                                        middot);
+    }
     return success();
   }
 };
