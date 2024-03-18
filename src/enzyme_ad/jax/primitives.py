@@ -243,8 +243,8 @@ class NewXLAPipeline:
         return self.passes.count("enzyme-wrap")
 
 
-# DefaultPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
-DefaultPipeline = JaXPipeline(
+DefaultCPPPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+DefaultJaXPipeline = JaXPipeline(
     "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,enzyme-hlo-opt{passses=24575},cse,print"
 )
 
@@ -883,7 +883,7 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
-    pipeline_options=DefaultPipeline
+    pipeline_options=DefaultCPPPipeline
 ):
     return _enzyme_primal_p.bind(
         *args,
@@ -902,7 +902,7 @@ def cpp_call(
     source: str,
     fn: str = "f",
     argv: tuple[str] = (),
-    pipeline_options=DefaultPipeline
+    pipeline_options=DefaultCPPPipeline
 ):
     return ffi_call(
         *args,
@@ -1267,7 +1267,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
-def enzyme_jax_ir(argv=(), pipeline_options=DefaultPipeline):
+def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @jax.jit
         def wrapped(*args: Any):
