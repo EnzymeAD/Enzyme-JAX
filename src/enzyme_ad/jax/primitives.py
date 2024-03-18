@@ -243,7 +243,10 @@ class NewXLAPipeline:
         return self.passes.count("enzyme-wrap")
 
 
-DefaultPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+# DefaultPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+DefaultPipeline = JaXPipeline(
+    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,enzyme-hlo-opt{passses=24575},cse,print"
+)
 
 
 def pass_pipeline(options):
