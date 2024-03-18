@@ -477,6 +477,9 @@ struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       outidx++;
     }
 
+    if (innerSlice && !llvm::hasSingleElement(bcast->getUsers()))
+      return failure();
+
     Value tobcast = bcast.getOperand();
     if (innerSlice)
       tobcast = rewriter.create<stablehlo::SliceOp>(
@@ -1167,6 +1170,40 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   }
 };
 
+struct NegativePadToSlice final : OpRewritePattern<mlir::stablehlo::PadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<int64_t> starts;
+    SmallVector<int64_t> limits;
+    SmallVector<int64_t> strides;
+
+    bool negative = false;
+    for (auto &&[low, high, inner, dim] : llvm::zip(
+             op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
+             op.getInteriorPadding(), op.getOperand().getType().getShape())) {
+      if (low > 0)
+        return failure();
+      if (high > 0)
+        return failure();
+      if (inner != 0)
+        return failure();
+      if (low < 0 || high < 0)
+        negative = true;
+
+      starts.push_back(-low);
+      limits.push_back(dim + high);
+      strides.push_back(1);
+    }
+    if (!negative)
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, op.getOperand(), starts,
+                                                    limits, strides);
+    return success();
+  }
+};
+
 /*
 
     %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
@@ -1174,21 +1211,45 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
    : tensor<2xf32>
 
 */
-struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
-  using OpRewritePattern::OpRewritePattern;
+template <typename T> struct BinopPadToConcat final : OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::AddOp op,
+  LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
 
     for (int i = 0; i < 2; i++) {
-      if (auto lhs = op->getOperand(i).getDefiningOp<stablehlo::PadOp>()) {
+      if (auto lhs =
+              op->getOperand(i).template getDefiningOp<stablehlo::PadOp>()) {
         auto rhs = op->getOperand(1 - i);
 
-        if (!matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
-          continue;
+        bool match = false;
+        if (isa<stablehlo::AddOp>(op)) {
+          match = matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat());
+        } else if (isa<stablehlo::MulOp>(op)) {
+          match = matchPattern(lhs.getPaddingValue(), m_OneFloat()) ||
+                  matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat());
+        }
+        if (!match) {
+          SmallVector<Operation *> ops = {op};
+          bool legal = true;
+          while (!ops.empty()) {
+            auto cur = ops.pop_back_val();
+            if (isa<stablehlo::SliceOp>(cur))
+              continue;
+            if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
+              for (auto u : cur->getResult(0).getUsers()) {
+                ops.push_back(u);
+              }
+              continue;
+            }
+            legal = false;
+            break;
+          }
+          if (!legal)
+            return failure();
         }
 
         bool legal = true;
@@ -1210,6 +1271,8 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
           padidx++;
           if (low == 0 && high == 0)
             continue;
+          if (low < 0 || high < 0)
+            return failure();
           idxs.push_back(padidx);
         }
 
@@ -1226,8 +1289,27 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
           if (lhs.getEdgePaddingLow()[idx] != 0) {
             starts[idx] = 0;
             limits[idx] = lhs.getEdgePaddingLow()[idx];
-            auto prevSlice = rewriter.create<stablehlo::SliceOp>(
+            Value prevSlice = rewriter.create<stablehlo::SliceOp>(
                 op.getLoc(), rhs, starts, limits, strides);
+
+            if (isa<stablehlo::AddOp>(op) &&
+                matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
+              // If adding we're adding 0, no need to do extra work
+            } else if (isa<stablehlo::MulOp>(op) &&
+                       matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
+              // If multiplying by 0, broadcast the zero
+              prevSlice = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  op.getLoc(), prevSlice.getType(), lhs.getPaddingValue(),
+                  ArrayRef<int64_t>());
+            } else if (isa<stablehlo::MulOp>(op) &&
+                       matchPattern(lhs.getPaddingValue(), m_OneFloat())) {
+              // If multiplying by 1, no need to do extra work
+            } else
+              prevSlice = rewriter.create<T>(
+                  op.getLoc(), prevSlice,
+                  rewriter.create<stablehlo::BroadcastInDimOp>(
+                      op.getLoc(), prevSlice.getType(), lhs.getPaddingValue(),
+                      ArrayRef<int64_t>()));
             vals.push_back(prevSlice);
           }
 
@@ -1236,15 +1318,34 @@ struct AddPad final : OpRewritePattern<mlir::stablehlo::AddOp> {
 
           auto midSlice = rewriter.create<stablehlo::SliceOp>(
               op.getLoc(), rhs, starts, limits, strides);
-          auto mid = rewriter.create<stablehlo::AddOp>(op.getLoc(), midSlice,
-                                                       lhs.getOperand());
+          auto mid =
+              rewriter.create<T>(op.getLoc(), midSlice, lhs.getOperand());
           vals.push_back(mid);
 
           if (lhs.getEdgePaddingHigh()[idx] != 0) {
             starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
             limits[idx] = type.getShape()[idx];
-            auto postSlice = rewriter.create<stablehlo::SliceOp>(
+            Value postSlice = rewriter.create<stablehlo::SliceOp>(
                 op.getLoc(), rhs, starts, limits, strides);
+
+            if (isa<stablehlo::AddOp>(op) &&
+                matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
+              // If adding we're adding 0, no need to do extra work
+            } else if (isa<stablehlo::MulOp>(op) &&
+                       matchPattern(lhs.getPaddingValue(), m_AnyZeroFloat())) {
+              // If multiplying by 0, broadcast the zero
+              postSlice = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  op.getLoc(), postSlice.getType(), lhs.getPaddingValue(),
+                  ArrayRef<int64_t>());
+            } else if (isa<stablehlo::MulOp>(op) &&
+                       matchPattern(lhs.getPaddingValue(), m_OneFloat())) {
+              // If multiplying by 1, no need to do extra work
+            } else
+              postSlice = rewriter.create<T>(
+                  op.getLoc(), postSlice,
+                  rewriter.create<stablehlo::BroadcastInDimOp>(
+                      op.getLoc(), postSlice.getType(), lhs.getPaddingValue(),
+                      ArrayRef<int64_t>()));
             vals.push_back(postSlice);
           }
 
@@ -1474,6 +1575,9 @@ struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
                                 PatternRewriter &rewriter) const override {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
+      return failure();
+
+    if (!llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
     auto padval = pad.getPaddingValue();
@@ -3102,7 +3206,7 @@ template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
   }
 };
 
-struct MulPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
+struct MulZeroPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
@@ -3138,7 +3242,7 @@ struct MulPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   }
 };
 
-struct DivPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
+struct DivZeroPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
   using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
@@ -3179,6 +3283,12 @@ struct DivPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
 
 struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
+
+  bool postPad;
+  PadDotGeneral(size_t postPad, MLIRContext *context,
+                PatternBenefit benefit = 1,
+                ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames), postPad(postPad) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
                                 PatternRewriter &rewriter) const final {
@@ -3303,6 +3413,9 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
       }
     }
 
+    if (!resultDimsToPad.empty() && !postPad)
+      return failure();
+
     if (otherDimsToSlice.empty() && resultDimsToPad.empty()) {
       return rewriter.notifyMatchFailure(op,
                                          "contracting dimensions not padded");
@@ -3367,6 +3480,9 @@ struct ReshapeToSlice : public OpRewritePattern<stablehlo::SliceOp> {
     if (!reshape) {
       return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
     }
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+
     std::optional<ReshapeDimMapping> mapping =
         tryFindReshapeDimMapping(reshape);
     if (!mapping) {
@@ -3428,33 +3544,82 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<
-        TransposeDotReorder, DotTranspose, ConvertConvertFloat,
-        FullReduceReshapeOrTranspose, ConcatToPad, ConcatAppendingReshape,
-        ReshapeIota, ReshapePad, ConvertConcat, DynamicSliceToStatic,
-        DynamicUpdateSliceElim, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceTranspose, SlicePad, SliceBroadcast, ReducePad, SliceSlice, AddPad,
-        MulPad, DivPad, BinopConstPad<stablehlo::AddOp>,
-        BinopConstPad<stablehlo::SubtractOp>, BinopConstPad<stablehlo::MulOp>,
-        BinopConstPad<stablehlo::DivOp>, BinopBinopPadPad<stablehlo::AddOp>,
-        BinopBinopPadPad<stablehlo::MulOp>, PadSimplify, DotReshapeDot,
-        ConcatConstProp, ConcatFuse, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, UnaryPadPush<stablehlo::ConvertOp>,
-        UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
-        TransposePad,
-        /*ScatterToPad, */ BroadcastToReshape, ReduceToReshape, ConvertSimplify,
-        ReshapeSimplify, SliceSimplify, ReduceConcat, SliceConcat, NoopSlice,
-        CosSimplify, SinSimplify, SqrtSimplify, TanhSimplify, ExpSimplify,
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
-        BinBroadcastSplat<stablehlo::AddOp>,
-        BinBroadcastSplat<stablehlo::SubtractOp>,
-        BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, TransposeTranspose,
-        TransposeConvert, BroadcastReduce, PadDotGeneral, ReshapeToSlice>(
-        context);
-    patterns.add<IotaSimplify, BroadcastInDimSimplify>(max_constant_expansion,
-                                                       context);
+
+    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
+                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, PowSimplify, SqrtSimplify, CosSimplify,
+                 SinSimplify, NoopSlice, SliceSlice, PadSimplify,
+                 NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
+                 ConvertSimplify, ReshapeSimplify, DynamicSliceToStatic,
+                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape>(
+        context, PatternBenefit(65000));
+
+    patterns.add<IotaSimplify, BroadcastInDimSimplify>(
+        max_constant_expansion, context, PatternBenefit(65000));
+
+    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+                 SlicePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
+                 ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatPushBinop<stablehlo::MulOp>,
+                 /*ScatterToPad, */
+                 ReduceConcat, SliceConcat, BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+
+    patterns.add<BinopPadToConcat<stablehlo::AddOp>,
+                 BinopPadToConcat<stablehlo::MulOp>>(context);
+
+    if (passses & 512)
+      patterns
+          .add<TransposeDotReorder, DotTranspose, ConvertConvertFloat,
+               ConcatToPad, ConcatAppendingReshape, ReshapeIota, ReshapePad>(
+              context);
+
+    if (passses & 1024)
+      patterns.add<FullReduceReshapeOrTranspose>(context);
+
+    if (passses & 1)
+      patterns.add<SliceTranspose, SliceBroadcast>(context);
+    if (passses & 2)
+      patterns.add<ReducePad>(context);
+    if (passses & 4)
+      patterns.add<MulZeroPad, DivZeroPad>(context);
+    if (passses & 8)
+      patterns.add<
+          BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
+          BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>>(
+          context);
+    if (passses & 16)
+      patterns.add<BinopBinopPadPad<stablehlo::AddOp>,
+                   BinopBinopPadPad<stablehlo::MulOp>>(context);
+    if (passses & 32)
+      patterns
+          .add<UnaryPadPush<stablehlo::ConvertOp>,
+               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>>(
+              context);
+
+    if (passses & 64)
+      patterns.add<TransposePad>(context);
+
+    if (passses & 256)
+      patterns.add<TransposeConvert>(context);
+
+    if (passses & 2048)
+      patterns.add<TransposeTranspose>(context);
+
+    if (passses & (2048 * 2))
+      patterns.add<BroadcastReduce>(context);
+
+    if (passses & (2048 * 4))
+      patterns.add<PadDotGeneral>(false, context);
+
+    if (passses & (2048 * 8))
+      patterns.add<ReshapeToSlice>(context);
+
+    if (passses & (2048 * 16))
+      patterns.add<PadDotGeneral>(true, context);
+
     if (all_finite)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite)

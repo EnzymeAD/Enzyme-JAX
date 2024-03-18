@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=65535})" %s | FileCheck %s
 
 // CHECK-LABEL: @pad_dot_general_lhs
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<1x3x1024x4xbf16>, %[[ARG1:.+]]: tensor<1x8x3x1024x2048xbf16>)
