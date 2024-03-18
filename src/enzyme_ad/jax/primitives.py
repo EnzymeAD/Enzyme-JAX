@@ -245,7 +245,7 @@ class NewXLAPipeline:
 
 DefaultCPPPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
 DefaultJaXPipeline = JaXPipeline(
-    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,enzyme-hlo-opt{passses=24575},cse,print"
+    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,enzyme-hlo-opt{passses=24575},cse"
 )
 
 
