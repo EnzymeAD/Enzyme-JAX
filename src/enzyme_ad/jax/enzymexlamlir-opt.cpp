@@ -11,6 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
+#include "Enzyme/MLIR/Passes/Passes.h"
+#include "Implementations/XLADerivatives.h"
+#include "Passes/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -23,30 +29,31 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Transform/Transforms/Passes.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
 
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
-#include "Enzyme/MLIR/Passes/Passes.h"
-
-#include "Enzyme/MLIR/Dialect/Ops.h"
-
-#include "Implementations/XLADerivatives.h"
-#include "Passes/Passes.h"
-
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 using namespace mlir;
+
+namespace mlir {
+namespace enzyme {
+void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
+void registerGenerateApplyPatternsPass();
+void registerRemoveTransformPass();
+} // namespace enzyme
+} // namespace mlir
 
 class MemRefInsider
     : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
@@ -115,6 +122,13 @@ int main(int argc, char **argv) {
 
   // Register the autodiff interface implementations for upstream dialects.
   enzyme::registerCoreDialectAutodiffInterfaces(registry);
+
+  // Transform dialect and extensions.
+  mlir::transform::registerInterpreterPass();
+  mlir::linalg::registerTransformDialectExtension(registry);
+  mlir::enzyme::registerGenerateApplyPatternsPass();
+  mlir::enzyme::registerRemoveTransformPass();
+  mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Enzyme modular optimizer driver", registry));
