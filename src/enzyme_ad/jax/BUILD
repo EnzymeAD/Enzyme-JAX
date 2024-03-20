@@ -225,6 +225,7 @@ pybind_library(
         "@xla//xla/service:hlo_proto_util",
         "@xla//xla:statusor",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:chlo_ops",
 
         # Make CPU target available to XLA.
         "@xla//xla/service:cpu_plugin",

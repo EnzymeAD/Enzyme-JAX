@@ -47,6 +47,7 @@ cc_binary(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Transforms",
+        "@stablehlo//:chlo_ops",
     ],
 )
 
