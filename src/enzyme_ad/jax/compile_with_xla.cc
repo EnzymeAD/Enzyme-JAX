@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
 #include "xla/client/executable_build_options.h"
@@ -117,6 +118,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  context.loadDialect<mlir::chlo::ChloDialect>();
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mlir, parser_config);
@@ -259,6 +261,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  context.loadDialect<mlir::chlo::ChloDialect>();
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);

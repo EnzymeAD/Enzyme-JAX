@@ -42,6 +42,7 @@
 #include "Passes/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
@@ -76,6 +77,7 @@ int main(int argc, char **argv) {
   registry.insert<DLTIDialect>();
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
+  registry.insert<mlir::chlo::ChloDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
 
