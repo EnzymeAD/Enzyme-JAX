@@ -168,7 +168,8 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
 
   std::string output;
   llvm::raw_string_ostream ss(output);
-  ss << *parsed_module;
+  parsed_module->getOperation()->print(
+      ss, mlir::OpPrintingFlags().enableDebugInfo());
 
   return std::make_pair(entryfn.str(), ss.str());
 }
