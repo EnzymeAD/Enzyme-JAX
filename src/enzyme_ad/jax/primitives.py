@@ -413,7 +413,7 @@ def _enzyme_aug_abstract_eval(
         avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = str(mhlo)
+        source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
@@ -553,7 +553,7 @@ def _enzyme_primal_lowering(
         avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = str(mhlo)
+        source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(
             arg
@@ -701,7 +701,7 @@ def _enzyme_fwd_lowering(
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = str(mhlo)
+        source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if i // 2 in kept)
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
@@ -763,7 +763,7 @@ def _enzyme_aug_lowering(
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = str(mhlo)
+        source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
@@ -829,7 +829,7 @@ def _enzyme_rev_lowering(
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = str(mhlo)
+        source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
         # in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
