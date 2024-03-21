@@ -553,25 +553,29 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     SmallVector<int64_t> interiors;
 
     bool needspad = false;
-    for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape] :
+    for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape, outshape] :
          llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
                    pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
                    pad.getInteriorPadding(),
-                   pad.getOperand().getType().getShape())) {
+                   pad.getOperand().getType().getShape(),
+                   pad.getType().getShape())) {
       if (nstep != 1)
         return failure();
       if (interior != 0)
         return failure();
 
+      // slice goes from [nstart, nend]
+      // pad result is [0..lpad][lpad...outshape-hpad][outshape-hpad...outshape]
+
       // start of slice starts after end of value being padded
-      if (nstart - lpad >= inshape) {
+      if (nstart >= outshape - hpad) {
         rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
             op, op.getType(), pad.getPaddingValue(),
             rewriter.getDenseI64ArrayAttr({}));
         return success();
       }
       // slice ends before the start of value being padded
-      if (nend - lpad < inshape) {
+      if (nend <= lpad) {
         rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
             op, op.getType(), pad.getPaddingValue(),
             rewriter.getDenseI64ArrayAttr({}));
