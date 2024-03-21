@@ -593,7 +593,10 @@ def _enzyme_primal_lowering(
 
             name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             if print_mlir:
-                print(str(nmod), flush=True)
+                if type(print_mlir) != type(True):
+                    print_mlir.write(nmod)
+                else:
+                    print(str(nmod), flush=True)
             nmod = ir.Module.parse(nmod)
             fn = None
             for f in nmod.body:
