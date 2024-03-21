@@ -21,7 +21,12 @@ using namespace enzyme;
 namespace {
 struct PrintPass : public PrintPassBase<PrintPass> {
 
-  void runOnOperation() override { llvm::errs() << *getOperation() << "\n"; }
+  void runOnOperation() override {
+    if (use_stdout)
+      llvm::outs() << *getOperation() << "\n";
+    else
+      llvm::errs() << *getOperation() << "\n";
+  }
 };
 
 } // end anonymous namespace

@@ -97,6 +97,15 @@ def PrintPass : Pass<"print"> {
   let dependentDialects = [
   ];
   let constructor = "mlir::enzyme::createPrintPass()";
+  let options = [
+    Option<
+      /*C++ variable name=*/"use_stdout",
+      /*CLI argument=*/"stdout",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to print to stdout (vs stderr)"
+    >
+    ];
 }
 
 #endif
