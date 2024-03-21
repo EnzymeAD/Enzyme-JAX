@@ -409,6 +409,8 @@ def _enzyme_aug_abstract_eval(
 
     if lang == LANG_MHLO:
         (in_tree, _, _, mfunc, jit_options) = source
+        if "print_mlir" in jit_options:
+            del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -703,6 +705,8 @@ def _enzyme_fwd_lowering(
 
     if lang == LANG_MHLO:
         (in_tree, _, _, mfunc, jit_options) = source
+        if "print_mlir" in jit_options:
+            del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -765,6 +769,8 @@ def _enzyme_aug_lowering(
 
     if lang == LANG_MHLO:
         (in_tree, _, _, mfunc, jit_options) = source
+        if "print_mlir" in jit_options:
+            del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -831,6 +837,8 @@ def _enzyme_rev_lowering(
     kept = None
     if lang == LANG_MHLO:
         (in_tree, _, _, mfunc, jit_options) = source
+        if "print_mlir" in jit_options:
+            del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1274,10 +1282,14 @@ ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
 def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}):
+    jit_options2 = {k: v for (k, v) in jit_options.items()}
+    if "print_mlir" in jit_options2:
+        del jit_options2["print_mlir"]
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(*args: Any):
             args_flat, in_tree = jax.tree_util.tree_flatten(args)
-            out_shape = jax.jit(func, **jit_options).eval_shape(*args)
+            out_shape = jax.jit(func, **jit_options2).eval_shape(*args)
             in_idxs = {i: i for i in range(len(args_flat))}
             out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
             out_shape_flat = [
@@ -1295,6 +1307,6 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}):
             )
             return jax.tree_util.tree_unflatten(out_tree, out_flat)
 
-        return jax.jit(wrapped, **jit_options)
+        return jax.jit(wrapped, **jit_options2)
 
     return decorator
