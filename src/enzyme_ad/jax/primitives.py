@@ -96,8 +96,7 @@ class NewXLAPipeline:
               region-simplify=true
               test-convergence=false
               top-down=true},
-          func.func(chlo-legalize-to-hlo{
-              expand-compositions=true legalize-broadcasts=true}),
+          func.func(chlo-legalize-to-hlo),
           func.func(mhlo-legalize-control-flow),
           func.func(mhlo-legalize-dot-general-to-dot),
           hlo-legalize-to-arithmetic,
