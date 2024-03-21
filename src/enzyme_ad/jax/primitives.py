@@ -535,6 +535,10 @@ def _enzyme_primal_lowering(
 
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        print_mlir = False
+        if "print_mlir" in jit_options:
+            print_mlir = jit_options["print_mlir"]
+            del jit_options["print_mlir"]
         assert len(out_idx_map) == len(out_shapes)
 
         orig_shapes = []
@@ -586,6 +590,8 @@ def _enzyme_primal_lowering(
                 fns.append(f.sym_name.value)
 
             name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+            if print_mlir:
+                print(str(nmod), flush=True)
             nmod = ir.Module.parse(nmod)
             fn = None
             for f in nmod.body:
