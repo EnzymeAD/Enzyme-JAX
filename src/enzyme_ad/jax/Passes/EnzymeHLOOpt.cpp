@@ -3251,6 +3251,45 @@ struct DivZeroPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
   }
 };
 
+struct PadPad : public OpRewritePattern<mlir::stablehlo::PadOp> {
+  using OpRewritePattern<mlir::stablehlo::PadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
+                                PatternRewriter &rewriter) const final {
+    auto definingPad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!definingPad || definingPad.getPaddingValue() != op.getPaddingValue()) {
+      return rewriter.notifyMatchFailure(op, "no compatible defining pad");
+    }
+
+    auto allZero = [](ArrayRef<int64_t> values) {
+      return llvm::all_of(values, [](int64_t v) { return v == 0; });
+    };
+
+    if (!allZero(op.getInteriorPadding()) ||
+        !allZero(definingPad.getInteriorPadding())) {
+      return rewriter.notifyMatchFailure(op, "cannot combine interior padding");
+    }
+
+    auto addLists = [](DenseI64ArrayAttr lhs, DenseI64ArrayAttr rhs) {
+      MLIRContext *context = lhs.getContext();
+      auto sum = llvm::map_to_vector(
+          llvm::zip(lhs.asArrayRef(), rhs.asArrayRef()),
+          [](auto &&pair) { return std::get<0>(pair) + std::get<1>(pair); });
+      return DenseI64ArrayAttr::get(context, sum);
+    };
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, definingPad.getOperand(), definingPad.getPaddingValue(),
+        addLists(op.getEdgePaddingLowAttr(),
+                 definingPad.getEdgePaddingLowAttr()),
+        addLists(op.getEdgePaddingHighAttr(),
+                 definingPad.getEdgePaddingHighAttr()),
+        addLists(op.getInteriorPaddingAttr(),
+                 definingPad.getInteriorPaddingAttr()));
+    return success();
+  }
+};
+
 struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
 
@@ -3777,7 +3816,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SlicePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
+                 SlicePad, DotReshapeDot, ConcatConstProp, ConcatFuse, PadPad,
                  ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, SliceConcat, BinBroadcastSplat<stablehlo::AddOp>,
