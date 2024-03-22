@@ -3539,6 +3539,8 @@ stablehlo::Tensor evalSliceOp(const stablehlo::Tensor &operand,
   Builder builder(operand.getType().getContext());
   auto inferStatus = hlo::inferSliceOp({}, operand.getType(), start, limit,
                                        strides, inferredTypes);
+  (void)inferStatus;
+  assert(!failed(inferStatus));
 
   return stablehlo::evalSliceOp(operand, start, strides,
                                 inferredTypes[0].cast<mlir::ShapedType>());
@@ -3624,7 +3626,6 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto operand = op.getOperand();
-    auto startIndiices = op.getStartIndices();
     auto offsetDims = op.getDimensionNumbers().getOffsetDims();
     auto collapsedSliceDims = op.getDimensionNumbers().getCollapsedSliceDims();
     auto startIndexMap = op.getDimensionNumbers().getStartIndexMap();
@@ -3638,7 +3639,7 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
 
     {
       DenseIntElementsAttr operandVals;
-      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
+      if (matchPattern(operand, m_Constant(&operandVals))) {
         auto out = myevalGatherOp(
             stablehlo::evalConstantOp(operandVals),
             stablehlo::evalConstantOp(startIndicesCst),
