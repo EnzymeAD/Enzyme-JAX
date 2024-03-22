@@ -1800,114 +1800,78 @@ struct BroadcastToReshape final
   }
 };
 
-#if 0
-struct ScatterToPad final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
+// Given a value and index idx, determine whether all values are the same along
+// idx. If so, return said value
+std::optional<Value> is_same_in_axis(OpBuilder &rewriter, ShapedType outTy,
+                                     Value v, size_t idx) {
+  mlir::SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat))) {
+    return rewriter.create<stablehlo::ConstantOp>(v.getLoc(), outTy,
+                                                  splat.resizeSplat(outTy));
+  }
+
+  return {};
+}
+
+struct ScatterToDynamicUpdateSlice final
+    : OpRewritePattern<mlir::stablehlo::ScatterOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
-    auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type)
-      return failure();
-
     Block &body = op.getUpdateComputation().front();
-    if (body.size() != 1)
+    if (body.getOperations().size() != 1)
+      return failure();
 
     Operation &innerOp = body.front();
-    if (!isa<ReturnOp>(&innerOp)) {
+    if (!isa<stablehlo::ReturnOp>(&innerOp)) {
       return failure();
     }
-    if (innerOp->getNumOperands() != 1) {
+    if (innerOp.getNumOperands() != 1) {
       return failure();
     }
-    auto retop = innerOp->getOperand(0).dyn_cast<BlockArgument>();
-    if (!retop) return failure();
-    if (retop.getOwner() != &body) return failure();
-    if (retop.getArgNumber() != 1) return failure();
-
-    if (op.getInputs().size() != 1) return failure();
-
-    mlir::SplatElementsAttr prev;
-    if (!matchPattern(op.getInputs()[0], m_Constant(&prev))) {
+    auto retop = innerOp.getOperand(0).dyn_cast<BlockArgument>();
+    if (!retop)
       return failure();
-    }
-
-    mlir::DenseElementsAttr idx;
-    if (!matchPattern(op.getScatterIndices()[0], m_Constant(&idx))) {
+    if (retop.getOwner() != &body)
       return failure();
-    }
-    auto idx2 = mlir::stablehlo::evalConstantOp(idx);
+    if (retop.getArgNumber() != 1)
+      return failure();
 
-    if (!op.getIndicesAreSorted()) return failure();
-    if (!op.getUniqueIndices()) return failure();
+    if (op.getInputs().size() != 1)
+      return failure();
 
     auto dims = op.getScatterDimensionNumbers();
-    if (dims.getInsertedWindowDims() != op.getScatterDimsToOperandDims())
-      return failure();
-    for (auto en : llvm::enumerate(dims.getInsertedWindowDims())) {
-      if (en.value() != en.index()) return failure();
-    }
-    
+
+    auto input = op.getInputs()[0];
     auto update = op.getUpdates()[0];
-    auto updateTy = update.getType().cast<RankedTensorType>();
-    if (op.getIndexVectorDim() != updateTy.getShape().size()) return failure();
+    auto scatter = op.getScatterIndices();
+    auto updateShape = update.getType().cast<ShapedType>().getShape();
 
-    SmallVector<int64_t> starts;
-    SmallVector<int64_t> edge_padding_high;
-    SmallVector<int64_t> interior_padding;
-    for (size_t lidx = 0; lidx < idx2.getShape()[idx2.getShape().size()-1]; lidx++) {
+    if (dims.getInsertedWindowDims().size() == 0 &
+        dims.getUpdateWindowDims().size() == updateShape.size()) {
 
-      uint64_t start = 0;
-      uint64_t step = 0
-      for (size_t incidx = 0; incidx < idx2.getShape()[lidx]; incidx++) {
-        std::optional<stablehlo::Element> value;
-        bool legal = true;
-        std::function<void(SmallVector<int64_t>)> checkAllEqual = [&](SmallVector<int64_t> prefix) {
-          if (prefix.size() == lidx)
-            prefix.push_back(incidx);
-
-          if (prefix.size() == idx2.getShape().size()-1) {
-            prefix.push_back(lidx);
-            auto cur = idx2.get(prefix);
-            if (value) {
-              legal &= value == cur;
-            } else {
-              value = cur;
-            }
-            return;
-          }
-          for (size_t j = 0; j < idx2.getShape()[prefix.size()]; j++) {
-            SmallVector<int64_t> prefix2(prefix);
-            prefix2.push_back(j);
-            checkAllEqual(prefix2);
-          }
-        };
-        checkAllEqual({});
-        assert(value);
-
-        uint64_t cur = (*value).getIntegerValue().getZExtValue();
-        if (incidx == 0) {
-          start = cur;
-        } else if (incidx == 1) {
-          step = cur - start;
-        } else {
-          // Only support step size of one
-          if (start + incidx * step != cur) {
-            return failure();
-          }
-        }
-
+      auto ity = RankedTensorType::get({}, rewriter.getI32Type());
+      SmallVector<Value> start(updateShape.size(), 0);
+      for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+        auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
+        if (!startval)
+          return failure();
+        start[en.value()] = *startval;
       }
-      start.push_back(start);
-      edge_padding_high.push_back(idx2.getShape()[lidx] - start - );
-      interior_padding.push_back(step - 1);
+      for (auto &v : start) {
+        if (v != nullptr)
+          continue;
+        v = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          op, op.getResult(0).getType(), input, update, start);
+      return success();
     }
-
-    auto padval = builder.create<stablehlo::ConstantOp>(op.getLoc(), RankedTensorType::get({}, prev.getType().getElementType()), prev.getSplatValue<Attribute>());
-    auto pad = builder.replaceOpWithNewOp<stablehlo::PadOp>(op, update, padval)
     return failure();
+  }
 };
-#endif
 
 struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
@@ -3814,8 +3778,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SlicePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
                  ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>,
-                 /*ScatterToPad, */
+                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, SliceConcat, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
