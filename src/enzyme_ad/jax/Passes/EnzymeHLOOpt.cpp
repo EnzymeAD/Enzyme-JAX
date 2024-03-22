@@ -28,6 +28,8 @@
 #include "mlir/Dialect/CommonFolders.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
+#include "stablehlo/dialect/TypeInference.h"
+
 #define DEBUG_TYPE "enzyme"
 
 using namespace mlir;
@@ -3543,20 +3545,268 @@ struct ReshapeToSlice : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
+// Rewritten from
+// https://github.com/openxla/stablehlo/blob/4f180d3c2236a15f82f29aad1b47f6ea2c14fc52/stablehlo/reference/Ops.cpp#L1381
+// using https://openxla.org/xla/operation_semantics#gather
+// becuase xla/openxla differ in semantics
+stablehlo::Index evalIndex(stablehlo::Tensor tensor) {
+  stablehlo::Index result;
+  for (auto it = tensor.index_begin(); it != tensor.index_end(); ++it)
+    result.push_back(tensor.get(*it).getIntegerValue().getSExtValue());
+  return result;
+}
+
+stablehlo::Tensor evalSliceOp(const stablehlo::Tensor &operand,
+                              const stablehlo::Index &index) {
+  using namespace stablehlo;
+  Sizes start, limit;
+  for (auto i = 0; i < operand.getRank(); ++i) {
+    if (index[i] == -1) {
+      start.push_back(0);
+      limit.push_back(operand.getShape()[i]);
+    } else {
+      start.push_back(index[i]);
+      limit.push_back(index[i] + 1);
+    }
+  }
+  Sizes strides(operand.getRank(), 1);
+
+  SmallVector<Type> inferredTypes;
+  Builder builder(operand.getType().getContext());
+  auto inferStatus = hlo::inferSliceOp({}, operand.getType(), start, limit,
+                                       strides, inferredTypes);
+
+  return stablehlo::evalSliceOp(operand, start, strides,
+                                inferredTypes[0].cast<mlir::ShapedType>());
+}
+
+stablehlo::Tensor myevalGatherOp(const stablehlo::Tensor &operand,
+                                 const stablehlo::Tensor &startIndices,
+                                 const stablehlo::Axes &offsetDims,
+                                 const stablehlo::Axes &collapsedSliceDims,
+                                 const stablehlo::Axes &startIndexMap,
+                                 stablehlo::Axis indexVectorDim,
+                                 const stablehlo::Sizes &sliceSizes,
+                                 bool indicesAreSorted, ShapedType resultType) {
+  using namespace stablehlo;
+  constexpr int64_t kColon = -1;
+
+  Tensor result(resultType);
+  Axes batchDims;
+  for (auto d : result.getAxes())
+    if (!llvm::is_contained(offsetDims, d))
+      batchDims.push_back(d);
+
+  for (auto resultIt = result.index_begin(); resultIt != result.index_end();
+       ++resultIt) {
+    auto resultIndex = *resultIt;
+
+    Index batchIndex;
+    for (auto d : batchDims)
+      batchIndex.push_back(resultIndex[d]);
+
+    auto startIndicesIndex = batchIndex;
+    if (indexVectorDim < startIndices.getRank())
+      startIndicesIndex.insert(startIndicesIndex.begin() + indexVectorDim,
+                               kColon);
+    auto startIndex = evalIndex(evalSliceOp(startIndices, startIndicesIndex));
+
+    Index fullStartIndex(operand.getRank(), 0);
+    for (auto dOperand : operand.getAxes()) {
+      auto dStartIt = llvm::find(startIndexMap, dOperand);
+      if (dStartIt == startIndexMap.end())
+        continue;
+      auto dStart = dStartIt - startIndexMap.begin();
+      fullStartIndex[dOperand] = std::clamp<int64_t>(
+          startIndex[dStart], 0ll,
+          operand.getShape()[dOperand] - sliceSizes[dOperand]);
+    }
+
+    Index offsetIndex;
+    for (auto d : offsetDims)
+      offsetIndex.push_back(resultIndex[d]);
+
+    // Change here
+    Index fullOffsetIndex(operand.getRank(), 0);
+    {
+      size_t remapped_idx = 0;
+      for (auto off : offsetDims) {
+        while (llvm::is_contained(collapsedSliceDims, remapped_idx))
+          remapped_idx++;
+        fullOffsetIndex[remapped_idx] = off;
+      }
+    }
+    // End change
+
+    auto operandIndex = fullStartIndex + fullOffsetIndex;
+    result.set(resultIndex, operand.get(operandIndex));
+  }
+  return result;
+}
+
+bool is_iota(ArrayRef<int64_t> idx) {
+  for (auto en : llvm::enumerate(idx))
+    if (en.index() != en.value())
+      return false;
+  return true;
+}
+
+/// Converts gather ops to slice ops in case we have a single set of constant
+/// indices.
+struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto operand = op.getOperand();
+    auto startIndiices = op.getStartIndices();
+    auto offsetDims = op.getDimensionNumbers().getOffsetDims();
+    auto collapsedSliceDims = op.getDimensionNumbers().getCollapsedSliceDims();
+    auto startIndexMap = op.getDimensionNumbers().getStartIndexMap();
+    auto indexVectorDim = op.getDimensionNumbers().getIndexVectorDim();
+    auto sliceSizes = op.getSliceSizes();
+    auto indicesAreSorted = op.getIndicesAreSorted();
+
+    DenseIntElementsAttr startIndicesCst;
+    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
+      return failure();
+
+    {
+      DenseIntElementsAttr operandVals;
+      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
+        auto out = myevalGatherOp(
+            stablehlo::evalConstantOp(operandVals),
+            stablehlo::evalConstantOp(startIndicesCst),
+            stablehlo::Axes(offsetDims), stablehlo::Axes(collapsedSliceDims),
+            stablehlo::Axes(startIndexMap), stablehlo::Axis(indexVectorDim),
+            stablehlo::Sizes(sliceSizes), indicesAreSorted, op.getType());
+
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                           fromTensor(out));
+        return success();
+      }
+    }
+
+    /*
+    SmallVector<int64_t> batchDims;
+    for (auto d : result.getAxes())
+    if (!llvm::is_contained(offsetDims, d)) batchDims.push_back(d);
+
+for (auto resultIt = result.index_begin(); resultIt != result.index_end();
+   ++resultIt) {
+auto resultIndex = *resultIt;
+
+Index batchIndex;
+for (auto d : batchDims) batchIndex.push_back(resultIndex[d]);
+
+auto startIndicesIndex = batchIndex;
+if (indexVectorDim < startIndices.getRank())
+  startIndicesIndex.insert(startIndicesIndex.begin() + indexVectorDim,
+                           kColon);
+auto startIndex = evalIndex(evalSliceOp(startIndices, startIndicesIndex));
+
+SmallVector<int64_t> fullStartIndex(operand.getRank(), 0);
+for (auto dOperand : operand.getAxes()) {
+  auto dStartIt = llvm::find(startIndexMap, dOperand);
+  if (dStartIt == startIndexMap.end()) continue;
+  auto dStart = dStartIt - startIndexMap.begin();
+  fullStartIndex[dOperand] = std::clamp<int64_t>(
+      startIndex[dStart], 0ll,
+      operand.getShape()[dOperand] - sliceSizes[dOperand]);
+}
+
+Index offsetIndex;
+for (auto d : offsetDims) offsetIndex.push_back(resultIndex[d]);
+
+Index fullOffsetIndex(offsetIndex.size() + collapsedSliceDims.size(), 0);
+for (size_t i = 0, oi = 0; i < fullOffsetIndex.size(); ++i) {
+  if (llvm::is_contained(collapsedSliceDims, i)) continue;
+  fullOffsetIndex[i] = offsetIndex[oi++];
+}
+
+auto operandIndex = fullStartIndex + fullOffsetIndex;
+result.set(resultIndex, operand.get(operandIndex));
+}
+
+
+mlir::stablehlo::GatherDimensionNumbersAttr dnums =
+    gather.getDimensionNumbers();
+if (dnums.getIndexVectorDim() != 0 || index.getType().getRank() > 1)
+  return failure();
+
+// TODO: Remove when the verifier catches this case that is
+// invalid if all previous condition holds.
+if (index.getNumElements() !=
+    static_cast<int64_t>(dnums.getStartIndexMap().size())) {
+  return failure();
+}
+
+auto operandType = gather->getOperand(0).getType().cast<RankedTensorType>();
+if (!operandType.hasStaticShape()) return failure();
+
+auto sliceEnd = llvm::to_vector(gather.getSliceSizes());
+SmallVector<int64_t> sliceStart(sliceEnd.size(), 0);
+for (auto [mapIndex, value] :
+     llvm::zip_equal(dnums.getStartIndexMap(), index.getValues<APInt>())) {
+  // Clamp the indices within bounds to faithfully mirror gather semantics.
+  int64_t offset =
+      std::clamp(value.getSExtValue(), static_cast<int64_t>(0),
+                 operandType.getDimSize(mapIndex) - sliceEnd[mapIndex]);
+  sliceStart[mapIndex] += offset;
+  sliceEnd[mapIndex] += offset;
+}
+
+SmallVector<int64_t> sliceStride(sliceEnd.size(), 1);
+SmallVector<int64_t> sliceShape(sliceEnd.size());
+for (auto [shapeElem, startElem, endElem] :
+     llvm::zip_equal(sliceShape, sliceStart, sliceEnd)) {
+  shapeElem = endElem - startElem;
+}
+
+Type elementType = gather.getType().getElementType();
+auto sliceType = RankedTensorType::get(sliceShape, elementType);
+Value result = rewriter.create<mlir::stablehlo::SliceOp>(
+    gather.getLoc(), sliceType, gather.getOperand(),
+    rewriter.getDenseI64ArrayAttr(sliceStart),
+    rewriter.getDenseI64ArrayAttr(sliceEnd),
+    rewriter.getDenseI64ArrayAttr(sliceStride));
+
+ArrayRef<int64_t> collapsedSliceDims = dnums.getCollapsedSliceDims();
+if (!collapsedSliceDims.empty()) {
+  llvm::SmallVector<int64_t> reshapeShape;
+  for (auto [idx, dim] : llvm::enumerate(sliceShape)) {
+    if (!llvm::is_contained(collapsedSliceDims, idx))
+      reshapeShape.push_back(dim);
+  }
+  auto reshapeType = RankedTensorType::get(reshapeShape, elementType);
+  result = rewriter.create<mlir::stablehlo::ReshapeOp>(gather.getLoc(),
+                                                       reshapeType, result);
+}
+
+result.setType(gather.getType());
+rewriter.replaceOp(gather, result);
+return success();
+*/
+    return failure();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
-                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify, SqrtSimplify, CosSimplify,
-                 SinSimplify, NoopSlice, SliceSlice, PadSimplify,
-                 NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-                 ConvertSimplify, ReshapeSimplify, DynamicSliceToStatic,
-                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
+             SqrtSimplify, CosSimplify, SinSimplify, NoopSlice, SliceSlice,
+             PadSimplify, NegativePadToSlice, TanhSimplify, ExpSimplify,
+             SliceSimplify, ConvertSimplify, ReshapeSimplify,
+             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+             BroadcastToReshape, GatherSimplify>(context,
+                                                 PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
