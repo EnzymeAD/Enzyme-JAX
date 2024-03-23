@@ -287,7 +287,7 @@ struct DynamicUpdateToConcat final
     auto dim = mismatches[0];
 
     DenseIntElementsAttr startattr;
-    if (!matchPattern(op.getStartIndices()[0], m_Constant(&startattr))) {
+    if (!matchPattern(op.getStartIndices()[dim], m_Constant(&startattr))) {
       return failure();
     }
     int64_t startv = (*startattr.begin()).getSExtValue();
