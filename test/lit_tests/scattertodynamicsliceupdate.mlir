@@ -26,8 +26,10 @@ module {
 // CHECK-NEXT:    %1 = stablehlo.concatenate %arg1, %0, dim = 2 : (tensor<1x1x2048x16x256xbf16>, tensor<1x1x6144x16x256xbf16>) -> tensor<1x1x8192x16x256xbf16>
 // CHECK-NEXT:    return %1 : tensor<1x1x8192x16x256xbf16>
 // CHECK-NEXT:  }
+
 // CHECK:  func.func @main2(%arg0: tensor<1x1x8192x16x256xbf16>, %arg1: tensor<1x1x2048x16x256xbf16>) -> tensor<1x1x8192x16x256xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:1, 0:1, 2048:8192, 0:16, 0:256] : (tensor<1x1x8192x16x256xbf16>) -> tensor<1x1x6144x16x256xbf16>
-// CHECK-NEXT:    %1 = stablehlo.concatenate %arg1, %0, dim = 2 : (tensor<1x1x2048x16x256xbf16>, tensor<1x1x6144x16x256xbf16>) -> tensor<1x1x8192x16x256xbf16>
-// CHECK-NEXT:    return %1 : tensor<1x1x8192x16x256xbf16>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:1, 0:1, 0:2048, 0:16, 0:256] : (tensor<1x1x8192x16x256xbf16>) -> tensor<1x1x2048x16x256xbf16>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [0:1, 0:1, 4096:8192, 0:16, 0:256] : (tensor<1x1x8192x16x256xbf16>) -> tensor<1x1x4096x16x256xbf16>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %0, %arg1, %1, dim = 2 : (tensor<1x1x2048x16x256xbf16>, tensor<1x1x2048x16x256xbf16>, tensor<1x1x4096x16x256xbf16>) -> tensor<1x1x8192x16x256xbf16>
+// CHECK-NEXT:    return %2 : tensor<1x1x8192x16x256xbf16>
 // CHECK-NEXT:  }
