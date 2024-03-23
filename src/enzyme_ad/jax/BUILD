@@ -162,6 +162,7 @@ cc_library(
         "@stablehlo//:reference_ops",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
     ],
 )
