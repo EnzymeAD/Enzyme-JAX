@@ -46,6 +46,17 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
+// Check if any of the pad sizes are negative
+bool anyPadSizesNegative(stablehlo::PadOp pad) {
+  for (auto &&[low, high, inner] :
+       llvm::zip(pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+                 pad.getInteriorPadding())) {
+    if (low < 0 || high < 0 || inner < 0)
+      return true;
+  }
+  return false;
+}
+
 namespace {
 
 class ReshapeDimMapping {
@@ -545,6 +556,8 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
+    if (anyPadSizesNegative(pad))
+      return failure();
 
     SmallVector<int64_t> start;
     SmallVector<int64_t> end;
@@ -725,6 +738,8 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     if (!pad) {
       return rewriter.notifyMatchFailure(op, "input source is not a pad op");
     }
+    if (anyPadSizesNegative(pad))
+      return failure();
 
     if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
       return failure();
@@ -1229,6 +1244,8 @@ template <typename T> struct BinopPadToConcat final : OpRewritePattern<T> {
     for (int i = 0; i < 2; i++) {
       if (auto lhs =
               op->getOperand(i).template getDefiningOp<stablehlo::PadOp>()) {
+        if (anyPadSizesNegative(lhs))
+          continue;
         auto rhs = op->getOperand(1 - i);
 
         bool match = false;
@@ -1412,6 +1429,8 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
+    if (anyPadSizesNegative(pad))
+      return failure();
     if (!llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
@@ -1553,6 +1572,8 @@ template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
+    if (anyPadSizesNegative(pad))
+      return failure();
 
     auto padval = pad.getPaddingValue();
     auto padval2 = rewriter.create<T>(
@@ -1581,6 +1602,8 @@ struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
                                 PatternRewriter &rewriter) const override {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
+      return failure();
+    if (anyPadSizesNegative(pad))
       return failure();
 
     if (!llvm::hasSingleElement(pad->getUsers()))
@@ -3016,6 +3039,8 @@ template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
           op->getOperand(1 - i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad)
         continue;
+      if (anyPadSizesNegative(pad))
+        return failure();
 
       auto pval = pad.getPaddingValue();
       auto pval_cst = rewriter.create<stablehlo::ConstantOp>(
@@ -3054,7 +3079,8 @@ template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
           continue;
         if (!inp1.isSplat())
           continue;
-      }
+      } else if (anyPadSizesNegative(pad1))
+        return failure();
 
       auto op2 = op->getOperand(1 - i).template getDefiningOp<T>();
       if (!op2)
@@ -3070,7 +3096,8 @@ template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
             continue;
           if (!inp2.isSplat())
             continue;
-        }
+        } else if (anyPadSizesNegative(pad2))
+          return failure();
 
         if (pad1 && pad2) {
           if (pad1.getEdgePaddingLow() != pad2.getEdgePaddingLow())
@@ -3140,6 +3167,8 @@ template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad1)
         continue;
+      if (anyPadSizesNegative(pad1))
+        return failure();
       auto op2 = op->getOperand(1 - i).template getDefiningOp<T>();
       if (!op2)
         continue;
@@ -3149,6 +3178,8 @@ template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
             op2->getOperand(j).template getDefiningOp<stablehlo::PadOp>();
         if (!pad2)
           continue;
+        if (anyPadSizesNegative(pad2))
+          return failure();
 
         if (pad1.getEdgePaddingLow() != pad2.getEdgePaddingLow())
           continue;
@@ -3186,6 +3217,8 @@ struct MulZeroPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
     bool otherIsLHS;
     if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
       return failure();
+    if (anyPadSizesNegative(pad))
+      return failure();
 
     auto otherArgType = otherArg.getType().cast<TensorType>();
     SmallVector<int64_t> limitDims = llvm::to_vector(otherArgType.getShape());
@@ -3206,6 +3239,7 @@ struct MulZeroPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
         pad.getLoc(), mul.getResult(), pad.getPaddingValue(),
         pad.getEdgePaddingLowAttr(), pad.getEdgePaddingHighAttr(),
         pad.getInteriorPaddingAttr());
+    assert(op.getType() == newPad.getType());
     rewriter.replaceOp(op, newPad);
 
     return success();
@@ -3221,6 +3255,8 @@ struct DivZeroPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
     Value otherArg;
     bool otherIsLHS;
     if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
+      return failure();
+    if (anyPadSizesNegative(pad))
       return failure();
 
     if (otherIsLHS)
@@ -3305,6 +3341,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
     Value otherArg;
     bool otherIsLHS;
     if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
+      return failure();
+    if (anyPadSizesNegative(pad))
       return failure();
 
     for (auto u : pad->getUsers())
@@ -3801,7 +3839,6 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
              OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
