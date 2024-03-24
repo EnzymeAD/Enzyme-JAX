@@ -606,7 +606,20 @@ def _enzyme_primal_lowering(
                 mod.regions[0].blocks[0].append(f)
                 if f.sym_name.value == name:
                     fn = f
-            results = func.CallOp(fn, list(in_args)).results
+            if True:
+                identifier_attr = jax_mlir.dense_int_elements([0])
+                placeholderop = stablehlo.ConstantOp(identifier_attr)
+                for op in list(fn.regions[0].blocks[0].operations)[:-1]:
+                    op.move_before(placeholderop)
+                for ba, arg in zip(fn.regions[0].blocks[0].arguments, in_args):
+                    ba.replace_all_uses_with(arg)
+                    print(str(ba))
+                results = list(fn.regions[0].blocks[0].operations[0].operands)
+                fn.regions[0].blocks[0].operations[0].erase()
+                fn.erase()
+            else:
+                callop = func.CallOp(fn, list(in_args))
+                results = callop.results
             if len(results) != len(out_shapes):
                 print(out_shapes, "\n", results, "\n", nmod)
             assert len(results) == len(out_shapes)
@@ -1291,6 +1304,7 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}):
     jit_options2 = {k: v for (k, v) in jit_options.items()}
     if "print_mlir" in jit_options2:
         del jit_options2["print_mlir"]
+    jit_options2["inline"] = True
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(*args: Any):
