@@ -1849,6 +1849,75 @@ struct BroadcastToReshape final
   }
 };
 
+struct BroadcastPad final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto pad = op.getOperand().getDefiningOp<mlir::stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (!llvm::hasSingleElement(pad->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> paddingLow;
+    SmallVector<int64_t> paddingHigh;
+    SmallVector<int64_t> paddingInt;
+
+    // broadcast dim map idx from pad output -> which broadcast output
+
+    SmallVector<int64_t> midShape;
+
+    for (auto en : llvm::enumerate(op.getType().getShape())) {
+      // which pad in/output dim
+      ssize_t origIdx = -1;
+      for (auto en2 : llvm::enumerate(op.getBroadcastDimensions())) {
+        if (en2.value() == en.index()) {
+          origIdx = en2.index();
+          break;
+        }
+      }
+
+      if (origIdx == -1) {
+        paddingLow.push_back(0);
+        paddingHigh.push_back(0);
+        paddingInt.push_back(0);
+        midShape.push_back(en.value());
+      } else {
+        if (pad.getType().getShape()[origIdx] == en.value()) {
+          paddingLow.push_back(pad.getEdgePaddingLow()[origIdx]);
+          paddingHigh.push_back(pad.getEdgePaddingHigh()[origIdx]);
+          paddingInt.push_back(pad.getInteriorPadding()[origIdx]);
+          midShape.push_back(pad.getOperand().getType().getShape()[origIdx]);
+        } else {
+          if (pad.getEdgePaddingLow()[origIdx] != 0)
+            return failure();
+          if (pad.getEdgePaddingHigh()[origIdx] != 0)
+            return failure();
+          if (pad.getInteriorPadding()[origIdx] != 0)
+            return failure();
+          paddingLow.push_back(pad.getEdgePaddingLow()[origIdx]);
+          paddingHigh.push_back(pad.getEdgePaddingHigh()[origIdx]);
+          paddingInt.push_back(pad.getInteriorPadding()[origIdx]);
+          midShape.push_back(en.value());
+        }
+      }
+    }
+
+    auto bcast2 = rewriter.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(midShape, pad.getType().getElementType()),
+        pad.getOperand(), op.getBroadcastDimensions());
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, bcast2, pad.getPaddingValue(), paddingLow, paddingHigh, paddingInt);
+    return success();
+  }
+};
+
 // Given a value and index idx, determine whether all values are the same along
 // idx. If so, return said value
 std::optional<Value> is_same_in_axis(OpBuilder &rewriter, ShapedType outTy,
@@ -3955,7 +4024,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (passses & 1)
       patterns.add<SliceTranspose, SliceBroadcast>(context);
     if (passses & 2)
-      patterns.add<ReducePad>(context);
+      patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
       patterns.add<MulZeroPad, DivZeroPad>(context);
     if (passses & 8)
