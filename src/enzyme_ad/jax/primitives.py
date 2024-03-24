@@ -613,7 +613,6 @@ def _enzyme_primal_lowering(
                     op.move_before(placeholderop)
                 for ba, arg in zip(fn.regions[0].blocks[0].arguments, in_args):
                     ba.replace_all_uses_with(arg)
-                    print(str(ba))
                 results = list(fn.regions[0].blocks[0].operations[0].operands)
                 fn.regions[0].blocks[0].operations[0].erase()
                 fn.erase()
