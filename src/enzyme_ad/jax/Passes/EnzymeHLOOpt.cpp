@@ -3551,7 +3551,7 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-struct ReshapeToSlice : public OpRewritePattern<stablehlo::SliceOp> {
+struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::SliceOp op,
@@ -3569,44 +3569,64 @@ struct ReshapeToSlice : public OpRewritePattern<stablehlo::SliceOp> {
       return rewriter.notifyMatchFailure(
           reshape, "reshape is not clearly merging or splitting dimensions");
     }
-    if (!mapping->isOnlySplitting()) {
-      // TODO: it may still be possible to handle this depending on the slice
-      // configuration.
-      return rewriter.notifyMatchFailure(reshape,
-                                         "reshape is merging dimensions");
-    }
 
-    auto sliceOperandType = op.getOperand().getType().cast<TensorType>();
-    SmallVector<bool> notSlicedDims;
-    notSlicedDims.reserve(sliceOperandType.getRank());
-    for (auto [start, limit, stride, dim] :
-         llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
-                   sliceOperandType.getShape())) {
-      notSlicedDims.push_back(start == 0 && limit == dim && stride == 1);
-    }
-
-    auto reshapeOperandType = reshape.getOperand().getType().cast<TensorType>();
     SmallVector<int64_t> starts, limits, strides;
-    for (auto [i, dim] : llvm::enumerate(reshapeOperandType.getShape())) {
-      SmallVector<int64_t> resultDims = mapping->getMappingFromOperandDim(i);
-      if (llvm::hasSingleElement(resultDims)) {
-        // Keep existing.
-        starts.push_back(op.getStartIndices()[resultDims[0]]);
-        limits.push_back(op.getLimitIndices()[resultDims[0]]);
-        strides.push_back(op.getStrides()[resultDims[0]]);
-        continue;
+    {
+      auto reshapeOperandType =
+          reshape.getOperand().getType().cast<TensorType>();
+      auto reshapeType = reshape.getType().cast<TensorType>();
+      size_t indim = 0;
+      size_t outdim = 0;
+      while (indim < reshapeOperandType.getShape().size() &&
+             outdim < reshapeType.getShape().size()) {
+        if (reshapeOperandType.getShape()[indim] ==
+            reshapeType.getShape()[outdim]) {
+          starts.push_back(op.getStartIndices()[outdim]);
+          limits.push_back(op.getLimitIndices()[outdim]);
+          strides.push_back(op.getStrides()[outdim]);
+          indim++;
+          outdim++;
+          continue;
+        }
+        if (reshapeOperandType.getShape()[indim] == 1) {
+          starts.push_back(0);
+          limits.push_back(1);
+          strides.push_back(1);
+          indim++;
+          continue;
+        }
+        if (reshapeType.getShape()[outdim] == 1) {
+          if (op.getStartIndices()[outdim] != 0)
+            return failure();
+          if (op.getLimitIndices()[outdim] != 1)
+            return failure();
+          if (op.getStrides()[outdim] != 1)
+            return failure();
+          outdim++;
+          continue;
+        }
+        return failure();
       }
-
-      if (!llvm::all_of(resultDims,
-                        [&](int64_t dim) { return notSlicedDims[dim]; })) {
-        return rewriter.notifyMatchFailure(reshape,
-                                           "split dimension is also sliced");
+      while (indim < reshapeOperandType.getShape().size()) {
+        if (reshapeOperandType.getShape()[indim] != 1)
+          return failure();
+        // It's a full slice of the original dimension.
+        starts.push_back(0);
+        limits.push_back(1);
+        strides.push_back(1);
+        indim++;
       }
-
-      // It's a full slice of the original dimension.
-      starts.push_back(0);
-      limits.push_back(reshapeOperandType.getDimSize(i));
-      strides.push_back(1);
+      while (outdim < reshapeType.getShape().size()) {
+        if (reshapeType.getShape()[outdim] != 1)
+          return failure();
+        if (op.getStartIndices()[outdim] != 0)
+          return failure();
+        if (op.getLimitIndices()[outdim] != 1)
+          return failure();
+        if (op.getStrides()[outdim] != 1)
+          return failure();
+        outdim++;
+      }
     }
 
     auto newSlice = rewriter.create<stablehlo::SliceOp>(
@@ -3947,7 +3967,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<PadDotGeneral>(false, context);
 
     if (passses & (2048 * 8))
-      patterns.add<ReshapeToSlice>(context);
+      patterns.add<SliceReshape>(context);
 
     if (passses & (2048 * 16))
       patterns.add<PadDotGeneral>(true, context);
