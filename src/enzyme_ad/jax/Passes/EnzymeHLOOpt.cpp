@@ -3066,6 +3066,39 @@ template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
   }
 };
 
+template <typename T> struct BinopPadPad : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+    auto pad1 = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad1 || anyPadSizesNegative(pad1))
+      return failure();
+
+    auto pad2 = op->getOperand(1).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad2 || anyPadSizesNegative(pad2))
+      return failure();
+
+    if (pad1.getEdgePaddingLow() != pad2.getEdgePaddingLow())
+      return failure();
+
+    if (pad1.getEdgePaddingHigh() != pad2.getEdgePaddingHigh())
+      return failure();
+
+    if (pad1.getInteriorPadding() != pad2.getInteriorPadding())
+      return failure();
+
+    auto pv2 = rewriter.create<T>(op.getLoc(), pad1.getPaddingValue(),
+                                  pad2.getPaddingValue());
+    auto op2 =
+        rewriter.create<T>(op.getLoc(), pad1.getOperand(), pad2.getOperand());
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, op2, pv2, pad1.getEdgePaddingLow(), pad1.getEdgePaddingHigh(),
+        pad1.getInteriorPadding());
+    return success();
+  }
+};
+
 template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -3884,9 +3917,14 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
           BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,
           BinopConstPad<stablehlo::MulOp>, BinopConstPad<stablehlo::DivOp>>(
           context);
+
     if (passses & 16)
-      patterns.add<BinopBinopPadPad<stablehlo::AddOp>,
-                   BinopBinopPadPad<stablehlo::MulOp>>(context);
+      patterns.add<
+          BinopBinopPadPad<stablehlo::AddOp>,
+          BinopBinopPadPad<stablehlo::MulOp>, BinopPadPad<stablehlo::AddOp>,
+          BinopPadPad<stablehlo::SubtractOp>, BinopPadPad<stablehlo::MulOp>,
+          BinopPadPad<stablehlo::DivOp>>(context);
+
     if (passses & 32)
       patterns
           .add<UnaryPadPush<stablehlo::ConvertOp>,
