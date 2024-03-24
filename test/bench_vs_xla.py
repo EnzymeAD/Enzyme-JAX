@@ -153,7 +153,7 @@ class EnzymeJaxTest(absltest.TestCase):
         )
 
         for pname, pipeline in AllPipelines:
-            rfn_enzyme = enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn)
+            rfn_enzyme = jax.jit(enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn))
 
             if (pname, pipeline) in self.primfilter(PrimalPipelines):
                 ao = rfn_enzyme(*ins)
@@ -440,7 +440,7 @@ class ValueAndGrad(absltest.TestCase):
             )
 
             g = jax.value_and_grad(
-                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f),
+                jax.jit(enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f)),
                 has_aux=True,
                 allow_int=True,
             )

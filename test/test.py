@@ -66,6 +66,7 @@ class EnzymeJax(absltest.TestCase):
         print(grads)
 
     def test_enzyme_mlir_jit(self):
+        @jax.jit
         @enzyme_jax_ir(argv=argv)
         def add_one(x: jax.Array, y) -> jax.Array:
             return x + 1 + y

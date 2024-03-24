@@ -616,6 +616,7 @@ def _enzyme_primal_lowering(
                 results = list(fn.regions[0].blocks[0].operations[0].operands)
                 fn.regions[0].blocks[0].operations[0].erase()
                 fn.erase()
+                placeholderop.erase()
             else:
                 callop = func.CallOp(fn, list(in_args))
                 results = callop.results
