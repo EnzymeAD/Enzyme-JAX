@@ -3943,7 +3943,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
           BinopBinopPadPad<stablehlo::AddOp>,
           BinopBinopPadPad<stablehlo::MulOp>, BinopPadPad<stablehlo::AddOp>,
           BinopPadPad<stablehlo::SubtractOp>, BinopPadPad<stablehlo::MulOp>,
-          BinopPadPad<stablehlo::DivOp>>(context);
+          BinopPadPad<stablehlo::DivOp>, BinopPadPad<stablehlo::MinOp>,
+          BinopPadPad<stablehlo::MaxOp>>(context);
 
     if (passses & 32)
       patterns
