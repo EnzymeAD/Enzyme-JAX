@@ -3982,6 +3982,33 @@ return success();
   }
 };
 
+template <typename T> struct CSE final : OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    for (auto nop : op->getOperand(0).getUsers()) {
+      if (nop == op)
+        continue;
+      if (!isa<T>(nop))
+        continue;
+      if (!OperationEquivalence::isEquivalentTo(
+              op, nop, OperationEquivalence::IgnoreLocations))
+        continue;
+      if (nop->getBlock() != op->getBlock())
+        continue;
+      if (nop->isBeforeInBlock(op)) {
+        rewriter.replaceOp(op, nop);
+        return success();
+      } else {
+        rewriter.replaceOp(nop, op);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
@@ -4013,10 +4040,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinopPadToConcat<stablehlo::MulOp>>(context);
 
     if (passses & 512)
-      patterns
-          .add<TransposeDotReorder, DotTranspose, ConvertConvertFloat,
-               ConcatToPad, ConcatAppendingReshape, ReshapeIota, ReshapePad>(
-              context);
+      patterns.add<TransposeDotReorder, DotTranspose, ConvertConvertFloat,
+                   ConcatToPad, ConcatAppendingReshape, ReshapeIota>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
@@ -4049,6 +4074,20 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     if (passses & 64)
       patterns.add<TransposePad>(context);
+
+    if (passses & 128)
+      patterns.add<ReshapePad>(context);
+
+    if (cse) {
+      patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
+                   CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
+                   CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
+                   CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
+                   CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
+                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
+                   CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>>(
+          context, PatternBenefit(65000));
+    }
 
     if (passses & 256)
       patterns.add<TransposeConvert>(context);

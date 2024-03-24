@@ -74,6 +74,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
       /*description=*/"Use top down traversal"
     >,
     Option<
+      /*C++ variable name=*/"cse",
+      /*CLI argument=*/"cse",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Run CSE alongside"
+    >,
+    Option<
       /*C++ variable name=*/"passses",
       /*CLI argument=*/"passses",
       /*type=*/"uint64_t",
