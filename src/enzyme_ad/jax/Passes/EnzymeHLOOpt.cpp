@@ -543,6 +543,32 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto elem = op.getOperand().getDefiningOp();
+    if (!elem)
+      return failure();
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+    if (!llvm::hasSingleElement(elem->getUsers()))
+      return failure();
+    SmallVector<Value> ops;
+    for (auto v : elem->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), v, op.getStartIndices(), op.getLimitIndices(),
+          op.getStrides()));
+    }
+    auto nex = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+        TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
+    rewriter.replaceOp(op, nex);
+    return success();
+  }
+};
+
 // slice(pad x) -> pad(slice x)
 struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3906,8 +3932,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SlicePad, DotReshapeDot, ConcatConstProp, ConcatFuse, PadPad,
-                 ConcatPushBinop<stablehlo::AddOp>,
+                 SliceElementwise, SlicePad, DotReshapeDot, ConcatConstProp,
+                 ConcatFuse, PadPad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, SliceConcat, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
