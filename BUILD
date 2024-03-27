@@ -26,7 +26,6 @@ cc_binary(
     srcs = ["//src/enzyme_ad/jax:enzymexlamlir-opt.cpp"],
     visibility = ["//visibility:public"],
     deps = [
-        "//src/enzyme_ad/jax:XLADerivatives",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AllPassesAndDialects",
@@ -37,8 +36,8 @@ cc_binary(
         "@llvm-project//mlir:DLTIDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:GPUDialect",
-        "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MlirOptLib",
@@ -46,8 +45,22 @@ cc_binary(
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:Transforms",
+        "//src/enzyme_ad/jax:TransformOps",
+        "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",
+    ],
+)
+
+cc_binary(
+    name = "enzymexlamlir-tblgen",
+    srcs = ["//src/enzyme_ad/tools:enzymexlamlir-tblgen.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:TableGen",
+        "@llvm-project//llvm:config",
     ],
 )
 

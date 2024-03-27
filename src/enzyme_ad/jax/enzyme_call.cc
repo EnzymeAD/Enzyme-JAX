@@ -6,6 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -56,7 +59,6 @@
 #include "Enzyme/FunctionUtils.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/transforms/Passes.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
@@ -1027,6 +1029,8 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::memref::registerMemRefPasses();
   mlir::registerenzymePasses();
   regsiterenzymeXLAPasses();
+  mlir::enzyme::registerGenerateApplyPatternsPass();
+  mlir::enzyme::registerRemoveTransformPass();
   mlir::stablehlo::registerPasses();
 
   pybind11::enum_<Language>(m, "Language")

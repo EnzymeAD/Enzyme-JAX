@@ -1,0 +1,110 @@
+//===- enzymexlamlir-tblgen.cpp - Tablegen backend for EnzymeJAX ----------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Signals.h"
+#include "llvm/TableGen/Main.h"
+#include "llvm/TableGen/Record.h"
+#include "llvm/TableGen/TableGenBackend.h"
+
+enum ActionType {
+  GenPopulatePatternsFuncDecl,
+  GenPopulatePatternsFuncDef,
+  GenPopulatePatternsInterfaceImpl,
+};
+
+static llvm::cl::opt<ActionType> action(
+    llvm::cl::desc("action to perform"),
+    llvm::cl::values(clEnumValN(GenPopulatePatternsFuncDecl,
+                                "gen-populate-patterns-func-decls", "")),
+    llvm::cl::values(clEnumValN(GenPopulatePatternsFuncDef,
+                                "gen-populate-patterns-func-defs", "")),
+    llvm::cl::values(clEnumValN(GenPopulatePatternsInterfaceImpl,
+                                "gen-populate-patterns-interface-impl", "")));
+
+llvm::StringRef getPopulateFunctionNameSuffix(llvm::Record *rec) {
+  return rec->getName().ends_with("Op") ? rec->getName().drop_back(2)
+                                        : rec->getName();
+}
+
+static bool emitPopulatePatterns(llvm::raw_ostream &os,
+                                 llvm::RecordKeeper &records) {
+  for (llvm::Record *rec :
+       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+    os << "void ";
+    llvm::StringRef ns = rec->getValueAsString("cppNamespace");
+    if (!ns.empty())
+      os << ns << "::";
+    os << rec->getName()
+       << "::populatePatterns(::mlir::RewritePatternSet &patterns) {\n";
+    os << "  " << ns << "::populate" << getPopulateFunctionNameSuffix(rec)
+       << "(patterns, *getContext());\n";
+    os << "}\n\n";
+  }
+  return false;
+}
+
+static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
+                                          llvm::RecordKeeper &records) {
+  for (llvm::Record *rec :
+       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+    llvm::StringRef ns = rec->getValueAsString("cppNamespace");
+    if (ns.starts_with("::"))
+      ns = ns.drop_front(2);
+    os << "namespace " << ns << " {\n";
+    os << "void populate" << getPopulateFunctionNameSuffix(rec)
+       << "(::mlir::RewritePatternSet &patterns, ::mlir::MLIRContext "
+          "&context);\n";
+    os << "} // namespace " << ns << "\n\n";
+  }
+  return false;
+}
+
+static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
+                                         llvm::RecordKeeper &records) {
+  for (llvm::Record *rec :
+       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+    os << "void ";
+    llvm::StringRef ns = rec->getValueAsString("cppNamespace");
+    if (!ns.empty())
+      os << ns;
+    os << "::populate" << getPopulateFunctionNameSuffix(rec)
+       << "(::mlir::RewritePatternSet &patterns,\n"
+       << "    ::mlir::MLIRContext &context) {\n";
+
+    for (llvm::StringRef pattern : rec->getValueAsListOfStrings("patterns")) {
+      os << "  patterns.add<" << pattern << ">(&context);\n";
+    }
+    os << "}\n\n";
+  }
+  return false;
+}
+
+static bool tablegenMain(llvm::raw_ostream &os, llvm::RecordKeeper &records) {
+  switch (action) {
+  case GenPopulatePatternsFuncDecl:
+    return emitPopulatePatternsFuncDecls(os, records);
+  case GenPopulatePatternsFuncDef:
+    return emitPopulatePatternsFuncDefs(os, records);
+  case GenPopulatePatternsInterfaceImpl:
+    return emitPopulatePatterns(os, records);
+  default:
+    llvm::report_fatal_error("unknown action");
+    return true;
+  }
+}
+
+int main(int argc, char **argv) {
+  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
+  llvm::PrettyStackTraceProgram X(argc, argv);
+  llvm::cl::ParseCommandLineOptions(argc, argv);
+
+  llvm::llvm_shutdown_obj Y;
+  return TableGenMain(argv[0], &tablegenMain);
+}

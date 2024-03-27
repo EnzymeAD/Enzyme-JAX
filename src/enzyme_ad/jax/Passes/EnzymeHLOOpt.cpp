@@ -10,23 +10,20 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/CommonFolders.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
-
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/reference/Ops.h"
-#include "stablehlo/transforms/Passes.h"
-
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
-#include "mlir/Dialect/CommonFolders.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/PassDetails.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/reference/Ops.h"
+#include "stablehlo/transforms/Passes.h"
+#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/TypeInference.h"
 
@@ -3733,6 +3730,7 @@ struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
     return success();
   }
 };
+} // namespace
 
 // Rewritten from
 // https://github.com/openxla/stablehlo/blob/4f180d3c2236a15f82f29aad1b47f6ea2c14fc52/stablehlo/reference/Ops.cpp#L1381
@@ -4009,6 +4007,14 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
   }
 };
 
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
+
+void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
+                                       bool postPad, MLIRContext &context) {
+  patterns.insert<PadDotGeneral>(postPad, &context);
+}
+
+namespace {
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {

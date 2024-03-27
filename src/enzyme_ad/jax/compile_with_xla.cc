@@ -18,6 +18,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -44,6 +45,7 @@
 
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Implementations/XLADerivatives.h"
+#include "TransformOps/TransformOps.h"
 
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 
@@ -52,6 +54,8 @@
 void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
+  mlir::linalg::registerTransformDialectExtension(registry);
+  mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
   mlir::func::registerInlinerExtension(registry);
 }
 
