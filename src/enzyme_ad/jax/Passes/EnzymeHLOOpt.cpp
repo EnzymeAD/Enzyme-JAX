@@ -1251,6 +1251,43 @@ struct NegativePadToSlice final : OpRewritePattern<mlir::stablehlo::PadOp> {
   }
 };
 
+struct BinopToSlice : public OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp slice,
+                                PatternRewriter &rewriter) const override {
+    if (!llvm::hasSingleElement(slice.getOperand().getUses())) {
+      return rewriter.notifyMatchFailure(slice,
+                                         "other uses of the operand detected");
+    }
+
+    Operation *definingOp = slice.getOperand().getDefiningOp();
+    if (!definingOp || !definingOp->hasTrait<OpTrait::Elementwise>() ||
+        definingOp->getNumOperands() != 2) {
+      return rewriter.notifyMatchFailure(
+          slice, "expected binary elementwise defining op");
+    }
+
+    auto operands = llvm::map_to_vector(
+        definingOp->getOperands(), [&](Value operand) -> Value {
+          return rewriter
+              .create<stablehlo::SliceOp>(
+                  slice->getLoc(), operand, slice.getStartIndices(),
+                  slice.getLimitIndices(), slice.getStrides())
+              .getResult();
+        });
+
+    OperationState state(definingOp->getLoc(), definingOp->getName());
+    state.addOperands(operands);
+    state.addTypes(slice.getResult().getType());
+    state.addAttributes(definingOp->getAttrs());
+    Operation *replacement = rewriter.create(state);
+    rewriter.replaceOp(slice, replacement);
+
+    return success();
+  }
+};
+
 /*
 
     %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
