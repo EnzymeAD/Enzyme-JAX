@@ -3677,10 +3677,11 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
       SmallVector<int64_t> sliceLow, sliceHigh, sliceStride;
       for (auto &&[pos, size] :
            llvm::enumerate(otherArg.getType().cast<TensorType>().getShape())) {
-        auto it = llvm::find_if(otherDimsToSlice, [&](auto &tup) {
-          return std::get<0>(tup) == pos;
-        });
-        if (it == otherDimsToSlice.end()) {
+        std::optional<std::tuple<int64_t, int64_t, int64_t, int64_t>> it;
+        for (auto tup : otherDimsToSlice)
+          if (std::get<0>(tup) == pos)
+            it = tup;
+        if (!it) {
           sliceLow.push_back(0);
           sliceHigh.push_back(size);
           sliceStride.push_back(1);
