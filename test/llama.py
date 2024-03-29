@@ -308,7 +308,9 @@ class Llama(absltest.TestCase):
 
         jfunc = jax.jit(func)
 
-        efunc = jax.jit(enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func))
+        efunc = jax.jit(
+            enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
+        )
 
         number = 100
         if True:
@@ -412,13 +414,15 @@ class Llama(absltest.TestCase):
         jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax rev", jres)
 
-        jrev2 = jax.jit(enzyme_jax.enzyme_jax_ir(
-            argv=argv,
-            pipeline_options=enzyme_jax.JaXPipeline(
-                "inline{default-pipeline=canonicalize max-iterations=4},"
-                + "canonicalize,cse,enzyme-hlo-opt,cse"
-            ),
-        )(jrev))
+        jrev2 = jax.jit(
+            enzyme_jax.enzyme_jax_ir(
+                argv=argv,
+                pipeline_options=enzyme_jax.JaXPipeline(
+                    "inline{default-pipeline=canonicalize max-iterations=4},"
+                    + "canonicalize,cse,enzyme-hlo-opt,cse"
+                ),
+            )(jrev)
+        )
 
         jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax2 rev", jres2)
