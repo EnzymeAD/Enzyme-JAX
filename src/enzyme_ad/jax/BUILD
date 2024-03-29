@@ -274,7 +274,6 @@ pybind_library(
         "@tsl//tsl/protobuf:histogram_proto_cc",
         "@tsl//tsl/protobuf:histogram_proto_cc_impl",
         "@tsl//tsl/protobuf:protos_all_cc_impl",
-        "@tsl//tsl/util:determinism",
 
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@xla//xla:autotune_results_proto_cc",
