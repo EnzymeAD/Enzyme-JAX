@@ -53,9 +53,9 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
       return namedSequence->emitError() << "unregistered pattern op '" << name
                                         << "' listed for construction";
     }
-    auto *concept =
+    auto *conceptV =
         opName->getInterface<SearchablePatternDescriptorOpInterface>();
-    for (DictionaryAttr attrs : concept->getPossibleAttrCombinations(builder)) {
+    for (DictionaryAttr attrs : conceptV->getPossibleAttrCombinations(builder)) {
       opConfigurations.push_back(OpConfig{*opName, attrs});
     }
   }
