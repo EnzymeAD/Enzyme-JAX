@@ -66,8 +66,11 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
       loc, namedSequence.getBody().front().getArgument(0),
       ArrayRef<StringRef>{func::FuncOp::getOperationName()});
 
-  auto configPow = llvm::APInt::getOneBitSet(version.getBitWidth() + 1,
-                                             opConfigurations.size());
+  if (version.getBitWidth() < opConfigurations.size() + 1)
+    version = version.zext(opConfigurations.size() + 1);
+
+  auto configPow =
+      llvm::APInt::getOneBitSet(version.getBitWidth(), opConfigurations.size());
   do {
     llvm::APInt configuration = version.srem(configPow);
     generatePatternGroup(builder, loc, match, opConfigurations, configuration);
