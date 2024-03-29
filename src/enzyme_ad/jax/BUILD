@@ -57,6 +57,68 @@ symlink_inputs(
 )
 
 td_library(
+    name = "TransformOpsTdFiles",
+    srcs = [
+        "TransformOps/TransformOps.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:TransformDialectTdFiles",
+    ]
+)
+
+gentbl_cc_library(
+    name = "TransformOpsIncGen",
+    tbl_outs = [(
+            ["-gen-op-decls"],
+            "TransformOps/TransformOps.h.inc",
+        ), (
+            ["-gen-op-defs"],
+            "TransformOps/TransformOps.cpp.inc",
+        ), (
+            ["-gen-op-interface-decls"],
+            "TransformOps/OpInterfaces.h.inc",
+        ), (
+            ["-gen-op-interface-defs"],
+            "TransformOps/OpInterfaces.cpp.inc",
+        ),
+    ],
+    td_file = "TransformOps/TransformOps.td",
+    deps = [
+        ":TransformOpsTdFiles",
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "TransformOpsImplIncGen",
+    tbl_outs = [(
+        ["-gen-populate-patterns-interface-impl"],
+        "TransformOps/TransformOpsImpl.cpp.inc"
+    )],
+    td_file = "TransformOps/TransformOps.td",
+    deps = [
+        ":TransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
+cc_library(
+    name = "TransformOps",
+    srcs = glob(["TransformOps/*.cpp"]),
+    hdrs = glob(["TransformOps/*.h"]),
+    deps = [
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LinalgTransformOps",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformDialect",
+        ":TransformOpsIncGen",
+        ":TransformOpsImplIncGen",
+        ":XLADerivatives",
+    ],
+)
+
+td_library(
     name = "ImplementationsCommonTdFiles",
     srcs = [
         ":EnzymeImplementationsCommonTdFiles",
@@ -127,6 +189,23 @@ gentbl_cc_library(
     deps = [":EnzymeXLAPassesTdFiles"],
 )
 
+gentbl_cc_library(
+    name = "EnzyeHLOPatternsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-patterns-func-decls"],
+            "Passes/EnzymeHLOPatterns.h.inc",
+        ), (
+            ["-gen-populate-patterns-func-defs"],
+            "Passes/EnzymeHLOPatterns.cpp.inc",
+        )],
+    td_file = "TransformOps/TransformOps.td",
+    deps = [
+        ":TransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
 cc_library(
     name = "XLADerivatives",
     srcs = glob(
@@ -147,15 +226,19 @@ cc_library(
     ],
     deps = [
         ":EnzymeXLAPassesIncGen",
+        ":EnzyeHLOPatternsIncGen",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         "@enzyme//:EnzymeMLIR",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:Transforms",
@@ -177,6 +260,7 @@ pybind_library(
     ]),
     deps = [
         ":XLADerivatives",
+        ":TransformOps",
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@tsl//tsl/framework:allocator",
         "@tsl//tsl/framework:allocator_registry_impl",
@@ -200,6 +284,7 @@ pybind_library(
         "@xla//xla/client",
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
+        "@xla//xla/client:local_client",
         "@xla//xla/client:xla_computation",
         "@xla//xla/service",
         "@xla//xla/service:local_service",
@@ -242,9 +327,11 @@ pybind_library(
         # MLIR dialects and parser.
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:LinalgTransformOps",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@xla//xla/mlir_hlo:all_passes",
@@ -266,6 +353,7 @@ pybind_extension(
     deps = [
         ":clang_compile",
         ":compile_with_xla",
+        ":TransformOps",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@enzyme//:EnzymeStatic",
