@@ -55,7 +55,8 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
     }
     auto *conceptV =
         opName->getInterface<SearchablePatternDescriptorOpInterface>();
-    for (DictionaryAttr attrs : conceptV->getPossibleAttrCombinations(builder)) {
+    for (DictionaryAttr attrs :
+         conceptV->getPossibleAttrCombinations(builder)) {
       opConfigurations.push_back(OpConfig{*opName, attrs});
     }
   }
