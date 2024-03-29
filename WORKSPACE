@@ -13,33 +13,23 @@ load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
 
 rules_cc_dependencies()
 
-LLVM_COMMIT = "e946b5a87b2db307da076093d0a9a72ecb4ec089"
-LLVM_SHA256 = "7528e725bd118fec655f378efea2abaec032309fecc04a7ea052fd63e68c4dc8"
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 
-http_archive(
-    name = "llvm-raw",
-    build_file_content = "# empty",
-    sha256 = LLVM_SHA256,
-    strip_prefix = "llvm-project-" + LLVM_COMMIT,
-    urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
-    patch_args = ["-p1"],
-    patches = ["//:patches/llvm_build.patch"]
-)
-
-load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
-
-XLA_COMMIT = "541962e88f52237bc6050e4c8d7270e7c7e12b4e"
-XLA_SHA256 = "ca67f68edad0d898241b65cbd85869de2560e2fdba700d964c707b427158583d"
+XLA_COMMIT = "35a563552b55129d3d91965bf5ede0cd2077a63a"
+XLA_SHA256 = "a2e089231bb75198268927ba16a4dbfb21f4495818a451706b6c5ef6b2a9e6ea"
 
 http_archive(
     name = "xla",
     sha256 = XLA_SHA256,
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-    patch_args = ["-p1"],
-    patches = ["//:patches/xla.patch", "//:patches/xla2.patch", ],
+    patch_cmds = [
+        "find . -type f -name BUILD -exec sed -i 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +", 
+        "find . -type f -name BUILD -exec sed -i 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
+        "find xla/mlir -type f -name BUILD -exec sed -i 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +"
+    ]
+    # patch_args = ["-p1"],
+    # patches = ["//:patches/xla.patch", "//:patches/xla2.patch", ],
 )
 
 PYRULES_COMMIT = "fe33a4582c37499f3caeb49a07a78fc7948a8949"
@@ -70,8 +60,8 @@ http_archive(
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
-JAX_COMMIT = "5e039f7af54539eed3268610b737b9f38621feb1"
-JAX_SHA256 = ""
+JAX_COMMIT = "8815b236b656f494171131301d1d81e84cf4c67c"
+JAX_SHA256 = "188787b8ec366dcda5805f24dcbfab7a349aa780498aeb9c3b728c9cec0a7e7d"
 
 http_archive(
     name = "jax",
@@ -92,6 +82,9 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 xla_workspace3()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
+
+load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
+llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 xla_workspace2()
 
 load("@xla//:workspace1.bzl", "xla_workspace1")
@@ -102,9 +95,3 @@ xla_workspace0()
 
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 flatbuffers()
-
-load("@jax//third_party/robin_map:workspace.bzl", robin_map = "repo")
-robin_map()
-
-load("@jax//third_party/nanobind:workspace.bzl", nanobind = "repo")
-nanobind()

@@ -1,4 +1,4 @@
-include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
+include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
 
 def SearchablePatternDescriptorOpInterface :
