@@ -4090,8 +4090,24 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
-                                       bool postPad, MLIRContext &context) {
-  patterns.insert<PadDotGeneral>(postPad, &context);
+                                       bool postPad, MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<PadDotGeneral>(postPad, &context, benefit);
+}
+
+void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
+                                      int64_t maxConstantExpansion,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
+}
+
+void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
+                                                int64_t maxConstantExpansion,
+                                                MLIRContext &context,
+                                                PatternBenefit benefit) {
+  patterns.insert<BroadcastInDimSimplify>(maxConstantExpansion, &context,
+                                          benefit);
 }
 
 namespace {
