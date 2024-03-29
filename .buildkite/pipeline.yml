@@ -20,7 +20,7 @@ steps:
           save: file
       - cache#v0.6.0:
           manifest: WORKSPACE
-          path: baztmp
+          path: .baztmp
           restore: file
           save: file
     commands: |
@@ -69,13 +69,13 @@ steps:
       # conda install -c conda-forge cxx-compiler -y
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
-      mkdir -p baztmp
+      mkdir -p .baztmp
       rm -f bazel-bin/*.whl
-      bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
+      bazel --output_user_root=`pwd`/.baztmp build :enzyme_ad
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install "jax[cpu]"
-      bazel --output_user_root=`pwd`/baztmp test --test_output=errors ...
+      bazel --output_user_root=`pwd`/.baztmp test --test_output=errors ...
     artifact_paths:
       - "*.whl"
 
