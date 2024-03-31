@@ -33,7 +33,7 @@ steps:
           sed -i.bak 's~targets = \[.*\]~targets = \[\"X86\", \"AMDGPU\"]~g' WORKSPACE
           curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-MacOSX-{{matrix.arch}}.sh
         fi
-        curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-darwin"
+        curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
         mv bazelisk-darwin .local/bin/bazel
         chmod +x .local/bin/bazel
         chmod +x Miniconda*.sh
@@ -41,9 +41,9 @@ steps:
         rm Miniconda*.sh
       elif [ "{{matrix.os}}" == "linux" ]; then      
         if [ "{{matrix.arch}}" == "aarch64" ]; then
-          curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-linux-arm64
+          curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-arm64
         else
-          curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-linux-amd64
+          curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
         fi
         mv bazel* .local/bin/bazel
         chmod +x .local/bin/bazel
