@@ -25,7 +25,18 @@ namespace mlir {
 namespace transform {
 
 void ApplyPadDotGeneralPatterns::populatePatterns(RewritePatternSet &patterns) {
-  addPadDotGeneral(patterns, getPostPad(), *getContext());
+  addPadDotGeneral(patterns, getParameter(), *getContext(),
+                   PatternBenefit(getBenefit().value_or(1)));
+}
+
+void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addIotaSimplify(patterns, getParameter(), *getContext(),
+                  PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addBroadcastInDimSimplify(patterns, getParameter(), *getContext(),
+                            PatternBenefit(getBenefit().value_or(1)));
 }
 
 } // namespace transform

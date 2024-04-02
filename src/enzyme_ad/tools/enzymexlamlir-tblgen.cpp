@@ -44,7 +44,9 @@ static bool emitPopulatePatterns(llvm::raw_ostream &os,
     os << rec->getName()
        << "::populatePatterns(::mlir::RewritePatternSet &patterns) {\n";
     os << "  " << ns << "::populate" << getPopulateFunctionNameSuffix(rec)
-       << "(patterns, *getContext());\n";
+       << "(patterns, *getContext(), "
+       << "getBenefit() ? PatternBenefit(*getBenefit()) : PatternBenefit(1));"
+       << "\n";
     os << "}\n\n";
   }
   return false;
@@ -60,7 +62,7 @@ static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
     os << "namespace " << ns << " {\n";
     os << "void populate" << getPopulateFunctionNameSuffix(rec)
        << "(::mlir::RewritePatternSet &patterns, ::mlir::MLIRContext "
-          "&context);\n";
+          "&context, ::mlir::PatternBenefit benefit);\n";
     os << "} // namespace " << ns << "\n\n";
   }
   return false;
@@ -76,7 +78,8 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
       os << ns;
     os << "::populate" << getPopulateFunctionNameSuffix(rec)
        << "(::mlir::RewritePatternSet &patterns,\n"
-       << "    ::mlir::MLIRContext &context) {\n";
+       << "    ::mlir::MLIRContext &context,\n"
+       << "    ::mlir::PatternBenefit benefit) {\n";
 
     for (llvm::StringRef pattern : rec->getValueAsListOfStrings("patterns")) {
       os << "  patterns.add<" << pattern << ">(&context);\n";
