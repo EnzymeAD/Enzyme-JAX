@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <stdint.h>
+
 namespace mlir {
 class MLIRContext;
 class PatternBenefit;
