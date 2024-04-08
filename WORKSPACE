@@ -1,4 +1,4 @@
-load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "PYRULES_COMMIT", "PYRULES_SHA256")
+load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "PYRULES_COMMIT", "PYRULES_SHA256", "XLA_PATCHES")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -32,14 +32,7 @@ http_archive(
     sha256 = XLA_SHA256,
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-    patch_cmds = [
-        """
-        sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/HAVE_BACKTRACE=0\\/g'\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
-        """,
-        "find . -type f -name BUILD -exec sed -i 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +", 
-        "find . -type f -name BUILD -exec sed -i 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
-        "find xla/mlir -type f -name BUILD -exec sed -i 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +"
-    ]
+    patch_cmds = XLA_PATCHES
 )
 
 http_archive(
