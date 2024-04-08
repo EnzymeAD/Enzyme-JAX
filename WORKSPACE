@@ -57,8 +57,11 @@ http_archive(
     urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
 )
 
-load("@jax//third_party/xla:workspace.bzl", jax_xla_workspace = "repo")
-jax_xla_workspace()
+
+load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
+llvm("llvm-raw")
+load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
+llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()
@@ -67,9 +70,6 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 xla_workspace3()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
-
-load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 xla_workspace2()
 
 load("@xla//:workspace1.bzl", "xla_workspace1")
