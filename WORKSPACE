@@ -24,6 +24,9 @@ http_archive(
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
     patch_cmds = [
+        """
+        sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/HAVE_BACKTRACE=0\\/g'\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
+        """,
         "find . -type f -name BUILD -exec sed -i 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +", 
         "find . -type f -name BUILD -exec sed -i 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
         "find xla/mlir -type f -name BUILD -exec sed -i 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +"
