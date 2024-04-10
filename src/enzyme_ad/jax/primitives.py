@@ -1300,7 +1300,9 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
-def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}):
+def enzyme_jax_ir(
+    argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True
+):
     jit_options2 = {k: v for (k, v) in jit_options.items()}
     if "print_mlir" in jit_options2:
         del jit_options2["print_mlir"]
@@ -1327,6 +1329,6 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}):
             )
             return jax.tree_util.tree_unflatten(out_tree, out_flat)
 
-        return jax.jit(wrapped, **jit_options2)
+        return jax.jit(wrapped, **jit_options2) if inner_jit else wrapped
 
     return decorator
