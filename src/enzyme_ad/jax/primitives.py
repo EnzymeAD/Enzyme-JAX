@@ -1311,13 +1311,31 @@ def enzyme_jax_ir(
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(*args: Any):
             args_flat, in_tree = jax.tree_util.tree_flatten(args)
-            out_shape = jax.jit(func, **jit_options2).eval_shape(*args)
+            jitres = jax.jit(func, **jit_options2)
+            out_shape = jitres.eval_shape(*args)
             in_idxs = {i: i for i in range(len(args_flat))}
             out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
             out_shape_flat = [
                 jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat
             ]
             out_idxs = {i: -1 for i in range(len(out_shape_flat))}
+
+            # Perform jax's dead arg ahead of time dead arg elimination to avoid
+            # passing in unnecessary args from our end into xla. Here we emulate
+            # compilation first with fake args (to not make a user, and so that
+            # this code will get DCE'd / not traced).
+            # TODO in the future we should look at mlir to determine what actual values
+            # we will need and do dead arg elim ourselves based on ir in advance
+            avals_in = jax.tree_util.tree_unflatten(
+                in_tree, [jnp.zeros(arg.shape, dtype=arg.dtype) for arg in args_flat]
+            )
+            lowered_func = jitres.lower(*avals_in)
+            kept = lowered_func.compile()._executable._kept_var_idx
+            args_flat = [
+                arg if i in kept else jnp.zeros(arg.shape, dtype=arg.dtype)
+                for (i, arg) in enumerate(args_flat)
+            ]
+
             out_flat = ffi_call(
                 *args_flat,
                 source=(in_tree, in_idxs, out_idxs, func, jit_options),
