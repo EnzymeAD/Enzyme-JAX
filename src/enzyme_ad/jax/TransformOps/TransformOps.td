@@ -271,6 +271,10 @@ def ApplyBroadcastReducePatterns : EnzymeHLOPatternOp<
     "broadcast_reduce"> {
   let patterns = ["BroadcastReduce"];
 }
+def ApplySliceDotGeneralPatterns : EnzymeHLOPatternOp<
+    "slice_dot_general"> {
+  let patterns = ["SliceDotGeneral"];
+}
 def ApplySliceReshapePatterns : EnzymeHLOPatternOp<
     "slice_reshape"> {
   let patterns = ["SliceReshape"];
