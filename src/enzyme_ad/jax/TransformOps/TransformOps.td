@@ -150,6 +150,11 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherSimplify"];
 }
 
+def ApplyGatherOpCanonInnerPatterns : EnzymeHLOPatternOp<
+    "gather_canon"> {
+  let patterns = ["GatherOpCanonInner"];
+}
+
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
     "convert_concat"> {

@@ -4087,6 +4087,76 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
   }
 };
 
+struct GatherOpCanonInner final : OpRewritePattern<mlir::stablehlo::GatherOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp gather,
+                                PatternRewriter &rewriter) const override {
+    DenseIntElementsAttr index;
+    if (!matchPattern(gather.getStartIndices(), m_Constant(&index)))
+      return failure();
+
+    mlir::stablehlo::GatherDimensionNumbersAttr dnums =
+        gather.getDimensionNumbers();
+    if (dnums.getIndexVectorDim() != 0 || index.getType().getRank() > 1)
+      return failure();
+
+    // TODO: Remove when the verifier catches this case that is
+    // invalid if all previous condition holds.
+    if (index.getNumElements() !=
+        static_cast<int64_t>(dnums.getStartIndexMap().size())) {
+      return failure();
+    }
+
+    auto operandType = gather->getOperand(0).getType().cast<RankedTensorType>();
+    if (!operandType.hasStaticShape())
+      return failure();
+
+    auto sliceEnd = llvm::to_vector(gather.getSliceSizes());
+    SmallVector<int64_t> sliceStart(sliceEnd.size(), 0);
+    for (auto [mapIndex, value] :
+         llvm::zip_equal(dnums.getStartIndexMap(), index.getValues<APInt>())) {
+      // Clamp the indices within bounds to faithfully mirror gather semantics.
+      int64_t offset =
+          std::clamp(value.getSExtValue(), static_cast<int64_t>(0),
+                     operandType.getDimSize(mapIndex) - sliceEnd[mapIndex]);
+      sliceStart[mapIndex] += offset;
+      sliceEnd[mapIndex] += offset;
+    }
+
+    SmallVector<int64_t> sliceStride(sliceEnd.size(), 1);
+    SmallVector<int64_t> sliceShape(sliceEnd.size());
+    for (auto [shapeElem, startElem, endElem] :
+         llvm::zip_equal(sliceShape, sliceStart, sliceEnd)) {
+      shapeElem = endElem - startElem;
+    }
+
+    Type elementType = gather.getType().getElementType();
+    auto sliceType = RankedTensorType::get(sliceShape, elementType);
+    Value result = rewriter.create<mlir::stablehlo::SliceOp>(
+        gather.getLoc(), sliceType, gather.getOperand(),
+        rewriter.getDenseI64ArrayAttr(sliceStart),
+        rewriter.getDenseI64ArrayAttr(sliceEnd),
+        rewriter.getDenseI64ArrayAttr(sliceStride));
+
+    ArrayRef<int64_t> collapsedSliceDims = dnums.getCollapsedSliceDims();
+    if (!collapsedSliceDims.empty()) {
+      llvm::SmallVector<int64_t> reshapeShape;
+      for (auto [idx, dim] : llvm::enumerate(sliceShape)) {
+        if (!llvm::is_contained(collapsedSliceDims, idx))
+          reshapeShape.push_back(dim);
+      }
+      auto reshapeType = RankedTensorType::get(reshapeShape, elementType);
+      result = rewriter.create<mlir::stablehlo::ReshapeOp>(gather.getLoc(),
+                                                           reshapeType, result);
+    }
+
+    result.setType(gather.getType());
+    rewriter.replaceOp(gather, result);
+    return success();
+  }
+};
+
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
@@ -4123,8 +4193,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              PadSimplify, NegativePadToSlice, TanhSimplify, ExpSimplify,
              SliceSimplify, ConvertSimplify, ReshapeSimplify,
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify>(context,
-                                                 PatternBenefit(65000));
+             BroadcastToReshape, GatherSimplify, GatherOpCanonInner>(
+            context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
