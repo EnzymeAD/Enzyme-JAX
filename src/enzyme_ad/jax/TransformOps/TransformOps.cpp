@@ -38,6 +38,14 @@ void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
   addBroadcastInDimSimplify(patterns, getParameter(), *getContext(),
                             PatternBenefit(getBenefit().value_or(1)));
 }
+void ConcatenateOpCanonPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addConcatenateOpCanon(patterns, getParameter(), *getContext(),
+                        PatternBenefit(getBenefit().value_or(1)));
+}
+void SelectOpCanonPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addSelectOpCanon(patterns, getParameter(), *getContext(),
+                   PatternBenefit(getBenefit().value_or(1)));
+}
 
 } // namespace transform
 } // namespace mlir
