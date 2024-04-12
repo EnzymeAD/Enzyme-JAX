@@ -602,10 +602,15 @@ def _enzyme_primal_lowering(
                     print(str(nmod), flush=True)
             nmod = ir.Module.parse(nmod)
             fn = None
+            pushtop = []
             for f in nmod.body:
+                if "top_k_gt" in f.sym_name.value:
+                    pushtop.append(f)
                 mod.regions[0].blocks[0].append(f)
                 if f.sym_name.value == name:
                     fn = f
+            for f in pushtop[::-1]:
+                f.move_before(next(mod.regions[0].blocks[0].__iter__()))
             if True:
                 identifier_attr = jax_mlir.dense_int_elements([0])
                 placeholderop = stablehlo.ConstantOp(identifier_attr)
