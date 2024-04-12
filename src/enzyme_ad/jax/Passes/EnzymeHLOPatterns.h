@@ -24,4 +24,9 @@ void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);
+void addSelectOpCanon(RewritePatternSet &patterns, int64_t maxConstantExpansion,
+                      MLIRContext &context, PatternBenefit benefit);
+void addConcatenateOpCanon(RewritePatternSet &patterns,
+                           int64_t maxConstantExpansion, MLIRContext &context,
+                           PatternBenefit benefit);
 } // namespace mlir::transform

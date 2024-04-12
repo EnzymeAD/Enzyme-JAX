@@ -150,11 +150,6 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherSimplify"];
 }
 
-def ApplyGatherOpCanonInnerPatterns : EnzymeHLOPatternOp<
-    "gather_canon"> {
-  let patterns = ["GatherOpCanonInner"];
-}
-
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
     "convert_concat"> {
@@ -438,6 +433,103 @@ def ApplyCSENegPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<stablehlo::NegOp>"];
 }
 
+
+
+def CompareOpCanonPatterns : EnzymeHLOPatternOp<
+    "compare_op_canon"> {
+  let patterns = ["CompareOpCanon"];
+}
+
+def BroadcastInDimOpCanonPatterns : EnzymeHLOPatternOp<
+    "broadcast_in_dim_op_canon"> {
+  let patterns = ["BroadcastInDimOpCanon"];
+}
+
+def ConvertOpCanonPatterns : EnzymeHLOPatternOp<
+    "convert_op_canon"> {
+  let patterns = ["ConvertOpCanon"];
+}
+
+def DynamicBroadcastInDimOpNotActuallyDunamicPatterns : EnzymeHLOPatternOp<
+    "dynamic_broadcast_in_dim_op_not_actually_dynamic"> {
+  let patterns = ["DynamicBroadcastInDimOpNotActuallyDynamic"];
+}
+
+def ChainedDynamicBroadcastInDimCanonicalizationPatterns : EnzymeHLOPatternOp<
+    "chained_dynamic_broadcast_in_dim_canonicalization"> {
+  let patterns = ["ChainedDynamicBroadcastInDimCanonicalization"];
+}
+
+def DynamicBroadcastInDimAlDimsNonExpandingPatterns : EnzymeHLOPatternOp<
+    "dynamic_broadcast_in_dim_all_dims_non_expanding"> {
+  let patterns = ["DynamicBroadcastInDimAllDimsNonExpanding"];
+}
+
+def NoopReduceOpCanonPatterns : EnzymeHLOPatternOp<
+    "noop_reduce_op_canon"> {
+  let patterns = ["NoopReduceOpCanon"];
+}
+
+def EmptyReduceOpCanonPatterns : EnzymeHLOPatternOp<
+    "empty_reduce_op_canon"> {
+  let patterns = ["EmptyReduceOpCanon"];
+}
+
+def DynamicReshapeOpCanonPatterns : EnzymeHLOPatternOp<
+    "dynamic_reshape_op_canon"> {
+  let patterns = ["DynamicReshapeOpCanon"];
+}
+
+def GetTupleElementOpCanonPatterns : EnzymeHLOPatternOp<
+    "get_tuple_element_op_canon"> {
+  let patterns = ["GetTupleElementOpCanon"];
+}
+
+def RealOpCanonPatterns : EnzymeHLOPatternOp<
+    "real_op_canon"> {
+  let patterns = ["RealOpCanon"];
+}
+
+def ImagOpCanonPatterns : EnzymeHLOPatternOp<
+    "imag_op_canon"> {
+  let patterns = ["ImagOpCanon"];
+}
+
+def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
+    "get_dimension_size_op_canon"> {
+  let patterns = ["GetDimensionSizeOpCanon"];
+}
+
+def GatherOpCanonPatterns : EnzymeHLOPatternOp<
+    "gather_op_canon"> {
+  let patterns = ["GatherOpCanon"];
+}
+
+def ReshapeOpCanonPatterns : EnzymeHLOPatternOp<
+    "reshape_op_canon"> {
+  let patterns = ["ReshapeOpCanon"];
+}
+
+def MergeConsecutiveReshapesPatterns : EnzymeHLOPatternOp<
+    "merge_consecutive_reshapes"> {
+  let patterns = ["MergeConsecutiveReshapes"];
+}
+
+def TransposeIsReshapePatterns : EnzymeHLOPatternOp<
+    "transpose_is_reshape"> {
+  let patterns = ["TransposeIsReshape"];
+}
+
+def ZeroExtentTensorCanonPatterns : EnzymeHLOPatternOp<
+    "zero_extent_tensor_canon"> {
+  let patterns = ["ZeroExtentTensorCanon"];
+}
+
+def ReorderElementwiseAndShapeOpPatterns : EnzymeHLOPatternOp<
+    "reorder_elementwise_and_shape_op"> {
+  let patterns = ["ReorderElementwiseAndShapeOp"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
@@ -458,6 +550,34 @@ def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 }
 def ApplyBroadcastInDimSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "broadcast_in_dim_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+def SelectOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
+    "select_op_canon"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+def ConcatenateOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
+    "concatenate_op_canon"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
