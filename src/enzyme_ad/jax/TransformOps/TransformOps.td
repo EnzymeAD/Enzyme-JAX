@@ -546,6 +546,11 @@ def ReorderElementwiseAndShapeOpPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReorderElementwiseAndShapeOp"];
 }
 
+def TransposeSimplifyPatterns : EnzymeHLOPatternOp<
+    "transpose_simplify"> {
+  let patterns = ["TransposeSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

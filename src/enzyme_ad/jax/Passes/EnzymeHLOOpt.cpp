@@ -1951,7 +1951,7 @@ struct ReshapeEmptyBroadcast final
     if (bcast.getBroadcastDimensions().size() != 0)
       return failure();
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, op.getType(), bcast.getOperand());
+        op, op.getType(), bcast.getOperand(), bcast.getBroadcastDimensions());
     return success();
   }
 };
@@ -2683,6 +2683,31 @@ struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return success();
     }
 
+    return failure();
+  }
+};
+
+struct TransposeSimplify
+    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const final {
+    DenseElementsAttr inp;
+    matchPattern(op->getOperand(0), m_Constant(&inp));
+    if (inp) {
+
+      DenseElementsAttr out;
+      if (inp.isSplat()) {
+        out = inp.resizeSplat(op.getType());
+      } else {
+        out = fromTensor(mlir::stablehlo::evalTransposeOp(
+            stablehlo::evalConstantOp(inp),
+            mlir::stablehlo::Axes(op.getPermutation()), op.getType()));
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+      return success();
+    }
     return failure();
   }
 };
@@ -5267,7 +5292,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              OrSimplify, NegateSimplify, MulSimplify, DivSimplify, PowSimplify,
              SqrtSimplify, CosSimplify, SinSimplify, NoopSlice, SliceSlice,
              PadSimplify, NegativePadToSlice, TanhSimplify, ExpSimplify,
-             SliceSimplify, ConvertSimplify, ReshapeSimplify,
+             SliceSimplify, ConvertSimplify, ReshapeSimplify, TransposeSimplify,
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast>(
             context, PatternBenefit(65000));
