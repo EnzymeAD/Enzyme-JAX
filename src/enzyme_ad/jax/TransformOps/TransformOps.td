@@ -551,6 +551,11 @@ def TransposeSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeSimplify"];
 }
 
+def DotGeneralSimplifyPatterns : EnzymeHLOPatternOp<
+    "dot_general_simplify"> {
+  let patterns = ["DotGeneralSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

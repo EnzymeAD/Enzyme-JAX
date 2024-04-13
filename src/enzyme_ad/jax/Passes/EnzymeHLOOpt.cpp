@@ -2687,6 +2687,22 @@ struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+struct DotGeneralSimplify
+    : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
+  using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
+                                PatternRewriter &rewriter) const final {
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_AnyZeroFloat())) {
+      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+          op, rewriter.getZeroAttr(op.getType()));
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct TransposeSimplify
     : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
@@ -5293,9 +5309,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              SqrtSimplify, CosSimplify, SinSimplify, NoopSlice, SliceSlice,
              PadSimplify, NegativePadToSlice, TanhSimplify, ExpSimplify,
              SliceSimplify, ConvertSimplify, ReshapeSimplify, TransposeSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast>(
-            context, PatternBenefit(65000));
+             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
+             ReduceToReshape, BroadcastToReshape, GatherSimplify,
+             ReshapeEmptyBroadcast>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
