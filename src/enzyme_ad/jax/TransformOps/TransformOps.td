@@ -568,6 +568,10 @@ def ApplyCSEConcatenatePatterns : EnzymeHLOPatternOp<
     "cse_concatenate"> {
   let patterns = ["CSE<stablehlo::ConcatenateOp>"];
 }
+def ApplySliceReshapeConcatPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_concat"> {
+  let patterns = ["SliceReshapeConcat"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
