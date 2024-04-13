@@ -171,6 +171,14 @@ def ApplySlicePadPatterns : EnzymeHLOPatternOp<
     "slice_pad"> {
   let patterns = ["SlicePad"];
 }
+def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
+    "reshape_empty_broadcast"> {
+  let patterns = ["ReshapeEmptyBroadcast"];
+}
+def ApplySliceReshapePadPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_pad"> {
+  let patterns = ["SliceReshapePad"];
+}
 def ApplyDotReshapeDotPatterns : EnzymeHLOPatternOp<
     "dot_reshape_dot"> {
   let patterns = ["DotReshapeDot"];
