@@ -3954,6 +3954,118 @@ struct SliceDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
+struct SliceReshapeDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const final {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape) return failure();
+    auto dot = reshape.getOperand().getDefiningOp<stablehlo::DotGeneralOp>();
+    if (!dot) {
+      return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
+    }
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+    if (!llvm::hasSingleElement(dot->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> lhs_lb(dot.getLhs().getType().getShape().size(), 0);
+    SmallVector<int64_t> lhs_ub(dot.getLhs().getType().getShape().begin(),
+                                dot.getLhs().getType().getShape().end());
+    SmallVector<int64_t> lhs_step(dot.getLhs().getType().getShape().size(), 1);
+
+    SmallVector<int64_t> rhs_lb(dot.getRhs().getType().getShape().size(), 0);
+    SmallVector<int64_t> rhs_ub(dot.getRhs().getType().getShape().begin(),
+                                dot.getRhs().getType().getShape().end());
+    SmallVector<int64_t> rhs_step(dot.getRhs().getType().getShape().size(), 1);
+
+    auto dimensionNumbers = dot.getDotDimensionNumbers();
+
+    // Index of the current result
+    size_t residx = 0;
+
+
+    size_t curiotaidx = 0;
+    size_t iotadim = 0;
+    for (auto en : llvm::enumerate(reshape.getType().getShape())) {
+      if (en.value() == 1)
+        continue;
+
+      if (curiotaidx == iota.getType().getShape().size())
+        return failure();
+      auto ival = iota.getType().getShape()[curiotaidx];
+      while (ival == 1 && curiotaidx < iota.getType().getShape().size()) {
+        if (curiotaidx == iota.getIotaDimension()) {
+          return failure();
+        }
+        curiotaidx++;
+        ival = iota.getType().getShape()[curiotaidx];
+      }
+      if (en.value() == ival) {
+        if (curiotaidx == iota.getIotaDimension()) {
+          iotadim = en.index();
+        }
+        curiotaidx++;
+        continue;
+      }
+      return failure();
+    }
+
+    for (auto &&[lhs, rhs] :
+         llvm::zip(dimensionNumbers.getLhsBatchingDimensions(),
+                   dimensionNumbers.getRhsBatchingDimensions())) {
+      lhs_lb[lhs] = op.getStartIndices()[residx];
+      lhs_ub[lhs] = op.getLimitIndices()[residx];
+      lhs_step[lhs] = op.getStrides()[residx];
+
+      rhs_lb[rhs] = op.getStartIndices()[residx];
+      rhs_ub[rhs] = op.getLimitIndices()[residx];
+      rhs_step[rhs] = op.getStrides()[residx];
+      residx++;
+    }
+
+    for (size_t i = 0, end = dot.getLhs().getType().getShape().size(); i < end;
+         i++) {
+      if (llvm::is_contained(dimensionNumbers.getLhsContractingDimensions(), i))
+        continue;
+      if (llvm::is_contained(dimensionNumbers.getLhsBatchingDimensions(), i))
+        continue;
+
+      lhs_lb[i] = op.getStartIndices()[residx];
+      lhs_ub[i] = op.getLimitIndices()[residx];
+      lhs_step[i] = op.getStrides()[residx];
+      residx++;
+    }
+
+    for (size_t i = 0, end = dot.getRhs().getType().getShape().size(); i < end;
+         i++) {
+      if (llvm::is_contained(dimensionNumbers.getRhsContractingDimensions(), i))
+        continue;
+      if (llvm::is_contained(dimensionNumbers.getRhsBatchingDimensions(), i))
+        continue;
+
+      rhs_lb[i] = op.getStartIndices()[residx];
+      rhs_ub[i] = op.getLimitIndices()[residx];
+      rhs_step[i] = op.getStrides()[residx];
+      residx++;
+    }
+
+    assert(residx == op.getType().getShape().size());
+
+    auto lhs2 = rewriter.create<stablehlo::SliceOp>(op.getLoc(), dot.getLhs(),
+                                                    lhs_lb, lhs_ub, lhs_step);
+    auto rhs2 = rewriter.create<stablehlo::SliceOp>(op.getLoc(), dot.getRhs(),
+                                                    rhs_lb, rhs_ub, rhs_step);
+
+    Value operands[2] = {lhs2, rhs2};
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, TypeRange(op.getType()), operands, dot->getAttrs());
+
+    return success();
+  }
+};
+
 struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
 
@@ -5514,7 +5626,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<TransposeTranspose>(context);
 
     if (passses & (2048 * 2))
-      patterns.add<BroadcastReduce, SliceDotGeneral>(context);
+      patterns.add<BroadcastReduce, SliceDotGeneral, SliceReshapeDotGeneral>(context);
 
     if (passses & (2048 * 4))
       patterns.add<PadDotGeneral>(false, context);

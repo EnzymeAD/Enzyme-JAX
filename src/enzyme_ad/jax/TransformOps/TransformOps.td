@@ -560,6 +560,10 @@ def BroadcastReshapePatterns : EnzymeHLOPatternOp<
     "broadcast_reshape"> {
   let patterns = ["BroadcastReshape"];
 }
+def ApplySliceReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_dot_general"> {
+  let patterns = ["SliceReshapeDotGeneral"];
+}
 
 def ConcatPadPatterns : EnzymeHLOPatternOp<
     "concat_pad"> {
