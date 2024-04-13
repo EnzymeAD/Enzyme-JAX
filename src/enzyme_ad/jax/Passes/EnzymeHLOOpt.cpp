@@ -4490,24 +4490,24 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     if (op->getNumOperands() > 0)
-    for (auto nop : op->getOperand(0).getUsers()) {
-      if (nop == op)
-        continue;
-      if (!isa<T>(nop))
-        continue;
-      if (!OperationEquivalence::isEquivalentTo(
-              op, nop, OperationEquivalence::IgnoreLocations))
-        continue;
-      if (nop->getBlock() != op->getBlock())
-        continue;
-      if (nop->isBeforeInBlock(op)) {
-        rewriter.replaceOp(op, nop);
-        return success();
-      } else {
-        rewriter.replaceOp(nop, op);
-        return success();
+      for (auto nop : op->getOperand(0).getUsers()) {
+        if (nop == op)
+          continue;
+        if (!isa<T>(nop))
+          continue;
+        if (!OperationEquivalence::isEquivalentTo(
+                op, nop, OperationEquivalence::IgnoreLocations))
+          continue;
+        if (nop->getBlock() != op->getBlock())
+          continue;
+        if (nop->isBeforeInBlock(op)) {
+          rewriter.replaceOp(op, nop);
+          return success();
+        } else {
+          rewriter.replaceOp(nop, op);
+          return success();
+        }
       }
-    }
     return failure();
   }
 };
@@ -5504,9 +5504,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                    CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
-                   CSE<stablehlo::ConcatenateOp>,
-                   CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>>(
-          context, PatternBenefit(65000));
+                   CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
+                   CSE<stablehlo::NegOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)

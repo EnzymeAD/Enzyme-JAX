@@ -448,10 +448,6 @@ def ApplyCSENegPatterns : EnzymeHLOPatternOp<
     "cse_neg"> {
   let patterns = ["CSE<stablehlo::NegOp>"];
 }
-def ApplyCSEConcatenatePatterns : EnzymeHLOPatternOp<
-    "cse_concatenate"> {
-  let patterns = ["CSE<stablehlo::ConcatenateOp>"];
-}
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
@@ -566,6 +562,11 @@ def BroadcastReshapePatterns : EnzymeHLOPatternOp<
 def ConcatPadPatterns : EnzymeHLOPatternOp<
     "concat_pad"> {
   let patterns = ["ConcatPad"];
+}
+
+def ApplyCSEConcatenatePatterns : EnzymeHLOPatternOp<
+    "cse_concatenate"> {
+  let patterns = ["CSE<stablehlo::ConcatenateOp>"];
 }
 
 // TODO: better naming for parameters requires a static interface for
