@@ -780,11 +780,15 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       interiors.push_back(0);
     }
 
-    if (needspad)
+    if (needspad && !llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
-    auto nslice = rewriter.create<stablehlo::SliceOp>(
+    mlir::Value nslice = rewriter.create<stablehlo::SliceOp>(
         op.getLoc(), pad.getOperand(), start, end, step);
+    if (needspad) {
+      nslice = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), nslice, pad.getPaddingValue(), lpads, hpads, interiors);
+    }
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), nslice);
     return success();
   }
