@@ -566,67 +566,71 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
-LogicalResult slicePadHelper(stablehlo::PadOp pad, ArrayRef<int64_t> starts, ArrayRef<int64_t> limits, ArrayRef<int64_t> strides, SmallVectorImpl<int64_t>& start, SmallVectorImpl<int64_t>& end, SmallVectorImpl<int64_t>& step, SmallVectorImpl<int64_t>& lpads, SmallVectorImpl<int64_t>& hpads, SmallVectorImpl<int64_t>& interiors, bool& broadcastres, bool& needspad) {
-    assert(start.size() == 0);
-    assert(end.size() == 0);
-    assert(step.size() == 0);
-    assert(lpads.size() == 0);
-    assert(hpads.size() == 0);
-    assert(interiors.size() == 0);
-    assert(!broadcastres);
-    assert(!needspad);
-    assert(starts.size() == pad.getOperand().getType().getShape().size());
-    assert(limits.size() == pad.getOperand().getType().getShape().size());
-    assert(strides.size() == pad.getOperand().getType().getShape().size());
-    
-    if (anyPadSizesNegative(pad))
+LogicalResult slicePadHelper(
+    stablehlo::PadOp pad, ArrayRef<int64_t> starts, ArrayRef<int64_t> limits,
+    ArrayRef<int64_t> strides, SmallVectorImpl<int64_t> &start,
+    SmallVectorImpl<int64_t> &end, SmallVectorImpl<int64_t> &step,
+    SmallVectorImpl<int64_t> &lpads, SmallVectorImpl<int64_t> &hpads,
+    SmallVectorImpl<int64_t> &interiors, bool &broadcastres, bool &needspad) {
+  assert(start.size() == 0);
+  assert(end.size() == 0);
+  assert(step.size() == 0);
+  assert(lpads.size() == 0);
+  assert(hpads.size() == 0);
+  assert(interiors.size() == 0);
+  assert(!broadcastres);
+  assert(!needspad);
+  assert(starts.size() == pad.getOperand().getType().getShape().size());
+  assert(limits.size() == pad.getOperand().getType().getShape().size());
+  assert(strides.size() == pad.getOperand().getType().getShape().size());
+
+  if (anyPadSizesNegative(pad))
+    return failure();
+
+  for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape, outshape] :
+       llvm::zip(starts, limits, strides, pad.getEdgePaddingLow(),
+                 pad.getEdgePaddingHigh(), pad.getInteriorPadding(),
+                 pad.getOperand().getType().getShape(),
+                 pad.getType().getShape())) {
+    if (nstep != 1)
       return failure();
-    
-    for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape, outshape] :
-         llvm::zip(starts, limits, strides,
-                   pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
-                   pad.getInteriorPadding(),
-                   pad.getOperand().getType().getShape(),
-                   pad.getType().getShape())) {
-      if (nstep != 1)
-        return failure();
-      if (interior != 0)
-        return failure();
+    if (interior != 0)
+      return failure();
 
-      // slice goes from [nstart, nend]
-      // pad result is [0..lpad][lpad...outshape-hpad][outshape-hpad...outshape]
+    // slice goes from [nstart, nend]
+    // pad result is [0..lpad][lpad...outshape-hpad][outshape-hpad...outshape]
 
-      // start of slice starts after end of value being padded
-      if (nstart >= outshape - hpad) {
-        broadcastres = true;
-        return success();
-      }
-      // slice ends before the start of value being padded
-      if (nend <= lpad) {
-        broadcastres = true;
-        return success();
-      }
-      if (nstart - lpad < 0) {
-        start.push_back(0);
-        lpads.push_back(lpad - nstart);
-        needspad = true;
-      } else {
-        start.push_back(nstart - lpad);
-        lpads.push_back(0);
-      }
-      if (nend - lpad > inshape) {
-        end.push_back(inshape);
-        hpads.push_back(nend - lpad - inshape);
-        needspad = true;
-      } else {
-        end.push_back(nend - lpad);
-        hpads.push_back(0);
-      }
-
-      step.push_back(1);
-      interiors.push_back(0);
+    // start of slice starts after end of value being padded
+    if (nstart >= outshape - hpad) {
+      broadcastres = true;
+      return success();
     }
-    return success();
+    // slice ends before the start of value being padded
+    if (nend <= lpad) {
+      broadcastres = true;
+      return success();
+    }
+    if (nstart - lpad < 0) {
+      start.push_back(0);
+      lpads.push_back(lpad - nstart);
+      needspad = true;
+    } else {
+      start.push_back(nstart - lpad);
+      lpads.push_back(0);
+    }
+    if (nend - lpad > inshape) {
+      end.push_back(inshape);
+      hpads.push_back(nend - lpad - inshape);
+      needspad = true;
+    } else {
+      end.push_back(nend - lpad);
+      hpads.push_back(0);
+    }
+
+    step.push_back(1);
+    interiors.push_back(0);
+  }
+  return success();
 }
 
 // slice(pad x) -> pad(slice x)
@@ -653,16 +657,19 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 
     bool needspad = false;
     bool broadcastres = false;
-    if (!slicePadHelper(pad, op.getStartIndices(), op.getLimitIndices(), op.getStrides(), start, end, step, lpads, hpads, interiors, broadcastres, needspad).succeeded())
-        return failure();
+    if (!slicePadHelper(pad, op.getStartIndices(), op.getLimitIndices(),
+                        op.getStrides(), start, end, step, lpads, hpads,
+                        interiors, broadcastres, needspad)
+             .succeeded())
+      return failure();
 
     if (broadcastres) {
-        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-            op, op.getType(), pad.getPaddingValue(),
-            rewriter.getDenseI64ArrayAttr({}));
-        return success();
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, op.getType(), pad.getPaddingValue(),
+          rewriter.getDenseI64ArrayAttr({}));
+      return success();
     }
-    
+
     if (needspad) {
       auto nslice = rewriter.create<stablehlo::SliceOp>(
           op.getLoc(), pad.getOperand(), start, end, step);
@@ -1062,40 +1069,44 @@ struct FullReduceReshapeOrTranspose final
   }
 };
 
-LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat, PatternRewriter &rewriter, ArrayRef<int64_t> starts, ArrayRef<int64_t> limits, ArrayRef<int64_t> strides, SmallVectorImpl<Value> &postConcat) {
-    auto dim = concat.getDimension();
+LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter,
+                                ArrayRef<int64_t> starts,
+                                ArrayRef<int64_t> limits,
+                                ArrayRef<int64_t> strides,
+                                SmallVectorImpl<Value> &postConcat) {
+  auto dim = concat.getDimension();
 
-    if (strides[dim] != 1)
-      return failure();
-    
-    assert(postConcat.size() == 0);
-    size_t curdim = 0;
-    for (auto v : concat.getInputs()) {
-      auto ty = v.getType().cast<RankedTensorType>();
-      auto nextdim = ty.getShape()[dim];
-      if (starts[dim] >= curdim + nextdim) {
-        curdim += nextdim;
-        continue;
-      }
-      if (limits[dim] <= curdim) {
-        curdim += nextdim;
-        continue;
-      }
-      SmallVector<int64_t> nstart(starts.begin(), starts.end());
-      SmallVector<int64_t> nend(limits.begin(), limits.end());
-      nstart[dim] -= curdim;
-      if (nstart[dim] < 0)
-        nstart[dim] = 0;
-      nend[dim] -= curdim;
-      if (nend[dim] > nextdim)
-        nend[dim] = nextdim;
-      auto subslice = rewriter.create<stablehlo::SliceOp>(
-          concat.getLoc(), v, nstart, nend, strides);
-      postConcat.push_back(subslice);
+  if (strides[dim] != 1)
+    return failure();
+
+  assert(postConcat.size() == 0);
+  size_t curdim = 0;
+  for (auto v : concat.getInputs()) {
+    auto ty = v.getType().cast<RankedTensorType>();
+    auto nextdim = ty.getShape()[dim];
+    if (starts[dim] >= curdim + nextdim) {
       curdim += nextdim;
+      continue;
     }
-    return success();
-
+    if (limits[dim] <= curdim) {
+      curdim += nextdim;
+      continue;
+    }
+    SmallVector<int64_t> nstart(starts.begin(), starts.end());
+    SmallVector<int64_t> nend(limits.begin(), limits.end());
+    nstart[dim] -= curdim;
+    if (nstart[dim] < 0)
+      nstart[dim] = 0;
+    nend[dim] -= curdim;
+    if (nend[dim] > nextdim)
+      nend[dim] = nextdim;
+    auto subslice = rewriter.create<stablehlo::SliceOp>(concat.getLoc(), v,
+                                                        nstart, nend, strides);
+    postConcat.push_back(subslice);
+    curdim += nextdim;
+  }
+  return success();
 }
 
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -1112,10 +1123,12 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
 
     auto dim = concat.getDimension();
-    
+
     SmallVector<Value> postConcat;
-    if (!sliceConcatHelper(concat, rewriter, op.getStartIndices(), op.getLimitIndices(), op.getStrides(), postConcat).succeeded())
-        return failure();
+    if (!sliceConcatHelper(concat, rewriter, op.getStartIndices(),
+                           op.getLimitIndices(), op.getStrides(), postConcat)
+             .succeeded())
+      return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, postConcat, dim);
     return success();
@@ -4038,7 +4051,10 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-LogicalResult sliceReshapeHelper(stablehlo::SliceOp op, SmallVectorImpl<int64_t> &starts, SmallVectorImpl<int64_t> &limits, SmallVectorImpl<int64_t> &strides) {
+LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
+                                 SmallVectorImpl<int64_t> &starts,
+                                 SmallVectorImpl<int64_t> &limits,
+                                 SmallVectorImpl<int64_t> &strides) {
   auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
   if (!reshape) {
     return failure();
@@ -4047,62 +4063,61 @@ LogicalResult sliceReshapeHelper(stablehlo::SliceOp op, SmallVectorImpl<int64_t>
   assert(starts.size() == 0);
   assert(limits.size() == 0);
   assert(strides.size() == 0);
-    
-      auto reshapeOperandType =
-          reshape.getOperand().getType().cast<TensorType>();
-      auto reshapeType = reshape.getType().cast<TensorType>();
-      size_t indim = 0;
-      size_t outdim = 0;
-      while (indim < reshapeOperandType.getShape().size() &&
-             outdim < reshapeType.getShape().size()) {
-        if (reshapeOperandType.getShape()[indim] ==
-            reshapeType.getShape()[outdim]) {
-          starts.push_back(op.getStartIndices()[outdim]);
-          limits.push_back(op.getLimitIndices()[outdim]);
-          strides.push_back(op.getStrides()[outdim]);
-          indim++;
-          outdim++;
-          continue;
-        }
-        if (reshapeOperandType.getShape()[indim] == 1) {
-          starts.push_back(0);
-          limits.push_back(1);
-          strides.push_back(1);
-          indim++;
-          continue;
-        }
-        if (reshapeType.getShape()[outdim] == 1) {
-          if (op.getStartIndices()[outdim] != 0)
-            return failure();
-          if (op.getLimitIndices()[outdim] != 1)
-            return failure();
-          if (op.getStrides()[outdim] != 1)
-            return failure();
-          outdim++;
-          continue;
-        }
+
+  auto reshapeOperandType = reshape.getOperand().getType().cast<TensorType>();
+  auto reshapeType = reshape.getType().cast<TensorType>();
+  size_t indim = 0;
+  size_t outdim = 0;
+  while (indim < reshapeOperandType.getShape().size() &&
+         outdim < reshapeType.getShape().size()) {
+    if (reshapeOperandType.getShape()[indim] ==
+        reshapeType.getShape()[outdim]) {
+      starts.push_back(op.getStartIndices()[outdim]);
+      limits.push_back(op.getLimitIndices()[outdim]);
+      strides.push_back(op.getStrides()[outdim]);
+      indim++;
+      outdim++;
+      continue;
+    }
+    if (reshapeOperandType.getShape()[indim] == 1) {
+      starts.push_back(0);
+      limits.push_back(1);
+      strides.push_back(1);
+      indim++;
+      continue;
+    }
+    if (reshapeType.getShape()[outdim] == 1) {
+      if (op.getStartIndices()[outdim] != 0)
         return failure();
-      }
-      while (indim < reshapeOperandType.getShape().size()) {
-        if (reshapeOperandType.getShape()[indim] != 1)
-          return failure();
-        // It's a full slice of the original dimension.
-        starts.push_back(0);
-        limits.push_back(1);
-        strides.push_back(1);
-        indim++;
-      }
-      while (outdim < reshapeType.getShape().size()) {
-        if (reshapeType.getShape()[outdim] != 1)
-          return failure();
-        if (op.getStartIndices()[outdim] != 0)
-          return failure();
-        if (op.getLimitIndices()[outdim] != 1)
-          return failure();
-        if (op.getStrides()[outdim] != 1)
-          return failure();
-        outdim++;
-      }
+      if (op.getLimitIndices()[outdim] != 1)
+        return failure();
+      if (op.getStrides()[outdim] != 1)
+        return failure();
+      outdim++;
+      continue;
+    }
+    return failure();
+  }
+  while (indim < reshapeOperandType.getShape().size()) {
+    if (reshapeOperandType.getShape()[indim] != 1)
+      return failure();
+    // It's a full slice of the original dimension.
+    starts.push_back(0);
+    limits.push_back(1);
+    strides.push_back(1);
+    indim++;
+  }
+  while (outdim < reshapeType.getShape().size()) {
+    if (reshapeType.getShape()[outdim] != 1)
+      return failure();
+    if (op.getStartIndices()[outdim] != 0)
+      return failure();
+    if (op.getLimitIndices()[outdim] != 1)
+      return failure();
+    if (op.getStrides()[outdim] != 1)
+      return failure();
+    outdim++;
+  }
   return success();
 }
 
@@ -4120,7 +4135,7 @@ struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
 
     SmallVector<int64_t> starts, limits, strides;
     if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
-        return failure();
+      return failure();
 
     auto newSlice = rewriter.create<stablehlo::SliceOp>(
         op->getLoc(), reshape.getOperand(), starts, limits, strides);
@@ -4147,7 +4162,7 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
 
     if (!llvm::hasSingleElement(reshape->getUsers()))
-        return failure();
+      return failure();
 
     auto pad = reshape.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
@@ -4155,8 +4170,7 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 
     SmallVector<int64_t> starts, limits, strides;
     if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
-        return failure();
-
+      return failure();
 
     SmallVector<int64_t> start;
     SmallVector<int64_t> end;
@@ -4168,16 +4182,18 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 
     bool needspad = false;
     bool broadcastres = false;
-    if (!slicePadHelper(pad, starts, limits, strides, start, end, step, lpads, hpads, interiors, broadcastres, needspad).succeeded())
-        return failure();
+    if (!slicePadHelper(pad, starts, limits, strides, start, end, step, lpads,
+                        hpads, interiors, broadcastres, needspad)
+             .succeeded())
+      return failure();
 
     if (broadcastres) {
-        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-            op, op.getType(), pad.getPaddingValue(),
-            rewriter.getDenseI64ArrayAttr({}));
-        return success();
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, op.getType(), pad.getPaddingValue(),
+          rewriter.getDenseI64ArrayAttr({}));
+      return success();
     }
-    
+
     if (needspad && !llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
@@ -4195,34 +4211,76 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 struct SliceReshapeConcat : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
 
     if (!llvm::hasSingleElement(reshape->getUsers()))
-        return failure();
+      return failure();
 
-    auto concat = reshape.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    auto concat =
+        reshape.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concat)
       return failure();
 
     SmallVector<int64_t> starts, limits, strides;
     if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
-        return failure();
+      return failure();
 
     auto dim = concat.getDimension();
-    
-    SmallVector<Value> postConcat;
-    if (!sliceConcatHelper(concat, rewriter, starts, limits, strides, postConcat).succeeded())
-        return failure();
 
-    auto c2 = rewriter.create<stablehlo::ConcatenateOp>(concat.getLoc(), postConcat, dim);
+    SmallVector<Value> postConcat;
+    if (!sliceConcatHelper(concat, rewriter, starts, limits, strides,
+                           postConcat)
+             .succeeded())
+      return failure();
+
+    auto c2 = rewriter.create<stablehlo::ConcatenateOp>(concat.getLoc(),
+                                                        postConcat, dim);
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), c2);
     return success();
   }
 };
 
+struct SliceReshapeElementwise final
+    : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+    auto elem = reshape.getOperand().getDefiningOp();
+    if (!elem)
+      return failure();
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+    if (!llvm::hasSingleElement(elem->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> starts, limits, strides;
+    if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : elem->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::SliceOp>(op.getLoc(), v, starts,
+                                                        limits, strides));
+    }
+    auto nex = rewriter.create(elem->getLoc(), elem->getName().getIdentifier(),
+                               ValueRange(ops), TypeRange(ops[0].getType()),
+                               elem->getAttrs(), {}, {});
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      nex->getResult(0));
+    return success();
+  }
+};
 } // namespace
 
 // Rewritten from
@@ -5435,11 +5493,12 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SlicePad, SliceReshapePad, DotReshapeDot,
-                 ConcatConstProp, ConcatFuse, PadPad,
-                 ConcatPushBinop<stablehlo::AddOp>,
+                 SliceElementwise, SliceReshapeElementwise, SlicePad,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
+                 PadPad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, SliceConcat, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+                 ReduceConcat, SliceConcat, SliceReshapeConcat,
+                 BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>>(context);

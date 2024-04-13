@@ -572,6 +572,10 @@ def ApplySliceReshapeConcatPatterns : EnzymeHLOPatternOp<
     "slice_reshape_concat"> {
   let patterns = ["SliceReshapeConcat"];
 }
+def ApplySliceReshapeElementwisePatterns : EnzymeHLOPatternOp<
+    "slice_reshape_elementwise"> {
+  let patterns = ["SliceReshapeElementwise"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
