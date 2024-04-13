@@ -561,6 +561,11 @@ def BroadcastReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastReshape"];
 }
 
+def ConcatPadPatterns : EnzymeHLOPatternOp<
+    "concat_pad"> {
+  let patterns = ["ConcatPad"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

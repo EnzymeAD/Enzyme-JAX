@@ -2634,6 +2634,73 @@ struct ConcatToPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
+struct ConcatPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getNumOperands() < 2)
+      return failure();
+
+    for (unsigned ind : {(unsigned int)0, op.getNumOperands() - 1}) {
+
+      auto pad = op->getOperand(ind).getDefiningOp<stablehlo::PadOp>();
+      if (!pad)
+        continue;
+
+      if (pad.getInteriorPadding()[op.getDimension()] != 0)
+        continue;
+
+      if (ind == 0) {
+        if (pad.getEdgePaddingHigh()[op.getDimension()] != 0)
+          continue;
+      } else {
+        if (pad.getEdgePaddingLow()[op.getDimension()] != 0)
+          continue;
+      }
+
+      bool legal = true;
+      for (size_t i = 0; i < pad.getType().getShape().size(); i++) {
+        if (i == op.getDimension())
+          continue;
+        if (pad.getInteriorPadding()[i] != 0) {
+          legal = false;
+          break;
+        }
+        if (pad.getEdgePaddingLow()[i] != 0) {
+          legal = false;
+          break;
+        }
+        if (pad.getEdgePaddingHigh()[i] != 0) {
+          legal = false;
+          break;
+        }
+      }
+
+      if (!legal)
+        continue;
+
+      auto prevArgs = (ind == 0) ? op.getOperands().drop_front()
+                                 : op.getOperands().drop_back();
+      SmallVector<Value> subArgs(prevArgs.begin(), prevArgs.end());
+      if (ind == 0)
+        subArgs.insert(subArgs.begin(), pad.getOperand());
+      else
+        subArgs.push_back(pad.getOperand());
+
+      auto subconcat = rewriter.create<stablehlo::ConcatenateOp>(
+          op.getLoc(), subArgs, op.getDimension());
+
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          op, op.getType(), subconcat, pad.getPaddingValue(),
+          pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+          pad.getInteriorPadding());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
 
@@ -5388,7 +5455,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
-                 BinopPadToConcat<stablehlo::MulOp>>(context);
+                 BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
 
     if (passses & 512)
       patterns.add<TransposeDotReorder, DotTranspose, ConvertConvertFloat,
