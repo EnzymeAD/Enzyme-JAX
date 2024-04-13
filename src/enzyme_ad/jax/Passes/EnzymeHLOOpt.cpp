@@ -1960,6 +1960,62 @@ struct ReshapeEmptyBroadcast final
   }
 };
 
+struct BroadcastReshape final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    SmallVector<int64_t> dims;
+
+    size_t curiotaidx = 0;
+    size_t postidx = 0;
+
+    SmallVector<int64_t> oneOutIdxs;
+    for (auto en : llvm::enumerate(op.getType().getShape()))
+      if (en.value() == 1)
+        oneOutIdxs.push_back(en.index());
+
+    for (auto en : llvm::enumerate(reshape.getType().getShape())) {
+      if (en.value() == 1) {
+        continue;
+      }
+
+      if (curiotaidx == reshape.getOperand().getType().getShape().size())
+        return failure();
+      auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      while (ival == 1 &&
+             curiotaidx < reshape.getOperand().getType().getShape().size()) {
+        if (postidx == oneOutIdxs.size())
+          return failure();
+        dims.push_back(oneOutIdxs[postidx]);
+        postidx++;
+        curiotaidx++;
+        ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      }
+      if (en.value() == ival) {
+        auto found = llvm::find(op.getBroadcastDimensions(), curiotaidx);
+        dims.push_back(*found);
+        curiotaidx++;
+        continue;
+      }
+      return failure();
+    }
+    assert(dims.size() == reshape.getOperand().getType().getShape().size());
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), reshape.getOperand(), dims);
+    return success();
+  }
+};
+
 struct BroadcastToReshape final
     : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -5315,7 +5371,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              SliceSimplify, ConvertSimplify, ReshapeSimplify, TransposeSimplify,
              DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
              ReduceToReshape, BroadcastToReshape, GatherSimplify,
-             ReshapeEmptyBroadcast>(context, PatternBenefit(65000));
+             ReshapeEmptyBroadcast, BroadcastReshape>(context,
+                                                      PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
