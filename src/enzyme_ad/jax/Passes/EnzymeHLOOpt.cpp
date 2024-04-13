@@ -4489,6 +4489,7 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
 
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() > 0)
     for (auto nop : op->getOperand(0).getUsers()) {
       if (nop == op)
         continue;
@@ -5503,6 +5504,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                    CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
+                   CSE<stablehlo::ConcatenateOp>,
                    CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>>(
           context, PatternBenefit(65000));
     }
