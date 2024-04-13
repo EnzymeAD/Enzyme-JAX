@@ -677,7 +677,6 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     // reshape.getType() == reshape output type == slice.inputType()
     // pad.getType() == pad output type == reshape input type
 
-    RankedTensorType sliceRes = op.getType();
     RankedTensorType reshapeRes = reshape.getType();
     RankedTensorType reshapeIn = pad.getType();
 
