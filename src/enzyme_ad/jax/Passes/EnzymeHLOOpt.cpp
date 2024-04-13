@@ -509,6 +509,24 @@ SmallVector<int64_t> invertPermutation(ArrayRef<int64_t> perm) {
   return res;
 }
 
+stablehlo::SliceOp sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                                        PatternRewriter &rewriter,
+                                        ArrayRef<int64_t> starts,
+                                        ArrayRef<int64_t> limits,
+                                        ArrayRef<int64_t> strides) {
+  SmallVector<int64_t> start;
+  SmallVector<int64_t> end;
+  SmallVector<int64_t> step;
+  for (auto ind : invertPermutation(transpose.getPermutation())) {
+    start.push_back(starts[ind]);
+    end.push_back(limits[ind]);
+    step.push_back(strides[ind]);
+  }
+
+  return rewriter.create<stablehlo::SliceOp>(
+      transpose.getLoc(), transpose.getOperand(), start, end, step);
+}
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -523,17 +541,9 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
       return failure();
 
-    SmallVector<int64_t> start;
-    SmallVector<int64_t> end;
-    SmallVector<int64_t> step;
-    for (auto ind : invertPermutation(transpose.getPermutation())) {
-      start.push_back(op.getStartIndices()[ind]);
-      end.push_back(op.getLimitIndices()[ind]);
-      step.push_back(op.getStrides()[ind]);
-    }
-
-    auto newslice = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), transpose.getOperand(), start, end, step);
+    auto newslice =
+        sliceTransposeHelper(transpose, rewriter, op.getStartIndices(),
+                             op.getLimitIndices(), op.getStrides());
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
         op, newslice, transpose.getPermutation());
     return success();
@@ -1911,6 +1921,22 @@ struct BroadcastReshape final
         continue;
       }
       return failure();
+    }
+    if (curiotaidx != reshape.getOperand().getType().getShape().size()) {
+      auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      while (ival == 1 &&
+             curiotaidx < reshape.getOperand().getType().getShape().size()) {
+        size_t nextdim = 0;
+        if (postidx == oneOutIdxs.size()) {
+          return failure();
+        } else {
+          nextdim = oneOutIdxs[postidx];
+          postidx++;
+        }
+        dims.push_back(nextdim);
+        curiotaidx++;
+        ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      }
     }
     assert(dims.size() == reshape.getOperand().getType().getShape().size());
 
@@ -4281,6 +4307,43 @@ struct SliceReshapeElementwise final
     return success();
   }
 };
+
+// slice(transpose x) -> transpose(slice x)
+struct SliceReshapeTranspose final
+    : OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+
+    auto transpose =
+        reshape.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> starts, limits, strides;
+    if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
+      return failure();
+
+    auto newslice =
+        sliceTransposeHelper(transpose, rewriter, starts, limits, strides);
+    auto newtransp = rewriter.create<stablehlo::TransposeOp>(
+        transpose.getLoc(), newslice, transpose.getPermutation());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newtransp);
+    return success();
+  }
+};
 } // namespace
 
 // Rewritten from
@@ -5514,7 +5577,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<FullReduceReshapeOrTranspose>(context);
 
     if (passses & 1)
-      patterns.add<SliceTranspose, SliceBroadcast>(context);
+      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
+          context);
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
