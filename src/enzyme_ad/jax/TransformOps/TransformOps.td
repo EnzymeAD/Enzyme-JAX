@@ -320,6 +320,10 @@ def ApplyBinBroadcastSplatMulPatterns : EnzymeHLOPatternOp<
     "bin_broadcast_splat_mul"> {
   let patterns = ["BinBroadcastSplat<stablehlo::MulOp>"];
 }
+def AddPadPadToConcatPatterns : EnzymeHLOPatternOp<
+    "add_pad_pad_to_concat"> {
+  let patterns = ["AddPadPadToConcat"];
+}
 def ApplyBinopPadToConcatAddPatterns : EnzymeHLOPatternOp<
     "binop_pad_to_concat_add"> {
   let patterns = ["BinopPadToConcat<stablehlo::AddOp>"];

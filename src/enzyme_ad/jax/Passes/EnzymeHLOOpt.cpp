@@ -3359,6 +3359,90 @@ template <typename T> struct BinopPadPad : public OpRewritePattern<T> {
   }
 };
 
+struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
+  using OpRewritePattern<stablehlo::AddOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::AddOp op, PatternRewriter &rewriter) const final {
+    auto pad1 = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad1 || anyPadSizesNegative(pad1))
+      return failure();
+
+    auto pad2 = op->getOperand(1).template getDefiningOp<stablehlo::PadOp>();
+    if (!pad2 || anyPadSizesNegative(pad2))
+      return failure();
+
+    if (!matchPattern(pad1.getPaddingValue(), m_AnyZeroFloat()))
+        return failure();
+
+    if (!matchPattern(pad2.getPaddingValue(), m_AnyZeroFloat()))
+        return failure();
+
+    for (auto [int1, int2] : llvm::zip(pad1.getInteriorPadding(), pad2.getInteriorPadding())) {
+        if (int1 != 0) return failure();
+        if (int2 != 0) return failure();
+    }
+    
+    for (auto en : llvm::enumerate(op.getType().getShape())) {
+        auto sz = en.value();
+
+        auto l1 = pad1.getEdgePaddingLow()[en.index()];
+        auto l2 = pad2.getEdgePaddingLow()[en.index()];
+        auto h1 = pad1.getEdgePaddingHigh()[en.index()];
+        auto h2 = pad2.getEdgePaddingHigh()[en.index()];
+
+       //  pad1: [ 0s   ][ data ]
+       //  pad2: [ data ][ 0s   ]
+        if (l1 + h2 == sz && h1 == 0 && l2 == 0) {
+            bool legal = true;
+            for (auto en2 : llvm::enumerate(op.getType().getShape())) {
+                if (en2.index() == en.index()) continue;
+        auto sl1 = pad1.getEdgePaddingLow()[en2.index()];
+        auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
+        auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
+        auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
+        if (sl1 != 0 || sl2 != 0 || sh1 != 0 || sh2 != 0) {
+            legal = false;
+            break;
+        }
+        }
+            if (legal) {
+                Value data[] = { pad2, pad1 };
+                rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(), data, en.index());
+                return success();
+
+            }
+        }
+       
+        //  pad2: [ 0s   ][ data ]
+       //  pad1: [ data ][ 0s   ]
+        if (l1 + h2 == sz && h2 == 0 && l1 == 0) {
+            bool legal = true;
+            for (auto en2 : llvm::enumerate(op.getType().getShape())) {
+                if (en2.index() == en.index()) continue;
+        auto sl1 = pad1.getEdgePaddingLow()[en2.index()];
+        auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
+        auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
+        auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
+        if (sl1 != 0 || sl2 != 0 || sh1 != 0 || sh2 != 0) {
+            legal = false;
+            break;
+        }
+        }
+            if (legal) {
+                Value data[] = { pad1, pad2 };
+                rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(), data, en.index());
+                return success();
+
+            }
+        }
+
+
+    }
+    
+    return failure();
+  }
+};
+
 template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -5221,7 +5305,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     if (passses & 16)
       patterns.add<
-          BinopBinopPadPad<stablehlo::AddOp>,
+          BinopBinopPadPad<stablehlo::AddOp>, AddPadPadToConcat,
           BinopBinopPadPad<stablehlo::MulOp>, BinopPadPad<stablehlo::AddOp>,
           BinopPadPad<stablehlo::SubtractOp>, BinopPadPad<stablehlo::MulOp>,
           BinopPadPad<stablehlo::DivOp>, BinopPadPad<stablehlo::MinOp>,
