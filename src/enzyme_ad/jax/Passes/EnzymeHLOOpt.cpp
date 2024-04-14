@@ -3527,7 +3527,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
           }
         }
         if (legal) {
-          Value data[] = {pad2, pad1};
+          Value data[] = {pad2.getOperand(), pad1.getOperand()};
           rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
               op, op.getType(), data, en.index());
           return success();
@@ -3536,7 +3536,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
 
       //  pad2: [ 0s   ][ data ]
       //  pad1: [ data ][ 0s   ]
-      if (l1 + h2 == sz && h2 == 0 && l1 == 0) {
+      if (l2 + h1 == sz && h2 == 0 && l1 == 0) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
           if (en2.index() == en.index())
@@ -3551,7 +3551,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
           }
         }
         if (legal) {
-          Value data[] = {pad1, pad2};
+          Value data[] = {pad1.getOperand(), pad2.getOperand()};
           rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
               op, op.getType(), data, en.index());
           return success();
