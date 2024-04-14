@@ -1924,7 +1924,8 @@ struct BroadcastReshape final
         return failure();
       auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
       while (ival == 1 &&
-             curiotaidx < reshape.getOperand().getType().getShape().size()) {
+             curiotaidx + 1 <
+                 reshape.getOperand().getType().getShape().size()) {
         if (postidx == oneOutIdxs.size())
           return failure();
         dims.push_back(oneOutIdxs[postidx]);
@@ -1940,21 +1941,19 @@ struct BroadcastReshape final
       }
       return failure();
     }
-    if (curiotaidx != reshape.getOperand().getType().getShape().size()) {
+    while (curiotaidx != reshape.getOperand().getType().getShape().size()) {
       auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
-      while (ival == 1 &&
-             curiotaidx < reshape.getOperand().getType().getShape().size()) {
-        size_t nextdim = 0;
-        if (postidx == oneOutIdxs.size()) {
-          return failure();
-        } else {
-          nextdim = oneOutIdxs[postidx];
-          postidx++;
-        }
-        dims.push_back(nextdim);
-        curiotaidx++;
-        ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      assert(ival == 1);
+
+      size_t nextdim = 0;
+      if (postidx == oneOutIdxs.size()) {
+        return failure();
+      } else {
+        nextdim = oneOutIdxs[postidx];
+        postidx++;
       }
+      dims.push_back(nextdim);
+      curiotaidx++;
     }
     assert(dims.size() == reshape.getOperand().getType().getShape().size());
 
