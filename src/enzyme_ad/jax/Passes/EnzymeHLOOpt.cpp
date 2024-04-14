@@ -3805,6 +3805,78 @@ struct PadPad : public OpRewritePattern<mlir::stablehlo::PadOp> {
   }
 };
 
+std::tuple<Value, Value, RankedTensorType>
+sliceDotGeneralHelper(stablehlo::DotGeneralOp dot, ArrayRef<int64_t> starts,
+                      ArrayRef<int64_t> limits, ArrayRef<int64_t> strides,
+                      PatternRewriter &rewriter) {
+  SmallVector<int64_t> lhs_lb(dot.getLhs().getType().getShape().size(), 0);
+  SmallVector<int64_t> lhs_ub(dot.getLhs().getType().getShape().begin(),
+                              dot.getLhs().getType().getShape().end());
+  SmallVector<int64_t> lhs_step(dot.getLhs().getType().getShape().size(), 1);
+
+  SmallVector<int64_t> rhs_lb(dot.getRhs().getType().getShape().size(), 0);
+  SmallVector<int64_t> rhs_ub(dot.getRhs().getType().getShape().begin(),
+                              dot.getRhs().getType().getShape().end());
+  SmallVector<int64_t> rhs_step(dot.getRhs().getType().getShape().size(), 1);
+
+  auto dimensionNumbers = dot.getDotDimensionNumbers();
+
+  size_t residx = 0;
+  SmallVector<int64_t> resShape;
+  for (auto &&[lhs, rhs] :
+       llvm::zip(dimensionNumbers.getLhsBatchingDimensions(),
+                 dimensionNumbers.getRhsBatchingDimensions())) {
+    lhs_lb[lhs] = starts[residx];
+    lhs_ub[lhs] = limits[residx];
+    lhs_step[lhs] = strides[residx];
+
+    rhs_lb[rhs] = starts[residx];
+    rhs_ub[rhs] = limits[residx];
+    rhs_step[rhs] = strides[residx];
+    resShape.push_back((limits[residx] - starts[residx]) / strides[residx]);
+    residx++;
+  }
+
+  for (size_t i = 0, end = dot.getLhs().getType().getShape().size(); i < end;
+       i++) {
+    if (llvm::is_contained(dimensionNumbers.getLhsContractingDimensions(), i))
+      continue;
+    if (llvm::is_contained(dimensionNumbers.getLhsBatchingDimensions(), i))
+      continue;
+
+    lhs_lb[i] = starts[residx];
+    lhs_ub[i] = limits[residx];
+    lhs_step[i] = strides[residx];
+    resShape.push_back((limits[residx] - starts[residx]) / strides[residx]);
+    residx++;
+  }
+
+  for (size_t i = 0, end = dot.getRhs().getType().getShape().size(); i < end;
+       i++) {
+    if (llvm::is_contained(dimensionNumbers.getRhsContractingDimensions(), i))
+      continue;
+    if (llvm::is_contained(dimensionNumbers.getRhsBatchingDimensions(), i))
+      continue;
+
+    rhs_lb[i] = starts[residx];
+    rhs_ub[i] = limits[residx];
+    rhs_step[i] = strides[residx];
+    resShape.push_back((limits[residx] - starts[residx]) / strides[residx]);
+    residx++;
+  }
+
+  assert(residx == dot.getType().getShape().size());
+
+  auto lhs2 = rewriter.create<stablehlo::SliceOp>(dot.getLoc(), dot.getLhs(),
+                                                  lhs_lb, lhs_ub, lhs_step);
+  auto rhs2 = rewriter.create<stablehlo::SliceOp>(dot.getLoc(), dot.getRhs(),
+                                                  rhs_lb, rhs_ub, rhs_step);
+
+  return std::tuple<Value, Value, RankedTensorType>(
+      lhs2, rhs2,
+      RankedTensorType::get(resShape, dot.getType().getElementType()));
+}
+
 struct SliceDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
@@ -3817,68 +3889,13 @@ struct SliceDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
     if (!llvm::hasSingleElement(dot->getUsers()))
       return failure();
 
-    SmallVector<int64_t> lhs_lb(dot.getLhs().getType().getShape().size(), 0);
-    SmallVector<int64_t> lhs_ub(dot.getLhs().getType().getShape().begin(),
-                                dot.getLhs().getType().getShape().end());
-    SmallVector<int64_t> lhs_step(dot.getLhs().getType().getShape().size(), 1);
-
-    SmallVector<int64_t> rhs_lb(dot.getRhs().getType().getShape().size(), 0);
-    SmallVector<int64_t> rhs_ub(dot.getRhs().getType().getShape().begin(),
-                                dot.getRhs().getType().getShape().end());
-    SmallVector<int64_t> rhs_step(dot.getRhs().getType().getShape().size(), 1);
-
-    auto dimensionNumbers = dot.getDotDimensionNumbers();
-
-    size_t residx = 0;
-    for (auto &&[lhs, rhs] :
-         llvm::zip(dimensionNumbers.getLhsBatchingDimensions(),
-                   dimensionNumbers.getRhsBatchingDimensions())) {
-      lhs_lb[lhs] = op.getStartIndices()[residx];
-      lhs_ub[lhs] = op.getLimitIndices()[residx];
-      lhs_step[lhs] = op.getStrides()[residx];
-
-      rhs_lb[rhs] = op.getStartIndices()[residx];
-      rhs_ub[rhs] = op.getLimitIndices()[residx];
-      rhs_step[rhs] = op.getStrides()[residx];
-      residx++;
-    }
-
-    for (size_t i = 0, end = dot.getLhs().getType().getShape().size(); i < end;
-         i++) {
-      if (llvm::is_contained(dimensionNumbers.getLhsContractingDimensions(), i))
-        continue;
-      if (llvm::is_contained(dimensionNumbers.getLhsBatchingDimensions(), i))
-        continue;
-
-      lhs_lb[i] = op.getStartIndices()[residx];
-      lhs_ub[i] = op.getLimitIndices()[residx];
-      lhs_step[i] = op.getStrides()[residx];
-      residx++;
-    }
-
-    for (size_t i = 0, end = dot.getRhs().getType().getShape().size(); i < end;
-         i++) {
-      if (llvm::is_contained(dimensionNumbers.getRhsContractingDimensions(), i))
-        continue;
-      if (llvm::is_contained(dimensionNumbers.getRhsBatchingDimensions(), i))
-        continue;
-
-      rhs_lb[i] = op.getStartIndices()[residx];
-      rhs_ub[i] = op.getLimitIndices()[residx];
-      rhs_step[i] = op.getStrides()[residx];
-      residx++;
-    }
-
-    assert(residx == op.getType().getShape().size());
-
-    auto lhs2 = rewriter.create<stablehlo::SliceOp>(op.getLoc(), dot.getLhs(),
-                                                    lhs_lb, lhs_ub, lhs_step);
-    auto rhs2 = rewriter.create<stablehlo::SliceOp>(op.getLoc(), dot.getRhs(),
-                                                    rhs_lb, rhs_ub, rhs_step);
+    auto &&[lhs2, rhs2, resTy] =
+        sliceDotGeneralHelper(dot, op.getStartIndices(), op.getLimitIndices(),
+                              op.getStrides(), rewriter);
 
     Value operands[2] = {lhs2, rhs2};
     rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, TypeRange(op.getType()), operands, dot->getAttrs());
+        op, TypeRange(resTy), operands, dot->getAttrs());
 
     return success();
   }
@@ -4341,6 +4358,41 @@ struct SliceReshapeTranspose final
         transpose.getLoc(), newslice, transpose.getPermutation());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       newtransp);
+    return success();
+  }
+};
+
+struct SliceReshapeDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const final {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+
+    auto dot = reshape.getOperand().getDefiningOp<stablehlo::DotGeneralOp>();
+    if (!dot) {
+      return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
+    }
+    if (!llvm::hasSingleElement(dot->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> starts, limits, strides;
+    if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
+      return failure();
+
+    auto &&[lhs2, rhs2, resTy] =
+        sliceDotGeneralHelper(dot, starts, limits, strides, rewriter);
+
+    Value operands[2] = {lhs2, rhs2};
+    auto newdot = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(), TypeRange(resTy), operands, dot->getAttrs());
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), newdot);
     return success();
   }
 };
@@ -5627,7 +5679,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<TransposeTranspose>(context);
 
     if (passses & (2048 * 2))
-      patterns.add<BroadcastReduce, SliceDotGeneral>(context);
+      patterns.add<BroadcastReduce, SliceDotGeneral, SliceReshapeDotGeneral>(
+          context);
 
     if (passses & (2048 * 4))
       patterns.add<PadDotGeneral>(false, context);

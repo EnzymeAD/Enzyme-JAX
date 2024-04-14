@@ -580,6 +580,10 @@ def ApplySliceReshapeTransposePatterns : EnzymeHLOPatternOp<
     "slice_reshape_transpose"> {
   let patterns = ["SliceReshapeTranspose"];
 }
+def ApplySliceReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_dot_general"> {
+  let patterns = ["SliceReshapeDotGeneral"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
