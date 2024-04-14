@@ -163,29 +163,26 @@ struct NoopSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
-
-void sliceSliceHelper(
-    stablehlo::SliceOp prev, SmallVector<int64_t> &starts, SmallVector<int64_t> &limits,
-    SmallVector<int64_t> &strides) {
+void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
+                      SmallVector<int64_t> &limits,
+                      SmallVector<int64_t> &strides) {
   assert(starts.size() == prev.getType().getShape().size());
   assert(limits.size() == prev.getType().getShape().size());
   assert(strides.size() == prev.getType().getShape().size());
 
+  for (auto &&[pstart, pend, pstep, nstart, nend, nstep, size] : llvm::zip(
+           prev.getStartIndices(), prev.getLimitIndices(), prev.getStrides(),
+           starts, limits, strides, prev.getOperand().getType().getShape())) {
 
-    for (auto &&[pstart, pend, pstep, nstart, nend, nstep, size] : llvm::zip(
-             prev.getStartIndices(), prev.getLimitIndices(), prev.getStrides(),
-             starts, limits, strides,
-             prev.getOperand().getType().getShape())) {
-
-      auto start2 = pstart + pstep * nstart;
-      auto step2 = pstep * nstep;
-      auto end2 = pstart + pstep * nstart + pstep * nstep * (nend - nstart);
-      if (end2 > size)
-        end2 = size;
-      nstart = start2;
-      nstep = step2;
-      nend = end2;
-    }
+    auto start2 = pstart + pstep * nstart;
+    auto step2 = pstep * nstep;
+    auto end2 = pstart + pstep * nstart + pstep * nstep * (nend - nstart);
+    if (end2 > size)
+      end2 = size;
+    nstart = start2;
+    nstep = step2;
+    nend = end2;
+  }
 }
 
 struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -201,8 +198,10 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (!prev)
       return failure();
 
-    SmallVector<int64_t> start(op.getStartIndices().begin(), op.getStartIndices().end());
-    SmallVector<int64_t> end(op.getLimitIndices().begin(), op.getLimitIndices().end());
+    SmallVector<int64_t> start(op.getStartIndices().begin(),
+                               op.getStartIndices().end());
+    SmallVector<int64_t> end(op.getLimitIndices().begin(),
+                             op.getLimitIndices().end());
     SmallVector<int64_t> step(op.getStrides().begin(), op.getStrides().end());
 
     sliceSliceHelper(prev, start, end, step);
@@ -4435,11 +4434,12 @@ struct SliceReshapeSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     SmallVector<int64_t> starts, limits, strides;
     if (!sliceReshapeHelper(op, starts, limits, strides).succeeded())
       return failure();
-    
+
     sliceSliceHelper(prev, starts, limits, strides);
-    auto newslice = rewriter.create<stablehlo::SliceOp>(op.getLoc(), prev.getOperand(),
-                                                    starts, limits, strides);
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), newslice);
+    auto newslice = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), prev.getOperand(), starts, limits, strides);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newslice);
     return success();
   }
 };
