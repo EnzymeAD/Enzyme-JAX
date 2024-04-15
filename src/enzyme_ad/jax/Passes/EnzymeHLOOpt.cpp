@@ -1872,7 +1872,7 @@ struct ConcatToBroadcast final
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
     if (op->getNumOperands() <= 1)
-      return success();
+      return failure();
     for (auto opv : op->getOperands())
       if (opv != op->getOperand(0))
         return failure();
