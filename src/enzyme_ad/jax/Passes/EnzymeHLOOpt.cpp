@@ -4161,7 +4161,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
       int64_t interior = pad.getInteriorPadding()[padDim];
       if (low == 0 && high == 0 && interior == 0)
         continue;
-      otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+      if (!postPad)
+        otherDimsToSlice.emplace_back(otherDim, low, high, interior);
     }
 
     SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>> resultDimsToPad;
@@ -4185,7 +4186,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
           resultidx++;
           continue;
         }
-        otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+        if (!postPad)
+          otherDimsToSlice.emplace_back(otherDim, low, high, interior);
         resultDimsToPad.emplace_back(resultidx, low, high, interior);
         resultidx++;
       }
