@@ -3525,7 +3525,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
 
       //  pad1: [ 0s ][ 0s   ][ data ][ 0s ]
       //  pad2: [ 0s ][ data ][ 0s   ][ 0s ]
-      if (h2 == h1 + p2) {
+      if (h2 == h1 + p1) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
           if (en2.index() == en.index())
@@ -3559,7 +3559,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
 
       //  pad2: [ 0s ][ 0s   ][ data ][ 0s ]
       //  pad1: [ 0s ][ data ][ 0s   ][ 0s ]
-      if (h1 == h2 + p1) {
+      if (h1 == h2 + p2) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
           if (en2.index() == en.index())
@@ -3588,6 +3588,86 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
 
           rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
               op, concat, pad1.getPaddingValue(), lows, highs, ints);
+          return success();
+        }
+      }
+
+      //  pad1: [ 0s ][      data            ][ 0s ]
+      //  pad2: [ 0s ][ 0s ][  data   ][ 0s  ][ 0s ]
+      if (h2 >= h1 && h2 + p2 <= h1 + p1) {
+        bool legal = true;
+        for (auto en2 : llvm::enumerate(op.getType().getShape())) {
+          if (en2.index() == en.index())
+            continue;
+          auto sl1 = pad1.getEdgePaddingLow()[en2.index()];
+          auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
+          auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
+          auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
+          if (sl1 != sl2 || sh1 != sh2) {
+            legal = false;
+            break;
+          }
+        }
+        if (legal) {
+
+          SmallVector<int64_t> slow(pad2.getEdgePaddingLow().size(), 0);
+          SmallVector<int64_t> shigh(pad2.getEdgePaddingLow().size(), 0);
+          SmallVector<int64_t> sint(pad2.getEdgePaddingLow().size(), 0);
+
+          slow[en.index()] = h1 + p1 - (h2 + p2);
+          shigh[en.index()] = h2 - h1;
+
+          auto inPad = rewriter.create<stablehlo::PadOp>(
+              op.getLoc(), pad2.getOperand(), pad2.getPaddingValue(), slow,
+              shigh, sint);
+          assert(inPad.getType() == pad1.getOperand().getType());
+
+          auto add = rewriter.create<stablehlo::AddOp>(op.getLoc(), inPad,
+                                                       pad1.getOperand());
+
+          rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+              op, add, pad1.getPaddingValue(), pad1.getEdgePaddingLow(),
+              pad1.getEdgePaddingHigh(), pad1.getInteriorPadding());
+          return success();
+        }
+      }
+
+      //  pad2: [ 0s ][      data            ][ 0s ]
+      //  pad1: [ 0s ][ 0s ][  data   ][ 0s  ][ 0s ]
+      if (h1 >= h2 && h1 + p1 <= h2 + p2) {
+        bool legal = true;
+        for (auto en2 : llvm::enumerate(op.getType().getShape())) {
+          if (en2.index() == en.index())
+            continue;
+          auto sl1 = pad1.getEdgePaddingLow()[en2.index()];
+          auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
+          auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
+          auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
+          if (sl1 != sl2 || sh1 != sh2) {
+            legal = false;
+            break;
+          }
+        }
+        if (legal) {
+
+          SmallVector<int64_t> slow(pad1.getEdgePaddingLow().size(), 0);
+          SmallVector<int64_t> shigh(pad1.getEdgePaddingLow().size(), 0);
+          SmallVector<int64_t> sint(pad1.getEdgePaddingLow().size(), 0);
+
+          slow[en.index()] = h2 + p2 - (h1 + p1);
+          shigh[en.index()] = h1 - h2;
+
+          auto inPad = rewriter.create<stablehlo::PadOp>(
+              op.getLoc(), pad1.getOperand(), pad1.getPaddingValue(), slow,
+              shigh, sint);
+          assert(inPad.getType() == pad2.getOperand().getType());
+
+          auto add = rewriter.create<stablehlo::AddOp>(op.getLoc(), inPad,
+                                                       pad2.getOperand());
+
+          rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+              op, add, pad2.getPaddingValue(), pad2.getEdgePaddingLow(),
+              pad2.getEdgePaddingHigh(), pad2.getInteriorPadding());
           return success();
         }
       }
