@@ -4220,9 +4220,6 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (!reshape)
       return failure();
 
-    if (!llvm::hasSingleElement(reshape->getUsers()))
-      return failure();
-
     auto pad = reshape.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4253,7 +4250,8 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return success();
     }
 
-    if (needspad && !llvm::hasSingleElement(pad->getUsers()))
+    if (needspad && !llvm::hasSingleElement(pad->getUsers()) &&
+        !llvm::hasSingleElement(reshape->getUsers()))
       return failure();
 
     mlir::Value nslice = rewriter.create<stablehlo::SliceOp>(
