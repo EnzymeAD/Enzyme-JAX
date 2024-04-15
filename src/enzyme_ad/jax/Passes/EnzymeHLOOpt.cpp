@@ -3512,10 +3512,6 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
       return failure();
 
     for (auto en : llvm::enumerate(op.getType().getShape())) {
-      auto sz = en.value();
-
-      auto l1 = pad1.getEdgePaddingLow()[en.index()];
-      auto l2 = pad2.getEdgePaddingLow()[en.index()];
       auto h1 = pad1.getEdgePaddingHigh()[en.index()];
       auto h2 = pad2.getEdgePaddingHigh()[en.index()];
 
