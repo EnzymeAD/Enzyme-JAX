@@ -1273,6 +1273,25 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
       }
     }
 
+    {
+      DenseElementsAttr inp;
+      matchPattern(op.getOperand(), m_Constant(&inp));
+      DenseElementsAttr pv;
+      matchPattern(op.getPaddingValue(), m_Constant(&pv));
+      if (inp && pv) {
+        auto ten = mlir::stablehlo::evalConstantOp(inp);
+        auto out = fromTensor(mlir::stablehlo::evalPadOp(
+            mlir::stablehlo::evalConstantOp(inp),
+            mlir::stablehlo::evalConstantOp(pv),
+            stablehlo::Sizes(op.getEdgePaddingLow()),
+            stablehlo::Sizes(op.getInteriorPadding()), op.getType()));
+
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                           out);
+        return success();
+      }
+    }
+
     for (auto &&[low, high, inner] :
          llvm::zip(op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
                    op.getInteriorPadding())) {
@@ -3492,14 +3511,6 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
     if (!matchPattern(pad2.getPaddingValue(), m_AnyZeroFloat()))
       return failure();
 
-    for (auto [int1, int2] :
-         llvm::zip(pad1.getInteriorPadding(), pad2.getInteriorPadding())) {
-      if (int1 != 0)
-        return failure();
-      if (int2 != 0)
-        return failure();
-    }
-
     for (auto en : llvm::enumerate(op.getType().getShape())) {
       auto sz = en.value();
 
@@ -3508,9 +3519,17 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
       auto h1 = pad1.getEdgePaddingHigh()[en.index()];
       auto h2 = pad2.getEdgePaddingHigh()[en.index()];
 
-      //  pad1: [ 0s   ][ data ]
-      //  pad2: [ data ][ 0s   ]
-      if (l1 + h2 == sz && h1 == 0 && l2 == 0) {
+      auto p1 = pad1.getOperand().getType().getShape()[en.index()];
+      auto p2 = pad2.getOperand().getType().getShape()[en.index()];
+
+      if (pad1.getInteriorPadding()[en.index()])
+        continue;
+      if (pad2.getInteriorPadding()[en.index()])
+        continue;
+
+      //  pad1: [ 0s ][ 0s   ][ data ][ 0s ]
+      //  pad2: [ 0s ][ data ][ 0s   ][ 0s ]
+      if (h2 == h1 + p2) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
           if (en2.index() == en.index())
@@ -3519,21 +3538,31 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
           auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
           auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
           auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
-          if (sl1 != 0 || sl2 != 0 || sh1 != 0 || sh2 != 0) {
+          if (sl1 != sl2 || sh1 != sh2) {
             legal = false;
             break;
           }
         }
         if (legal) {
           Value data[] = {pad2.getOperand(), pad1.getOperand()};
-          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-              op, op.getType(), data, en.index());
+          auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), data, en.index());
+
+          SmallVector<int64_t> lows(pad2.getEdgePaddingLow().begin(),
+                                    pad2.getEdgePaddingLow().end());
+          SmallVector<int64_t> highs(pad1.getEdgePaddingHigh().begin(),
+                                     pad1.getEdgePaddingHigh().end());
+          SmallVector<int64_t> ints(pad1.getInteriorPadding().begin(),
+                                    pad1.getInteriorPadding().end());
+
+          rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+              op, concat, pad1.getPaddingValue(), lows, highs, ints);
           return success();
         }
       }
 
-      //  pad2: [ 0s   ][ data ]
-      //  pad1: [ data ][ 0s   ]
+      //  pad2: [ 0s ][ 0s   ][ data ][ 0s ]
+      //  pad1: [ 0s ][ data ][ 0s   ][ 0s ]
       if (l2 + h1 == sz && h2 == 0 && l1 == 0) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
@@ -3543,15 +3572,26 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
           auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
           auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
           auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
-          if (sl1 != 0 || sl2 != 0 || sh1 != 0 || sh2 != 0) {
+          if (sl1 != sl2 || sh1 != sh2) {
             legal = false;
             break;
           }
         }
         if (legal) {
           Value data[] = {pad1.getOperand(), pad2.getOperand()};
-          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-              op, op.getType(), data, en.index());
+
+          auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), data, en.index());
+
+          SmallVector<int64_t> lows(pad1.getEdgePaddingLow().begin(),
+                                    pad1.getEdgePaddingLow().end());
+          SmallVector<int64_t> highs(pad2.getEdgePaddingHigh().begin(),
+                                     pad2.getEdgePaddingHigh().end());
+          SmallVector<int64_t> ints(pad1.getInteriorPadding().begin(),
+                                    pad1.getInteriorPadding().end());
+
+          rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+              op, concat, pad1.getPaddingValue(), lows, highs, ints);
           return success();
         }
       }
