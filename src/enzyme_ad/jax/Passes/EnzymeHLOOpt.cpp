@@ -3563,7 +3563,7 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
 
       //  pad2: [ 0s ][ 0s   ][ data ][ 0s ]
       //  pad1: [ 0s ][ data ][ 0s   ][ 0s ]
-      if (l2 + h1 == sz && h2 == 0 && l1 == 0) {
+      if (h1 == h2 + p1) {
         bool legal = true;
         for (auto en2 : llvm::enumerate(op.getType().getShape())) {
           if (en2.index() == en.index())

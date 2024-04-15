@@ -13,11 +13,11 @@ module {
 }
 
 // REMOVED:  func.func @main(%arg0: tensor<2x2xf32>) -> tensor<2x2xi1> {
-// REMOVED-NEXT:    %0 = stablehlo.constant dense<true> : tensor<2x2xi1>
-// REMOVED-NEXT:    return %0 : tensor<2x2xi1>
+// REMOVED-NEXT:    %[[i0:.+]] = stablehlo.constant dense<true> : tensor<2x2xi1>
+// REMOVED-NEXT:    return %[[i0]] : tensor<2x2xi1>
 // REMOVED-NEXT:  }
 
 // SAME:  func.func @main(%arg0: tensor<2x2xf32>) -> tensor<2x2xi1> {
-// SAME-NEXT:    %0 = stablehlo.is_finite %arg0 : (tensor<2x2xf32>) -> tensor<2x2xi1>
-// SAME-NEXT:    return %0 : tensor<2x2xi1>
+// SAME-NEXT:    %[[i0:.+]] = stablehlo.is_finite %arg0 : (tensor<2x2xf32>) -> tensor<2x2xi1>
+// SAME-NEXT:    return %[[i0]] : tensor<2x2xi1>
 // SAME-NEXT:  }

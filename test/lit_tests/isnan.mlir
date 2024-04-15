@@ -14,13 +14,13 @@ module {
 }
 
 // REMOVED:  func.func @main(%arg0: tensor<2x2xf32>) -> (tensor<2x2xi1>, tensor<2x2xi1>) {
-// REMOVED-NEXT:    %0 = stablehlo.constant dense<true> : tensor<2x2xi1>
-// REMOVED-NEXT:    %1 = stablehlo.constant dense<false> : tensor<2x2xi1>
-// REMOVED-NEXT:    return %0, %1 : tensor<2x2xi1>, tensor<2x2xi1>
+// REMOVED-NEXT:    %[[i0:.+]] = stablehlo.constant dense<true> : tensor<2x2xi1>
+// REMOVED-NEXT:    %[[i1:.+]] = stablehlo.constant dense<false> : tensor<2x2xi1>
+// REMOVED-NEXT:    return %[[i0]], %[[i1]] : tensor<2x2xi1>, tensor<2x2xi1>
 // REMOVED-NEXT:  }
 
 // SAME:  func.func @main(%arg0: tensor<2x2xf32>) -> (tensor<2x2xi1>, tensor<2x2xi1>) {
-// SAME-NEXT:    %0 = stablehlo.compare  EQ, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
-// SAME-NEXT:    %1 = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
-// SAME-NEXT:    return %0, %1 : tensor<2x2xi1>, tensor<2x2xi1>
+// SAME-NEXT:    %[[i0:.+]] = stablehlo.compare  EQ, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
+// SAME-NEXT:    %[[i1:.+]] = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
+// SAME-NEXT:    return %[[i0]], %[[i1]] : tensor<2x2xi1>, tensor<2x2xi1>
 // SAME-NEXT:  }

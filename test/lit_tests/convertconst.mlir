@@ -9,6 +9,6 @@ module {
 }
 
 // CHECK:  func.func @main() -> tensor<4xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<3.140630e+00> : tensor<4xbf16>
-// CHECK-NEXT:    return %0 : tensor<4xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<3.140630e+00> : tensor<4xbf16>
+// CHECK-NEXT:    return %[[i0]] : tensor<4xbf16>
 // CHECK-NEXT:  }
