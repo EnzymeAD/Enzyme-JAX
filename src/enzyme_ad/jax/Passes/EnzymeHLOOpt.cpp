@@ -2020,6 +2020,7 @@ struct BroadcastReshape final
            reshape.getOperand().getType().getShape().size()) {
       auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
       assert(ival == 1);
+      (void)ival;
 
       size_t nextdim = 0;
       if (postidx == oneOutIdxs.size()) {
