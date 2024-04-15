@@ -588,6 +588,14 @@ def ApplySliceReshapeSlicePatterns : EnzymeHLOPatternOp<
     "slice_reshape_slice"> {
   let patterns = ["SliceReshapeSlice"];
 }
+def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
+    "concat_to_broadcast"> {
+  let patterns = ["ConcatToBroadcast"];
+}
+def DotReshapePadPatterns : EnzymeHLOPatternOp<
+    "dot_reshape_pad"> {
+  let patterns = ["DotReshapePad"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
