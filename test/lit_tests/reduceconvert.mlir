@@ -12,8 +12,8 @@ module {
 }
 
 // CHECK:  func.func public @main(%arg0: tensor<1x32xbf16>) -> tensor<f32> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.convert %arg0 : (tensor<1x32xbf16>) -> tensor<1x32xf32>
-// CHECK-NEXT:    %2 = stablehlo.reduce(%1 init: %0) applies stablehlo.add across dimensions = [0, 1] : (tensor<1x32xf32>, tensor<f32>) -> tensor<f32>
-// CHECK-NEXT:    return %2 : tensor<f32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.convert %arg0 : (tensor<1x32xbf16>) -> tensor<1x32xf32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.reduce(%[[i1]] init: %[[i0]]) applies stablehlo.add across dimensions = [0, 1] : (tensor<1x32xf32>, tensor<f32>) -> tensor<f32>
+// CHECK-NEXT:    return %[[i2]] : tensor<f32>
 // CHECK-NEXT:  }

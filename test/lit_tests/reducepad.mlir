@@ -10,8 +10,8 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<2x3x1xf32>, %arg1: tensor<f32>) -> tensor<6x1xf32> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.reduce(%arg0 init: %arg1) applies stablehlo.add across dimensions = [1] : (tensor<2x3x1xf32>, tensor<f32>) -> tensor<2x1xf32>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [1, 0], high = [3, 0], interior = [0, 0] : (tensor<2x1xf32>, tensor<f32>) -> tensor<6x1xf32>
-// CHECK-NEXT:    return %2 : tensor<6x1xf32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.reduce(%arg0 init: %arg1) applies stablehlo.add across dimensions = [1] : (tensor<2x3x1xf32>, tensor<f32>) -> tensor<2x1xf32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [1, 0], high = [3, 0], interior = [0, 0] : (tensor<2x1xf32>, tensor<f32>) -> tensor<6x1xf32>
+// CHECK-NEXT:    return %[[i2]] : tensor<6x1xf32>
 // CHECK-NEXT:  }

@@ -8,10 +8,10 @@
   }
 
 // CHECK:  func.func @t1(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.concatenate %arg1, %arg0, dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x20xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 0, 0, 80], high = [0, 0, 0, 0], interior = [0, 0, 0, 0] : (tensor<1x30x1x20xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.concatenate %arg1, %arg0, dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x20xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 0, 0, 80], high = [0, 0, 0, 0], interior = [0, 0, 0, 0] : (tensor<1x30x1x20xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x30x1x100xbf16>
 // CHECK-NEXT:  }
 
   func.func @t2(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
@@ -23,10 +23,10 @@
 
 // doesn't do if wrong side
 // CHECK:  func.func @t2(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.pad %arg1, %0, low = [0, 0, 0, 0], high = [0, 0, 0, 80], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x90xbf16>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %arg0, dim = 3 : (tensor<1x30x1x90xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.pad %arg1, %[[i0]], low = [0, 0, 0, 0], high = [0, 0, 0, 80], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x90xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.concatenate %[[i1]], %arg0, dim = 3 : (tensor<1x30x1x90xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x30x1x100xbf16>
 // CHECK-NEXT:  }
 
   func.func @t3(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
@@ -37,10 +37,10 @@
   }
 
 // CHECK:  func.func @t3(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.concatenate %arg0, %arg1, dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x20xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 0, 0, 0], high = [0, 0, 0, 80], interior = [0, 0, 0, 0] : (tensor<1x30x1x20xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.concatenate %arg0, %arg1, dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x10xbf16>) -> tensor<1x30x1x20xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 0, 0, 0], high = [0, 0, 0, 80], interior = [0, 0, 0, 0] : (tensor<1x30x1x20xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x30x1x100xbf16>
 // CHECK-NEXT:  }
 
   func.func @t4(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
@@ -52,10 +52,10 @@
 
 // doesn't do if wrong side
 // CHECK:  func.func @t4(%arg0: tensor<1x30x1x10xbf16>, %arg1: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.pad %arg1, %0, low = [0, 0, 0, 80], high = [0, 0, 0, 0], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x90xbf16>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %arg0, %1, dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x90xbf16>) -> tensor<1x30x1x100xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.pad %arg1, %[[i0]], low = [0, 0, 0, 80], high = [0, 0, 0, 0], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x90xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.concatenate %arg0, %[[i1]], dim = 3 : (tensor<1x30x1x10xbf16>, tensor<1x30x1x90xbf16>) -> tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x30x1x100xbf16>
 // CHECK-NEXT:  }
 
   func.func @c1(%arg0: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
@@ -67,9 +67,9 @@
   }
 
 // CHECK:  func.func @c1(%arg0: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x100xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.pad %arg0, %0, low = [0, 0, 0, 80], high = [0, 0, 0, 10], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
-// CHECK-NEXT:    return %1 : tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.pad %arg0, %[[i0]], low = [0, 0, 0, 80], high = [0, 0, 0, 10], interior = [0, 0, 0, 0] : (tensor<1x30x1x10xbf16>, tensor<bf16>) -> tensor<1x30x1x100xbf16>
+// CHECK-NEXT:    return %[[i1]] : tensor<1x30x1x100xbf16>
 // CHECK-NEXT:  }
 
   func.func @c2(%771: tensor<1x30x1x25xbf16>) -> tensor<1x1x160x1x25xbf16> {
@@ -82,8 +82,8 @@
   }
 
 // CHECK:  func.func @c2(%arg0: tensor<1x30x1x25xbf16>) -> tensor<1x1x160x1x25xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<1x30x1x25xbf16>) -> tensor<1x1x30x1x25xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 0, 80, 0, 0], high = [0, 0, 50, 0, 0], interior = [0, 0, 0, 0, 0] : (tensor<1x1x30x1x25xbf16>, tensor<bf16>) -> tensor<1x1x160x1x25xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x1x160x1x25xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.reshape %arg0 : (tensor<1x30x1x25xbf16>) -> tensor<1x1x30x1x25xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 0, 80, 0, 0], high = [0, 0, 50, 0, 0], interior = [0, 0, 0, 0, 0] : (tensor<1x1x30x1x25xbf16>, tensor<bf16>) -> tensor<1x1x160x1x25xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x1x160x1x25xbf16>
 // CHECK-NEXT:  }

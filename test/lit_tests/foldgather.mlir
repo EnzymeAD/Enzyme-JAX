@@ -32,19 +32,19 @@ module {
 }
 
 // CHECK:   func.func @main() -> tensor<1x3072xi32> {
-// CHECK-NEXT:     %0 = stablehlo.constant dense<0> : tensor<1x3072xi32>
-// CHECK-NEXT:     return %0 : tensor<1x3072xi32>
+// CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<0> : tensor<1x3072xi32>
+// CHECK-NEXT:     return %[[i0]] : tensor<1x3072xi32>
 // CHECK-NEXT:   }
 // CHECK:   func.func @main2() -> tensor<1x3072xi32> {
-// CHECK-NEXT:     %0 = stablehlo.constant dense<256128> : tensor<1x3072xi32>
-// CHECK-NEXT:     return %0 : tensor<1x3072xi32>
+// CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<256128> : tensor<1x3072xi32>
+// CHECK-NEXT:     return %[[i0]] : tensor<1x3072xi32>
 // CHECK-NEXT:   }
 // CHECK:   func.func @main3() -> tensor<1x3072xi32> {
-// CHECK-NEXT:     %0 = stablehlo.constant dense<256128> : tensor<1x3072xi32>
-// CHECK-NEXT:     return %0 : tensor<1x3072xi32>
+// CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<256128> : tensor<1x3072xi32>
+// CHECK-NEXT:     return %[[i0]] : tensor<1x3072xi32>
 // CHECK-NEXT:   }
 // CHECK:   func.func @main4() -> tensor<1x3072xi32> {
-// CHECK-NEXT:     %0 = stablehlo.constant dense<256128> : tensor<1x3072xi32>
-// CHECK-NEXT:     return %0 : tensor<1x3072xi32>
+// CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<256128> : tensor<1x3072xi32>
+// CHECK-NEXT:     return %[[i0]] : tensor<1x3072xi32>
 // CHECK-NEXT:   }
 // CHECK-NEXT: }

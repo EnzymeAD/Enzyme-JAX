@@ -31,10 +31,10 @@ func.func @pad_dot_general_lhs(%4 : tensor<1x3x1024x4xbf16>, %6: tensor<1x8x3x10
   }
 
 // CHECK:  func.func @pad_dot_general3(%arg0: tensor<4x1024xbf16>, %arg1: tensor<1048x4xbf16>) -> tensor<1024x2048xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
-// CHECK-NEXT:    return %2 : tensor<1024x2048xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %1, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1024x2048xbf16>
 // CHECK-NEXT:  }
 
   func.func @pad_dot_general4(%arg0: tensor<4x1024xbf16>, %arg1: tensor<1048x4xbf16>, %arg2: tensor<4x1024xbf16>) -> (tensor<1024x2048xbf16>, tensor<1024x2048xbf16>) {
@@ -46,10 +46,10 @@ func.func @pad_dot_general_lhs(%4 : tensor<1x3x1024x4xbf16>, %6: tensor<1x8x3x10
   }
 
 // CHECK:  func.func @pad_dot_general4(%arg0: tensor<4x1024xbf16>, %arg1: tensor<1048x4xbf16>, %arg2: tensor<4x1024xbf16>) -> (tensor<1024x2048xbf16>, tensor<1024x2048xbf16>) {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
-// CHECK-NEXT:    %3 = stablehlo.dot_general %arg2, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
-// CHECK-NEXT:    %4 = stablehlo.pad %3, %0, low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
-// CHECK-NEXT:    return %2, %4 : tensor<1024x2048xbf16>, tensor<1024x2048xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
+// CHECK-NEXT:    %[[i3:.+]] = stablehlo.dot_general %arg2, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<4x1024xbf16>, tensor<1048x4xbf16>) -> tensor<1024x1048xbf16>
+// CHECK-NEXT:    %[[i4:.+]] = stablehlo.pad %[[i3]], %[[i0]], low = [0, 1000], high = [0, 0], interior = [0, 0] : (tensor<1024x1048xbf16>, tensor<bf16>) -> tensor<1024x2048xbf16>
+// CHECK-NEXT:    return %[[i2]], %[[i4]] : tensor<1024x2048xbf16>, tensor<1024x2048xbf16>
 // CHECK-NEXT:  }

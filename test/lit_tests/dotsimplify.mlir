@@ -7,6 +7,6 @@ func.func @transpose(%928 : tensor<1x4x1x20x160xbf16>) -> tensor<1x1x48x160xbf16
 }
 
 // CHECK:  func.func @transpose(%arg0: tensor<1x4x1x20x160xbf16>) -> tensor<1x1x48x160xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<1x1x48x160xbf16>
-// CHECK-NEXT:    return %0 : tensor<1x1x48x160xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<1x1x48x160xbf16>
+// CHECK-NEXT:    return %[[i0]] : tensor<1x1x48x160xbf16>
 // CHECK-NEXT:  }

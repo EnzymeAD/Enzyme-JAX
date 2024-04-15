@@ -10,8 +10,8 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<2x3x1x1xf32>) -> tensor<1x6x11xf32> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<2x3x1x1xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 1, 2], high = [0, 3, 4], interior = [0, 0, 1] : (tensor<1x2x3xf32>, tensor<f32>) -> tensor<1x6x11xf32>
-// CHECK-NEXT:    return %2 : tensor<1x6x11xf32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.reshape %arg0 : (tensor<2x3x1x1xf32>) -> tensor<1x2x3xf32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 1, 2], high = [0, 3, 4], interior = [0, 0, 1] : (tensor<1x2x3xf32>, tensor<f32>) -> tensor<1x6x11xf32>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x6x11xf32>
 // CHECK-NEXT:  }

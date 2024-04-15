@@ -8,8 +8,8 @@ func.func @pad_multiply(%4: tensor<1x3x1024xf32>) -> tensor<1x3x2048xbf16> {
 }
 
 // CHECK:  func.func @pad_multiply(%arg0: tensor<1x3x1024xf32>) -> tensor<1x3x2048xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-// CHECK-NEXT:    %1 = stablehlo.convert %arg0 : (tensor<1x3x1024xf32>) -> tensor<1x3x1024xbf16>
-// CHECK-NEXT:    %2 = stablehlo.pad %1, %0, low = [0, 0, 1024], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<1x3x1024xbf16>, tensor<bf16>) -> tensor<1x3x2048xbf16>
-// CHECK-NEXT:    return %2 : tensor<1x3x2048xbf16>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.convert %arg0 : (tensor<1x3x1024xf32>) -> tensor<1x3x1024xbf16>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.pad %[[i1]], %[[i0]], low = [0, 0, 1024], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<1x3x1024xbf16>, tensor<bf16>) -> tensor<1x3x2048xbf16>
+// CHECK-NEXT:    return %[[i2]] : tensor<1x3x2048xbf16>
 // CHECK-NEXT:  }

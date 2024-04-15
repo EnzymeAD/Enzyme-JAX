@@ -1907,7 +1907,7 @@ struct BroadcastReshape final
 
     SmallVector<int64_t> dims;
 
-    size_t curiotaidx = 0;
+    size_t pre_reshape_idx = 0;
     size_t postidx = 0;
 
     SmallVector<int64_t> oneOutIdxs;
@@ -1920,29 +1920,29 @@ struct BroadcastReshape final
         continue;
       }
 
-      if (curiotaidx == reshape.getOperand().getType().getShape().size())
+      if (pre_reshape_idx == reshape.getOperand().getType().getShape().size())
         return failure();
-      auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
+      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
       while (ival == 1 &&
-             curiotaidx + 1 <
+             pre_reshape_idx + 1 <
                  reshape.getOperand().getType().getShape().size()) {
         if (postidx == oneOutIdxs.size())
           return failure();
         dims.push_back(oneOutIdxs[postidx]);
         postidx++;
-        curiotaidx++;
-        ival = reshape.getOperand().getType().getShape()[curiotaidx];
+        pre_reshape_idx++;
+        ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
       }
       if (en.value() == ival) {
-        auto found = llvm::find(op.getBroadcastDimensions(), curiotaidx);
-        dims.push_back(*found);
-        curiotaidx++;
+        dims.push_back(op.getBroadcastDimensions()[en.index()]);
+        pre_reshape_idx++;
         continue;
       }
       return failure();
     }
-    while (curiotaidx != reshape.getOperand().getType().getShape().size()) {
-      auto ival = reshape.getOperand().getType().getShape()[curiotaidx];
+    while (pre_reshape_idx !=
+           reshape.getOperand().getType().getShape().size()) {
+      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
       assert(ival == 1);
 
       size_t nextdim = 0;
@@ -1953,10 +1953,9 @@ struct BroadcastReshape final
         postidx++;
       }
       dims.push_back(nextdim);
-      curiotaidx++;
+      pre_reshape_idx++;
     }
     assert(dims.size() == reshape.getOperand().getType().getShape().size());
-
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), reshape.getOperand(), dims);
     return success();

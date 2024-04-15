@@ -11,8 +11,8 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<f32>) -> tensor<2xf32> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.add %arg0, %0 : tensor<f32>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [] : (tensor<f32>) -> tensor<2xf32>
-// CHECK-NEXT:    return %2 : tensor<2xf32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.add %arg0, %[[i0]] : tensor<f32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.broadcast_in_dim %[[i1]], dims = [] : (tensor<f32>) -> tensor<2xf32>
+// CHECK-NEXT:    return %[[i2]] : tensor<2xf32>
 // CHECK-NEXT:  }

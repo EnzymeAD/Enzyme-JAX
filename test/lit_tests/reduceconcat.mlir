@@ -34,11 +34,11 @@ module {
 // CHECK-NEXT:  }
 
 // CHECK:  func.func @main2(%arg0: tensor<2x2x3xf32>, %arg1: tensor<1x2x3xf32>, %arg2: tensor<1x2x3xf32>) -> tensor<2x3xf32> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.reduce(%arg0 init: %0) applies stablehlo.add across dimensions = [0] : (tensor<2x2x3xf32>, tensor<f32>) -> tensor<2x3xf32>
-// CHECK-NEXT:    %2 = stablehlo.reshape %arg1 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
-// CHECK-NEXT:    %3 = stablehlo.add %1, %2 : tensor<2x3xf32>
-// CHECK-NEXT:    %4 = stablehlo.reshape %arg2 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
-// CHECK-NEXT:    %5 = stablehlo.add %3, %4 : tensor<2x3xf32>
-// CHECK-NEXT:    return %5 : tensor<2x3xf32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.reduce(%arg0 init: %[[i0]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2x3xf32>, tensor<f32>) -> tensor<2x3xf32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.reshape %arg1 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:    %[[i3:.+]] = stablehlo.add %[[i1]], %[[i2]] : tensor<2x3xf32>
+// CHECK-NEXT:    %[[i4:.+]] = stablehlo.reshape %arg2 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:    %[[i5:.+]] = stablehlo.add %[[i3]], %[[i4]] : tensor<2x3xf32>
+// CHECK-NEXT:    return %[[i5]] : tensor<2x3xf32>
 // CHECK-NEXT:  }
