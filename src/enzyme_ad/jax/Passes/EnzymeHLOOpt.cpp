@@ -1653,6 +1653,34 @@ struct ZeroProductReshapePad final
   }
 };
 
+struct PadReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (!llvm::hasSingleElement(pad->getUsers()))
+      return failure();
+
+    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
+      return failure();
+
+    for (auto u : op->getUsers()) {
+      auto pad2 = dyn_cast<stablehlo::PadOp>(u);
+      if (!pad2)
+        return failure();
+      if (pad2.getPaddingValue() != pad.getPaddingValue())
+        return failure();
+    }
+    if (!reshapePadHelper(op, rewriter).succeeded())
+      return failure();
+    return success();
+  }
+};
+
 struct ConcatAppendingReshape final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -5862,7 +5890,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
                  SliceReshapePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 ConcatToBroadcast, PadPad, ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatToBroadcast, PadPad, PadReshapePad,
+                 ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
