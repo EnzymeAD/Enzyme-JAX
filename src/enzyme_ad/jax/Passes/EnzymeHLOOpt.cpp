@@ -1627,6 +1627,32 @@ struct DotReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+struct ZeroProductReshapePad final
+    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (!llvm::hasSingleElement(pad->getUsers()))
+      return failure();
+
+    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
+      return failure();
+
+    for (auto u : op->getUsers()) {
+      if (!isa<stablehlo::MulOp>(u) && !isa<stablehlo::DivOp>(u))
+        return failure();
+    }
+    if (!reshapePadHelper(op, rewriter).succeeded())
+      return failure();
+    return success();
+  }
+};
+
 struct ConcatAppendingReshape final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -5860,7 +5886,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
-      patterns.add<MulZeroPad, DivZeroPad>(context);
+      patterns.add<MulZeroPad, DivZeroPad, ZeroProductReshapePad>(context);
     if (passses & 8)
       patterns.add<
           BinopConstPad<stablehlo::AddOp>, BinopConstPad<stablehlo::SubtractOp>,

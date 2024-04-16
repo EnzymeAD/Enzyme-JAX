@@ -596,6 +596,10 @@ def DotReshapePadPatterns : EnzymeHLOPatternOp<
     "dot_reshape_pad"> {
   let patterns = ["DotReshapePad"];
 }
+def ZeroProductReshapePadPatterns : EnzymeHLOPatternOp<
+    "zero_product_reshape_pad"> {
+  let patterns = ["ZeroProductReshapePad"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
