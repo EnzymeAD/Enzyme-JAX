@@ -604,6 +604,10 @@ def PadReshapePadPatterns : EnzymeHLOPatternOp<
     "pad_reshape_pad"> {
   let patterns = ["PadReshapePad"];
 }
+def BinopConstReshapePadPatterns : EnzymeHLOPatternOp<
+    "binop_const_reshape_pad"> {
+  let patterns = ["BinopConstReshapePad"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
