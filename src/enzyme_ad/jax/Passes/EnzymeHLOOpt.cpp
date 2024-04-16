@@ -578,18 +578,92 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       return failure();
     if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
       return failure();
-    if (!llvm::hasSingleElement(elem->getUsers()))
+    if (llvm::hasSingleElement(elem->getUsers())) {
+      SmallVector<Value> ops;
+      for (auto v : elem->getOperands()) {
+        ops.push_back(rewriter.create<stablehlo::SliceOp>(
+            op.getLoc(), v, op.getStartIndices(), op.getLimitIndices(),
+            op.getStrides()));
+      }
+      auto nex = rewriter.create(
+          elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+          TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
+      rewriter.replaceOp(op, nex);
+      return success();
+    }
+
+    SmallVector<int64_t> starts(op.getStartIndices().begin(),
+                                op.getStartIndices().end());
+    SmallVector<int64_t> stops(op.getLimitIndices().begin(),
+                               op.getLimitIndices().end());
+    SmallVector<int64_t> ints(op.getStrides().begin(), op.getStrides().end());
+    SmallVector<stablehlo::SliceOp> todo;
+    for (auto u : elem->getUsers()) {
+      auto sop = dyn_cast<stablehlo::SliceOp>(u);
+      if (!sop)
+        return failure();
+      for (auto en : llvm::enumerate(sop.getType().getShape())) {
+        auto start = sop.getStartIndices()[en.index()];
+        auto stop = sop.getLimitIndices()[en.index()];
+        auto stride = sop.getStrides()[en.index()];
+        if (start < starts[en.index()])
+          starts[en.index()] = start;
+        if (stop > stops[en.index()])
+          stops[en.index()] = stop;
+        if (stride != ints[en.index()])
+          ints[en.index()] = 1;
+      }
+      todo.push_back(sop);
+    }
+    bool changed = false;
+    for (auto en : llvm::enumerate(op.getOperand().getType().getShape())) {
+      if (starts[en.index()] != 0) {
+        changed = true;
+        break;
+      }
+      if (stops[en.index()] < en.value()) {
+        changed = true;
+        break;
+      }
+      if (ints[en.index()] != 1) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed)
       return failure();
+    rewriter.setInsertionPoint(elem);
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
-      ops.push_back(rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), v, op.getStartIndices(), op.getLimitIndices(),
-          op.getStrides()));
+      ops.push_back(rewriter.create<stablehlo::SliceOp>(op.getLoc(), v, starts,
+                                                        stops, ints));
     }
-    auto nex = rewriter.create(
-        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
-    rewriter.replaceOp(op, nex);
+    auto nex = rewriter.create(elem->getLoc(), elem->getName().getIdentifier(),
+                               ValueRange(ops), TypeRange(ops[0].getType()),
+                               elem->getAttrs(), {}, {});
+
+    for (auto sl : todo) {
+      SmallVector<int64_t> sstarts;
+      SmallVector<int64_t> sstops;
+      SmallVector<int64_t> sints;
+
+      for (auto &&[start, stop, stride, ostart, ostop, ostride] :
+           llvm::zip(sl.getStartIndices(), sl.getLimitIndices(),
+                     sl.getStrides(), starts, stops, ints)) {
+        if (stride == ostride) {
+          sstarts.push_back(start - ostart);
+          sstops.push_back((stop - ostart) / stride);
+          sints.push_back(1);
+        } else {
+          assert(ostride == 1);
+          sstarts.push_back(start - ostart);
+          sstops.push_back(stop - ostart);
+          sints.push_back(stride);
+        }
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(sl, nex->getResult(0),
+                                                      sstarts, sstops, sints);
+    }
     return success();
   }
 };
