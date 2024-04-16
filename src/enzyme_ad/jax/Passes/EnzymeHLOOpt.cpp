@@ -4670,9 +4670,14 @@ struct SliceReshapeElementwise final
       ops.push_back(rewriter.create<stablehlo::SliceOp>(op.getLoc(), v, starts,
                                                         limits, strides));
     }
-    auto nex = rewriter.create(elem->getLoc(), elem->getName().getIdentifier(),
-                               ValueRange(ops), TypeRange(ops[0].getType()),
-                               elem->getAttrs(), {}, {});
+    SmallVector<int64_t> sizes;
+    for (auto &&[start, stop, stride] : llvm::zip(starts, limits, strides))
+      sizes.push_back((stop - start) / stride);
+    auto nex = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+        TypeRange(RankedTensorType::get(
+            sizes, reshape.getOperand().getType().getElementType())),
+        elem->getAttrs(), {}, {});
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       nex->getResult(0));
     return success();
