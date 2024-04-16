@@ -2565,6 +2565,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
               if (a.getSizeInBits(a.getSemantics()) == 32 &&
                   b.getSizeInBits(b.getSemantics()) == 32)
                 return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
+
               return {};
             })) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -3039,7 +3040,13 @@ struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
 
                   if (a.getSizeInBits(a.getSemantics()) == 32)
                     return APFloat(tanhf(a.convertToFloat()));
-                  return {};
+
+                  bool losesInfo = false;
+                  APFloat res(tanh(a.convertToDouble()));
+                  res.convert(a.getSemantics(),
+                              llvm::RoundingMode::NearestTiesToEven,
+                              &losesInfo);
+                  return res;
                 })) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, op.getType(), res.cast<ElementsAttr>());
