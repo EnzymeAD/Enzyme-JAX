@@ -1665,9 +1665,6 @@ struct PadReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
-    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
-      return failure();
-
     for (auto u : op->getUsers()) {
       auto pad2 = dyn_cast<stablehlo::PadOp>(u);
       if (!pad2)
