@@ -366,6 +366,7 @@ pybind_extension(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:CAPIIR",
+        "@llvm-project//mlir:MLIRBindingsPythonHeaders",
         "@stablehlo//:stablehlo_passes",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/mlir/backends/cpu/transforms:passes",

@@ -41,6 +41,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir-c/Bindings/Python/Interop.h"
 #include "mlir-c/IR.h"
 #include "mlir-c/Support.h"
 #include "mlir/CAPI/IR.h"
@@ -1149,7 +1150,8 @@ PYBIND11_MODULE(enzyme_call, m) {
   });
 
   m.def("optimize_module",
-        [](MlirModule cmod, const std::string &pass_pipeline) {
+        [](pybind11::object capsule, const std::string &pass_pipeline) {
+          MlirModule cmod = mlirPythonCapsuleToModule(capsule.ptr());
           run_pass_pipeline(unwrap(cmod), pass_pipeline);
         });
   m.def("run_pass_pipeline",
