@@ -41,6 +41,9 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir-c/IR.h"
+#include "mlir-c/Support.h"
+#include "mlir/CAPI/IR.h"
 #include "mlir/InitAllPasses.h"
 #include "xla/mlir/backends/cpu/transforms/passes.h"
 #include "xla/mlir/memref/transforms/passes.h"
@@ -1145,6 +1148,10 @@ PYBIND11_MODULE(enzyme_call, m) {
                              "xla._CUSTOM_CALL_TARGET");
   });
 
+  m.def("optimize_module",
+        [](MlirModule cmod, const std::string &pass_pipeline) {
+          run_pass_pipeline(unwrap(cmod), pass_pipeline);
+        });
   m.def("run_pass_pipeline",
         [](pybind11::object pyoldsyms, const std::string &mlir,
            const std::string &pass_pipeline) {
