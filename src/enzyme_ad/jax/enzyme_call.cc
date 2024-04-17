@@ -44,6 +44,7 @@
 #include "mlir-c/Bindings/Python/Interop.h"
 #include "mlir-c/IR.h"
 #include "mlir-c/Support.h"
+#include "mlir/Bindings/Python/PybindAdaptors.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/InitAllPasses.h"
 #include "xla/mlir/backends/cpu/transforms/passes.h"
@@ -1150,8 +1151,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   });
 
   m.def("optimize_module",
-        [](pybind11::object capsule, const std::string &pass_pipeline) {
-          MlirModule cmod = mlirPythonCapsuleToModule(capsule.ptr());
+        [](MlirModule cmod, const std::string &pass_pipeline) {
           run_pass_pipeline(unwrap(cmod), pass_pipeline);
         });
   m.def("run_pass_pipeline",
