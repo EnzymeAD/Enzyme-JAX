@@ -14,3 +14,8 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
 std::pair<std::string, std::string>
 run_pass_pipeline(const std::vector<std::string> &oldsyms,
                   const std::string &mlir, const std::string &pass_pipeline);
+
+namespace mlir {
+class Operation;
+}
+void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline);

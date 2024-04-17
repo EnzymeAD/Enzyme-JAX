@@ -365,6 +365,7 @@ pybind_extension(
         "@llvm-project//llvm:OrcTargetProcess",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllPassesAndDialects",
+        "@llvm-project//mlir:CAPIIR",
         "@stablehlo//:stablehlo_passes",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/mlir/backends/cpu/transforms:passes",

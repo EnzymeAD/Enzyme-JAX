@@ -4,4 +4,5 @@ from enzyme_ad.jax.primitives import (
     NewXLAPipeline,
     OldXLAPipeline,
     JaXPipeline,
+    optimize_module,
 )

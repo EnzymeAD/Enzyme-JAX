@@ -1,9 +1,20 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir
+from enzyme_ad.jax import cpp_call, enzyme_jax_ir, optimize_module
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+
+
+class EnzymePipeline(absltest.TestCase):
+    def test_pipeline(self):
+        def fn(x):
+            return x
+
+        x = jnp.ones(3)
+        module = jax.jit(fn).lower(x).compiler_ir(dialect="stablehlo")
+        optimize_module(module)
+        print(str(module))
 
 
 class EnzymeJax(absltest.TestCase):

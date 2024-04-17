@@ -105,6 +105,27 @@ updateSymbolAndAllUses(mlir::SymbolOpInterface op, mlir::ModuleOp target,
   return success();
 }
 
+void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
+  using namespace llvm;
+  using namespace mlir;
+
+  mlir::DialectRegistry registry;
+  prepareRegistry(registry);
+  mod->getContext()->appendDialectRegistry(registry);
+
+  mlir::PassManager pm(mod->getContext());
+  std::string error_message;
+  llvm::raw_string_ostream error_stream(error_message);
+  mlir::LogicalResult result =
+      mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
+  if (mlir::failed(result)) {
+    throw pybind11::value_error(error_message);
+  }
+  if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(mod)))) {
+    throw pybind11::value_error("Pipeline failed");
+  }
+}
+
 std::pair<std::string, std::string>
 run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
                   const std::string &mlir, const std::string &pass_pipeline) {
