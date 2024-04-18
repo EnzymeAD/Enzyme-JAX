@@ -4120,6 +4120,17 @@ struct DivZeroPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
   }
 };
 
+template <typename T> DenseI64ArrayAttr addLists(T lhs, T rhs) {
+  MLIRContext *context = lhs.getContext();
+  SmallVector<int64_t> sum;
+  for (auto &&[lhsv, rhsv] :
+       llvm::zip(cast<DenseI64ArrayAttr>(lhs).asArrayRef(),
+                 cast<DenseI64ArrayAttr>(rhs).asArrayRef())) {
+    sum.push_back(lhsv + rhsv);
+  }
+  return DenseI64ArrayAttr::get(context, sum);
+}
+
 struct PadPad : public OpRewritePattern<mlir::stablehlo::PadOp> {
   using OpRewritePattern<mlir::stablehlo::PadOp>::OpRewritePattern;
 
@@ -4138,14 +4149,6 @@ struct PadPad : public OpRewritePattern<mlir::stablehlo::PadOp> {
         !allZero(definingPad.getInteriorPadding())) {
       return rewriter.notifyMatchFailure(op, "cannot combine interior padding");
     }
-
-    auto addLists = [](DenseI64ArrayAttr lhs, DenseI64ArrayAttr rhs) {
-      MLIRContext *context = lhs.getContext();
-      auto sum = llvm::map_to_vector(
-          llvm::zip(lhs.asArrayRef(), rhs.asArrayRef()),
-          [](auto &&pair) { return std::get<0>(pair) + std::get<1>(pair); });
-      return DenseI64ArrayAttr::get(context, sum);
-    };
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
         op, definingPad.getOperand(), definingPad.getPaddingValue(),
