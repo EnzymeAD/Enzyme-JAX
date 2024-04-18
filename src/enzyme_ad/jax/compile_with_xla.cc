@@ -121,8 +121,16 @@ void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
   if (mlir::failed(result)) {
     throw pybind11::value_error(error_message);
   }
+
+  DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
+  error_stream << "Pipeline failed:\n";
+  DiagnosticEngine::HandlerID id =
+      engine.registerHandler([&](Diagnostic &diag) -> LogicalResult {
+        error_stream << diag << "\n";
+        return failure();
+      });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(mod)))) {
-    throw pybind11::value_error("Pipeline failed");
+    throw pybind11::value_error(error_stream.str());
   }
 }
 
@@ -161,8 +169,16 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   if (mlir::failed(result)) {
     throw pybind11::value_error(error_message);
   }
-  if (!mlir::succeeded(pm.run(*parsed_module))) {
-    throw pybind11::value_error("Pipeline failed");
+
+  DiagnosticEngine &engine = context.getDiagEngine();
+  error_stream << "Pipeline failed:\n";
+  DiagnosticEngine::HandlerID id =
+      engine.registerHandler([&](Diagnostic &diag) -> LogicalResult {
+        error_stream << diag << "\n";
+        return failure();
+      });
+  if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*parsed_module)))) {
+    throw pybind11::value_error(error_stream.str());
   }
 
   StringRef entryfn = "main";
