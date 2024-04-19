@@ -8,6 +8,6 @@ func.func @transpose() -> tensor<2xui64> {
 }
 
 // CHECK:  func.func @transpose() -> tensor<2xui64> {
-// CHECK-NEXT:    %0 = stablehlo.constant dense<0> : tensor<2xui64>
-// CHECK-NEXT:    return %0 : tensor<2xui64>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0> : tensor<2xui64>
+// CHECK-NEXT:    return %[[i0]] : tensor<2xui64>
 // CHECK-NEXT:  }
