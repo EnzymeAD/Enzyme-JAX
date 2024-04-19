@@ -608,6 +608,10 @@ def BinopConstReshapePadPatterns : EnzymeHLOPatternOp<
     "binop_const_reshape_pad"> {
   let patterns = ["BinopConstReshapePad"];
 }
+def ApplyShiftRightLogicalSimplifyPatterns : EnzymeHLOPatternOp<
+    "shift_right_logical_simplify"> {
+  let patterns = ["ShiftRightLogicalSimplify"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
