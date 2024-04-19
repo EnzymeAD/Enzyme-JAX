@@ -177,6 +177,8 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
     auto start2 = pstart + pstep * nstart;
     auto step2 = pstep * nstep;
     auto end2 = pstart + pstep * nstart + pstep * nstep * (nend - nstart);
+    if (start2 > size)
+      start2 = size;
     if (end2 > size)
       end2 = size;
     nstart = start2;
