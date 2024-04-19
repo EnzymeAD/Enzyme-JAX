@@ -5108,6 +5108,46 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
   }
 };
 
+struct ConstPropThroughBarrier final
+    : OpRewritePattern<mlir::stablehlo::OptimizationBarrierOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::OptimizationBarrierOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value> replacements;
+    bool changed = false;
+    for (auto &&[res, inp] : llvm::zip(op.getResults(), op.getOperands())) {
+      if (inp.getDefiningOp<stablehlo::ConstantOp>()) {
+        changed = true;
+      } else if (res.use_empty()) {
+        changed = true;
+      } else {
+        replacements.push_back(inp);
+      }
+    }
+    if (!changed) {
+      return failure();
+    }
+
+    auto nop = rewriter.create<stablehlo::OptimizationBarrierOp>(op.getLoc(),
+                                                                 replacements);
+
+    size_t idx = 0;
+    SmallVector<Value> results;
+    for (auto &&[res, inp] : llvm::zip(op.getResults(), op.getOperands())) {
+      if (res.use_empty() || inp.getDefiningOp<stablehlo::ConstantOp>()) {
+        results.push_back(inp);
+      } else {
+        results.push_back(nop->getResult(idx));
+        idx++;
+      }
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 //////////////// Imported from stablehlo
 static bool isIotaRange(ArrayRef<int64_t> dims) {
   return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
@@ -6027,16 +6067,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
-                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
-                 CosSimplify, SinSimplify, NoopSlice, SliceSlice, PadSimplify,
-                 ShiftRightLogicalSimplify, NegativePadToSlice, TanhSimplify,
-                 ExpSimplify, SliceSimplify, ConvertSimplify, ReshapeSimplify,
-                 TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,
-                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
-                 GatherSimplify, ReshapeEmptyBroadcast, BroadcastReshape>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
+             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
+             SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
+             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
+             ConvertSimplify, ReshapeSimplify, TransposeSimplify,
+             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
+             ReduceToReshape, BroadcastToReshape, GatherSimplify,
+             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier>(
+            context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));

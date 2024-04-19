@@ -352,6 +352,7 @@ sqrt_simplify<16>;
 cos_simplify<16>;
 sin_simplify<16>;
 noop_slice<16>;
+const_prop_through_barrier<16>;
 slice_slice<16>;
 shift_right_logical_simplify<16>;
 pad_simplify<16>;

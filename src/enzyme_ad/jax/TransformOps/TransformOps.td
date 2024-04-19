@@ -616,6 +616,10 @@ def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
 }
+def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
+    "const_prop_through_barrier"> {
+  let patterns = ["ConstPropThroughBarrier"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
