@@ -1,22 +1,22 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=1000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce' | FileCheck %s --check-prefixes=TD,FL4
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=20000000000000000000 radix=16' | FileCheck %s --check-prefixes=TD,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=40000000000000000000 radix=16' | FileCheck %s --check-prefixes=TD,FL64
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=reduce_pad' | FileCheck %s --check-prefixes=TD,FL64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=20000000000001000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=40000000000001000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4,FL64
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;reduce_pad' | FileCheck %s --check-prefixes=TD,FL4,FL64
 
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=1000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=20000000000000000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=40000000000000000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=reduce_pad' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=20000000000001000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=40000000000001000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;reduce_pad' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=20000000000001000000 radix=16' --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefixes=CLEAN
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=40000000000001000000 radix=16' --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefixes=CLEAN
 
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce<32>;pad_dot_general(1);iota_simplify<16>(2)' | FileCheck %s --check-prefixes=TD,PARAM
 
