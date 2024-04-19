@@ -346,6 +346,7 @@ or_simplify<16>;
 negate_simplify<16>;
 mul_simplify<16>;
 div_simplify<16>;
+rem_simplify<16>;
 pow_simplify<16>;
 sqrt_simplify<16>;
 cos_simplify<16>;

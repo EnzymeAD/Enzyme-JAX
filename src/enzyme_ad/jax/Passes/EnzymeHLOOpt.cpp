@@ -2729,6 +2729,20 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
   }
 };
 
+struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
+  using OpRewritePattern<mlir::stablehlo::RemOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::RemOp op,
+                                PatternRewriter &rewriter) const final {
+
+    if (matchPattern(op.getRhs(), m_One())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
   using OpRewritePattern<mlir::stablehlo::PowOp>::OpRewritePattern;
 
@@ -6015,8 +6029,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     RewritePatternSet patterns(context);
     patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
                  MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, PowSimplify, SqrtSimplify, CosSimplify,
-                 SinSimplify, NoopSlice, SliceSlice, PadSimplify,
+                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
+                 CosSimplify, SinSimplify, NoopSlice, SliceSlice, PadSimplify,
                  ShiftRightLogicalSimplify, NegativePadToSlice, TanhSimplify,
                  ExpSimplify, SliceSimplify, ConvertSimplify, ReshapeSimplify,
                  TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,

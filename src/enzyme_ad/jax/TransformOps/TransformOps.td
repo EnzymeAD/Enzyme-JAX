@@ -612,6 +612,10 @@ def ApplyShiftRightLogicalSimplifyPatterns : EnzymeHLOPatternOp<
     "shift_right_logical_simplify"> {
   let patterns = ["ShiftRightLogicalSimplify"];
 }
+def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
+    "rem_simplify"> {
+  let patterns = ["RemSimplify"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
