@@ -176,7 +176,7 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
 
     auto start2 = pstart + pstep * nstart;
     auto step2 = pstep * nstep;
-    auto end2 = pstart + pstep * nstart + pstep * nstep * (nend - nstart);
+    auto end2 = pstart + pstep * nstart + pstep * (nend - nstart);
     if (start2 > size)
       start2 = size;
     if (end2 > size)
@@ -207,8 +207,12 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
     SmallVector<int64_t> step(op.getStrides().begin(), op.getStrides().end());
 
     sliceSliceHelper(prev, start, end, step);
-    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, prev.getOperand(),
-                                                    start, end, step);
+    auto resTy = op.getType();
+    auto res = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+        op, prev.getOperand(), start, end, step);
+    assert(res.getType() == resTy);
+    (void)res;
+    (void)resTy;
     return success();
   }
 };
