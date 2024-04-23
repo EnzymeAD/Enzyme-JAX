@@ -81,6 +81,12 @@ def : HLODerivative<"SqrtOp", (Op $x),
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
                       ]
                   >;
+def : HLODerivative<"RsqrtOp", (Op $x),
+                    [
+                      // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
+                      (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
+                      ]
+                  >;
 
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def : HLODerivative<"MaxOp", (Op $x, $y),
