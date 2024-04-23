@@ -242,63 +242,8 @@ class NewXLAPipeline:
         return self.passes.count("enzyme-wrap")
 
 
-DefaultCPPPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
-DefaultJaXPipeline = JaXPipeline(
-    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,enzyme-hlo-opt{passses=24575},cse"
-)
-
-
-def pass_pipeline(options):
-    if type(options) == type(""):
-        return options
-    else:
-        return
-
-
-def resource_dir():
-    import os
-
-    dn = os.path.dirname(enzyme_call.__file__)
-    res = os.path.join(dn, "..", "..", "clang", "staging")
-    return res
-
-
-def cflags():
-    import platform
-    import os
-
-    if platform.system() == "Darwin":
-        res = (
-            "-isysroot",
-            "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-            "-isystem",
-            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1",
-            "-internal-isystem",
-            os.path.join(resource_dir(), "include"),
-            "-internal-externc-isystem",
-            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include",
-            "-internal-externc-isystem",
-            "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include",
-            "-fgnuc-version=4.2.1",
-        )
-    else:
-        res = ()
-        if os.getenv("ENABLE_GDBLISTENER") is not None:
-            res = res + (
-                "-debug-info-kind=standalone",
-                "-dwarf-version=5",
-                "-debugger-tuning=gdb",
-            )
-    return res
-
-
-def optimize_module(mod, pipeline=None):
-    if pipeline is None:
-        pipeline = """
-            inline{default-pipeline=canonicalize max-iterations=4},
-            canonicalize,cse,
-            canonicalize,
-            enzyme-hlo-generate-td{
+def hlo_opts():
+    return """enzyme-hlo-generate-td{
             patterns=compare_op_canon<16>;
 broadcast_in_dim_op_canon<16>;
 convert_op_canon<16>;
@@ -452,6 +397,69 @@ pad_dot_general<1>(1);
             transform-interpreter,
             enzyme-hlo-remove-transform
         """
+
+
+DefaultCPPPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+DefaultJaXPipeline = JaXPipeline(
+    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,"
+    + hlo_opts()
+    + ", cse"
+)
+
+
+def pass_pipeline(options):
+    if type(options) == type(""):
+        return options
+    else:
+        return
+
+
+def resource_dir():
+    import os
+
+    dn = os.path.dirname(enzyme_call.__file__)
+    res = os.path.join(dn, "..", "..", "clang", "staging")
+    return res
+
+
+def cflags():
+    import platform
+    import os
+
+    if platform.system() == "Darwin":
+        res = (
+            "-isysroot",
+            "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+            "-isystem",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1",
+            "-internal-isystem",
+            os.path.join(resource_dir(), "include"),
+            "-internal-externc-isystem",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include",
+            "-internal-externc-isystem",
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include",
+            "-fgnuc-version=4.2.1",
+        )
+    else:
+        res = ()
+        if os.getenv("ENABLE_GDBLISTENER") is not None:
+            res = res + (
+                "-debug-info-kind=standalone",
+                "-dwarf-version=5",
+                "-debugger-tuning=gdb",
+            )
+    return res
+
+
+def optimize_module(mod, pipeline=None):
+    if pipeline is None:
+        pipeline = (
+            """
+            inline{default-pipeline=canonicalize max-iterations=4},
+            canonicalize,cse,
+            canonicalize,"""
+            + hlo_opts()
+        )
     enzyme_call.optimize_module(mod, pipeline)
     return
 
@@ -630,6 +638,7 @@ def maketup(ty):
     ty = ir.RankedTensorType(ty)
     tystr = ty.element_type.__str__()
     tystr = {
+        "i1": "bool",
         "bf16": "bfloat16",
         "f32": "float",
         "f64": "double",
@@ -1169,10 +1178,11 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
         outshapes = kwargs["out_shapes"]
         ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
-        afterad = "arith-raise{stablehlo=true}, enzyme-hlo-opt, cse, canonicalize"
+        afterad = "arith-raise{stablehlo=true}, " + hlo_opts() + ", cse, canonicalize"
         newpasses = (
             "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "enzyme-hlo-opt,cse,enzyme-wrap{infn=main outfn= retTys="
+            + hlo_opts()
+            + ", cse,enzyme-wrap{infn=main outfn= retTys="
             + ret_act_tup
             + " argTys="
             + arg_act_tup
@@ -1401,7 +1411,9 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         newpasses = (
             prev_passes
             + ad_pass
-            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, enzyme-hlo-opt, canonicalize, cse"
+            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
+            + hlo_opts()
+            + ", canonicalize, cse"
             + post_passes
         )
 
