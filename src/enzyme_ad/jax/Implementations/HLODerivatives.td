@@ -361,4 +361,119 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
 
+
+def Convolution : HLOInst<"ConvolutionOp">;
+
+def ConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowStridesAttr();
+}]>;
+
+def ConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getPaddingAttr();
+}]>;
+
+def ConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLhsDilationAttr();
+}]>;
+
+def ConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getRhsDilationAttr();
+}]>;
+
+def ConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowReversalAttr();
+}]>;
+
+def ConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbersAttr();
+}]>;
+
+def ConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFeatureGroupCountAttr();
+}]>;
+
+def ConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getBatchGroupCountAttr();
+}]>;
+
+// TODO
+
+def GradFilterConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowStridesAttr();
+}]>;
+
+def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getPaddingAttr();
+}]>;
+
+def GradFilterConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLhsDilationAttr();
+}]>;
+
+def GradFilterConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getRhsDilationAttr();
+}]>;
+
+def GradFilterConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowReversalAttr();
+}]>;
+
+def GradFilterConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbersAttr();
+}]>;
+
+def GradFilterConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFeatureGroupCountAttr();
+}]>;
+
+def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getBatchGroupCountAttr();
+}]>;
+
+
+// TODO
+
+def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowStridesAttr();
+}]>;
+
+def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getPaddingAttr();
+}]>;
+
+def GradDataConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLhsDilationAttr();
+}]>;
+
+def GradDataConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getRhsDilationAttr();
+}]>;
+
+def GradDataConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowReversalAttr();
+}]>;
+
+def GradDataConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbersAttr();
+}]>;
+
+def GradDataConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFeatureGroupCountAttr();
+}]>;
+
+def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getBatchGroupCountAttr();
+}]>;
+
+def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
+                    [
+                        (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
+                        (Convolution (TypeOf $rhs), (DiffeRet), $rhs, (GradDataConvWindowStrides), (GradDataConvPadding), (GradDataConvLhsDialation), (GradDataConvRhsDialation), (GradDataConvWindowReversal), (GradDataConvDimensionNumbers), (GradDataConvFeatureGroupCount), (GradDataConvBatchGroupCount), (ResultDotPrec))
+                      ],
+                     (Add (SelectIfActive $lhs, 
+                     (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
+                     (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
+                     (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
+                     (HLOConstantFP<"0">)))
+                  >;
 def : HLORegionTerminatorOp<"ReturnOp">;
