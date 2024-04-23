@@ -335,4 +335,24 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                      (Add (SelectIfActive $lhs, (Dot (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Dot (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
 
+
+def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+op.getPermutation();
+}]>;
+
+def InversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> res(op.getPermutation().size(), 0);
+  for (auto en : llvm::enumerate(op.getPermutation())) {
+    res[to_i64(en.value())] = en.index();
+  }
+  getI64Attr(builder, res);
+}]>;
+
+def : HLODerivative<"TransposeOp", (Op $x),
+                    [
+                        (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
+                    ],
+                    (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
+                  >;
+
 def : HLORegionTerminatorOp<"ReturnOp">;
