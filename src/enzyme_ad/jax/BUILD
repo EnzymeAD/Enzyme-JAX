@@ -143,7 +143,6 @@ gentbl_cc_library(
     ],
     deps = [
         ":ImplementationsCommonTdFiles",
-        "@enzyme//:enzyme-tblgen",
     ],
 )
 
@@ -161,7 +160,6 @@ gentbl_cc_library(
     ],
     deps = [
         ":EnzymeImplementationsCommonTdFiles",
-        "@enzyme//:enzyme-tblgen",
     ],
 )
 
