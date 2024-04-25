@@ -820,7 +820,7 @@ def _enzyme_primal_lowering(
 
             if tmpBuf != 0:
                 sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
-                out_types = out_types + (sa,)
+                out_types = tuple(list(out_types) + [sa])
 
             custom_call = stablehlo.CustomCallOp(
                 out_types, mlir_args, call_target_name="jaxzyme.primal"

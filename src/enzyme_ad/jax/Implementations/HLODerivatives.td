@@ -10,6 +10,9 @@ def Cos : HLOInst<"CosineOp">;
 def Sin : HLOInst<"SineOp">;
 def Sqrt : HLOInst<"SqrtOp">;
 def Exp : HLOInst<"ExpOp">;
+def Tanh : HLOInst<"TanhOp">;
+def Sinh : HLOInst<"SinhOp">;
+def Cosh : HLOInst<"CoshOp">;
 
 def Dot : HLOInst<"DotGeneralOp", "->getResult(0)">;
 
@@ -85,6 +88,16 @@ def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
+                      ]
+                  >;
+def : HLODerivative<"TanhOp", (Op $x),
+                    [
+                      (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
+                      ]
+                  >;
+def : HLODerivative<"LogOp", (Op $x),
+                    [
+                      (CheckedDiv (DiffeRet), $x)
                       ]
                   >;
 
@@ -475,5 +488,15 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                      (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
                      (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
                      (HLOConstantFP<"0">)))
+                  >;
+
+
+def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
+                    [
+                        (AssertingInactiveArg),
+                        (Select $cond, (DiffeRet), (HLOConstantFP<"0">)),
+                        (Select $cond, (HLOConstantFP<"0">), (DiffeRet)),
+                      ],
+                      (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
 def : HLORegionTerminatorOp<"ReturnOp">;
