@@ -799,6 +799,9 @@ def _enzyme_primal_lowering(
                 callop = func.CallOp(fn, list(in_args))
                 results = callop.results
             if len(results) != len(out_shapes):
+                print(source)
+                print(pass_pipeline)
+                print(str(nmod))
                 print(out_shapes, "\n", results, "\n", nmod)
             assert len(results) == len(out_shapes)
         else:
@@ -1389,7 +1392,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
         _, acts, _ = arg_activity_from_pipeline(ad_pass)
 
-        ad_pass = ad_pass.replace("enzyme_dup", "enzyme_out")
+        ad_pass = ad_pass.replace("enzyme_dup", "enzyme_active")
         ad_pass = ad_pass.replace("ForwardMode", "ReverseModeCombined")
 
         shadow_rets2 = tuple(
@@ -1403,7 +1406,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             if type(shad) is ad.Zero:
                 ret_act.append("enzyme_const")
             else:
-                ret_act.append("enzyme_out")
+                ret_act.append("enzyme_active")
                 shadow_rets2.append(shad)
         shadow_rets2 = tuple(shadow_rets2)
         ad_pass = preret + ",".join(ret_act) + postret
