@@ -1510,13 +1510,20 @@ def enzyme_jax_ir(
             # this code will get DCE'd / not traced).
             # TODO in the future we should look at mlir to determine what actual values
             # we will need and do dead arg elim ourselves based on ir in advance
+            def zero_like(arg):
+                if arg.dtype == jax.float0:
+                    return arg
+                else:
+                    return jnp.zeros(arg.shape, dtype=arg.dtype)
+
             avals_in = jax.tree_util.tree_unflatten(
-                in_tree, [jnp.zeros(arg.shape, dtype=arg.dtype) for arg in args_flat]
+                in_tree,
+                [zero_like(arg) for arg in args_flat],
             )
             lowered_func = jitres.lower(*avals_in)
             kept = lowered_func.compile()._executable._kept_var_idx
             args_flat = [
-                arg if i in kept else jnp.zeros(arg.shape, dtype=arg.dtype)
+                arg if i in kept else zero_like(arg)
                 for (i, arg) in enumerate(args_flat)
             ]
 
