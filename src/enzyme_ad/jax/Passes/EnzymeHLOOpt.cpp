@@ -2627,13 +2627,15 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
     }
 
     // 1 * x -> x
-    if (matchPattern(op.getLhs(), m_One())) {
+    if (matchPattern(op.getLhs(), m_One()) ||
+        matchPattern(op.getLhs(), m_OneFloat())) {
       rewriter.replaceOp(op, op.getRhs());
       return success();
     }
 
     // x * 1 -> x
-    if (matchPattern(op.getRhs(), m_One())) {
+    if (matchPattern(op.getRhs(), m_One()) ||
+        matchPattern(op.getRhs(), m_OneFloat())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
