@@ -639,6 +639,7 @@ def maketup(ty):
     tystr = ty.element_type.__str__()
     tystr = {
         "i1": "bool",
+        "i8": "char",
         "bf16": "bfloat16",
         "f32": "float",
         "f64": "double",
