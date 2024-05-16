@@ -199,7 +199,6 @@ GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
   const std::unique_ptr<clang::driver::Compilation> compilation(
       driver->BuildCompilation(PreArgs));
 
-  Argv.push_back("-S");
   Argv.push_back("-emit-llvm");
   Argv.push_back("-I/enzyme");
   Argv.push_back("-O1");
