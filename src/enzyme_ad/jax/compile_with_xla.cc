@@ -386,8 +386,6 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
 
   xla::ExecutableBuildOptions build_options;
   build_options.mutable_debug_options()->set_xla_embed_ir_in_executable(true);
-  build_options.mutable_debug_options()->set_xla_cpu_use_xla_runtime(
-      xla_runtime);
 
   build_options.mutable_debug_options()
       ->mutable_xla_backend_extra_options()

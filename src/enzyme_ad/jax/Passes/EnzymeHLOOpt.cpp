@@ -1361,10 +1361,9 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
       DenseElementsAttr pv;
       matchPattern(op.getPaddingValue(), m_Constant(&pv));
       if (inp && pv) {
-        auto ten = mlir::stablehlo::evalConstantOp(inp);
-        auto out = fromTensor(mlir::stablehlo::evalPadOp(
-            mlir::stablehlo::evalConstantOp(inp),
-            mlir::stablehlo::evalConstantOp(pv),
+        auto ten = mlir::stablehlo::constantOp(inp);
+        auto out = fromTensor(mlir::stablehlo::padOp(
+            mlir::stablehlo::constantOp(inp), mlir::stablehlo::constantOp(pv),
             stablehlo::Sizes(op.getEdgePaddingLow()),
             stablehlo::Sizes(op.getInteriorPadding()), op.getType()));
 
@@ -1401,9 +1400,9 @@ struct ShiftRightLogicalSimplify final
     DenseElementsAttr rhs;
     matchPattern(op.getRhs(), m_Constant(&rhs));
     if (lhs && rhs) {
-      auto out = fromTensor(mlir::stablehlo::evalShiftRightLogicalOp(
-          mlir::stablehlo::evalConstantOp(lhs),
-          mlir::stablehlo::evalConstantOp(rhs), op.getType()));
+      auto out = fromTensor(mlir::stablehlo::shiftRightLogicalOp(
+          mlir::stablehlo::constantOp(lhs), mlir::stablehlo::constantOp(rhs),
+          op.getType()));
 
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
@@ -2126,9 +2125,9 @@ struct ConcatConstProp final
 
       SmallVector<stablehlo::Tensor> inps;
       for (auto &c : constants)
-        inps.push_back(mlir::stablehlo::evalConstantOp(c));
-      auto out = mlir::stablehlo::evalConcatenateOp(inps, op.getDimension(),
-                                                    op.getType());
+        inps.push_back(mlir::stablehlo::constantOp(c));
+      auto out =
+          mlir::stablehlo::concatenateOp(inps, op.getDimension(), op.getType());
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                          fromTensor(out));
       return success();
@@ -2813,7 +2812,7 @@ struct IotaSimplify : public OpRewritePattern<mlir::stablehlo::IotaOp> {
     if (size >= max_constant_expansion)
       return failure();
 
-    auto out = mlir::stablehlo::evalIotaOp(op.getIotaDimension(), op.getType());
+    auto out = mlir::stablehlo::iotaOp(op.getIotaDimension(), op.getType());
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                        fromTensor(out));
     return success();
@@ -2942,9 +2941,9 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
             RankedTensorType::get({}, inp.getType().getElementType())));
         ty = RankedTensorType::get({}, op.getType().getElementType());
       } else {
-        ten = mlir::stablehlo::evalConstantOp(inp);
+        ten = mlir::stablehlo::constantOp(inp);
       }
-      auto out = fromTensor(mlir::stablehlo::evalConvertOp(ten, ty));
+      auto out = fromTensor(mlir::stablehlo::convertOp(ten, ty));
       if (inp.isSplat())
         out = out.resizeSplat(op.getType());
 
@@ -2968,8 +2967,8 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        auto ten = mlir::stablehlo::evalConstantOp(inp);
-        out = fromTensor(mlir::stablehlo::evalSliceOp(
+        auto ten = mlir::stablehlo::constantOp(inp);
+        out = fromTensor(mlir::stablehlo::sliceOp(
             ten, stablehlo::Sizes(op.getStartIndices()),
             stablehlo::Sizes(op.getStrides()), op.getType()));
       }
@@ -3007,8 +3006,8 @@ struct BroadcastInDimSimplify
           size *= sz;
         if (size >= max_constant_expansion)
           return failure();
-        auto ten = mlir::stablehlo::evalConstantOp(inp);
-        out = fromTensor(mlir::stablehlo::evalBroadcastInDimOp(
+        auto ten = mlir::stablehlo::constantOp(inp);
+        out = fromTensor(mlir::stablehlo::broadcastInDimOp(
             ten, mlir::stablehlo::Axes(op.getBroadcastDimensions()),
             op.getType()));
       }
@@ -3070,8 +3069,8 @@ struct TransposeSimplify
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        out = fromTensor(mlir::stablehlo::evalTransposeOp(
-            stablehlo::evalConstantOp(inp),
+        out = fromTensor(mlir::stablehlo::transposeOp(
+            stablehlo::constantOp(inp),
             mlir::stablehlo::Axes(op.getPermutation()), op.getType()));
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
@@ -4838,15 +4837,15 @@ struct SliceReshapeSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 // https://github.com/openxla/stablehlo/blob/4f180d3c2236a15f82f29aad1b47f6ea2c14fc52/stablehlo/reference/Ops.cpp#L1381
 // using https://openxla.org/xla/operation_semantics#gather
 // becuase xla/openxla differ in semantics
-stablehlo::Index evalIndex(stablehlo::Tensor tensor) {
+stablehlo::Index index(stablehlo::Tensor tensor) {
   stablehlo::Index result;
   for (auto it = tensor.index_begin(); it != tensor.index_end(); ++it)
     result.push_back(tensor.get(*it).getIntegerValue().getSExtValue());
   return result;
 }
 
-stablehlo::Tensor evalSliceOp(const stablehlo::Tensor &operand,
-                              const stablehlo::Index &index) {
+stablehlo::Tensor sliceOp(const stablehlo::Tensor &operand,
+                          const stablehlo::Index &index) {
   using namespace stablehlo;
   Sizes start, limit;
   for (auto i = 0; i < operand.getRank(); ++i) {
@@ -4867,18 +4866,18 @@ stablehlo::Tensor evalSliceOp(const stablehlo::Tensor &operand,
   (void)inferStatus;
   assert(!failed(inferStatus));
 
-  return stablehlo::evalSliceOp(operand, start, strides,
-                                inferredTypes[0].cast<mlir::ShapedType>());
+  return stablehlo::sliceOp(operand, start, strides,
+                            inferredTypes[0].cast<mlir::ShapedType>());
 }
 
-stablehlo::Tensor myevalGatherOp(const stablehlo::Tensor &operand,
-                                 const stablehlo::Tensor &startIndices,
-                                 const stablehlo::Axes &offsetDims,
-                                 const stablehlo::Axes &collapsedSliceDims,
-                                 const stablehlo::Axes &startIndexMap,
-                                 stablehlo::Axis indexVectorDim,
-                                 const stablehlo::Sizes &sliceSizes,
-                                 bool indicesAreSorted, ShapedType resultType) {
+stablehlo::Tensor mygatherOp(const stablehlo::Tensor &operand,
+                             const stablehlo::Tensor &startIndices,
+                             const stablehlo::Axes &offsetDims,
+                             const stablehlo::Axes &collapsedSliceDims,
+                             const stablehlo::Axes &startIndexMap,
+                             stablehlo::Axis indexVectorDim,
+                             const stablehlo::Sizes &sliceSizes,
+                             bool indicesAreSorted, ShapedType resultType) {
   using namespace stablehlo;
   constexpr int64_t kColon = -1;
 
@@ -4900,7 +4899,7 @@ stablehlo::Tensor myevalGatherOp(const stablehlo::Tensor &operand,
     if (indexVectorDim < startIndices.getRank())
       startIndicesIndex.insert(startIndicesIndex.begin() + indexVectorDim,
                                kColon);
-    auto startIndex = evalIndex(evalSliceOp(startIndices, startIndicesIndex));
+    auto startIndex = index(sliceOp(startIndices, startIndicesIndex));
 
     Index fullStartIndex(operand.getRank(), 0);
     for (auto dOperand : operand.getAxes()) {
@@ -4965,12 +4964,12 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
     {
       DenseIntElementsAttr operandVals;
       if (matchPattern(operand, m_Constant(&operandVals))) {
-        auto out = myevalGatherOp(
-            stablehlo::evalConstantOp(operandVals),
-            stablehlo::evalConstantOp(startIndicesCst),
-            stablehlo::Axes(offsetDims), stablehlo::Axes(collapsedSliceDims),
-            stablehlo::Axes(startIndexMap), stablehlo::Axis(indexVectorDim),
-            stablehlo::Sizes(sliceSizes), indicesAreSorted, op.getType());
+        auto out = mygatherOp(
+            stablehlo::constantOp(operandVals),
+            stablehlo::constantOp(startIndicesCst), stablehlo::Axes(offsetDims),
+            stablehlo::Axes(collapsedSliceDims), stablehlo::Axes(startIndexMap),
+            stablehlo::Axis(indexVectorDim), stablehlo::Sizes(sliceSizes),
+            indicesAreSorted, op.getType());
 
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                            fromTensor(out));
