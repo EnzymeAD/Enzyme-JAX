@@ -9,8 +9,8 @@ number = 1000
 
 AllPipelines = [
     ("JaXPipeline", JaXPipeline()),
-    ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
-    ("NewXLA", NewXLAPipeline()),
+    # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
+    # ("NewXLA", NewXLAPipeline()),
     ("OldXLA", OldXLAPipeline()),
 ]
 PrimalPipelines = AllPipelines

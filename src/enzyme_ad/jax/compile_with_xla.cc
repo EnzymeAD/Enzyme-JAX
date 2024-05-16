@@ -222,9 +222,10 @@ RunBackend(xla::cpu::CpuCompiler *self, std::unique_ptr<xla::HloModule> module,
 
   std::unique_ptr<xla::cpu::CpuExecutable> cpu_executable;
   if (xla_runtime) {
-    TF_ASSIGN_OR_RETURN(cpu_executable,
-                        self->CompileXlaRuntimeCpuExecutable(std::move(module),
-                                                             options.registry));
+    throw pybind11::value_error("xla_runtime deprecated upstream");
+    // TF_ASSIGN_OR_RETURN(cpu_executable,
+    //                    self->CompileXlaRuntimeCpuExecutable(std::move(module),
+    //                                                         options.registry));
   } else {
     TF_ASSIGN_OR_RETURN(cpu_executable,
                         self->CompileLegacyCpuExecutable(std::move(module)));
