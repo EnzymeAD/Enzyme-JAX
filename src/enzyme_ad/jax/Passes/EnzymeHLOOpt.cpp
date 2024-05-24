@@ -1265,6 +1265,10 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
     return DenseFPElementsAttr::get(type, floatValues);
   }
 
+  if (elemType.isSignlessInteger(1)) {
+    auto floatValues = ArrayRef((bool *)inp.getData(), inp.getNumElements());
+    return DenseIntElementsAttr::get(type, floatValues);
+  }
   if (elemType.isSignlessInteger(8)) {
     auto floatValues = ArrayRef((int8_t *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
@@ -1279,6 +1283,10 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   }
   if (elemType.isSignlessInteger(64)) {
     auto floatValues = ArrayRef((int64_t *)inp.getData(), inp.getNumElements());
+    return DenseIntElementsAttr::get(type, floatValues);
+  }
+  if (elemType.isUnsignedInteger(1)) {
+    auto floatValues = ArrayRef((bool *)inp.getData(), inp.getNumElements());
     return DenseIntElementsAttr::get(type, floatValues);
   }
   if (elemType.isUnsignedInteger(8)) {
@@ -1301,6 +1309,8 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
     return DenseIntElementsAttr::get(type, floatValues);
   }
 
+  llvm::errs() << "Unknown stablehlo type to parse data from\n: " << elemType
+               << "\n";
   assert(0);
   return {};
 }
@@ -5248,6 +5258,22 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
                                 PatternRewriter &rewriter) const override {
     RankedTensorType type = op.getType();
+
+    {
+      DenseElementsAttr lhs;
+      matchPattern(op.getLhs(), m_Constant(&lhs));
+      DenseElementsAttr rhs;
+      matchPattern(op.getRhs(), m_Constant(&rhs));
+      if (lhs && rhs) {
+        auto out = fromTensor(mlir::stablehlo::compareOp(
+            mlir::stablehlo::constantOp(lhs), mlir::stablehlo::constantOp(rhs),
+            op.getComparisonDirection(), op.getType()));
+
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                           out);
+        return success();
+      }
+    }
 
     // Bail out on non-integer comparison.
     // TODO: Support more comparison types.
