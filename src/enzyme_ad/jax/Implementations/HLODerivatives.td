@@ -641,3 +641,25 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     ],
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
+
+def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
+def Einsum : HLOInst<"EinsumOp">;
+
+// TODO can we refere to `complex.conj` without declaring it here?
+def Conj : Inst<"ConjOp", "complex">;
+
+def : HLODerivative<"UnaryEinsumOp", (Op $x),
+                    [
+                        // TODO Repeat `DiffeRet` on contracted dims (must return same shape as $x)
+                        (BroadcastInDim (DiffeRet), ...),
+                    ]
+                  >;
+
+def : HLODerivative<"EinsumOp", (Op $lhs, $rhs)
+                    [
+                        // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
+                        // TODO how do we replace `einsum_config` here?
+                        (Einsum (DiffeRet), $rhs),
+                        (Einsum $lhs, (DiffeRet)),
+                    ]
+                  >;
