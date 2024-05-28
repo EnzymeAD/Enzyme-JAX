@@ -651,7 +651,7 @@ def Conj : Inst<"ConjOp", "complex">;
 def UnaryEinsumRevertConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
-  const Twine &new_config = output + "->" + input;
+  const StringRef new_config = (output + "->" + input).toStringRef();
   getStrAttr(builder, new_config);
 }]>;
 
