@@ -648,7 +648,7 @@ def Einsum : HLOInst<"EinsumOp">;
 // TODO can we refere to `complex.conj` without declaring it here?
 def Conj : Inst<"ConjOp", "complex">;
 
-def UnaryEinsumRevertConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
   const StringRef new_config = (output + "->" + input).toStringRef();
@@ -657,12 +657,12 @@ def UnaryEinsumRevertConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     [
-                        // TODO Repeat `DiffeRet` on contracted dims (must return same shape as $x)
-                        (UnaryEinsum (DiffeRet), (UnaryEinsumRevertConfig)),
+                        // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
+                        (UnaryEinsum (DiffeRet), (GradUnaryEinsumConfig)),
                     ]
                   >;
 
-def EinsumGradConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
   auto [lhs, rhs] = input.split(',');
@@ -670,7 +670,7 @@ def EinsumGradConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   getStrAttr(builder, new_config);
 }]>;
 
-def EinsumGradConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
   auto [lhs, rhs] = input.split(',');
@@ -681,7 +681,7 @@ def EinsumGradConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs)
                     [
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
-                        (Einsum (DiffeRet), $rhs, (EinsumGradConfigLhs)),
-                        (Einsum (DiffeRet), $lhs, (EinsumGradConfigRhs)),
+                        (Einsum (DiffeRet), $rhs, (GradEinsumConfigLhs)),
+                        (Einsum (DiffeRet), $lhs, (GradEinsumConfigRhs)),
                     ]
                   >;
