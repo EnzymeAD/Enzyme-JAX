@@ -662,9 +662,9 @@ def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     [
                         // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
-                        (UnaryEinsum (DiffeRet), (GradUnaryEinsumConfig)),
+                        (UnaryEinsum (TypeOf $x), (DiffeRet), (GradUnaryEinsumConfig)),
                     ],
-                    (UnaryEinsum (Shadow $x), (EinsumConfig))
+                    (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
 
 def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -686,8 +686,8 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                     [
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
-                        (Einsum (DiffeRet), $rhs, (GradEinsumConfigLhs)),
-                        (Einsum (DiffeRet), $lhs, (GradEinsumConfigRhs)),
+                        (Einsum (TypeOf $lhs), (DiffeRet), $rhs, (GradEinsumConfigLhs)),
+                        (Einsum (TypeOf $rhs), (DiffeRet), $lhs, (GradEinsumConfigRhs)),
                     ],
-                    (Add (Einsum (Shadow $lhs), $rhs, (EinsumConfig)), (Einsum $lhs, (Shadow $rhs), (EinsumConfig)))
+                    (Add (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)))
                   >;
