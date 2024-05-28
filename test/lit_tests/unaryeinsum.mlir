@@ -8,10 +8,10 @@ module {
   }
 }
 
-// FORWARD:  func.func @main(%x: tensor<2x3xf32>, %dx: tensor<2x3xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %[[y:.+]] = "stablehlo.unary_einsum"(%x) {einsum_config = "ab->a"} : (tensor<2x3xf32>) -> tensor<2xf32>
-// FORWARD-NEXT:    %[[dy:.+]] = "stablehlo.unary_einsum"(%dx) {einsum_config = "ab->a"} : (tensor<2x3xf32>) -> tensor<2xf32>
-// FORWARD-NEXT:    return %[[y]], %[[dy]] : tensor<2xf32>, tensor<2xf32>
+// FORWARD:  func.func @main(%arg0: tensor<2x3xf32>, %arg1: tensor<2x3xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
+// FORWARD-NEXT:    %0 = stablehlo.unary_einsum %arg1, config = "ab->a" : (tensor<2x3xf32>) -> tensor<2xf32>
+// FORWARD-NEXT:    %1 = stablehlo.unary_einsum %arg0, config = "ab->a" : (tensor<2x3xf32>) -> tensor<2xf32>
+// FORWARD-NEXT:    return %1, %0 : tensor<2xf32>, tensor<2xf32>
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%x: tensor<2x3xf32>, %dy: tensor<2xf32>) -> tensor<2x3xf32> {
