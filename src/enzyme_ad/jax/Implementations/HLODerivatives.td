@@ -648,10 +648,17 @@ def Einsum : HLOInst<"EinsumOp">;
 // TODO can we refere to `complex.conj` without declaring it here?
 def Conj : Inst<"ConjOp", "complex">;
 
+def UnaryEinsumRevertConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  const Twine &new_config = output + "->" + input;
+  getStrAttr(builder, new_config);
+}]>;
+
 def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     [
                         // TODO Repeat `DiffeRet` on contracted dims (must return same shape as $x)
-                        (BroadcastInDim (DiffeRet), ...),
+                        (UnaryEinsum (DiffeRet), (UnaryEinsumRevertConfig)),
                     ]
                   >;
 
