@@ -9,10 +9,12 @@ module {
 }
 
 // TODO complex version
-// FORWARD:  func.func @main(%a: tensor<2x3xf32>, %b: tensor<4x3x5xf32>, %da: tensor<2x3xf32>, %db : tensor<4x3x5xf32>) -> (tensor<4x2x5xf32>, tensor<4x2x5xf32>) {
-// FORWARD-NEXT:    %[[c:.+]] = "stablehlo.einsum"(%a, %b) {einsum_config = "ab,cbd->cad"} : (tensor<2x3xf32>, tensor<4x3x5xf32>) -> tensor<4x2x5xf32>
-// FORWARD-NEXT:    %[[dc:.+]] = "stablehlo.einsum"(%da, %db) {einsum_config = "ab,cbd->cad"} : (tensor<2x3xf32>, tensor<4x3x5xf32>) -> tensor<4x2x5xf32>
-// FORWARD-NEXT:    return %[[c]], %[[dc]] : tensor<4x2x5xf32>, tensor<4x2x5xf32>
+// FORWARD:  func.func @main(%arg0: tensor<2x3xf32>, %arg1: tensor<2x3xf32>, %arg2: tensor<4x3x5xf32>, %arg3: tensor<4x3x5xf32>) -> (tensor<4x2x5xf32>, tensor<4x2x5xf32>) {
+// FORWARD-NEXT:    %0 = stablehlo.einsum %arg1, %arg2, config = "ab,cbd->cad" : (tensor<2x3xf32>, tensor<4x3x5xf32>) -> tensor<4x2x5xf32>
+// FORWARD-NEXT:    %1 = stablehlo.einsum %arg0, %arg3, config = "ab,cbd->cad" : (tensor<2x3xf32>, tensor<4x3x5xf32>) -> tensor<4x2x5xf32>
+// FORWARD-NEXT:    %2 = stablehlo.add %0, %1 : tensor<4x2x5xf32>
+// FORWARD-NEXT:    %3 = stablehlo.einsum %arg0, %arg2, config = "ab,cbd->cad" : (tensor<2x3xf32>, tensor<4x3x5xf32>) -> tensor<4x2x5xf32>
+// FORWARD-NEXT:    return %3, %2 : tensor<4x2x5xf32>, tensor<4x2x5xf32>
 // FORWARD-NEXT:  }
 
 // TODO complex version
