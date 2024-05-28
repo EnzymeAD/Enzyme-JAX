@@ -662,11 +662,26 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     ]
                   >;
 
+def EinsumGradConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  auto [lhs, rhs] = input.split(',');
+  const StringRef new_config = (output + "," + rhs + "->" + lhs).toStringRef();
+  getStrAttr(builder, new_config);
+}]>;
+
+def EinsumGradConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  auto [lhs, rhs] = input.split(',');
+  const StringRef new_config = (output + "," + lhs + "->" + rhs).toStringRef();
+  getStrAttr(builder, new_config);
+}]>;
+
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs)
                     [
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
-                        // TODO how do we replace `einsum_config` here?
-                        (Einsum (DiffeRet), $rhs),
-                        (Einsum $lhs, (DiffeRet)),
+                        (Einsum (DiffeRet), $rhs, (EinsumGradConfigLhs)),
+                        (Einsum (DiffeRet), $lhs, (EinsumGradConfigRhs)),
                     ]
                   >;
