@@ -648,6 +648,10 @@ def Einsum : HLOInst<"EinsumOp">;
 // TODO can we refere to `complex.conj` without declaring it here?
 def Conj : Inst<"ConjOp", "complex">;
 
+def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getEinsumConfig();
+}]>;
+
 def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
@@ -659,7 +663,8 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     [
                         // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
                         (UnaryEinsum (DiffeRet), (GradUnaryEinsumConfig)),
-                    ]
+                    ],
+                    (UnaryEinsum (Shadow $x), (EinsumConfig))
                   >;
 
 def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -683,5 +688,6 @@ def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
                         (Einsum (DiffeRet), $rhs, (GradEinsumConfigLhs)),
                         (Einsum (DiffeRet), $lhs, (GradEinsumConfigRhs)),
-                    ]
+                    ],
+                    (Add (Einsum (Shadow $lhs), $rhs, (EinsumConfig)), (Einsum $lhs, (Shadow $rhs), (EinsumConfig)))
                   >;
