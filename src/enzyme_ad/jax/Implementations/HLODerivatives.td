@@ -678,7 +678,7 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   getStrAttr(builder, new_config);
 }]>;
 
-def : HLODerivative<"EinsumOp", (Op $lhs, $rhs)
+def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                     [
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
                         (Einsum (DiffeRet), $rhs, (GradEinsumConfigLhs)),
