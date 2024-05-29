@@ -655,8 +655,7 @@ def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
-  const StringRef new_config = (output + "->" + input).getSingleStringRef();
-  builder.getStringAttr(new_config);
+  builder.getStringAttr(output + "->" + input);
 }]>;
 
 def : HLODerivative<"UnaryEinsumOp", (Op $x),
@@ -671,16 +670,14 @@ def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
   auto [lhs, rhs] = input.split(',');
-  const StringRef new_config = (output + "," + rhs + "->" + lhs).getSingleStringRef();
-  builder.getStringAttr(new_config);
+  builder.getStringAttr(output + "," + rhs + "->" + lhs);
 }]>;
 
 def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   StringRef config = op.getEinsumConfig();
   auto [input, output] = config.split(StringRef("->"));
   auto [lhs, rhs] = input.split(',');
-  const StringRef new_config = (output + "," + lhs + "->" + rhs).getSingleStringRef();
-  builder.getStringAttr(new_config);
+  builder.getStringAttr(output + "," + lhs + "->" + rhs);
 }]>;
 
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),

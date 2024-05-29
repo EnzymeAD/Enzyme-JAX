@@ -14,8 +14,11 @@ module {
 // FORWARD-NEXT:    return %1, %0 : tensor<2xf32>, tensor<2xf32>
 // FORWARD-NEXT:  }
 
-// REVERSE:  func.func @main(%x: tensor<2x3xf32>, %dy: tensor<2xf32>) -> tensor<2x3xf32> {
-// REVERSE-NEXT:    %[[dy_reshaped:.+]] = "stablehlo.reshape"(%dy) : (tensor<2xi32>) -> tensor<2x1xi32>
-// REVERSE-NEXT:    %[[dx:.+]] = "stablehlo.broadcast_in_dim"(%[[dy_reshaped]]) {broadcast_dimensions = array<i64: 1, 3>} : (tensor<2x1xf32>) -> tensor<2x3xf32>
-// REVERSE-NEXT:    return %[[dx]] : tensor<2x3xf32>
+// REVERSE:  func.func @main(%arg0: tensor<2x3xf32>, %arg1: tensor<2xf32>) -> tensor<2x3xf32> {
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
+// REVERSE-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<2x3xf32>
+// REVERSE-NEXT:    %0 = arith.addf %arg1, %cst : tensor<2xf32>
+// REVERSE-NEXT:    %1 = stablehlo.unary_einsum %0, config = "a->ab" : (tensor<2xf32>) -> tensor<2x3xf32>
+// REVERSE-NEXT:    %2 = arith.addf %1, %cst_0 : tensor<2x3xf32>
+// REVERSE-NEXT:    return %2 : tensor<2x3xf32>
 // REVERSE-NEXT:  }
