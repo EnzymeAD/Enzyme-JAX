@@ -645,9 +645,6 @@ def : HLODerivative<"TransposeOp", (Op $x),
 def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
 def Einsum : HLOInst<"EinsumOp">;
 
-// TODO can we refere to `complex.conj` without declaring it here?
-def Conj : Inst<"ConjOp", "complex">;
-
 def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEinsumConfig();
 }]>;
