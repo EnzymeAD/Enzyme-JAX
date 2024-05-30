@@ -2750,6 +2750,37 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
+    SmallVector<Attribute> constants;
+    constants.assign(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+
+    if (op.getType().getElementType().isa<FloatType>()) {
+      if (auto res = constFoldBinaryOpConditional<FloatAttr,
+                                                  FloatAttr::ValueType, void>(
+              constants,
+              [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+                APFloat res2(a);
+                res2.remainder(b);
+                return res2;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
+    } else {
+      if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                  IntegerAttr::ValueType, void>(
+              constants,
+              [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+                APInt res2(a);
+                return res2.srem(b);
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
+    }
     return failure();
   }
 };
