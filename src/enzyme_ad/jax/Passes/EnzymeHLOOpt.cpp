@@ -3103,14 +3103,30 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
     constants.assign(op->getNumOperands(), Attribute());
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
-    if (auto res =
-            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-                constants,
-                [](const APFloat &a, const APFloat &b)
-                    -> std::optional<APFloat> { return (a > b) ? a : b; })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), res.cast<ElementsAttr>());
-      return success();
+
+    if (op.getType().getElementType().isa<FloatType>()) {
+
+      if (auto res = constFoldBinaryOpConditional<FloatAttr,
+                                                  FloatAttr::ValueType, void>(
+              constants,
+              [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+                return (a > b) ? a : b;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
+    } else {
+      if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                  IntegerAttr::ValueType, void>(
+              constants,
+              [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+                return a.sgt(b) ? a : b;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
     }
     return failure();
   }
@@ -3129,14 +3145,30 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
     constants.assign(op->getNumOperands(), Attribute());
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
-    if (auto res =
-            constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType, void>(
-                constants,
-                [](const APFloat &a, const APFloat &b)
-                    -> std::optional<APFloat> { return (a < b) ? a : b; })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), res.cast<ElementsAttr>());
-      return success();
+
+    if (op.getType().getElementType().isa<FloatType>()) {
+
+      if (auto res = constFoldBinaryOpConditional<FloatAttr,
+                                                  FloatAttr::ValueType, void>(
+              constants,
+              [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+                return (a < b) ? a : b;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
+    } else {
+      if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                  IntegerAttr::ValueType, void>(
+              constants,
+              [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+                return a.slt(b) ? a : b;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
     }
     return failure();
   }
