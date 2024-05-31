@@ -5749,7 +5749,12 @@ struct NoopReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
           }))
         return failure();
 
-      rewriter.replaceOp(op, retOp.getResults());
+      SmallVector<Value> vals;
+      DenseI64ArrayAttr empty = rewriter.getDenseI64ArrayAttr({});
+      for (auto [res, opres] : llvm::zip(retOp.getResults(), op.getResults()))
+        vals.push_back(rewriter.create<stablehlo::BroadcastInDimOp>(
+            op.getLoc(), opres.getType(), res, empty));
+      rewriter.replaceOp(op, vals);
       return success();
     }
 
