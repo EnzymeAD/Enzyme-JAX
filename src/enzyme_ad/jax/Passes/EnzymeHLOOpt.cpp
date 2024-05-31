@@ -5340,9 +5340,22 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
       DenseElementsAttr rhs;
       matchPattern(op.getRhs(), m_Constant(&rhs));
       if (lhs && rhs) {
+        bool isSplat = lhs.isSplat() && rhs.isSplat();
+        auto ty = isSplat
+                      ? RankedTensorType::get({}, op.getType().getElementType())
+                      : op.getType();
         auto out = fromTensor(mlir::stablehlo::compareOp(
-            mlir::stablehlo::constantOp(lhs), mlir::stablehlo::constantOp(rhs),
-            op.getComparisonDirection(), op.getType()));
+            isSplat
+                ? stablehlo::makeTensor(lhs.resizeSplat(RankedTensorType::get(
+                      {}, lhs.getType().getElementType())))
+                : mlir::stablehlo::constantOp(lhs),
+            isSplat
+                ? stablehlo::makeTensor(rhs.resizeSplat(RankedTensorType::get(
+                      {}, rhs.getType().getElementType())))
+                : mlir::stablehlo::constantOp(rhs),
+            op.getComparisonDirection(), ty));
+        if (isSplat)
+          out = out.resizeSplat(op.getType());
 
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                            out);
