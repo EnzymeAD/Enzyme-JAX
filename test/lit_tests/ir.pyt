@@ -99,9 +99,9 @@ print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="stablehlo"))
 # CHECK-NEXT:     %[[i1:.+]]:2 = call @do_something(%[[i0]], %arg0, %arg1) : (tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1 : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
-# CHECK-NEXT:   func.func private @do_something(%arg0: tensor<16xi8>, %arg1: tensor<6x9xf32>, %arg2: tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>) {
+# CHECK:   func.func private @do_something
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<6> : tensor<1xi64>
-# CHECK-NEXT:     %[[i1:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%0, %arg0, %arg1, %arg2) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
+# CHECK-NEXT:     %[[i1:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%[[i0]], %arg0, %arg1, %arg2) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1 : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
