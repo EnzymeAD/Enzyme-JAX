@@ -684,5 +684,5 @@ def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                         (Einsum (TypeOf $lhs), (DiffeRet), $rhs, (GradEinsumConfigLhs)),
                         (Einsum (TypeOf $rhs), (DiffeRet), $lhs, (GradEinsumConfigRhs)),
                     ],
-                    (Add (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)))
+                    (Add (SelectIfActive $lhs, (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)), (HLOConstantFP<"0">)))
                   >;
