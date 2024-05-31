@@ -63,7 +63,7 @@ print(f.lower(ones, twos).compiler_ir(dialect="stablehlo"))
 # CHECK: module @jit_f attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:  func.func public @main
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<2> : tensor<1xi64>
-# CHECK-NEXT:     %[[i1:.+]]:3 = stablehlo.custom_call @jaxzyme.aug(%0, %arg0, %arg1) : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
+# CHECK-NEXT:     %[[i1:.+]]:3 = stablehlo.custom_call @jaxzyme.aug(%[[i0]], %arg0, %arg1) : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1, %[[i1]]#2, %arg0, %arg1 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>, tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
@@ -83,7 +83,7 @@ def g(a, b, x, y):
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<3> : tensor<1xi64>
 # CHECK-NEXT:     %[[i1:.+]]:3 = stablehlo.custom_call @jaxzyme.aug(%[[i0]], %arg0, %arg1) : (tensor<1xi64>, tensor<2x3xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<4x6xf32>, tensor<16xi8>)
 # CHECK-NEXT:     %[[i2:.+]] = stablehlo.constant dense<4> : tensor<1xi64>
-# CHECK-NEXT:     %[[i3:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%[[i2]], %1#2, %arg2, %arg3) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
+# CHECK-NEXT:     %[[i3:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%[[i2]], %[[i1]]#2, %arg2, %arg3) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1, %[[i3]]#0, %[[i3]]#1 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
