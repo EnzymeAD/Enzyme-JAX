@@ -2549,15 +2549,27 @@ struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res =
-            mlir::constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType,
-                                              void>(
-                constants, [](const APFloat &a) -> std::optional<APFloat> {
-                  return -a;
-                })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), res.cast<ElementsAttr>());
-      return success();
+    if (op.getType().getElementType().isa<FloatType>()) {
+      if (auto res =
+              mlir::constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType,
+                                                void>(
+                  constants, [](const APFloat &a) -> std::optional<APFloat> {
+                    return -a;
+                  })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
+    } else {
+      if (auto res =
+              mlir::constFoldUnaryOpConditional<IntegerAttr,
+                                                IntegerAttr::ValueType, void>(
+                  constants,
+                  [](const APInt &a) -> std::optional<APInt> { return -a; })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
     }
 
     return failure();
