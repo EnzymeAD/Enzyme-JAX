@@ -676,7 +676,7 @@ def : HLODerivative<"LogisticOp", (Op $x), [(CheckedMul (DiffeRet), (CheckedMul 
 def : HLODerivative<"MaxOp", (Op $x, $y),
                   [
                     (Select (Compare $x, $y, (LT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
-                    (Select (Compare $x, $y, (LT)), (DiffeRet), (HLOConstantFP<"0"> $x))
+                    (Select (Compare $x, $y, (LT)), (DiffeRet), (HLOConstantFP<"0"> $y))
                   ],
                   (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
@@ -684,7 +684,7 @@ def : HLODerivative<"MaxOp", (Op $x, $y),
 def : HLODerivative<"MinOp", (Op $x, $y),
                   [
                     (Select (Compare $y, $x, (LT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
-                    (Select (Compare $y, $x, (LT)), (DiffeRet), (HLOConstantFP<"0"> $x))
+                    (Select (Compare $y, $x, (LT)), (DiffeRet), (HLOConstantFP<"0"> $y))
                   ],
                   (Select (Compare $y, $x, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
