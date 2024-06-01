@@ -642,9 +642,6 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
 
-def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
-def Einsum : HLOInst<"EinsumOp">;
-
 def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEinsumConfig();
 }]>;
