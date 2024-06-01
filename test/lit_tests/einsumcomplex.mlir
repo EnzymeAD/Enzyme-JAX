@@ -19,8 +19,8 @@ module {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%arg0: tensor<2x3xcomplex<f32>>, %arg1: tensor<4x3x5xcomplex<f32>>, %arg2: tensor<4x2x5xcomplex<f32>>) -> (tensor<2x3xcomplex<f32>>, tensor<4x3x5xcomplex<f32>>) {
-// REVERSE-NEXT:    %0 = stablehlo.conj %arg0 : tensor<2x3xcomplex<f32>>
-// REVERSE-NEXT:    %1 = stablehlo.conj %arg1 : tensor<4x2x5xcomplex<f32>>
+// REVERSE-NEXT:    %0 = complex.conj %arg0 : tensor<2x3xcomplex<f32>>
+// REVERSE-NEXT:    %1 = complex.conj %arg1 : tensor<4x2x5xcomplex<f32>>
 // REVERSE-NEXT:    %2 = stablehlo.einsum %arg2, %0, config = "cad,ab->cbd" : (tensor<4x2x5xcomplex<f32>>, tensor<2x3xcomplex<f32>>) -> tensor<4x3x5xcomplex<f32>>
 // REVERSE-NEXT:    %3 = stablehlo.einsum %arg2, %1, config = "cad,cbd->ab" : (tensor<4x2x5xcomplex<f32>>, tensor<4x3x5xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
 // REVERSE-NEXT:    return %2, %3 : tensor<2x3xcomplex<f32>>, tensor<4x3x5xcomplex<f32>>
