@@ -558,10 +558,6 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     ]
                   >;
 
-def : HLOInactiveOp<"AfterAllOp">;
-
-def : HLOInactiveOp<"AndOp">;
-
 def : HLODerivative<"AsinOp", (Op $x), [
   (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
 ]>;
@@ -587,17 +583,11 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOInactiveOp<"BroadcastAndOp">;
-
-def : HLOInactiveOp<"BroadcastOrOp">;
-
 def : HLOInactiveOp<"BroadcastShiftLeftOp">;
 
 def : HLOInactiveOp<"BroadcastShiftRightArithmeticOp">;
 
 def : HLOInactiveOp<"BroadcastShiftRightLogicalOp">;
-
-def : HLOInactiveOp<"BroadcastXorOp">;
 
 def : HLOInactiveOp<"CeilOp">;
 
@@ -708,18 +698,12 @@ def : HLODerivative<"MulOp", (Op $x, $y),
 
 def : HLODerivative<"NegOp", (Op $x), [(Neg (DiffeRet))]>;
 
-def : HLOInactiveOp<"NotOp">;
-
-def : HLOInactiveOp<"OrOp">;
-
 def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
   (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
   (AssertingInactiveArg)
 ]>;
 
 def : HLOInactiveOp<"PartitionIdOp">;
-
-def : HLOInactiveOp<"PopcntOp">;
 
 def : HLODerivative<"PowOp", (Op $x, $y), 
                   [
@@ -812,5 +796,3 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     ],
                     (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
-
-def : HLOInactiveOp<"XorOp">;
