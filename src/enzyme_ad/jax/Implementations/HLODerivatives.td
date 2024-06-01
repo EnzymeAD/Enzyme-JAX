@@ -1,25 +1,124 @@
+// StableHLO specification
+def Abs : HLOInst<"AbsOp">;
 def Add : HLOInst<"AddOp">;
-def Sub : HLOInst<"SubtractOp">;
-def Neg : HLOInst<"NegOp">;
-def Mul : HLOInst<"MulOp">;
-def Div : HLOInst<"DivOp">;
-def Rem : HLOInst<"RemainderOp">;
-def Pow : HLOInst<"PowOp">;
-def Log : HLOInst<"LogOp">;
-def Cos : HLOInst<"CosineOp">;
-def Sin : HLOInst<"SineOp">;
-def Sqrt : HLOInst<"SqrtOp">;
-def Exp : HLOInst<"ExpOp">;
-def Tanh : HLOInst<"TanhOp">;
-def Sinh : HLOInst<"SinhOp">;
-def Cosh : HLOInst<"CoshOp">;
-
-def Dot : HLOInst<"DotGeneralOp", "->getResult(0)">;
-
+def AfterAll : HLOInst<"AfterAllOp">;
+def AllGather : HLOInst<"AllGatherOp">;
+def AllReduce : HLOInst<"AllReduceOp">;
+def AllToAll : HLOInst<"AllToAllOp">;
+def And : HLOInst<"AndOp">;
+def Atan2 : HLOInst<"Atan2Op">;
+def BatchNormGrad : HLOInst<"BatchNormGradOp">;
+def BatchNormInference : HLOInst<"BatchNormInferenceOp">;
+def BatchNormTraining : HLOInst<"BatchNormTrainingOp">;
+def BitcastConvert : HLOInst<"BitcastConvertOp">;
+def BroadcastInDim : HLOInst<"BroadcastInDimOp">;
+def Case : HLOInst<"CaseOp">;
+def Cbrt : HLOInst<"CbrtOp">;
+def Ceil : HLOInst<"CeilOp">;
+def Cholesky : HLOInst<"CholeskyOp">;
+def Clamp : HLOInst<"ClampOp">;
+def CollectiveBroadcast : HLOInst<"CollectiveBroadcastOp">;
+def CollectivePermute : HLOInst<"CollectivePermuteOp">;
 def Compare : HLOInst<"CompareOp">;
+def Complex : HLOInst<"ComplexOp">;
+def Composite : HLOInst<"CompositeOp">;
+def Concatenate : HLOInst<"ConcatenateOp">;
+def Constant : HLOInst<"ConstantOp">;
+def Convert : HLOInst<"ConvertOp">;
+def Convolution : HLOInst<"ConvolutionOp">;
+def Cos : HLOInst<"CosineOp">;
+def CountLeadingZeros : HLOInst<"CountLeadingZerosOp">;
+def CustomCall : HLOInst<"CustomCallOp">;
+def Div : HLOInst<"DivideOp">;
+def DotGeneral : HLOInst<"DotGeneralOp", "->getResult(0)">;
+def DynamicBroadcastInDim : HLOInst<"DynamicBroadcastInDimOp">;
+def DynamicConv : HLOInst<"DynamicConvOp">;
+def DynamicGather : HLOInst<"DynamicGatherOp">;
+def DynamicIota : HLOInst<"DynamicIotaOp">;
+def DynamicPad : HLOInst<"DynamicPadOp">;
+def DynamicReshape : HLOInst<"DynamicReshapeOp">;
+def DynamicSlice : HLOInst<"DynamicSliceOp">;
+def DynamicUpdateSlice : HLOInst<"DynamicUpdateSliceOp">;
+def Exp : HLOInst<"ExponentialOp">;
+def ExponentialMinusOne : HLOInst<"ExponentialMinusOneOp">;
+def Fft : HLOInst<"FftOp">;
+def Floor : HLOInst<"FloorOp">;
+def Gather : HLOInst<"GatherOp">;
+def GetDimensionSize : HLOInst<"GetDimensionSizeOp">;
+def GetTupleElement : HLOInst<"GetTupleElementOp">;
+def If : HLOInst<"IfOp">;
+def Imag : HLOInst<"ImagOp">;
+def Infeed : HLOInst<"InfeedOp">;
+def Iota : HLOInst<"IotaOp">;
+def IsFinite : HLOInst<"IsFiniteOp">;
+def Log : HLOInst<"LogOp">;
+def LogPlusOne : HLOInst<"LogPlusOneOp">;
+def Logistic : HLOInst<"LogisticOp">;
+def Map : HLOInst<"MapOp">;
+def Maximum : HLOInst<"MaxOp">;
+def Minimum : HLOInst<"MinOp">;
+def Mul : HLOInst<"MulOp">;
+def Neg : HLOInst<"NegateOp">;
+def Not : HLOInst<"NotOp">;
+def OptimizationBarrier : HLOInst<"OptimizationBarrierOp">;
+def Or : HLOInst<"OrOp">;
+def Outfeed : HLOInst<"OutfeedOp">;
+def Pad : HLOInst<"PadOp">;
+def PartitionId : HLOInst<"PartitionIdOp">;
+def Popcnt : HLOInst<"PopcntOp">;
+def Pow : HLOInst<"PowerOp">;
+def Real : HLOInst<"RealOp">;
+def Recv : HLOInst<"RecvOp">;
+def Reduce : HLOInst<"ReduceOp">;
+def ReducePrecision : HLOInst<"ReducePrecisionOp">;
+def ReduceScatter : HLOInst<"ReduceScatterOp">;
+def ReduceWindow : HLOInst<"ReduceWindowOp">;
+def Rem : HLOInst<"RemainderOp">;
+def ReplicaId : HLOInst<"ReplicaIdOp">;
+def Reshape : HLOInst<"ReshapeOp">;
+def Reverse : HLOInst<"ReverseOp">;
+def Rng : HLOInst<"RngOp">;
+def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
+def RoundNearestAfz : HLOInst<"RoundNearestAfzOp">;
+def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
+def Rsqrt : HLOInst<"RsqrtOp">;
+def Scatter : HLOInst<"ScatterOp">;
 def Select : HLOInst<"SelectOp">;
+def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
+def Send : HLOInst<"SendOp">;
+def ShiftLeft : HLOInst<"ShiftLeftOp">;
+def ShiftRightArithmetic : HLOInst<"ShiftRightArithmeticOp">;
+def ShiftRightLogical : HLOInst<"ShiftRightLogicalOp">;
+def Sign : HLOInst<"SignOp">;
+def Sin : HLOInst<"SineOp">;
+def Slice : HLOInst<"SliceOp">;
+def Sort : HLOInst<"SortOp">;
+def Sqrt : HLOInst<"SqrtOp">;
+def Sub : HLOInst<"SubtractOp">;
+def Tanh : HLOInst<"TanhOp">;
+def Transpose : HLOInst<"TransposeOp">;
+def TriangularSolve : HLOInst<"TriangularSolveOp">;
+def Tuple : HLOInst<"TupleOp">;
+def UniformDequantize : HLOInst<"UniformDequantizeOp">;
+def UniformQuantize : HLOInst<"UniformQuantizeOp">;
+def While : HLOInst<"WhileOp">;
+def Xor : HLOInst<"XorOp">;
 
+// CHLO
+// NOTE CHLO ops are higher level and lower to StableHLO ops
+// def Sinh : HLOInst<"SinhOp">;
+// def Cosh : HLOInst<"CoshOp">;
 
+// Deprecated operations from StableHLO - "Not in HLO" category
+def Broadcast : HLOInst<"BroadcastOp">;
+def CreateToken : HLOInst<"CreateTokenOp">;
+def CrossReplicaSum : HLOInst<"CrossReplicaSumOp">;
+def Dot : HLOInst<"DotOp">;
+def Einsum : HLOInst<"EinsumOp">;
+def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
+def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
+
+// Others
 def CheckedMul : HLOInst<"MulOp">;
 def CheckedDiv : HLOInst<"DivOp">;
 
@@ -110,14 +209,10 @@ def : HLODerivative<"MaxOp", (Op $x, $y),
                   (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
 
-def Transpose : HLOInst<"TransposeOp">;
-def Reshape : HLOInst<"ReshapeOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
-def Slice : HLOInst<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 
-def Reduce : HLOInst<"ReduceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
@@ -348,10 +443,10 @@ def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
-                        (Transpose (TypeOf $lhs), (Dot (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (Dot (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec)), (ShadowRHSTranspose))
+                        (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec)), (ShadowLHSTranspose)),
+                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec)), (ShadowRHSTranspose))
                       ],
-                     (Add (SelectIfActive $lhs, (Dot (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Dot (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
+                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
 
 
