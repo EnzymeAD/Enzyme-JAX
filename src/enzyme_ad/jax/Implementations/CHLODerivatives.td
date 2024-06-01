@@ -104,6 +104,8 @@ def : HLODerivative<"AtanhOp", (Op $x), [
   (CheckedDiv (DiffeRet), (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
 ]>;
 
+def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
+
 def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
 
 def : HLOInactiveOp<"IsInfOp">;
