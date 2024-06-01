@@ -105,9 +105,67 @@ def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
 // CHLO
-// NOTE CHLO ops are higher level and lower to StableHLO ops
-// def Sinh : HLOInst<"SinhOp">;
-// def Cosh : HLOInst<"CoshOp">;
+/// CHLO - binary elementwise operations
+def BroadcastAdd : HLOInst<"BroadcastAddOp">;
+def BroadcastAtan2 : HLOInst<"BroadcastAtan2Op">;
+def BroadcastDiv : HLOInst<"BroadcastDivOp">;
+def BroadcastMax : HLOInst<"BroadcastMaxOp">;
+def BroadcastMin : HLOInst<"BroadcastMinOp">;
+def BroadcastMul : HLOInst<"BroadcastMulOp">;
+def BroadcastNextAfter : HLOInst<"BroadcastNextAfterOp">;
+def CHLO_BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
+def BroadcastPow : HLOInst<"BroadcastPowOp">;
+def BroadcastRem : HLOInst<"BroadcastRemOp">;
+def BroadcastShiftLeft : HLOInst<"BroadcastShiftLeftOp">;
+def BroadcastShiftRightArithmetic : HLOInst<"BroadcastShiftRightArithmeticOp">;
+def BroadcastShiftRightLogical : HLOInst<"BroadcastShiftRightLogicalOp">;
+def BroadcastSub : HLOInst<"BroadcastSubOp">;
+def BroadcastZeta : HLOInst<"BroadcastZetaOp">;
+
+/// CHLO - binary logical elementwise operations
+def BroadcastAnd : HLOInst<"BroadcastAndOp">;
+def BroadcastOr : HLOInst<"BroadcastOrOp">;
+def BroadcastXor : HLOInst<"BroadcastXorOp">;
+
+/// CHLO - non-broadcasting binary operations
+def NextAfter : HLOInst<"NextAfterOp">;
+def Polygamma : HLOInst<"PolygammaOp">;
+def Zeta : HLOInst<"ZetaOp">;
+
+/// CHLO - complex broadcasting operation
+def BroadcastComplex : HLOInst<"BroadcastComplexOp">;
+
+/// CHLO - unary elementwise operations
+def Acos : HLOInst<"AcosOp">;
+def Acosh : HLOInst<"AcoshOp">;
+def Asin : HLOInst<"AsinOp">;
+def Asinh : HLOInst<"AsinhOp">;
+def Atan : HLOInst<"AtanOp">;
+def Atanh : HLOInst<"AtanhOp">;
+def BesselI1e : HLOInst<"BesselI1eOp">;
+def Conj : HLOInst<"ConjOp">;
+def Cosh : HLOInst<"CoshOp">;
+def Sinh : HLOInst<"SinhOp">;
+def Tan : HLOInst<"TanOp">;
+// def Constant : HLOInst<"ConstantOp">;
+def ConstantLike : HLOInst<"ConstantLikeOp">;
+def Digamma : HLOInst<"DigammaOp">;
+def Erf : HLOInst<"ErfOp">;
+def ErfInv : HLOInst<"ErfInvOp">;
+def Erfc : HLOInst<"ErfcOp">;
+def IsInf : HLOInst<"IsInfOp">;
+def IsNegInf : HLOInst<"IsNegInfOp">;
+def IsPosInf : HLOInst<"IsPosInfOp">;
+def Lgamma : HLOInst<"LgammaOp">;
+
+/// CHLO - broadcasting compare operation
+def BroadcastCompare : HLOInst<"BroadcastCompareOp">;
+
+/// CHLO - broadcasting select operation
+def BroadcastSelect : HLOInst<"BroadcastSelectOp">;
+
+/// CHLO - miscelaneous operations
+def TopK : HLOInst<"TopKOp">;
 
 // Deprecated operations from StableHLO - "Not in HLO" category
 def Broadcast : HLOInst<"BroadcastOp">;
