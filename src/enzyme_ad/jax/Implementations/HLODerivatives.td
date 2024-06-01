@@ -210,6 +210,7 @@ def : HLODerivative<"LogOp", (Op $x),
                   >;
 
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+
 def : HLODerivative<"MaxOp", (Op $x, $y),
                   [
                     (Select (Compare $x, $y, (LT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
@@ -250,7 +251,6 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
 ]>;
 
 // convert
-
 
 def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDimensionNumbersAttr()">;
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
@@ -458,7 +458,6 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                      (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
 
-
 def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 op.getPermutation();
 }]>;
@@ -547,7 +546,6 @@ def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/
   op.getBatchGroupCountAttr();
 }]>;
 
-
 // TODO
 
 def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -594,7 +592,6 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                       (HLOConstantFP<"0">)))
                   >;
 
-
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                     [
                         (AssertingInactiveArg),
@@ -603,4 +600,5 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       ],
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
+
 def : HLORegionTerminatorOp<"ReturnOp">;
