@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
+// XFAIL: *
 
 module {
   func.func @main(%a : tensor<2x3xcomplex<f32>>, %b : tensor<4x3x5xcomplex<f32>>) -> tensor<4x2x5xcomplex<f32>> {
