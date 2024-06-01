@@ -514,7 +514,9 @@ def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
   op.getBatchGroupCountAttr();
 }]>;
 
+/// Helpers - Max/Min
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 
 def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEinsumConfig();
@@ -601,6 +603,14 @@ def : HLODerivative<"MaxOp", (Op $x, $y),
                     (Select (Compare $x, $y, (LT)), (DiffeRet), (HLOConstantFP<"0"> $x))
                   ],
                   (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
+                  >;
+
+def : HLODerivative<"MinOp", (Op $x, $y),
+                  [
+                    (Select (Compare $x, $y, (GT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
+                    (Select (Compare $x, $y, (GT)), (DiffeRet), (HLOConstantFP<"0"> $x))
+                  ],
+                  (Select (Compare $x, $y, (GT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
 
 def : HLODerivative<"MulOp", (Op $x, $y),
