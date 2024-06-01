@@ -585,14 +585,6 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
                     ]
                   >;
 
-def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
-
-def : HLODerivative<"SinhOp", (Op $x), [(CheckedMul (DiffeRet), (Cosh $x))]>;
-
-def : HLODerivative<"TanOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2">)), (HLOConstantFP<"1">))
-]>;
-
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 def : HLOInactiveOp<"BroadcastAndOp">;
@@ -637,6 +629,8 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                   >;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))]>;
+
+def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
 
 def : HLOInactiveOp<"CreateTokenOp">;
 
@@ -774,6 +768,8 @@ def : HLOInactiveOp<"SignOp">;
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
 
+def : HLODerivative<"SinhOp", (Op $x), [(CheckedMul (DiffeRet), (Cosh $x))]>;
+
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 
 def : HLODerivative<"SubtractOp", (Op $x, $y),
@@ -789,6 +785,10 @@ def : HLODerivative<"SqrtOp", (Op $x),
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
                     ]
                   >;
+
+def : HLODerivative<"TanOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2">)), (HLOConstantFP<"1">))
+]>;
 
 def : HLODerivative<"TanhOp", (Op $x),
                     [
