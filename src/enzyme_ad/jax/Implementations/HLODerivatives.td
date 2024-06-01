@@ -135,17 +135,20 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
                       (Neg (DiffeRet)),
                     ]
                   >;
+
 def : HLODerivative<"NegOp", (Op $x),
                     [
                       (Neg (DiffeRet)),
                     ]
                   >;
+
 def : HLODerivative<"MulOp", (Op $x, $y),
                     [
                       (CheckedMul (DiffeRet), $y),
                       (CheckedMul (DiffeRet), $x)
                     ]
                   >;
+
 def : HLODerivative<"DivOp", (Op $x, $y), 
                     [
                       (CheckedDiv (DiffeRet), $y),
@@ -160,40 +163,46 @@ def : HLODerivative<"PowOp", (Op $x, $y),
                     (CheckedMul (DiffeRet), (Mul (Pow $x, $y), (Log $x)
                     ))
                   ]
-                 >;
+                  >;
 
 def : HLODerivative<"CosineOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Neg (Sin $x)))
                     ]
                   >;
+
 def : HLODerivative<"ExpOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Exp $x))
                     ]
                   >;
+
 def : HLODerivative<"SineOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Cos $x))
                       ]
                   >;
+
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
                       ]
                   >;
+
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
                       ]
                   >;
+
 def : HLODerivative<"TanhOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
                       ]
                   >;
+
 def : HLODerivative<"LogOp", (Op $x),
                     [
                       (CheckedDiv (DiffeRet), $x)
@@ -578,11 +587,11 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                         (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
                         (Convolution (TypeOf $rhs), (DiffeRet), $rhs, (GradDataConvWindowStrides), (GradDataConvPadding), (GradDataConvLhsDialation), (GradDataConvRhsDialation), (GradDataConvWindowReversal), (GradDataConvDimensionNumbers), (GradDataConvFeatureGroupCount), (GradDataConvBatchGroupCount), (ResultDotPrec))
                       ],
-                     (Add (SelectIfActive $lhs, 
-                     (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
-                     (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
-                     (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
-                     (HLOConstantFP<"0">)))
+                      (Add (SelectIfActive $lhs, 
+                      (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
+                      (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
+                      (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
+                      (HLOConstantFP<"0">)))
                   >;
 
 
