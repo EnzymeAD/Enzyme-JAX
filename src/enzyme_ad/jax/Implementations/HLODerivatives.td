@@ -79,7 +79,7 @@ def Reshape : HLOInst<"ReshapeOp">;
 def Reverse : HLOInst<"ReverseOp">;
 def Rng : HLOInst<"RngOp">;
 def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
-def RoundNearestAfz : HLOInst<"RoundOp">;
+def Round : HLOInst<"RoundOp">; // round_nearest_afz
 def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
 def Rsqrt : HLOInst<"RsqrtOp">;
 def Scatter : HLOInst<"ScatterOp">;
@@ -543,6 +543,14 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 // Derivative rules
+def : HLODerivative<"AcosOp", (Op $x), [
+  (Neg (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">))))))
+]>;
+
+def : HLODerivative<"AcoshOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (CheckedMul (Sqrt (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">))), (Sqrt (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))))
+]>;
+
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
                       (DiffeRet),
@@ -553,6 +561,37 @@ def : HLODerivative<"AddOp", (Op $x, $y),
 def : HLOInactiveOp<"AfterAllOp">;
 
 def : HLOInactiveOp<"AndOp">;
+
+def : HLODerivative<"AsinOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">, (Pow $x, (HLOConstantFP<"2">))))))
+]>;
+
+def : HLODerivative<"AsinhOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Sqrt (Add (HLOConstantFP<"1">, (Pow $x, (HLOConstantFP<"2">))))))
+]>;
+
+def : HLODerivative<"AtanOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
+]>;
+
+def : HLODerivative<"AtanhOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
+]>;
+
+def : HLODerivative<"Atan2Op", (Op $x, $y), 
+                    [
+                      (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
+                      (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
+                    ]
+                  >;
+
+def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
+
+def : HLODerivative<"SinhOp", (Op $x), [(CheckedMul (DiffeRet), (Cosh $x))]>;
+
+def : HLODerivative<"TanOp", (Op $x), [
+  (CheckedDiv (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2">)), (HLOConstantFP<"1">))
+]>;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
@@ -567,6 +606,19 @@ def : HLOInactiveOp<"BroadcastShiftRightArithmeticOp">;
 def : HLOInactiveOp<"BroadcastShiftRightLogicalOp">;
 
 def : HLOInactiveOp<"BroadcastXorOp">;
+
+def : HLOInactiveOp<"CeilOp">;
+
+def : HLODerivative<"CbrtOp", (Op $x), [
+  (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
+]>;
+
+def : HLOInactiveOp<"ClzOp">;
+
+def : HLODerivative<"ComplexOp", (Op $re, $im), [
+  (Real (DiffeRet)),
+  (Imag (DiffeRet)),
+], (Complex (Shadow $re), (Shadow $im))>;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
@@ -615,6 +667,10 @@ def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
+def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
+
+def : HLOInactiveOp<"FloorOp">;
+
 def : HLOInactiveOp<"IotaOp">;
 
 def : HLOInactiveOp<"IsFiniteOp">;
@@ -626,6 +682,10 @@ def : HLOInactiveOp<"IsNegInfOp">;
 def : HLOInactiveOp<"IsPosInfOp">;
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
+
+def : HLODerivative<"Log1pOp", (Op $x), [(CheckedDiv (DiffeRet), (Add $x, (HLOConstantFP<"1"> $x)))]>;
+
+def : HLODerivative<"LogisticOp", (Op $x), [(CheckedMul (DiffeRet), (CheckedMul (Logistic $x), (Sub (HLOConstantFP<"1">), (Logistic $x))))]>;
 
 def : HLODerivative<"MaxOp", (Op $x, $y),
                   [
@@ -676,6 +736,12 @@ def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (D
 
 def : HLORegionTerminatorOp<"ReturnOp">;
 
+def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet))]>;
+
+def : HLOInactiveOp<"RoundOp">;
+
+def : HLOInactiveOp<"RoundNearestEvenOp">;
+
 def : HLOInactiveOp<"RngOp">;
 
 def : HLOInactiveOp<"RngBitGeneratorOp">;
@@ -701,6 +767,8 @@ def : HLOInactiveOp<"ShiftLeftOp">;
 def : HLOInactiveOp<"ShiftRightArithmeticOp">;
 
 def : HLOInactiveOp<"ShiftRightLogicalOp">;
+
+def : HLOInactiveOp<"SignOp">;
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
 
