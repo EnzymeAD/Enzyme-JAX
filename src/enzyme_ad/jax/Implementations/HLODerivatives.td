@@ -620,6 +620,8 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Imag (DiffeRet)),
 ], (Complex (Shadow $re), (Shadow $im))>;
 
+def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
+
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
