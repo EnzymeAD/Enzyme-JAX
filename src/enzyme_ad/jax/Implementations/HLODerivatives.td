@@ -550,6 +550,10 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     ]
                   >;
 
+def : HLOInactiveOp<"AfterAllOp">;
+
+def : HLOInactiveOp<"AndOp">;
+
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
@@ -584,6 +588,8 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
 
+def : HLOInactiveOp<"DynamicIotaOp">;
+
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                     [
                         // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
@@ -594,6 +600,10 @@ def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
                   >;
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
+
+def : HLOInactiveOp<"IotaOp">;
+
+def : HLOInactiveOp<"IsFiniteOp">;
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
 
@@ -622,10 +632,18 @@ def : HLODerivative<"MulOp", (Op $x, $y),
 
 def : HLODerivative<"NegOp", (Op $x), [(Neg (DiffeRet))]>;
 
+def : HLOInactiveOp<"NotOp">;
+
+def : HLOInactiveOp<"OrOp">;
+
 def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
   (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
   (AssertingInactiveArg)
 ]>;
+
+def : HLOInactiveOp<"PartitionIdOp">;
+
+def : HLOInactiveOp<"PopcntOp">;
 
 def : HLODerivative<"PowOp", (Op $x, $y), 
                   [
@@ -637,6 +655,10 @@ def : HLODerivative<"PowOp", (Op $x, $y),
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
 def : HLORegionTerminatorOp<"ReturnOp">;
+
+def : HLOInactiveOp<"RngOp">;
+
+def : HLOInactiveOp<"RngBitGeneratorOp">;
 
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
@@ -653,6 +675,12 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       ],
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
+
+def : HLOInactiveOp<"ShiftLeftOp">;
+
+def : HLOInactiveOp<"ShiftRightArithmeticOp">;
+
+def : HLOInactiveOp<"ShiftRightLogicalOp">;
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
 
@@ -692,3 +720,5 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     ],
                     (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
+
+def : HLOInactiveOp<"XorOp">;
