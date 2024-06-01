@@ -116,7 +116,7 @@ def BroadcastMax : HLOInst<"BroadcastMaxOp">;
 def BroadcastMin : HLOInst<"BroadcastMinOp">;
 def BroadcastMul : HLOInst<"BroadcastMulOp">;
 def BroadcastNextAfter : HLOInst<"BroadcastNextAfterOp">;
-def CHLO_BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
+def BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
 def BroadcastPow : HLOInst<"BroadcastPowOp">;
 def BroadcastRem : HLOInst<"BroadcastRemOp">;
 def BroadcastShiftLeft : HLOInst<"BroadcastShiftLeftOp">;
@@ -556,6 +556,18 @@ def : HLOInactiveOp<"AndOp">;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
+def : HLOInactiveOp<"BroadcastAndOp">;
+
+def : HLOInactiveOp<"BroadcastOrOp">;
+
+def : HLOInactiveOp<"BroadcastShiftLeftOp">;
+
+def : HLOInactiveOp<"BroadcastShiftRightArithmeticOp">;
+
+def : HLOInactiveOp<"BroadcastShiftRightLogicalOp">;
+
+def : HLOInactiveOp<"BroadcastXorOp">;
+
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
@@ -571,6 +583,8 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                   >;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))]>;
+
+def : HLOInactiveOp<"CreateTokenOp">;
 
 def : HLODerivative<"DivOp", (Op $x, $y), 
                     [
@@ -604,6 +618,12 @@ def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 def : HLOInactiveOp<"IotaOp">;
 
 def : HLOInactiveOp<"IsFiniteOp">;
+
+def : HLOInactiveOp<"IsInfOp">;
+
+def : HLOInactiveOp<"IsNegInfOp">;
+
+def : HLOInactiveOp<"IsPosInfOp">;
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
 
@@ -705,6 +725,8 @@ def : HLODerivative<"TanhOp", (Op $x),
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
                     ]
                   >;
+
+def : HLOInactiveOp<"TorchIndexSelect">;
 
 def : HLODerivative<"TransposeOp", (Op $x),
                     [
