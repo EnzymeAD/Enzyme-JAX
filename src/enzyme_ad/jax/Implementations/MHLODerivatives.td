@@ -14,4 +14,6 @@ class HLOConstantFP<string m> : ConstantFP<m, "mhlo", "ConstantOp", "mlir::Eleme
 
 class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"mhlo", m>;
 
+class HLOInactiveOp<string m> : InactiveOp<"mhlo", m>;
+
 include "HLODerivatives.td"

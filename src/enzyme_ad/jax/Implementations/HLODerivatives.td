@@ -1,25 +1,182 @@
+// StableHLO specification
+def Abs : HLOInst<"AbsOp">;
 def Add : HLOInst<"AddOp">;
-def Sub : HLOInst<"SubtractOp">;
-def Neg : HLOInst<"NegOp">;
-def Mul : HLOInst<"MulOp">;
-def Div : HLOInst<"DivOp">;
-def Rem : HLOInst<"RemainderOp">;
-def Pow : HLOInst<"PowOp">;
-def Log : HLOInst<"LogOp">;
-def Cos : HLOInst<"CosineOp">;
-def Sin : HLOInst<"SineOp">;
-def Sqrt : HLOInst<"SqrtOp">;
-def Exp : HLOInst<"ExpOp">;
-def Tanh : HLOInst<"TanhOp">;
-def Sinh : HLOInst<"SinhOp">;
-def Cosh : HLOInst<"CoshOp">;
-
-def Dot : HLOInst<"DotGeneralOp", "->getResult(0)">;
-
+def AfterAll : HLOInst<"AfterAllOp">;
+def AllGather : HLOInst<"AllGatherOp">;
+def AllReduce : HLOInst<"AllReduceOp">;
+def AllToAll : HLOInst<"AllToAllOp">;
+def And : HLOInst<"AndOp">;
+def Atan2 : HLOInst<"Atan2Op">;
+def BatchNormGrad : HLOInst<"BatchNormGradOp">;
+def BatchNormInference : HLOInst<"BatchNormInferenceOp">;
+def BatchNormTraining : HLOInst<"BatchNormTrainingOp">;
+def BitcastConvert : HLOInst<"BitcastConvertOp">;
+def BroadcastInDim : HLOInst<"BroadcastInDimOp">;
+def Case : HLOInst<"CaseOp">;
+def Cbrt : HLOInst<"CbrtOp">;
+def Ceil : HLOInst<"CeilOp">;
+def Cholesky : HLOInst<"CholeskyOp">;
+def Clamp : HLOInst<"ClampOp">;
+def CollectiveBroadcast : HLOInst<"CollectiveBroadcastOp">;
+def CollectivePermute : HLOInst<"CollectivePermuteOp">;
 def Compare : HLOInst<"CompareOp">;
+def Complex : HLOInst<"ComplexOp">;
+def Composite : HLOInst<"CompositeOp">;
+def Concatenate : HLOInst<"ConcatenateOp">;
+def Constant : HLOInst<"ConstantOp">;
+def Convert : HLOInst<"ConvertOp">;
+def Convolution : HLOInst<"ConvolutionOp">;
+def Cos : HLOInst<"CosineOp">;
+def CountLeadingZeros : HLOInst<"ClzOp">;
+def CustomCall : HLOInst<"CustomCallOp">;
+def Div : HLOInst<"DivOp">;
+def DotGeneral : HLOInst<"DotGeneralOp", "->getResult(0)">;
+def DynamicBroadcastInDim : HLOInst<"DynamicBroadcastInDimOp">;
+def DynamicConv : HLOInst<"DynamicConvOp">;
+def DynamicGather : HLOInst<"DynamicGatherOp">;
+def DynamicIota : HLOInst<"DynamicIotaOp">;
+def DynamicPad : HLOInst<"DynamicPadOp">;
+def DynamicReshape : HLOInst<"DynamicReshapeOp">;
+def DynamicSlice : HLOInst<"DynamicSliceOp">;
+def DynamicUpdateSlice : HLOInst<"DynamicUpdateSliceOp">;
+def Exp : HLOInst<"ExpOp">;
+def Expm1 : HLOInst<"Expm1">;
+def Fft : HLOInst<"FftOp">;
+def Floor : HLOInst<"FloorOp">;
+def Gather : HLOInst<"GatherOp">;
+def GetDimensionSize : HLOInst<"GetDimensionSizeOp">;
+def GetTupleElement : HLOInst<"GetTupleElementOp">;
+def If : HLOInst<"IfOp">;
+def Imag : HLOInst<"ImagOp">;
+def Infeed : HLOInst<"InfeedOp">;
+def Iota : HLOInst<"IotaOp">;
+def IsFinite : HLOInst<"IsFiniteOp">;
+def Log : HLOInst<"LogOp">;
+def Log1p : HLOInst<"Log1pOp">;
+def Logistic : HLOInst<"LogisticOp">;
+def Map : HLOInst<"MapOp">;
+def Max : HLOInst<"MaxOp">;
+def Min : HLOInst<"MinOp">;
+def Mul : HLOInst<"MulOp">;
+def Neg : HLOInst<"NegOp">;
+def Not : HLOInst<"NotOp">;
+def OptimizationBarrier : HLOInst<"OptimizationBarrierOp">;
+def Or : HLOInst<"OrOp">;
+def Outfeed : HLOInst<"OutfeedOp">;
+def Pad : HLOInst<"PadOp">;
+def PartitionId : HLOInst<"PartitionIdOp">;
+def PopulationCount : HLOInst<"PopcntOp">;
+def Pow : HLOInst<"PowOp">;
+def Real : HLOInst<"RealOp">;
+def Recv : HLOInst<"RecvOp">;
+def Reduce : HLOInst<"ReduceOp">;
+def ReducePrecision : HLOInst<"ReducePrecisionOp">;
+def ReduceScatter : HLOInst<"ReduceScatterOp">;
+def ReduceWindow : HLOInst<"ReduceWindowOp">;
+def Rem : HLOInst<"RemOp">;
+def ReplicaId : HLOInst<"ReplicaIdOp">;
+def Reshape : HLOInst<"ReshapeOp">;
+def Reverse : HLOInst<"ReverseOp">;
+def Rng : HLOInst<"RngOp">;
+def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
+def RoundNearestAfz : HLOInst<"RoundOp">;
+def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
+def Rsqrt : HLOInst<"RsqrtOp">;
+def Scatter : HLOInst<"ScatterOp">;
 def Select : HLOInst<"SelectOp">;
+def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
+def Send : HLOInst<"SendOp">;
+def ShiftLeft : HLOInst<"ShiftLeftOp">;
+def ShiftRightArithmetic : HLOInst<"ShiftRightArithmeticOp">;
+def ShiftRightLogical : HLOInst<"ShiftRightLogicalOp">;
+def Sign : HLOInst<"SignOp">;
+def Sin : HLOInst<"SineOp">;
+def Slice : HLOInst<"SliceOp">;
+def Sort : HLOInst<"SortOp">;
+def Sqrt : HLOInst<"SqrtOp">;
+def Sub : HLOInst<"SubtractOp">;
+def Tanh : HLOInst<"TanhOp">;
+def Transpose : HLOInst<"TransposeOp">;
+def TriangularSolve : HLOInst<"TriangularSolveOp">;
+def Tuple : HLOInst<"TupleOp">;
+def UniformDequantize : HLOInst<"UniformDequantizeOp">;
+def UniformQuantize : HLOInst<"UniformQuantizeOp">;
+def While : HLOInst<"WhileOp">;
+def Xor : HLOInst<"XorOp">;
 
+// CHLO
+/// CHLO - binary elementwise operations
+def BroadcastAdd : HLOInst<"BroadcastAddOp">;
+def BroadcastAtan2 : HLOInst<"BroadcastAtan2Op">;
+def BroadcastDiv : HLOInst<"BroadcastDivOp">;
+def BroadcastMax : HLOInst<"BroadcastMaxOp">;
+def BroadcastMin : HLOInst<"BroadcastMinOp">;
+def BroadcastMul : HLOInst<"BroadcastMulOp">;
+def BroadcastNextAfter : HLOInst<"BroadcastNextAfterOp">;
+def CHLO_BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
+def BroadcastPow : HLOInst<"BroadcastPowOp">;
+def BroadcastRem : HLOInst<"BroadcastRemOp">;
+def BroadcastShiftLeft : HLOInst<"BroadcastShiftLeftOp">;
+def BroadcastShiftRightArithmetic : HLOInst<"BroadcastShiftRightArithmeticOp">;
+def BroadcastShiftRightLogical : HLOInst<"BroadcastShiftRightLogicalOp">;
+def BroadcastSub : HLOInst<"BroadcastSubOp">;
+def BroadcastZeta : HLOInst<"BroadcastZetaOp">;
 
+/// CHLO - binary logical elementwise operations
+def BroadcastAnd : HLOInst<"BroadcastAndOp">;
+def BroadcastOr : HLOInst<"BroadcastOrOp">;
+def BroadcastXor : HLOInst<"BroadcastXorOp">;
+
+/// CHLO - non-broadcasting binary operations
+def NextAfter : HLOInst<"NextAfterOp">;
+def Polygamma : HLOInst<"PolygammaOp">;
+def Zeta : HLOInst<"ZetaOp">;
+
+/// CHLO - complex broadcasting operation
+def BroadcastComplex : HLOInst<"BroadcastComplexOp">;
+
+/// CHLO - unary elementwise operations
+def Acos : HLOInst<"AcosOp">;
+def Acosh : HLOInst<"AcoshOp">;
+def Asin : HLOInst<"AsinOp">;
+def Asinh : HLOInst<"AsinhOp">;
+def Atan : HLOInst<"AtanOp">;
+def Atanh : HLOInst<"AtanhOp">;
+def BesselI1e : HLOInst<"BesselI1eOp">;
+def Conj : HLOInst<"ConjOp">;
+def Cosh : HLOInst<"CoshOp">;
+def Sinh : HLOInst<"SinhOp">;
+def Tan : HLOInst<"TanOp">;
+// def Constant : HLOInst<"ConstantOp">;
+def ConstantLike : HLOInst<"ConstantLikeOp">;
+def Digamma : HLOInst<"DigammaOp">;
+def Erf : HLOInst<"ErfOp">;
+def ErfInv : HLOInst<"ErfInvOp">;
+def Erfc : HLOInst<"ErfcOp">;
+def IsInf : HLOInst<"IsInfOp">;
+def IsNegInf : HLOInst<"IsNegInfOp">;
+def IsPosInf : HLOInst<"IsPosInfOp">;
+def Lgamma : HLOInst<"LgammaOp">;
+
+/// CHLO - broadcasting compare operation
+def BroadcastCompare : HLOInst<"BroadcastCompareOp">;
+
+/// CHLO - broadcasting select operation
+def BroadcastSelect : HLOInst<"BroadcastSelectOp">;
+
+/// CHLO - miscelaneous operations
+def TopK : HLOInst<"TopKOp">;
+
+// Deprecated operations from StableHLO - "Not in HLO" category
+def Broadcast : HLOInst<"BroadcastOp">;
+def CreateToken : HLOInst<"CreateTokenOp">;
+def CrossReplicaSum : HLOInst<"CrossReplicaSumOp">;
+def Dot : HLOInst<"DotOp">;
+def Einsum : HLOInst<"EinsumOp">;
+def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
+def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
+
+// Others
 def CheckedMul : HLOInst<"MulOp">;
 def CheckedDiv : HLOInst<"DivOp">;
 
@@ -36,17 +193,20 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
                       (Neg (DiffeRet)),
                     ]
                   >;
+
 def : HLODerivative<"NegOp", (Op $x),
                     [
                       (Neg (DiffeRet)),
                     ]
                   >;
+
 def : HLODerivative<"MulOp", (Op $x, $y),
                     [
                       (CheckedMul (DiffeRet), $y),
                       (CheckedMul (DiffeRet), $x)
                     ]
                   >;
+
 def : HLODerivative<"DivOp", (Op $x, $y), 
                     [
                       (CheckedDiv (DiffeRet), $y),
@@ -61,40 +221,46 @@ def : HLODerivative<"PowOp", (Op $x, $y),
                     (CheckedMul (DiffeRet), (Mul (Pow $x, $y), (Log $x)
                     ))
                   ]
-                 >;
+                  >;
 
 def : HLODerivative<"CosineOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Neg (Sin $x)))
                     ]
                   >;
+
 def : HLODerivative<"ExpOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Exp $x))
                     ]
                   >;
+
 def : HLODerivative<"SineOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Cos $x))
                       ]
                   >;
+
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
                       ]
                   >;
+
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
                       ]
                   >;
+
 def : HLODerivative<"TanhOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
                       ]
                   >;
+
 def : HLODerivative<"LogOp", (Op $x),
                     [
                       (CheckedDiv (DiffeRet), $x)
@@ -102,6 +268,7 @@ def : HLODerivative<"LogOp", (Op $x),
                   >;
 
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+
 def : HLODerivative<"MaxOp", (Op $x, $y),
                   [
                     (Select (Compare $x, $y, (LT)), (HLOConstantFP<"0"> $x), (DiffeRet)),
@@ -110,14 +277,10 @@ def : HLODerivative<"MaxOp", (Op $x, $y),
                   (Select (Compare $x, $y, (LT)), (SelectIfActive $y, (Shadow $y), (HLOConstantFP<"0"> $y)), (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0"> $x)))
                   >;
 
-def Transpose : HLOInst<"TransposeOp">;
-def Reshape : HLOInst<"ReshapeOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
-def Slice : HLOInst<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 
-def Reduce : HLOInst<"ReduceOp">;
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
@@ -146,7 +309,6 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
 ]>;
 
 // convert
-
 
 def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDimensionNumbersAttr()">;
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
@@ -348,12 +510,11 @@ def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
-                        (Transpose (TypeOf $lhs), (Dot (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (Dot (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec)), (ShadowRHSTranspose))
+                        (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec)), (ShadowLHSTranspose)),
+                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec)), (ShadowRHSTranspose))
                       ],
-                     (Add (SelectIfActive $lhs, (Dot (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Dot (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
+                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
                   >;
-
 
 def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 op.getPermutation();
@@ -373,9 +534,6 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     ],
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
-
-
-def Convolution : HLOInst<"ConvolutionOp">;
 
 def ConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getWindowStridesAttr();
@@ -443,7 +601,6 @@ def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/
   op.getBatchGroupCountAttr();
 }]>;
 
-
 // TODO
 
 def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -483,13 +640,12 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                         (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
                         (Convolution (TypeOf $rhs), (DiffeRet), $rhs, (GradDataConvWindowStrides), (GradDataConvPadding), (GradDataConvLhsDialation), (GradDataConvRhsDialation), (GradDataConvWindowReversal), (GradDataConvDimensionNumbers), (GradDataConvFeatureGroupCount), (GradDataConvBatchGroupCount), (ResultDotPrec))
                       ],
-                     (Add (SelectIfActive $lhs, 
-                     (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
-                     (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
-                     (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
-                     (HLOConstantFP<"0">)))
+                      (Add (SelectIfActive $lhs, 
+                      (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
+                      (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
+                      (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
+                      (HLOConstantFP<"0">)))
                   >;
-
 
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                     [
@@ -499,4 +655,5 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       ],
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
+
 def : HLORegionTerminatorOp<"ReturnOp">;
