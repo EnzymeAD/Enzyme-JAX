@@ -59,7 +59,7 @@ def Conj : HLOInst<"ConjOp">;
 def Cosh : HLOInst<"CoshOp">;
 def Sinh : HLOInst<"SinhOp">;
 def Tan : HLOInst<"TanOp">;
-// def Constant : HLOInst<"ConstantOp">;
+def Constant : HLOInst<"ConstantOp">;
 def ConstantLike : HLOInst<"ConstantLikeOp">;
 def Digamma : HLOInst<"DigammaOp">;
 def Erf : HLOInst<"ErfOp">;
