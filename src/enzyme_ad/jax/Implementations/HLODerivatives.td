@@ -516,6 +516,30 @@ def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
 
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 
+def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getEinsumConfig();
+}]>;
+
+def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  builder.getStringAttr(output + "->" + input);
+}]>;
+
+def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  auto [lhs, rhs] = input.split(',');
+  builder.getStringAttr(output + "," + rhs + "->" + lhs);
+}]>;
+
+def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  StringRef config = op.getEinsumConfig();
+  auto [input, output] = config.split(StringRef("->"));
+  auto [lhs, rhs] = input.split(',');
+  builder.getStringAttr(output + "," + lhs + "->" + rhs);
+}]>;
+
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -556,6 +580,15 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                         (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec)), (ShadowRHSTranspose))
                       ],
                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec)), (HLOConstantFP<"0">)))
+                  >;
+
+def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
+                    [
+                        // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
+                        (Einsum (TypeOf $lhs), (DiffeRet), $rhs, (GradEinsumConfigLhs)),
+                        (Einsum (TypeOf $rhs), (DiffeRet), $lhs, (GradEinsumConfigRhs)),
+                    ],
+                    (Add (SelectIfActive $lhs, (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)), (HLOConstantFP<"0">)))
                   >;
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
@@ -640,4 +673,12 @@ def : HLODerivative<"TransposeOp", (Op $x),
                         (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
                     ],
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
+                  >;
+
+def : HLODerivative<"UnaryEinsumOp", (Op $x),
+                    [
+                        // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
+                        (UnaryEinsum (TypeOf $x), (DiffeRet), (GradUnaryEinsumConfig)),
+                    ],
+                    (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
