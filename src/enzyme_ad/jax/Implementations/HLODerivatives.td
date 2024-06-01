@@ -104,6 +104,9 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
+/// StableHLO - WIP operations
+def ReturnOp : HLOInst<"ReturnOp">;
+
 // CHLO
 /// CHLO - binary elementwise operations
 def BroadcastAdd : HLOInst<"BroadcastAddOp">;
