@@ -583,12 +583,6 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOInactiveOp<"BroadcastShiftLeftOp">;
-
-def : HLOInactiveOp<"BroadcastShiftRightArithmeticOp">;
-
-def : HLOInactiveOp<"BroadcastShiftRightLogicalOp">;
-
 def : HLOInactiveOp<"CeilOp">;
 
 def : HLODerivative<"CbrtOp", (Op $x), [
@@ -741,12 +735,6 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       ],
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
-
-def : HLOInactiveOp<"ShiftLeftOp">;
-
-def : HLOInactiveOp<"ShiftRightArithmeticOp">;
-
-def : HLOInactiveOp<"ShiftRightLogicalOp">;
 
 def : HLOInactiveOp<"SignOp">;
 
