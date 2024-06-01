@@ -563,11 +563,11 @@ def : HLOInactiveOp<"AfterAllOp">;
 def : HLOInactiveOp<"AndOp">;
 
 def : HLODerivative<"AsinOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">, (Pow $x, (HLOConstantFP<"2">))))))
+  (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
 ]>;
 
 def : HLODerivative<"AsinhOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Sqrt (Add (HLOConstantFP<"1">, (Pow $x, (HLOConstantFP<"2">))))))
+  (CheckedDiv (DiffeRet), (Sqrt (Add (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
 ]>;
 
 def : HLODerivative<"AtanOp", (Op $x), [
