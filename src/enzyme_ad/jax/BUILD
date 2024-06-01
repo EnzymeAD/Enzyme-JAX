@@ -163,6 +163,22 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "chlo-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/CHLODerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/CHLODerivatives.td",
+    td_srcs = [
+        "Implementations/CHLODerivatives.td",
+    ],
+    deps = [
+        ":EnzymeImplementationsCommonTdFiles",
+    ],
+)
+
 td_library(
     name = "EnzymeXLAPassesTdFiles",
     srcs = [
@@ -228,6 +244,7 @@ cc_library(
         ":EnzyeHLOPatternsIncGen",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
+        ":chlo-derivatives",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
