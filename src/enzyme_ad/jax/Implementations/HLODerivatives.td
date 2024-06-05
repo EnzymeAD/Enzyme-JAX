@@ -664,7 +664,7 @@ def : HLODerivative<"TanhOp", (Op $x),
                     ]
                   >;
 
-def : HLOInactiveOp<"TorchIndexSelect">;
+def : HLOInactiveOp<"TorchIndexSelectOp">;
 
 def : HLODerivative<"TransposeOp", (Op $x),
                     [
