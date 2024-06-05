@@ -522,7 +522,7 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                       (HLOConstantFP<"0">)))
                   >;
 
-def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))]>;
+def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
 
 def : HLOInactiveOp<"CreateTokenOp">;
 
