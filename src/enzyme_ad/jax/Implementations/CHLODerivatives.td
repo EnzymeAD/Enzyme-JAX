@@ -16,6 +16,17 @@ class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"chlo", m>;
 
 class HLOInactiveOp<string m> : InactiveOp<"chlo", m>;
 
+// Required operations from the StableHLO dialect
+def Add : Inst<"AddOp", "stablehlo">;
+def Sub : Inst<"SubOp", "stablehlo">;
+def Mul : Inst<"MulOp", "stablehlo">;
+def Div : Inst<"DivOp", "stablehlo">;
+def Neg : Inst<"NegOp", "stablehlo">;
+def Sqrt : Inst<"SqrtOp", "stablehlo">;
+def Pow : Inst<"PowOp", "stablehlo">;
+def Cos : Inst<"CosineOp", "stablehlo">;
+def Sin : Inst<"SineOp", "stablehlo">;
+
 // Operations
 /// CHLO - binary elementwise operations
 def BroadcastAdd : HLOInst<"BroadcastAddOp">;
@@ -81,32 +92,32 @@ def TopK : HLOInst<"TopKOp">;
 
 // Derivative rules
 def : HLODerivative<"AcosOp", (Op $x), [
-  (Neg (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">))))))
+  (Neg (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">))))))
 ]>;
 
 def : HLODerivative<"AcoshOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (CheckedMul (Sqrt (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">))), (Sqrt (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))))
+  (Div (DiffeRet), (Mul (Sqrt (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">))), (Sqrt (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))))
 ]>;
 
 def : HLODerivative<"AsinOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
+  (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
 ]>;
 
 def : HLODerivative<"AsinhOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Sqrt (Add (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
+  (Div (DiffeRet), (Sqrt (Add (HLOConstantFP<"1">), (Pow $x, (HLOConstantFP<"2">)))))
 ]>;
 
 def : HLODerivative<"AtanOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
+  (Div (DiffeRet), (Add (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
 ]>;
 
 def : HLODerivative<"AtanhOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
+  (Div (DiffeRet), (Sub (Pow $x, (HLOConstantFP<"2">)), (HLOConstantFP<"1">)))
 ]>;
 
 def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
 
-def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
+def : HLODerivative<"CoshOp", (Op $x), [(Mul (DiffeRet), (Sinh $x))]>;
 
 def : HLOInactiveOp<"IsInfOp">;
 
@@ -114,8 +125,8 @@ def : HLOInactiveOp<"IsNegInfOp">;
 
 def : HLOInactiveOp<"IsPosInfOp">;
 
-def : HLODerivative<"SinhOp", (Op $x), [(CheckedMul (DiffeRet), (Cosh $x))]>;
+def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
-  (CheckedDiv (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2">)), (HLOConstantFP<"1">))
+  (Div (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2">)), (HLOConstantFP<"1">))
 ]>;
