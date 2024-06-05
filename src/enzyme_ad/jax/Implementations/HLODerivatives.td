@@ -484,7 +484,8 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     [
                       (DiffeRet),
                       (DiffeRet),
-                    ]
+                    ],
+                    (Add (Shadow $x), (Shadow $y))
                   >;
 
 def : HLODerivative<"Atan2Op", (Op $x, $y), 
@@ -648,7 +649,8 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
                     [
                       (DiffeRet),
                       (Neg (DiffeRet)),
-                    ]
+                    ],
+                    (Sub (Shadow $x), (Shadow $y))
                   >;
 
 def : HLODerivative<"SqrtOp", (Op $x),
