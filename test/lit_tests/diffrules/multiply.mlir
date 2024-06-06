@@ -5,3 +5,13 @@ func.func @main(%a : tensor<2xf32>, %b : tensor<2xf32>) -> tensor<2xf32> {
   %c = stablehlo.multiply %a, %b : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   func.return %c : tensor<2xf32>
 }
+
+// REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>, %arg2: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
+// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst : tensor<2xf32>
+// REVERSE-NEXT:    %1 = stablehlo.multiply %0, %arg1 : tensor<2xf32>
+// REVERSE-NEXT:    %2 = arith.addf %1, %cst : tensor<2xf32>
+// REVERSE-NEXT:    %3 = stablehlo.multiply %0, %arg0 : tensor<2xf32>
+// REVERSE-NEXT:    %4 = arith.addf %3, %cst : tensor<2xf32>
+// REVERSE-NEXT:    return %2, %4 : tensor<2xf32>, tensor<2xf32>
+// REVERSE-NEXT:  }
