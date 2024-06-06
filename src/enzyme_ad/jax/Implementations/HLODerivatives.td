@@ -351,6 +351,10 @@ def InversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   getI64Attr(builder, res);
 }]>;
 
+def Dimensions : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensions();
+}]>;
+
 def ConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getWindowStridesAttr();
 }]>;
@@ -613,7 +617,7 @@ def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (D
 
 def : HLORegionTerminatorOp<"ReturnOp">;
 
-def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet))]>;
+def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
 def : HLOInactiveOp<"RoundOp">;
 
