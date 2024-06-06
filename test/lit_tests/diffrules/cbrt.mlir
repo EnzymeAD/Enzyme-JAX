@@ -6,6 +6,18 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
   func.return %y : tensor<2xf32>
 }
 
+// FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
+// FORWARD-NEXT:    %cst = stablehlo.constant dense<-2.000000e+00> : tensor<2xf32>
+// FORWARD-NEXT:    %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
+// FORWARD-NEXT:    %0 = stablehlo.divide %cst, %cst_0 : tensor<2xf32>
+// FORWARD-NEXT:    %1 = stablehlo.power %arg0, %0 : tensor<2xf32>
+// FORWARD-NEXT:    %cst_1 = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
+// FORWARD-NEXT:    %2 = stablehlo.divide %1, %cst_1 : tensor<2xf32>
+// FORWARD-NEXT:    %3 = stablehlo.multiply %arg1, %2 : tensor<2xf32>
+// FORWARD-NEXT:    %4 = stablehlo.cbrt %arg0 : tensor<2xf32>
+// FORWARD-NEXT:    return %4, %3 : tensor<2xf32>, tensor<2xf32>
+// FORWARD-NEXT:  }
+
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    %cst = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
 // REVERSE-NEXT:    %cst_0 = stablehlo.constant dense<-2.000000e+00> : tensor<2xf32>

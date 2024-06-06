@@ -6,6 +6,13 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
   func.return %y : tensor<2xf32>
 }
 
+// FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
+// FORWARD-NEXT:    %0 = stablehlo.cosine %arg0 : tensor<2xf32>
+// FORWARD-NEXT:    %1 = stablehlo.multiply %arg1, %0 : tensor<2xf32>
+// FORWARD-NEXT:    %2 = stablehlo.sine %arg0 : tensor<2xf32>
+// FORWARD-NEXT:    return %2, %1 : tensor<2xf32>, tensor<2xf32>
+// FORWARD-NEXT:  }
+
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
 // REVERSE-NEXT:    %0 = arith.addf %arg1, %cst : tensor<2xf32>

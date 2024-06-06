@@ -6,6 +6,12 @@ func.func @main(%x : tensor<2x3x4x5xf32>) -> tensor<5x3x2x4xf32> {
   func.return %y : tensor<5x3x2x4xf32>
 }
 
+// FORWARD:  func.func @main(%arg0: tensor<2x3x4x5xf32>, %arg1: tensor<2x3x4x5xf32>) -> (tensor<5x3x2x4xf32>, tensor<5x3x2x4xf32>) {
+// FORWARD-NEXT:    %0 = stablehlo.transpose %arg1, dims = [3, 1, 0, 2] : (tensor<2x3x4x5xf32>) -> tensor<5x3x2x4xf32>
+// FORWARD-NEXT:    %1 = stablehlo.transpose %arg0, dims = [3, 1, 0, 2] : (tensor<2x3x4x5xf32>) -> tensor<5x3x2x4xf32>
+// FORWARD-NEXT:    return %1, %0 : tensor<5x3x2x4xf32>, tensor<5x3x2x4xf32>
+// FORWARD-NEXT:  }
+
 // REVERSE:  func.func @main(%arg0: tensor<2x3x4x5xf32>, %arg1: tensor<5x3x2x4xf32>) -> tensor<2x3x4x5xf32> {
 // REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<5x3x2x4xf32>
 // REVERSE-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<2x3x4x5xf32>
