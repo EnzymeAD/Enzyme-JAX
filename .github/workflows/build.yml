@@ -17,6 +17,8 @@ jobs:
         os: [openstack22]
     timeout-minutes: 500
     steps:
+      - name: temporary rm corrupt file
+        run: rm -rf /home/ubuntu/.cache/bazel/_bazel_ubuntu/install/50a5a3eaeaa5297d31568ab6a3a702d9
       - name: add llvm
         run: |
             if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
