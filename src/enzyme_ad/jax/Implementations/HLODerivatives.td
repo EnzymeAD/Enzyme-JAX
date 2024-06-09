@@ -483,6 +483,25 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   builder.getStringAttr(output + "," + lhs + "->" + rhs);
 }]>;
 
+def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftType();
+}]>;
+
+def FftTypeInverse : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  FftType ret;
+  switch (op.getFftType()) {
+    case FftType::FFT: {ret = FftType::IFFT; break;}
+    case FftType::IFFT: {ret = FftType::FFT; break;}
+    case FftType::RFFT: {ret = FftType::IRFFT; break;}
+    case FftType::IRFFT: {ret = FftType::RFFT; break;}
+  }
+  ret;
+}]>;
+
+def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftLength();
+}]>;
+
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -561,6 +580,14 @@ def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
+
+// TODO multiply by 1/N or N?
+def : HLODerivative<"FftOp", (Op $x),
+                    [
+                      (Fft (DiffeRet), (FftTypeInverse), (FftLength))
+                    ],
+                    (Fft (Shadow $x), (FftType), (FftLength))
+                  >;
 
 def : HLOInactiveOp<"FloorOp">;
 
