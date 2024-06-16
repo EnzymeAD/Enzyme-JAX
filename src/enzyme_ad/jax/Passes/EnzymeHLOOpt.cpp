@@ -3328,11 +3328,11 @@ struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
                     return APFloat(tanhf(a.convertToFloat()));
 
                   bool losesInfo = false;
-                  APFloat res(tanh(a.convertToDouble()));
-                  res.convert(a.getSemantics(),
+                  APFloat fres(tanh(a.convertToDouble()));
+                  fres.convert(a.getSemantics(),
                               llvm::RoundingMode::NearestTiesToEven,
                               &losesInfo);
-                  return res;
+                  return fres;
                 })) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, op.getType(), res.cast<ElementsAttr>());
