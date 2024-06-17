@@ -3330,8 +3330,8 @@ struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
                   bool losesInfo = false;
                   APFloat fres(tanh(a.convertToDouble()));
                   fres.convert(a.getSemantics(),
-                              llvm::RoundingMode::NearestTiesToEven,
-                              &losesInfo);
+                               llvm::RoundingMode::NearestTiesToEven,
+                               &losesInfo);
                   return fres;
                 })) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
