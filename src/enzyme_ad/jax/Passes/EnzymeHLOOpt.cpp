@@ -3217,6 +3217,38 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
   }
 };
 
+struct SelectSimplify : public OpRewritePattern<mlir::stablehlo::SelectOp> {
+  using OpRewritePattern<mlir::stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const final {
+    SmallVector<DenseElementsAttr> constants;
+    constants.assign(op->getNumOperands(), DenseElementsAttr());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if ((bool)constants[0] && (bool)constants[1] && (bool)constants[2]) {
+      if (isa<SplatElementsAttr>(constants[0])) {
+        if (constants[0].getSplatValue<bool>()) {
+          rewriter.replaceOp(op, op->getOperand(1));
+          return success();
+        } else {
+          rewriter.replaceOp(op, op->getOperand(2));
+          return success();
+        }
+      }
+
+      auto out = fromTensor(mlir::stablehlo::selectOp(
+          mlir::stablehlo::constantOp(constants[0]),
+          mlir::stablehlo::constantOp(constants[1]),
+          mlir::stablehlo::constantOp(constants[2]), op.getType()));
+
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct CosSimplify : public OpRewritePattern<mlir::stablehlo::CosineOp> {
   using OpRewritePattern<mlir::stablehlo::CosineOp>::OpRewritePattern;
 
@@ -6188,7 +6220,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
     patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify, SelectSimplify,
              OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
              PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
              SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
