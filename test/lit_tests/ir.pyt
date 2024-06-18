@@ -4,6 +4,18 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call
 
+def lower(fn, vals, parameters=None):
+    if hasattr(fn, "trace"):
+        if parameters is not None:
+            return fn.trace(*vals).lower(_private_parameters=parameters)
+        else:
+            return fn.trace(*vals).lower()
+    else:
+        if parameters is not None:
+            return fn.lower(*vals, _experimental_lowering_parameters=parameters)
+        else:
+            return fn.lower(*vals)
+
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 def do_something(ones, twos):
@@ -42,7 +54,7 @@ def fwdmode(a, b, c, d):
     return jax.jvp(do_something, (a, b), (c, d))
 
 
-print(fwdmode.lower(ones, twos, ones, twos).compiler_ir(dialect="stablehlo"))
+print(lower(fwdmode, (ones, twos, ones, twos)).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_fwdmode attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default"}, %arg2: tensor<2x3xf32> {mhlo.layout_mode = "default"}, %arg3: tensor<5x7xf32> {mhlo.layout_mode = "default"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<6x9xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default"}) 
@@ -58,7 +70,7 @@ def f(a, b):
     return jax.vjp(do_something, a, b)
 
 
-print(f.lower(ones, twos).compiler_ir(dialect="stablehlo"))
+print(lower(f, (ones, twos)).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_f attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:  func.func public @main
@@ -88,11 +100,11 @@ def g(a, b, x, y):
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 
-print(g.lower(ones, twos, x, y).compiler_ir(dialect="stablehlo"))
+print(lower(g, (ones, twos, x, y)).compiler_ir(dialect="stablehlo"))
 
 primals, f_vjp = jax.vjp(jax.jit(do_something), ones, twos)
 
-print(jax.jit(f_vjp).lower((x, y)).compiler_ir(dialect="stablehlo"))
+print(lower(jax.jit(f_vjp), ((x, y),)).compiler_ir(dialect="stablehlo"))
 # CHECK: module @jit__unnamed_wrapped_function_ attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<[0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63]> : tensor<16xi8>

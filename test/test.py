@@ -12,10 +12,11 @@ class EnzymePipeline(absltest.TestCase):
             return x
 
         x = jnp.ones(3)
-        module = jax.jit(fn).lower(x).compiler_ir(dialect="stablehlo")
-        # Only applies if jax-mlir and enzyme-mlir are built on the same version
-        # optimize_module(module)
-        print(str(module))
+        if hasattr(fn, "trace"):
+            module = jax.jit(fn).trace(x).lower().compiler_ir(dialect="stablehlo")
+            # Only applies if jax-mlir and enzyme-mlir are built on the same version
+            # optimize_module(module)
+            print(str(module))
 
 
 class EnzymeJax(absltest.TestCase):

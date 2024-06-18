@@ -562,6 +562,19 @@ def absmaketup(ty):
     return (tystr, ty.shape)
 
 
+def lower(fn, vals, parameters=None):
+    if hasattr(fn, "trace"):
+        if parameters is not None:
+            return fn.trace(*vals).lower(_private_parameters=parameters)
+        else:
+            return fn.trace(*vals).lower()
+    else:
+        if parameters is not None:
+            return fn.lower(*vals, _experimental_lowering_parameters=parameters)
+        else:
+            return fn.lower(*vals)
+
+
 def _enzyme_aug_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source,
@@ -584,7 +597,7 @@ def _enzyme_aug_abstract_eval(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
-        lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -730,9 +743,10 @@ def _enzyme_primal_lowering(
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
         avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
-        lowered_func = jax.jit(mfunc, **jit_options).lower(
-            *avals_in,
-            _experimental_lowering_parameters=ctx.module_context.lowering_parameters
+        lowered_func = lower(
+            jax.jit(mfunc, **jit_options),
+            avals_in,
+            ctx.module_context.lowering_parameters,
         )
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -909,7 +923,7 @@ def _enzyme_fwd_lowering(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
-        lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -973,7 +987,7 @@ def _enzyme_aug_lowering(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
-        lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -1041,7 +1055,7 @@ def _enzyme_rev_lowering(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
-        lowered_func = jax.jit(mfunc, **jit_options).lower(*avals_in)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -1521,7 +1535,7 @@ def enzyme_jax_ir(
                 in_tree,
                 [zero_like(arg) for arg in args_flat],
             )
-            lowered_func = jitres.lower(*avals_in)
+            lowered_func = lower(jitres, avals_in)
             kept = lowered_func.compile()._executable._kept_var_idx
             args_flat = [
                 arg if i in kept else zero_like(arg)
