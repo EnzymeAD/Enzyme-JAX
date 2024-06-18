@@ -338,16 +338,12 @@ public:
     gutils->zeroDiffe(op->getResult(0), builder);
 
     SmallVector<int64_t> toBroadcast;
-    {
-      size_t idx = 0;
-      for (auto en : llvm::enumerate(inTy.getShape())) {
-        if (llvm::is_contained(op.getDimensions(), en.index())) {
-          // reduced op
-          continue;
-        }
-        toBroadcast.push_back(idx);
-        idx++;
+    for (auto en : llvm::enumerate(inTy.getShape())) {
+      if (llvm::is_contained(op.getDimensions(), en.index())) {
+        // reduced op
+        continue;
       }
+      toBroadcast.push_back(en.index());
     }
 
     if (isa<AddOp>(innerOp)) {
