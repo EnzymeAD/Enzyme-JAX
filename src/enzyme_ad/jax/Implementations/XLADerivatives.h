@@ -13,6 +13,7 @@ static inline void
 registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
   registerMHLODialectAutoDiffInterface(registry);
   registerStableHLODialectAutoDiffInterface(registry);
+  registerCHLODialectAutoDiffInterface(registry);
 }
 } // namespace enzyme
 } // namespace mlir
