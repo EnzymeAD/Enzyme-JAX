@@ -502,6 +502,16 @@ def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getFftLength();
 }]>;
 
+def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto op_type = op->getResult(0).getType().cast<RankedTensorType>();
+  auto lengths = op.getFftLength();
+  auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
+
+  auto ret_constant = builder.create<ConstantOp>(op.getLoc(), builder.getDenseI64ArrayAttr(ArrayRef<int64_t>({N})));
+  auto ret_broadcast = builder.create<BroadcastInDimOp>(op.getLoc(), op_type.clone(op_type.getShape(), builder.getI64Type()), ret_constant, builder.getI64VectorAttr(op_type.getShape()));
+  builder.create<ConvertOp>(op.getLoc(), op->getResult(0).getType(), ret_broadcast);
+}]>;
+
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -581,10 +591,12 @@ def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
-// TODO multiply by 1/N or N?
+// TODO fix `rfft` and `irfft` derivatives:
+// - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
+// - `irfft` => 
 def : HLODerivative<"FftOp", (Op $x),
                     [
-                      (Fft (DiffeRet), (FftTypeInverse), (FftLength))
+                      (Mul (FftMultiplier), (Fft (DiffeRet), (FftTypeInverse), (FftLength)))
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
                   >;
