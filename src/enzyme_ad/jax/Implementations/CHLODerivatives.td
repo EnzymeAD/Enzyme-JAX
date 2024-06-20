@@ -92,27 +92,27 @@ def TopK : HLOInst<"TopKOp">;
 
 // Derivative rules
 def : HLODerivative<"AcosOp", (Op $x), [
-  (Neg (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1"> $x), (Pow $x, (HLOConstantFP<"2"> $x))))))
+  (Neg (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1"> $x), (Mul $x, $x)))))
 ]>;
 
 def : HLODerivative<"AcoshOp", (Op $x), [
-  (Div (DiffeRet), (Mul (Sqrt (Sub (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x))), (Sqrt (Add (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x)))))
+  (Div (DiffeRet), (Mul (Sqrt (Sub (Mul $x, $x), (HLOConstantFP<"1"> $x))), (Sqrt (Add (Mul $x, $x), (HLOConstantFP<"1"> $x)))))
 ]>;
 
 def : HLODerivative<"AsinOp", (Op $x), [
-  (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1"> $x), (Pow $x, (HLOConstantFP<"2"> $x)))))
+  (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1"> $x), (Mul $x, $x))))
 ]>;
 
 def : HLODerivative<"AsinhOp", (Op $x), [
-  (Div (DiffeRet), (Sqrt (Add (HLOConstantFP<"1"> $x), (Pow $x, (HLOConstantFP<"2"> $x)))))
+  (Div (DiffeRet), (Sqrt (Add (HLOConstantFP<"1"> $x), (Mul $x, $x))))
 ]>;
 
 def : HLODerivative<"AtanOp", (Op $x), [
-  (Div (DiffeRet), (Add (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x)))
+  (Div (DiffeRet), (Add (Mul $x, $x), (HLOConstantFP<"1"> $x)))
 ]>;
 
 def : HLODerivative<"AtanhOp", (Op $x), [
-  (Div (DiffeRet), (Sub (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x)))
+  (Div (DiffeRet), (Sub (Mul $x, $x), (HLOConstantFP<"1"> $x)))
 ]>;
 
 def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
@@ -140,5 +140,5 @@ def : HLODerivative<"PolygammaOp", (Op $x, $n),
 def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
-  (Div (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2"> $x)))
+  (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
 ]>;
