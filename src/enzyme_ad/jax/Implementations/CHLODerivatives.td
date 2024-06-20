@@ -93,7 +93,7 @@ def TopK : HLOInst<"TopKOp">;
 // Derivative rules
 def : HLODerivative<"AcosOp", (Op $x), [
   (Neg (Div (DiffeRet), (Sqrt (Sub (HLOConstantFP<"1"> $x), (Pow $x, (HLOConstantFP<"2"> $x))))))
-], (Acos (Shadow $x))>;
+]>;
 
 def : HLODerivative<"AcoshOp", (Op $x), [
   (Div (DiffeRet), (Mul (Sqrt (Sub (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x))), (Sqrt (Add (Pow $x, (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x)))))
