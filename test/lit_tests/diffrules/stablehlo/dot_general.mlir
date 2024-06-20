@@ -53,10 +53,10 @@ func.func @dot_general_batch(%a : tensor<2x3x8xf32>, %b : tensor<4x2x8xf32>) -> 
 }
 
 // FORWARD-BATCH:  func.func @dot_general_batch(%arg0: tensor<2x3x8xf32>, %arg1: tensor<2x3x8xf32>, %arg2: tensor<4x2x8xf32>, %arg3: tensor<4x2x8xf32>) -> (tensor<8x3x4xf32>, tensor<8x3x4xf32>) {
-// FORWARD-BATCH-NEXT:    %0 = stablehlo.dot_general %arg1, %arg2, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
-// FORWARD-BATCH-NEXT:    %1 = stablehlo.dot_general %arg0, %arg3, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
+// FORWARD-BATCH-NEXT:    %0 = stablehlo.dot_general %arg1, %arg2, batching_dims = [2] x [2], contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
+// FORWARD-BATCH-NEXT:    %1 = stablehlo.dot_general %arg0, %arg3, batching_dims = [2] x [2], contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
 // FORWARD-BATCH-NEXT:    %2 = stablehlo.add %0, %1 : tensor<8x3x4xf32>
-// FORWARD-BATCH-NEXT:    %3 = stablehlo.dot_general %arg0, %arg2, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
+// FORWARD-BATCH-NEXT:    %3 = stablehlo.dot_general %arg0, %arg2, batching_dims = [2] x [2], contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x3x8xf32>, tensor<4x2x8xf32>) -> tensor<8x3x4xf32>
 // FORWARD-BATCH-NEXT:    return %3, %2 : tensor<8x3x4xf32>, tensor<8x3x4xf32>
 // FORWARD-BATCH-NEXT:  }
 
