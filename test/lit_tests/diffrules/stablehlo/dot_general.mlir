@@ -60,7 +60,7 @@ func.func @dot_general_batch(%a : tensor<2x3x8xf32>, %b : tensor<4x2x8xf32>) -> 
 // FORWARD-BATCH-NEXT:    return %3, %2 : tensor<8x3x4xf32>, tensor<8x3x4xf32>
 // FORWARD-BATCH-NEXT:  }
 
-// REVERSE-BATCH:  func.func @dot_general_batch(%arg0: tensor<2x3x8xf32>, %arg1: tensor<4x2x8xf32>, %arg2: tensor<8x3x4xf32>) -> (tensor<8x2x3xf32>, tensor<8x4x2xf32>) {
+// REVERSE-BATCH:  func.func @dot_general_batch(%arg0: tensor<2x3x8xf32>, %arg1: tensor<4x2x8xf32>, %arg2: tensor<8x3x4xf32>) -> (tensor<2x3x8xf32>, tensor<4x2x8xf32>) {
 // REVERSE-BATCH-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<8x3x4xf32>
 // REVERSE-BATCH-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<2x3x8xf32>
 // REVERSE-BATCH-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<4x2x8xf32>
