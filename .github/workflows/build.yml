@@ -35,7 +35,6 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: sudo rm /home/ubuntu/.cache/bazel/_bazel_ubuntu/install/50a5a3eaeaa5297d31568ab6a3a702d9/A-server.jar
       - run: |
           bazel build :enzyme_ad @llvm-project//llvm:FileCheck
           bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
