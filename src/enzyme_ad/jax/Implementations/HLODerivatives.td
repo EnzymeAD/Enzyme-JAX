@@ -705,7 +705,7 @@ def : HLODerivative<"SqrtOp", (Op $x),
 
 def : HLODerivative<"TanhOp", (Op $x),
                     [
-                      (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
+                      (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Pow (Tanh $x), (HLOConstantFP<"2">))))
                     ]
                   >;
 
