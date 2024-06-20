@@ -18,7 +18,7 @@ class HLOInactiveOp<string m> : InactiveOp<"chlo", m>;
 
 // Required operations from the StableHLO dialect
 def Add : Inst<"AddOp", "stablehlo">;
-def Sub : Inst<"SubOp", "stablehlo">;
+def Sub : Inst<"SubtractOp", "stablehlo">;
 def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
 def Neg : Inst<"NegOp", "stablehlo">;
@@ -140,5 +140,5 @@ def : HLODerivative<"PolygammaOp", (Op $x, $n),
 def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
-  (Div (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2"> $x)), (HLOConstantFP<"1"> $x))
+  (Div (DiffeRet), (Pow (Cos $x), (HLOConstantFP<"2"> $x)))
 ]>;
