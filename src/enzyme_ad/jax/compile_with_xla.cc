@@ -17,6 +17,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -147,6 +148,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   prepareRegistry(registry);
   MLIRContext context(registry);
   context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::complex::ComplexDialect>();
   context.loadDialect<mlir::tensor::TensorDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
@@ -300,6 +302,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   prepareRegistry(registry);
   mlir::MLIRContext context(registry);
   context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::complex::ComplexDialect>();
   context.loadDialect<mlir::tensor::TensorDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();

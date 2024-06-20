@@ -31,6 +31,7 @@ cc_binary(
         "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
         "@llvm-project//mlir:ConversionPasses",
         "@llvm-project//mlir:DLTIDialect",
