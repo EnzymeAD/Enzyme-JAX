@@ -20,8 +20,8 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
-#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/ChloOps.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
@@ -64,8 +64,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
     op->walk([=](complex::ConjOp addOp) {
       OpBuilder builder(addOp);
       Value newAddOp;
-      newAddOp = builder.create<chlo::ConjOp>(
-            addOp.getLoc(), addOp->getOperand(0));
+      newAddOp =
+          builder.create<chlo::ConjOp>(addOp.getLoc(), addOp->getOperand(0));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
