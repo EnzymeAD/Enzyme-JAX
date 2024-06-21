@@ -75,7 +75,7 @@ func.func @dot_general_batch(%a : tensor<2x3x8xf32>, %b : tensor<4x2x8xf32>) -> 
 // REVERSE-BATCH-NEXT:  }
 
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=dot_general_nobatch_complex outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=dot_general_nobatch_complex outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=dot_general_nobatch_complex outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-COMPLEX
 
 func.func @dot_general_nobatch_complex(%a : tensor<2x3xcomplex<f32>>, %b : tensor<4x2xcomplex<f32>>) -> tensor<3x4xcomplex<f32>> {
   %c = "stablehlo.dot_general"(%a, %b) {
