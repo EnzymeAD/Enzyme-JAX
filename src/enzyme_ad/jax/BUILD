@@ -245,6 +245,7 @@ cc_library(
         "@llvm-project//mlir:TransformUtils",
         "@stablehlo//:reference_ops",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
