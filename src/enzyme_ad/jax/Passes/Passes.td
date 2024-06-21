@@ -16,7 +16,8 @@ def ArithRaisingPass : Pass<"arith-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "mhlo::MhloDialect",
-    "stablehlo::StablehloDialect"
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect"
   ];
   let constructor = "mlir::enzyme::createArithRaisingPass()";
   let options = [

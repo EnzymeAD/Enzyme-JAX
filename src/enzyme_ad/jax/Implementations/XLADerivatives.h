@@ -8,11 +8,13 @@ namespace mlir {
 namespace enzyme {
 void registerMHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerStableHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
+void registerCHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 
 static inline void
 registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
   registerMHLODialectAutoDiffInterface(registry);
   registerStableHLODialectAutoDiffInterface(registry);
+  registerCHLODialectAutoDiffInterface(registry);
 }
 } // namespace enzyme
 } // namespace mlir

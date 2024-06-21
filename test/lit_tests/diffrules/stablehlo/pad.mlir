@@ -2,7 +2,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
 
 module {
-
   func.func @main(%a : tensor<2x3xf32>) -> tensor<18x27xf32> {
     %0 = stablehlo.constant dense<3.140000e+00> : tensor<f32>
     %2 = stablehlo.pad %a, %0, low = [5, 7], high = [11, 13], interior = [0, 2] : (tensor<2x3xf32>, tensor<f32>) -> tensor<18x27xf32>
