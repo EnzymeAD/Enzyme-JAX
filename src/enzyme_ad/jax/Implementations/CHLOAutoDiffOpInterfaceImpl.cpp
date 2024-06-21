@@ -47,5 +47,6 @@ void mlir::enzyme::registerCHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *context, chlo::ChloDialect *) {
     registerInterfaces(context);
+    context->loadDialect<stablehlo::StablehloDialect>();
   });
 }
