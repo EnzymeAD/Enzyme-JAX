@@ -11,3 +11,13 @@ func.func @main(%x : tensor<2xcomplex<f32>>) -> tensor<2xcomplex<f32>> {
 // FORWARD-NEXT:    %1 = chlo.conj %arg0 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
 // FORWARD-NEXT:    return %1, %0 : tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>
 // FORWARD-NEXT:  }
+
+// REVERSE:  func.func @main(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>) -> tensor<2xcomplex<f32>> {
+// REVERSE-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %0 = stablehlo.add %cst, %arg1 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %1 = chlo.conj %0 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %2 = chlo.conj %1 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %3 = chlo.conj %2 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %4 = stablehlo.add %cst, %3 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    return %4 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:  }
