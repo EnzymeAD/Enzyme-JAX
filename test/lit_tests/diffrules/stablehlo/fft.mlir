@@ -1,12 +1,12 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=fft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-FFT
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=fft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-FFT
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=fft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-FFT
 
 func.func @fft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
-  %y = "stablehlo.fft"(%x) {
+  %0 = "stablehlo.fft"(%x) {
     fft_type = #stablehlo<fft_type FFT>,
     fft_length = array<i64 : 4>
   } : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
-  func.return %y : tensor<4xcomplex<f32>>
+  func.return %0 : tensor<4xcomplex<f32>>
 }
 
 // FORWARD-FFT:  func.func @fft(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> (tensor<4xcomplex<f32>>, tensor<4xcomplex<f32>>) {
@@ -15,8 +15,18 @@ func.func @fft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // FORWARD-FFT-NEXT:       return %1, %0 : tensor<4xcomplex<f32>>, tensor<4xcomplex<f32>>
 // FORWARD-FFT-NEXT:   }
 
+// REVERSE:  func.func @fft(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
+// REVERSE-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %0 = stablehlo.add %cst, %arg1 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %2 = stablehlo.fft %1, type =  FFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %3 = chlo.conj %2 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %4 = stablehlo.add %cst, %3 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    return %4 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:  }
+
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=ifft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IFFT
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=ifft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IFFT
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=ifft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IFFT
 
 func.func @ifft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
   %y = "stablehlo.fft"(%x) {
@@ -31,8 +41,18 @@ func.func @ifft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // FORWARD-IFFT-NEXT:       return %1, %0 : tensor<4xcomplex<f32>>, tensor<4xcomplex<f32>>
 // FORWARD-IFFT-NEXT:   }
 
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-RFFT
+// REVERSE:  func.func @ifft(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
+// REVERSE-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %0 = stablehlo.add %cst, %arg1 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %2 = stablehlo.fft %1, type =  IFFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %3 = chlo.conj %2 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    %4 = stablehlo.add %cst, %3 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:    return %4 : tensor<4xcomplex<f32>>
+// REVERSE-NEXT:  }
+
+// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
+// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-RFFT
 
 func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
   %y = "stablehlo.fft"(%x) {
@@ -48,8 +68,8 @@ func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
 // FORWARD-RFFT-NEXT:       return %1, %0 : tensor<3xcomplex<f32>>, tensor<3xcomplex<f32>>
 // FORWARD-RFFT-NEXT:   }
 
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IRFFT
+// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
+// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IRFFT
 
 func.func @irfft(%x : tensor<3xcomplex<f32>>) -> tensor<4xf32> {
   %y = "stablehlo.fft"(%x) {

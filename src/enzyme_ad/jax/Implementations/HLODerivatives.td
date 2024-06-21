@@ -596,7 +596,7 @@ def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 // - `irfft` => 
 def : HLODerivative<"FftOp", (Op $x),
                     [
-                      (Mul (FftMultiplier), (Fft (DiffeRet), (FftTypeInverse), (FftLength)))
+                      (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
                   >;
