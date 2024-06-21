@@ -51,8 +51,8 @@ func.func @ifft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // REVERSE-IFFT-NEXT:    return %4 : tensor<4xcomplex<f32>>
 // REVERSE-IFFT-NEXT:  }
 
-// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
-// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-RFFT
+// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
+// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-RFFT
 
 func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
   %y = "stablehlo.fft"(%x) {
@@ -68,8 +68,8 @@ func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
 // FORWARD-RFFT-NEXT:       return %1, %0 : tensor<3xcomplex<f32>>, tensor<3xcomplex<f32>>
 // FORWARD-RFFT-NEXT:   }
 
-// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
-// TODO RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IRFFT
+// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
+// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IRFFT
 
 func.func @irfft(%x : tensor<3xcomplex<f32>>) -> tensor<4xf32> {
   %y = "stablehlo.fft"(%x) {
