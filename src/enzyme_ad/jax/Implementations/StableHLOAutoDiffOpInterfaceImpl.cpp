@@ -234,20 +234,22 @@ public:
     }
 
     auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
+    auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
 
-    Value zero = gutils->getShadowType(reduceTy)
+    Value zero = gutils->getShadowType(bodyTy)
                      .cast<AutoDiffTypeInterface>()
                      .createNullValue(builder, op.getLoc());
 
-    auto red = builder.create<ReduceOp>(op.getLoc(), TypeRange(zero.getType()),
-                                        inDiffe, zero, reducedDims);
+    auto red = builder.create<ReduceOp>(
+        op.getLoc(), TypeRange(gutils->getShadowType(reduceTy)), inDiffe, zero,
+        reducedDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
     OpBuilder bodyBuilder(orig->getContext());
     bodyBuilder.setInsertionPointToEnd(&body);
 
-    body.addArgument(zero.getType(), op.getLoc());
-    body.addArgument(zero.getType(), op.getLoc());
+    body.addArgument(bodyTy, op.getLoc());
+    body.addArgument(bodyTy, op.getLoc());
     auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
                                          body.getArgument(1));
     bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
