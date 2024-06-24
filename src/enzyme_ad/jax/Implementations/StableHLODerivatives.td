@@ -17,3 +17,20 @@ class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"stablehlo", m>;
 class HLOInactiveOp<string m> : InactiveOp<"stablehlo", m>;
 
 include "HLODerivatives.td"
+
+def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
+                    [
+                        // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
+                        (Einsum (TypeOf $lhs), (DiffeRet), $rhs, (GradEinsumConfigLhs)),
+                        (Einsum (TypeOf $rhs), (DiffeRet), $lhs, (GradEinsumConfigRhs)),
+                    ],
+                    (Add (SelectIfActive $lhs, (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)), (HLOConstantFP<"0">)))
+                  >;
+
+def : HLODerivative<"UnaryEinsumOp", (Op $x),
+                    [
+                        // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
+                        (UnaryEinsum (TypeOf $x), (DiffeRet), (GradUnaryEinsumConfig)),
+                    ],
+                    (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
+                  >;

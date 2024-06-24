@@ -578,15 +578,6 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
 
 def : HLOInactiveOp<"DynamicIotaOp">;
 
-def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
-                    [
-                        // TODO add support for complex numbers by conjugating `$rhs` and `$lhs` (only if complex tensors)
-                        (Einsum (TypeOf $lhs), (DiffeRet), $rhs, (GradEinsumConfigLhs)),
-                        (Einsum (TypeOf $rhs), (DiffeRet), $lhs, (GradEinsumConfigRhs)),
-                    ],
-                    (Add (SelectIfActive $lhs, (Einsum (ResultTypes), (Shadow $lhs), $rhs, (EinsumConfig)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Einsum (ResultTypes), $lhs, (Shadow $rhs), (EinsumConfig)), (HLOConstantFP<"0">)))
-                  >;
-
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
@@ -716,12 +707,4 @@ def : HLODerivative<"TransposeOp", (Op $x),
                         (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
                     ],
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
-                  >;
-
-def : HLODerivative<"UnaryEinsumOp", (Op $x),
-                    [
-                        // TODO maybe replace `UnaryEinsum` for `Reshape` + `BroadcastInDim`
-                        (UnaryEinsum (TypeOf $x), (DiffeRet), (GradUnaryEinsumConfig)),
-                    ],
-                    (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
