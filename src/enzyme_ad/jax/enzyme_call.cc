@@ -868,7 +868,7 @@ public:
     // force deletion of mod first explicitly
     mod = nullptr;
     return std::make_pair(res, tmpBuf);
-  }
+  }  
 
   static size_t tempSize(llvm::StringRef source, Language lang,
                          bool xla_runtime, const std::string &pass_pipeline) {
@@ -1097,6 +1097,59 @@ PYBIND11_MODULE(enzyme_call, m) {
           return CpuKernel::tempSize(source, (Language)lang, xla_runtime,
                                      pass_pipeline);
         });
+
+  m.def("compile_to_llvm",
+        [](constd std::string outfile, const std::string &source, const std::string &fn,
+           const pybind11::list &py_out_shapes,
+           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           Language lang, bool xla_runtime,
+           const std::string &pass_pipeline) -> std::pair<size_t, size_t> {
+
+    llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
+    out_shapes.reserve(pybind11::len(py_out_shapes));
+    llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
+    in_shapes.reserve(pybind11::len(py_in_shapes));
+
+    llvm::SmallVector<std::string> out_types;
+    out_types.reserve(pybind11::len(py_out_shapes));
+
+    llvm::SmallVector<std::string> in_types;
+    in_types.reserve(pybind11::len(py_in_shapes));
+
+    for (const auto &element : py_out_shapes) {
+      auto se = element.cast<pybind11::tuple>();
+      auto dtype = se[0].cast<std::string>();
+      out_types.push_back(dtype);
+      auto nested = se[1].cast<pybind11::list>();
+      llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
+      target.reserve(pybind11::len(nested));
+      for (const auto &nested_element : nested) {
+        target.push_back(nested_element.cast<int64_t>());
+      }
+    }
+    for (const auto &element : py_in_shapes) {
+      auto se = element.cast<pybind11::tuple>();
+      auto dtype = se[0].cast<std::string>();
+      in_types.push_back(dtype);
+      auto nested = se[1].cast<pybind11::list>();
+      llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
+      target.reserve(pybind11::len(nested));
+      for (const auto &nested_element : nested) {
+        target.push_back(nested_element.cast<int64_t>());
+      }
+    }
+
+    std::error_code EC;
+    llvm::raw_fd_ostream ostream(outfile, std::error_code &EC);
+
+    auto [mod, llvm_ctx, num_out, tmpBuf] =
+        CpuKernel::createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
+                      pyargv, mode, lang, xla_runtime, pass_pipeline);
+
+    ostream << *mod;
+    ostream.close();
+    return;
+  });
 
   m.def("tape_and_tmp_size",
         [](const std::string &source, const std::string &fn,
