@@ -46,8 +46,14 @@ class PipelineConfig:
     def ad_level(self):
         raise NotImplementedError()
 
+    def export_llvm(self):
+        return None
+
 
 class OldXLAPipeline:
+    def __init__(self, name=None):
+        self.exportname = name
+
     def xla_runtime(self):
         return False
 
@@ -59,6 +65,9 @@ class OldXLAPipeline:
 
     def stablehlo_inject(self):
         return False
+
+    def export_llvm(self):
+        return self.exportname
 
 
 class JaXPipeline:
@@ -1497,6 +1506,45 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
 
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
+
+
+def export(outfile, func, *args, argv=(), jit_options={}):
+    def zero_like(arg):
+        if arg.dtype == jax.float0:
+            return arg
+        else:
+            return jnp.zeros(arg.shape, dtype=arg.dtype)
+
+    args_flat, in_tree = jax.tree_util.tree_flatten(args)
+    in_shapes = [absmaketup(a) for a in args_flat]
+    jitres = jax.jit(func, **jit_options)
+    out_shape = jitres.eval_shape(*args)
+    out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
+    out_shape_flat = [jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat]
+    avals_in = jax.tree_util.tree_unflatten(
+        in_tree,
+        [zero_like(arg) for arg in args_flat],
+    )
+    lowered_func = lower(jitres, avals_in)
+    mhlo = lowered_func.compiler_ir(dialect="stablehlo")
+    source = mhlo.operation.get_asm(enable_debug_info=True)
+    kept = lowered_func.compile()._executable._kept_var_idx
+    in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
+    xla_runtime = False
+    pass_pipeline = ""
+    lang = LANG_MHLO
+    enzyme_call.compile_to_llvm(
+        outfile,
+        source,
+        "",
+        list(map(absmaketup, out_shape_flat)),
+        in_shapes,
+        argv,
+        lang,
+        xla_runtime,
+        pass_pipeline,
+    )
+    return
 
 
 def enzyme_jax_ir(
