@@ -37,7 +37,7 @@ jobs:
           key: bazel-${{ matrix.os }}
       - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          export HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
           bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
           bazel --version
           nm -C $(find bazel-out/ -name enzyme_call.so -type f) | grep ExecutorCache::

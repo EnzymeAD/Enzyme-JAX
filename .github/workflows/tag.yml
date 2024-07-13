@@ -37,7 +37,7 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: export HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
+      - run: HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
