@@ -36,6 +36,7 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
+      - run: sudo find ~/.cache/bazel -name "A-server.jar" -exec rm -rf $(dirname {}) \;
       - run: |
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
           bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
