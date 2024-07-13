@@ -15,6 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [openstack22]
+        python: ["3.11"]
     timeout-minutes: 500
     steps:
       - name: add llvm
@@ -37,7 +38,7 @@ jobs:
       - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: sudo find ~/.cache/bazel -name "A-server.jar" -exec rm -rf $(dirname {}) \;
       - run: |
-          bazel build :enzyme_ad @llvm-project//llvm:FileCheck
+          export HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
           bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
           bazel --version
           nm -C $(find bazel-out/ -name enzyme_call.so -type f) | grep ExecutorCache::

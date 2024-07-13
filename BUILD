@@ -1,5 +1,6 @@
 load("@rules_python//python:packaging.bzl", "py_wheel")
 load(":package.bzl", "py_package")
+load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
 
 licenses(["notice"])
 
@@ -89,6 +90,7 @@ py_wheel(
         "jax >= 0.4.21",
         "jaxlib >= 0.4.21",
     ],
+    python_requires = HERMETIC_PYTHON_VERSION,
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",
     version = "0.0.6",

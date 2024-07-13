@@ -12,6 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [openstack22]
+        python: ["3.10", "3.11", "3.12", "3.13"]
     timeout-minutes: 500
     steps:
       - name: add llvm
@@ -36,7 +37,7 @@ jobs:
           path: "~/.cache/bazel"
           key: bazel-${{ matrix.os }}
       - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: bazel build :enzyme_ad
+      - run: export HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
