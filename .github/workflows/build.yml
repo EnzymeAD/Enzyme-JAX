@@ -29,7 +29,12 @@ jobs:
         with:
           submodules: recursive
       - uses: bazelbuild/setup-bazelisk@v2
-      - run: sudo rm -rf ~/.cache/bazel && mkdir -p ~/.cache/bazel && sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
+      - name: Mount bazel cache  # Optional
+        uses: actions/cache@v3
+        with:
+          path: "~/.cache/bazel"
+          key: bazel-${{ matrix.os }}
+      - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: sudo find ~/.cache/bazel -name "A-server.jar" -exec rm -rf $(dirname {}) \;
       - run: |
           bazel build :enzyme_ad @llvm-project//llvm:FileCheck

@@ -281,8 +281,8 @@ pybind_library(
         ":XLADerivatives",
         ":TransformOps",
         # This is similar to xla_binary rule and is needed to make XLA client compile.
-        "@tsl//tsl/framework:allocator",
-        "@tsl//tsl/framework:allocator_registry_impl",
+        # "@tsl//tsl/framework:allocator",
+        # "@tsl//tsl/framework:allocator_registry_impl",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
         "@tsl//tsl/platform:tensor_float_32_utils",
