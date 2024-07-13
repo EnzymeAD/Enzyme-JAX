@@ -1,4 +1,4 @@
-load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "PYRULES_COMMIT", "PYRULES_SHA256", "XLA_PATCHES")
+load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "XLA_PATCHES")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -35,12 +35,28 @@ http_archive(
     patch_cmds = XLA_PATCHES
 )
 
-http_archive(
-    name = "rules_python",
-    sha256 = PYRULES_SHA256,
-    strip_prefix = "rules_python-" + PYRULES_COMMIT,
-    urls = ["https://github.com/bazelbuild/rules_python/archive/{commit}.tar.gz".format(commit = PYRULES_COMMIT)]
+load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
+python_init_rules()
+
+load("@xla//third_party/py:python_init_repositories.bzl", "python_init_repositories")
+python_init_repositories(
+    requirements = {
+        "3.9": "//build:requirements_lock_3_9.txt",
+        "3.10": "//build:requirements_lock_3_10.txt",
+        "3.11": "//build:requirements_lock_3_11.txt",
+        "3.12": "//build:requirements_lock_3_12.txt",
+        "3.13": "//build:requirements_lock_3_13.txt",
+    },
 )
+
+load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains")
+python_init_toolchains()
+
+load("@xla//third_party/py:python_init_pip.bzl", "python_init_pip")
+python_init_pip()
+
+load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
+python_init_rules()
 
 load("@rules_python//python:repositories.bzl", "py_repositories")
 
