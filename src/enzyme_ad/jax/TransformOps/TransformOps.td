@@ -219,6 +219,10 @@ def ApplyEinsumTransposePatterns : EnzymeHLOPatternOp<
     "einsum_transpose"> {
   let patterns = ["EinsumTranspose"];
 }
+def ApplyConvolutionTransposePatterns : EnzymeHLOPatternOp<
+    "convolution_transpose"> {
+  let patterns = ["ConvolutionTranspose"];
+}
 def ApplyDotTransposePatterns : EnzymeHLOPatternOp<
     "dot_transpose"> {
   let patterns = ["DotTranspose"];
