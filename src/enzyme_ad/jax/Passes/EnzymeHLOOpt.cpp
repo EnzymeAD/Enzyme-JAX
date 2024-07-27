@@ -3604,6 +3604,93 @@ struct TransposeDotReorder
   }
 };
 
+// transpose(einsum) -> einsum
+struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
+                                PatternRewriter &rewriter) const final {
+    auto operand = transpose.getOperand();
+    auto einsum = operand.getDefiningOp<mlir::stablehlo::EinsumOp>();
+    if (!einsum || !llvm::hasSingleElement(operand.getUsers()))
+      return failure();
+
+    auto einsumConfig = einsum.getEinsumConfig();
+    auto arrowPos = einsumConfig.find("->");
+
+    if (arrowPos == StringRef::npos)
+      return failure();
+
+    auto permutation = transpose.getPermutation();
+
+    if (einsumConfig.size() - (arrowPos + 2) < permutation.size())
+      return failure();
+
+    auto newEinsumConfig = std::string(einsumConfig.str());
+    for (int i = 0; i < permutation.size(); ++i) {
+      newEinsumConfig[arrowPos + 2 + i] =
+          einsumConfig[arrowPos + 2 + permutation[i]];
+    }
+
+    rewriter.modifyOpInPlace(einsum, [&einsum, &transpose, newEinsumConfig] {
+      einsum.setEinsumConfig(
+          StringAttr::get(einsum.getContext(), newEinsumConfig));
+      einsum.getResult().setType(transpose.getType());
+    });
+    rewriter.replaceAllUsesWith(transpose.getResult(), einsum.getResult());
+
+    return success();
+  }
+};
+
+// einsum(transpose(x), transpose(y)) -> einsum(x, y)
+struct EinsumTranspose : public OpRewritePattern<mlir::stablehlo::EinsumOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::EinsumOp einsum,
+                                PatternRewriter &rewriter) const final {
+    llvm::StringRef einsumConfig = einsum.getEinsumConfig();
+
+    auto lhs_trans =
+        einsum.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto rhs_trans =
+        einsum.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (!lhs_trans && !rhs_trans)
+      return failure();
+
+    size_t commaPos = einsumConfig.find(",");
+    size_t arrowPos = einsumConfig.find("->");
+    if (commaPos != einsum.getLhs().getType().getRank() ||
+        einsumConfig.size() - commaPos < einsum.getRhs().getType().getRank() ||
+        (arrowPos != StringRef::npos &&
+         arrowPos - commaPos < einsum.getRhs().getType().getRank()))
+      return failure();
+
+    auto newEinsumConfig = std::string(einsumConfig.str());
+
+    if (lhs_trans) {
+      for (int i = 0; i < commaPos; ++i) {
+        newEinsumConfig[i] = einsumConfig[lhs_trans.getPermutation()[i]];
+      }
+    }
+
+    if (rhs_trans) {
+      int64_t rhsRank = einsum.getRhs().getType().getRank();
+      for (int i = 0; i < rhsRank; ++i) {
+        newEinsumConfig[commaPos + 1 + i] =
+            einsumConfig[commaPos + 1 + rhs_trans.getPermutation()[i]];
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::EinsumOp>(
+        einsum, einsum.getType(),
+        lhs_trans ? lhs_trans.getOperand() : einsum.getLhs(),
+        rhs_trans ? rhs_trans.getOperand() : einsum.getRhs(),
+        StringAttr::get(einsum.getContext(), newEinsumConfig));
+    return success();
+  }
+};
+
 struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -6218,8 +6305,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
 
     if (passses & 512)
-      patterns.add<TransposeDotReorder, DotTranspose, ConvertConvertFloat,
-                   ConcatToPad, ConcatAppendingReshape, ReshapeIota>(context);
+      patterns.add<TransposeDotReorder, DotTranspose, EinsumTranspose,
+                   TransposeEinsum, ConvertConvertFloat, ConcatToPad,
+                   ConcatAppendingReshape, ReshapeIota>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
