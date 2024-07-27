@@ -3604,6 +3604,69 @@ struct TransposeDotReorder
   }
 };
 
+struct ConvolutionTranspose
+    : public OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConvolutionOp conv,
+                                PatternRewriter &rewriter) const final {
+    auto lhs_trans =
+        conv.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto rhs_trans =
+        conv.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    if (!lhs_trans && !rhs_trans)
+      return failure();
+
+    auto dim = conv.getDimensionNumbers();
+    int64_t inputBatchDimension = dim.getInputBatchDimension();
+    int64_t inputFeatureDimension = dim.getInputFeatureDimension();
+    SmallVector<int64_t> inputSpatialDimensions(
+        dim.getInputSpatialDimensions().begin(),
+        dim.getInputSpatialDimensions().end());
+
+    int64_t kernelInputFeatureDimension = dim.getKernelInputFeatureDimension();
+    int64_t kernelOutputFeatureDimension =
+        dim.getKernelOutputFeatureDimension();
+    SmallVector<int64_t> kernelSpatialDimensions(
+        dim.getKernelSpatialDimensions().begin(),
+        dim.getKernelSpatialDimensions().end());
+
+    if (lhs_trans) {
+      inputBatchDimension = lhs_trans.getPermutation()[inputBatchDimension];
+      inputFeatureDimension = lhs_trans.getPermutation()[inputFeatureDimension];
+      for (auto &dim : inputSpatialDimensions)
+        dim = lhs_trans.getPermutation()[dim];
+    }
+
+    if (rhs_trans) {
+      kernelInputFeatureDimension =
+          rhs_trans.getPermutation()[kernelInputFeatureDimension];
+      kernelOutputFeatureDimension =
+          rhs_trans.getPermutation()[kernelOutputFeatureDimension];
+      for (auto &dim : kernelSpatialDimensions)
+        dim = rhs_trans.getPermutation()[dim];
+    }
+
+    auto ndim = stablehlo::ConvDimensionNumbersAttr::get(
+        dim.getContext(), inputBatchDimension, inputFeatureDimension,
+        inputSpatialDimensions, kernelInputFeatureDimension,
+        kernelOutputFeatureDimension, kernelSpatialDimensions,
+        dim.getOutputBatchDimension(), dim.getOutputFeatureDimension(),
+        dim.getOutputSpatialDimensions());
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
+        conv, conv.getType(),
+        lhs_trans ? lhs_trans.getOperand() : conv.getLhs(),
+        rhs_trans ? rhs_trans.getOperand() : conv.getRhs(),
+
+        conv.getWindowStridesAttr(), conv.getPaddingAttr(),
+        conv.getLhsDilationAttr(), conv.getRhsDilationAttr(),
+        conv.getWindowReversalAttr(), ndim, conv.getFeatureGroupCountAttr(),
+        conv.getBatchGroupCountAttr(), conv.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 // transpose(einsum) -> einsum
 struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -6305,9 +6368,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
 
     if (passses & 512)
-      patterns.add<TransposeDotReorder, DotTranspose, EinsumTranspose,
-                   TransposeEinsum, ConvertConvertFloat, ConcatToPad,
-                   ConcatAppendingReshape, ReshapeIota>(context);
+      patterns.add<TransposeDotReorder, ConvolutionTranspose, DotTranspose,
+                   EinsumTranspose, TransposeEinsum, ConvertConvertFloat,
+                   ConcatToPad, ConcatAppendingReshape, ReshapeIota>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
