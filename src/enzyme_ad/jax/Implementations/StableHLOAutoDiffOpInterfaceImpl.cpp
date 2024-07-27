@@ -469,6 +469,36 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+struct SHLOConstantOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
+                                             ConstantOp> {
+
+  mlir::Operation *createBatch(Operation *src, IRMapping &mapper,
+                               Operation::CloneOptions options,
+                               std::map<Operation *, Operation *> &opMap,
+                               ArrayRef<int64_t> batchSizes) const {
+
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+    mlir::NamedAttrList attrs;
+    for (auto attr : src->getAttrs()) {
+      auto eattr = cast<DenseElementsAttr>(attr.getValue());
+      attr.setValue(eattr.resizeSplat(cast<ShapedType>(resultTypes[0])));
+      attrs.append(attr);
+    }
+    auto cop = mlir::Operation::create(
+        src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
+        OpaqueProperties(nullptr), mlir::BlockRange(), 0);
+    return cop;
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -482,5 +512,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
         ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+        ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
       });
 }
