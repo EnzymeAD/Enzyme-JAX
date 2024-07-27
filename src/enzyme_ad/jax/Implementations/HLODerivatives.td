@@ -537,6 +537,8 @@ def : HLODerivative<"CbrtOp", (Op $x), [
   (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
 ]>;
 
+def : HLOInactiveOp<"CompareOp">;
+
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
   (Imag (DiffeRet)),
