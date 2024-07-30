@@ -3604,6 +3604,54 @@ struct TransposeDotReorder
   }
 };
 
+struct TransposeConvolution
+    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
+                                PatternRewriter &rewriter) const final {
+    auto operand = transpose.getOperand();
+    auto conv = operand.getDefiningOp<mlir::stablehlo::ConvolutionOp>();
+    if (!conv || !llvm::hasSingleElement(operand.getUsers()))
+      return failure();
+
+    auto permutation = transpose.getPermutation();
+
+    auto dimensionNumbers = conv.getDimensionNumbers();
+    int64_t outputBatchDimension =
+        permutation[dimensionNumbers.getOutputBatchDimension()];
+    int64_t outputFeatureDimension =
+        permutation[dimensionNumbers.getOutputFeatureDimension()];
+    SmallVector<int64_t> outputSpatialDimensions(
+        dimensionNumbers.getOutputSpatialDimensions().begin(),
+        dimensionNumbers.getOutputSpatialDimensions().end());
+
+    for (auto &dim : outputSpatialDimensions) {
+      dim = permutation[dim];
+    }
+
+    auto newDimensionNumbers = stablehlo::ConvDimensionNumbersAttr::get(
+        dimensionNumbers.getContext(),
+        dimensionNumbers.getInputBatchDimension(),
+        dimensionNumbers.getInputFeatureDimension(),
+        dimensionNumbers.getInputSpatialDimensions(),
+        dimensionNumbers.getKernelInputFeatureDimension(),
+        dimensionNumbers.getKernelOutputFeatureDimension(),
+        dimensionNumbers.getKernelSpatialDimensions(), outputBatchDimension,
+        outputFeatureDimension, outputSpatialDimensions);
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConvolutionOp>(
+        transpose, transpose.getType(), conv.getLhs(), conv.getRhs(),
+        conv.getWindowStridesAttr(), conv.getPaddingAttr(),
+        conv.getLhsDilationAttr(), conv.getRhsDilationAttr(),
+        conv.getWindowReversalAttr(), newDimensionNumbers,
+        conv.getFeatureGroupCountAttr(), conv.getBatchGroupCountAttr(),
+        conv.getPrecisionConfigAttr());
+
+    return success();
+  }
+};
+
 struct ConvolutionTranspose
     : public OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -4601,7 +4649,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
         otherDimsToSlice;
     for (auto &&[padDim, otherDim] :
          llvm::zip(padContractingDimensions, otherContractingDimensions)) {
-      // If padding along the dim, mark the corresponding other dim for slicing.
+      // If padding along the dim, mark the corresponding other dim for
+      // slicing.
       int64_t low = pad.getEdgePaddingLow()[padDim];
       int64_t high = pad.getEdgePaddingHigh()[padDim];
       int64_t interior = pad.getInteriorPadding()[padDim];
@@ -6368,9 +6417,10 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
 
     if (passses & 512)
-      patterns.add<TransposeDotReorder, ConvolutionTranspose, DotTranspose,
-                   EinsumTranspose, TransposeEinsum, ConvertConvertFloat,
-                   ConcatToPad, ConcatAppendingReshape, ReshapeIota>(context);
+      patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
+                   TransposeConvolution, EinsumTranspose, TransposeEinsum,
+                   ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
+                   ReshapeIota>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
