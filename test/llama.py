@@ -1,4 +1,5 @@
 from absl.testing import absltest
+import jax
 import jax.numpy as jnp
 import jax.random
 import jax.lax
@@ -9,15 +10,16 @@ import timeit
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 
-def rmsnorm(x, weight):
-    ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
-    return weight * x * ss
+def rmsnorm(x: jax.Array, weight: jax.Array) -> jax.Array:
+    # TODO: turn epsilon into function argument / model param here (default was 1e-6)
+    ss = x * jnp.reciprocal(jnp.sqrt((x**2).mean(axis=-1, keepdims=True) + 1e-5))
+    return ss * weight
 
 
-def softmax(x):
-    max_val = jnp.max(x)
+def softmax(x: jax.Array, axis: int | None = None) -> jax.Array:
+    max_val = jnp.max(x, axis=axis, keepdims=True)
     x = jnp.exp(x - max_val)
-    return x / sum(x)
+    return x / jnp.sum(x, axis=axis, keepdims=True)
 
 
 def sigmoid(x):
@@ -26,6 +28,17 @@ def sigmoid(x):
 
 def silu(x):
     return x * sigmoid(x)
+
+
+def compute_freqs_ci(dim: int, end: int, theta: float = 10000.0) -> jax.Array:
+    freqs = jnp.reciprocal(jnp.power(theta, jnp.arange(0, dim, 2)[: (dim // 2)].astype(float) / dim))
+    t = jnp.arange(end)
+    freqs = jnp.outer(t, freqs).astype(float)
+    # polar is abs * cos(angle) + i * abs * sin(angle)
+    cosine = jnp.cos(freqs)
+    sine = jnp.sin(freqs)
+    freqs_cis = cosine + 1j*sine
+    return freqs_cis
 
 
 # Token is token value
@@ -126,23 +139,22 @@ def forward(x, config, weights, key_cache, value_cache):
     if asserts:
         assert wv.shape == (n_layers, kv_dim, dim)
 
-    toconv = []
+    # toconv = []
 
-    for i in range(0, dim, 2):
-        freq = 1 / jnp.power(10000, (i % head_size) / head_size)
-        val = pos * freq
-        fcr = jnp.cos(val)
-        fci = jnp.sin(val)
+    # for i in range(0, dim, 2):
+    #     freq = 1 / jnp.power(10000, (i % head_size) / head_size)
+    #     val = pos * freq
+    #     fcr = jnp.cos(val)
+    #     fci = jnp.sin(val)
 
-        rotM = jnp.array([[fcr, -fci], [fci, fcr]])
-        toconv.append(rotM)
-    toconv2 = toconv[: kv_dim // 2] + [jnp.eye(2)] * (dim // 2 - kv_dim // 2)
+    #     rotM = jnp.array([[fcr, -fci], [fci, fcr]])
+    #     toconv.append(rotM)
+    # toconv2 = toconv[: kv_dim // 2] + [jnp.eye(2)] * (dim // 2 - kv_dim // 2)
 
-    toconv = jnp.array(toconv)
-    toconv2 = jnp.array(toconv2)
+    # toconv = jnp.array(toconv)
+    # toconv2 = jnp.array(toconv2)
+    freqs_cis = compute_freqs_ci(dim // n_heads, config["max_seq_len"] * 2)[start_pos : strt_pos + seq_len]
 
-    keys2 = []
-    values2 = []
     for l in range(n_layers):
         xb = rmsnorm(x, rms_att_weight[l, :])
         if asserts:
@@ -160,61 +172,58 @@ def forward(x, config, weights, key_cache, value_cache):
         if asserts:
             assert q.shape == (kv_dim,)
 
-        q_tmp = jnp.reshape(q, (dim // 2, 2))
-        k_tmp = jnp.reshape(k, (dim // 2, 2))
+        # q_tmp = jnp.reshape(q, (dim // 2, 2))
+        # k_tmp = jnp.reshape(k, (dim // 2, 2))
+        xq = q.reshape((seq_len, n_heads, head_size))
+        xk = k.reshape((seq_len, n_kv_heads, head_size))
+        xv = v.reshape((seq_len, n_kv_heads, head_size))
 
         # dim == head_size * n_heads
 
-        # Batched gemv
-        k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
-        q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (dim,))
+        # # Batched gemv
+        # k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
+        # q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (dim,))
 
-        key_cache_l = key_cache[l, :, :]
-        key_cache_l = jnp.append(key_cache_l, jnp.reshape(k, (1, dim)), axis=0)
-        value_cache_l = value_cache[l, :, :]
-        value_cache_l = jnp.append(value_cache_l, jnp.reshape(v, (1, dim)), axis=0)
-        keys2.append(key_cache_l)
-        values2.append(value_cache_l)
+        # Split the last dimension into pairs of values to be treated as complex.
+        # Note that `reshape` is a copy unless JIT manages to optimize it away.
+        xq = q.reshape((*xq.shape[:-1], -1, 2))
+        xk = k.reshape((*xk.shape[:-1], -1, 2))
+        if asserts: 
+            assert xq.shape == (seq_len, n_heads, head_size // 2, 2)
+            assert xk.shape == (seq_len, n_kv_heads, head_size // 2, 2)
 
-        xbs2 = []
-        for h in range(n_heads):
-            q2 = q[head_size * h : head_size * (h + 1)]
-            if asserts:
-                assert q2.shape == (head_size,)
-
-            # For kv_mul consecutive heads, they share the same kv cache
-            # reshape key_cache last dim from (kv_dim,) to (kv_mul, head_size)
-            # generalized einsum reducing the last dim, the rest are batch
-            att = []
-
-            key_index = h // kv_mul
-
-            att = jnp.einsum(
-                "ij,j->i",
-                key_cache_l[:, key_index * head_size : (key_index + 1) * head_size],
-                q2,
-            )
-
-            att = att / jnp.sqrt(head_size)
-
-            att = softmax(att)
-
-            x_tmp = jnp.einsum(
-                "ij,i->j",
-                value_cache_l[:, key_index * head_size : (key_index + 1) * head_size],
-                att,
-            )
-
-            xbs2.append(x_tmp)
-
-        # Todo right concat
-        xb = jnp.concatenate(xbs2, axis=None)
-
-        xb2 = wo[l, :, :] @ xb
+        # Note that `astype` and `view` created copies, JAX hopes XLA will
+        # remove those copies.
+        xq_ = xq.astype(float).view(jnp.complex64).squeeze(axis=-1)
+        xk_ = xk.astype(float).view(jnp.complex64).squeeze(axis=-1)
         if asserts:
-            assert xb2.shape == (dim,)
+            assert freqs_cis.shape == (xq_.shape[0], xq_.shape[-1])
+        freqs_cis = freqs_cis.reshape([d if i == 0 or i == xq_.ndim - 1 else 1 for (i, d) in enumerate(xq_.shape)])
+        xq_out = (xq_ * freqs_cis).view(float)
+        xk_out = (xk_ * freqs_cis).view(float)
+        xq = xq_out.astype(xq.dtype)
+        xk = xk_out.astype(xk.dtype)
 
-        x += xb2
+        # Caches.
+        key_cache = key_cache.at[l, start_pos : start_pos + seq_len].set(xk)
+        value_cache = value_cache.at[l, start_pos : start_pos + seq_len].set(xv)
+
+        keys = key_cache[l, : start_pos + seq_len].repeat(n_heads // n_kv_heads, axis=-2)
+        values = value_cache[l, : start_pos + seq_len].repeat(n_heads // n_kv_heads, axis=-2)
+
+        xq = xq.swapaxes(0, 1)
+        keys = keys.swapaxes(0, 1)
+        values = values.swapaxes(0, 1)
+        scores = (xq @ keys.swapaxes(1, 2)) / jnp.sqrt(jnp.array(head_size))
+        scores = softmax(scores, axis=-1)
+        output = scores @ values
+        output = output.swapaxes(0, 1).reshape(seq_len, -1)
+
+        att = wo[l, :, :] @ output
+        if asserts:
+            assert att.shape == (dim,)
+
+        x += att
 
         # Rmsnorm and feedforward swiglu
 
