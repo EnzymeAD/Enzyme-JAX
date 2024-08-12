@@ -427,6 +427,19 @@ class Llama(absltest.TestCase):
         jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
         print("Jax2 rev", jres2)
 
+        jrev3 = jax.jit(
+            enzyme_jax.enzyme_jax_ir(
+                argv=argv,
+                pipeline_options=enzyme_jax.JaXPipeline(
+                    "inline{default-pipeline=canonicalize max-iterations=4},"
+                    + "canonicalize,cse,enzyme-hlo-opt{passses=65535},cse"
+                ),
+            )(jrev)
+        )
+
+        jres3 = jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)
+        print("Jax3 rev", jres3)
+
         print(
             "Enzyme rev",
             timeit.Timer(
@@ -465,6 +478,22 @@ class Llama(absltest.TestCase):
                 "jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
                     "jrev2": jrev2,
+                    "x": x,
+                    "weights": weights,
+                    "key_cache": key_cache,
+                    "value_cache": value_cache,
+                    "dx": dx,
+                    "dkc": dkc,
+                    "dvc": dvc,
+                },
+            ).timeit(number),
+        )
+        print(
+            "JaX3 rev",
+            timeit.Timer(
+                "jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)",
+                globals={
+                    "jrev3": jrev3,
                     "x": x,
                     "weights": weights,
                     "key_cache": key_cache,

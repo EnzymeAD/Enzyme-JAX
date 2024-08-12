@@ -391,5 +391,7 @@ pybind_extension(
         "@xla//xla/mlir_hlo:deallocation_passes",
         "@xla//xla/service/cpu:cpu_executable",
         "@xla//xla/stream_executor:stream_executor_impl",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:env_impl",
     ],
 )
