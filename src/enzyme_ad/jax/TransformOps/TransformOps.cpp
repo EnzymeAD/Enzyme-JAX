@@ -54,6 +54,7 @@ namespace {
 class EnzymeJaxTransformExtension
     : public transform::TransformDialectExtension<EnzymeJaxTransformExtension> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EnzymeJaxTransformExtension)
   using Base::Base;
 
   void init() {
