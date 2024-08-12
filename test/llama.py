@@ -312,7 +312,7 @@ class Llama(absltest.TestCase):
             enzyme_jax.enzyme_jax_ir(argv=argv, pipeline_options=pipeline)(func)
         )
 
-        number = 100
+        number = 1000
         if False:
             eres = efunc(x, weights, key_cache, value_cache)
             print("Enzyme primal", eres)
@@ -410,9 +410,9 @@ class Llama(absltest.TestCase):
             return f_vjp(dx)  # , dkc, dvc)
 
         eres = erev(x, weights, key_cache, value_cache, dx, dkc, dvc)
-        #print("Enzyme rev", eres)
+        # print("Enzyme rev", eres)
         jres = jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)
-        #print("Jax rev", jres)
+        # print("Jax rev", jres)
 
         jrev2 = jax.jit(
             enzyme_jax.enzyme_jax_ir(
@@ -425,7 +425,7 @@ class Llama(absltest.TestCase):
         )
 
         jres2 = jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)
-        #print("Jax2 rev", jres2)
+        # print("Jax2 rev", jres2)
 
         jrev3 = jax.jit(
             enzyme_jax.enzyme_jax_ir(
@@ -526,6 +526,11 @@ bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;
 bin_broadcast_splat_div<1>;
 bin_broadcast_splat_mul<1>;
+slice_reshape<1>;
+
+dot_reshape_pad<1>;
+pad_dot_general<1>(1);
+broadcast_reduce<1>;
             },
             transform-interpreter,
             enzyme-hlo-remove-transform,cse,print"""
@@ -595,20 +600,7 @@ pad_dot_general<1>(1);
 """
 
         jres3 = jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)
-        #print("Jax3 rev", jres3)
-
-        jrev3 = jax.jit(
-            enzyme_jax.enzyme_jax_ir(
-                argv=argv,
-                pipeline_options=enzyme_jax.JaXPipeline(
-                    "inline{default-pipeline=canonicalize max-iterations=4},"
-                    + "canonicalize,cse,enzyme-hlo-opt{passses=65535},cse"
-                ),
-            )(jrev)
-        )
-
-        jres3 = jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)
-        print("Jax3 rev", jres3)
+        # print("Jax3 rev", jres3)
 
         print(
             "Enzyme rev",
