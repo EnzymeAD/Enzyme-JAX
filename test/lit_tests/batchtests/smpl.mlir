@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-batch | FileCheck %s --check-prefix=FORWARD
+// RUN: enzymexlamlir-opt %s --enzyme-batch | FileCheck %s
   
 func.func private @relu_broadcast_scalar(%arg0: tensor<f64>) -> (tensor<f64>) {
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
