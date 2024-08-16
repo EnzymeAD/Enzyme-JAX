@@ -5,6 +5,10 @@ import jax.lax
 import enzyme_ad.jax as enzyme_jax
 import numpy as np
 import timeit
+import logging
+
+# Disable annoying messages from XLA internals.
+logging.disable()
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
@@ -533,14 +537,16 @@ pad_dot_general<1>(1);
 broadcast_reduce<1>;
             },
             transform-interpreter,
-            enzyme-hlo-remove-transform,cse,print"""
+            enzyme-hlo-remove-transform,cse"""
                 ),
             )(jrev)
         )
+
+
+        ###
+        ### These patterns are not in use. Copy them to the text above to enable.
+        ###
         unused = """
-
-
-
 reshape_iota<16>;
 slice_reshape_slice<1>;
 dot_general_simplify<16>;
@@ -603,7 +609,7 @@ pad_dot_general<1>(1);
         # print("Jax3 rev", jres3)
 
         print(
-            "Enzyme rev",
+            "Enzyme reverse mode",
             timeit.Timer(
                 "erev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
@@ -619,7 +625,7 @@ pad_dot_general<1>(1);
             ).timeit(number),
         )
         print(
-            "JaX rev",
+            "JaX reverse mode (no custom optimization)",
             timeit.Timer(
                 "jrev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
@@ -635,7 +641,7 @@ pad_dot_general<1>(1);
             ).timeit(number),
         )
         print(
-            "JaX2 rev",
+            "JaX reverse mode (all custom optimization)",
             timeit.Timer(
                 "jrev2(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
@@ -651,7 +657,7 @@ pad_dot_general<1>(1);
             ).timeit(number),
         )
         print(
-            "JaX3 rev",
+            "JaX reverse mode (subset of custom optimization)",
             timeit.Timer(
                 "jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)",
                 globals={
