@@ -608,22 +608,22 @@ pad_dot_general<1>(1);
         jres3 = jrev3(x, weights, key_cache, value_cache, dx, dkc, dvc)
         # print("Jax3 rev", jres3)
 
-        print(
-            "Enzyme reverse mode",
-            timeit.Timer(
-                "erev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
-                globals={
-                    "erev": erev,
-                    "x": x,
-                    "weights": weights,
-                    "key_cache": key_cache,
-                    "value_cache": value_cache,
-                    "dx": dx,
-                    "dkc": dkc,
-                    "dvc": dvc,
-                },
-            ).timeit(number),
-        )
+        # print(
+        #     "Enzyme reverse mode",
+        #     timeit.Timer(
+        #         "erev(x, weights, key_cache, value_cache, dx, dkc, dvc)",
+        #         globals={
+        #             "erev": erev,
+        #             "x": x,
+        #             "weights": weights,
+        #             "key_cache": key_cache,
+        #             "value_cache": value_cache,
+        #             "dx": dx,
+        #             "dkc": dkc,
+        #             "dvc": dvc,
+        #         },
+        #     ).timeit(number),
+        # )
         print(
             "JaX reverse mode (no custom optimization)",
             timeit.Timer(
