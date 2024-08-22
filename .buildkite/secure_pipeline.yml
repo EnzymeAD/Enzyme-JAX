@@ -22,7 +22,7 @@ steps:
     plugins:
       - staticfloat/cryptic:
           variables:
-            - TWINE_PASSWORD="U2FsdGVkX1+klgFCAUlH1ht3/MyFLbgbao5zmd6LgTqoA4nIJAJ8Wqug/XhdblOv42lyBEAn6+13KDwI5HtLWmExE3VKh1szyzmv+jS9VjpnIpH9aZucbyhVci4QC0RoMkKevJOK2GTyRDDAchYOjpaMkv4pFYdcHPq2VyMMC1PpCiHOx3R6m4LbFPxngJgyOj//YhFT2+rzNoncrxWoJ4clFfC8hpkgQR0mEMAMRTkVfgY6sODbKLW7jtcu8jkE3nf2/kyEMwbt9w1e6ci3pNsdQO67PYlgbnGLX8dIzCpw5s6Eap2GTCvI3iL1+uLZ"
+            - TWINE_PASSWORD="U2FsdGVkX19DPqNOEUSG1w7VRv4QF4ugt8YOe+9OKDGz3WHspNY8qzqgkdICl5bGOv5deZmHKGj1qMV9SGYhwW1HVgUubH5to0tNPUhtigyTbuUO/DbYyr+mLXhraI2sw4iQ1Zs34yYWd9lxi3kPEKbsYhrYjElgzh5qbq5ui476F3DgHXEGLdgIS0njJajB2uLDzR/721moWurkkBKu/JEAem5m2QrOmsFOt8s05Vv234Gen3Zh9GGjTisfNQRX2sEimZnINKdN80mz5D5nVPDXNgVyKDihfRJmBIRoOE1o3vTgMkemHK/phkRmKjxR"
     if: build.tag != null
     commands: |
       mkdir -p .local/bin
