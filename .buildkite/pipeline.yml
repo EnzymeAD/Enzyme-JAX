@@ -77,7 +77,7 @@ steps:
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install "jax[cpu]"
-      bazel --output_user_root=`pwd`/.baztmp test --test_output=errors ...
+      bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
     artifact_paths:
       - "*.whl"
 
