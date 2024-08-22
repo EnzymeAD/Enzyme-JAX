@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [openstack22]
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        python: ["3.10", "3.11", "3.12"]
     timeout-minutes: 500
     steps:
       - name: add llvm
@@ -27,7 +27,7 @@ jobs:
           submodules: recursive
       - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
       - run: |
-          export TAG=`echo $GITHUB_REF | cut -c2- `
+          export TAG=`echo $GITHUB_REF | sed 's/^.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\).*$/\1/'`
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
