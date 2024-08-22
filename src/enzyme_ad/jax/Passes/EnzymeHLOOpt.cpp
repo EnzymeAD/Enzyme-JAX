@@ -3590,13 +3590,14 @@ struct TransposeDotReorder
     if (!convert) {
       rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
           op, op.getType(), dot.getRhs(), dot.getLhs(), ndim,
-          dot.getPrecisionConfigAttr());
+          dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
     } else {
       auto middot = rewriter.create<stablehlo::DotGeneralOp>(
           op.getLoc(),
           RankedTensorType::get(op.getType().getShape(),
                                 dot.getType().getElementType()),
-          dot.getRhs(), dot.getLhs(), ndim, dot.getPrecisionConfigAttr());
+          dot.getRhs(), dot.getLhs(), ndim, dot.getPrecisionConfigAttr(),
+          dot.getAlgorithmAttr());
       rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(),
                                                         middot);
     }
@@ -3808,7 +3809,7 @@ struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
     rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
         dot, dot.getType(), lhs_trans ? lhs_trans.getOperand() : dot.getLhs(),
         rhs_trans ? rhs_trans.getOperand() : dot.getRhs(), ndim,
-        dot.getPrecisionConfigAttr());
+        dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
     return success();
   }
 };
@@ -4712,7 +4713,8 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
         RankedTensorType::get(resultShape, op.getType().getElementType()),
         otherIsLHS ? nextOtherArg : pad.getOperand(),
         otherIsLHS ? pad.getOperand() : nextOtherArg,
-        op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr());
+        op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
 
     if (!resultDimsToPad.empty()) {
       SmallVector<int64_t> low(op.getType().getShape().size(), 0);

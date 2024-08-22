@@ -7,6 +7,8 @@ steps:
           - x86_64
         os:
           - macos
+        python:
+          - "3.10"
     agents:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
@@ -71,11 +73,11 @@ steps:
       python -m pip install --user numpy wheel
       mkdir -p .baztmp
       rm -f bazel-bin/*.whl
-      bazel --output_user_root=`pwd`/.baztmp build :enzyme_ad
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build --define=no_nccl_support=true :enzyme_ad
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install "jax[cpu]"
-      bazel --output_user_root=`pwd`/.baztmp test --test_output=errors ...
+      bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
     artifact_paths:
       - "*.whl"
 

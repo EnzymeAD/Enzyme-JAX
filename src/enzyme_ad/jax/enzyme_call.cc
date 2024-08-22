@@ -902,7 +902,7 @@ public:
                       pyargv, mode, lang, xla_runtime, pass_pipeline);
 
     if (!JIT) {
-      DL = std::make_unique<llvm::DataLayout>(mod.get());
+      DL = std::make_unique<llvm::DataLayout>(mod->getDataLayoutStr());
       auto tJIT =
           llvm::orc::LLJITBuilder()
               .setDataLayout(*DL.get())
