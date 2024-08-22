@@ -42,13 +42,17 @@ jobs:
           repository-cache: true
           bazelisk-version: 1.x
 
-      - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \; || echo
       - run: |
-          HERMETIC_PYTHON_VERSION=`python3 -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel build :enzyme_ad @llvm-project//llvm:FileCheck
+          HERMETIC_PYTHON_VERSION=`python3 -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel build @llvm-project//llvm:FileCheck
+          sudo rm bazel-bin/*.whl || echo
+          HERMETIC_PYTHON_VERSION=`python3 -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel build :enzyme_ad
+
       - run: cp bazel-bin/*.whl .
 
       - name: test
         run: |
+          ls -all .
+          ls -all bazel-bin
           python3 -m pip uninstall enzyme-ad -y || echo
           python3 -m pip install --user --force-reinstall "jax[cpu]" *.whl
           HERMETIC_PYTHON_VERSION=`python3 -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel test --test_output=errors ...
