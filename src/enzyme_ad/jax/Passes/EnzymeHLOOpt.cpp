@@ -4714,7 +4714,7 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
         otherIsLHS ? nextOtherArg : pad.getOperand(),
         otherIsLHS ? pad.getOperand() : nextOtherArg,
         op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr(),
-        op.getAlgorithmAttr(), op.getAlgorithmAttr());
+        op.getAlgorithmAttr());
 
     if (!resultDimsToPad.empty()) {
       SmallVector<int64_t> low(op.getType().getShape().size(), 0);

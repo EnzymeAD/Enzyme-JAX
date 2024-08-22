@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
+      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
       - run: |
           export TAG=`echo $GITHUB_REF | cut -c2- `
           echo $TAG
@@ -34,12 +35,9 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow.
-          disk-cache: ${{ github.workflow }}
-          # Share repository cache between workflows.
-          repository-cache: true
-      - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazelisk build :enzyme_ad
+          bazelisk-version: 1.x
+      # - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
+      - run: HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

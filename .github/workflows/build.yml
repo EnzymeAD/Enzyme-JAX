@@ -29,23 +29,29 @@ jobs:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
+      
+      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
+      
       - uses: bazel-contrib/setup-bazel@0.8.5
+        name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow.
-          disk-cache: ${{ github.workflow }}
+          # disk-cache: ${{ github.workflow }}-${{ hashFiles('.github/workflows/build.yml') }}
           # Share repository cache between workflows.
           repository-cache: true
-      - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
+          bazelisk-version: 1.x
+
+      # - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazelisk build :enzyme_ad @llvm-project//llvm:FileCheck
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
       - run: cp bazel-bin/*.whl .
 
       - name: test
         run: |
           python3 -m pip install --user --force-reinstall "jax[cpu]" *.whl
-          bazelisk test --test_output=errors ...
+          bazel test --test_output=errors ...
 
       - name: Upload Build
         uses: actions/upload-artifact@v3
