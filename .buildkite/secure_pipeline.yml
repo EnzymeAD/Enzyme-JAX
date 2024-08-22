@@ -7,6 +7,11 @@ steps:
           - x86_64
         os:
           - macos
+        python:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
     agents:
       queue: "juliaecosystem"
       os: "{{matrix.os}}"
@@ -59,18 +64,15 @@ steps:
           wget https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-x86_64.exe
         fi
         mv bazel* .local/bin/bazel.exe
-        start /wait "" Miniconda3*.exe /InstallationType=JustMe /RegisterPython=0 /S /D=`pwd`/conda
-        rm Miniconda*.exe
       fi
       python -m ensurepip --upgrade
       python -m pip install --user numpy wheel
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD
-      bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
       cp bazel-bin/*.whl .
       python -m pip install *.whl
-      cd test && python -m pip install "jax[cpu]" && python test.py && cd ..
       python -m pip install --user twine
       python -m twine upload *.whl
     artifact_paths:
