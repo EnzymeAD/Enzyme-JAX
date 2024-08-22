@@ -70,7 +70,7 @@ steps:
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build :enzyme_ad
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build --define=no_nccl_support=true :enzyme_ad
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install --user twine
