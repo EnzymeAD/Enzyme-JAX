@@ -30,14 +30,16 @@ jobs:
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-      - uses: bazelbuild/setup-bazelisk@v2
-      - name: Mount bazel cache  # Optional
-        uses: actions/cache@v3
+      - uses: bazel-contrib/setup-bazel@0.8.5
         with:
-          path: "~/.cache/bazel"
-          key: bazel-${{ matrix.os }}
-      - run: find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
+          # Avoid downloading Bazel every time.
+          bazelisk-cache: true
+          # Store build cache per workflow.
+          disk-cache: ${{ github.workflow }}
+          # Share repository cache between workflows.
+          repository-cache: true
+      - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
+      - run: HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazelisk build :enzyme_ad
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

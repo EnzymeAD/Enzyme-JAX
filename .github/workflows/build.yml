@@ -39,16 +39,13 @@ jobs:
           repository-cache: true
       - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad @llvm-project//llvm:FileCheck
-          bazel cquery "allpaths(//src/enzyme_ad/jax:enzyme_call,@xla//xla/stream_executor:executor_cache)" --notool_deps
-          bazel --version
-          nm -C $(find bazel-out/ -name enzyme_call.so -type f) | grep ExecutorCache::
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazelisk build :enzyme_ad @llvm-project//llvm:FileCheck
       - run: cp bazel-bin/*.whl .
 
       - name: test
         run: |
           python3 -m pip install --user --force-reinstall "jax[cpu]" *.whl
-          bazel test --test_output=errors ...
+          bazelisk test --test_output=errors ...
 
       - name: Upload Build
         uses: actions/upload-artifact@v3
