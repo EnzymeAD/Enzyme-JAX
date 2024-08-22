@@ -90,7 +90,7 @@ py_wheel(
         "jax >= 0.4.21",
         "jaxlib >= 0.4.21",
     ],
-    python_requires = HERMETIC_PYTHON_VERSION,
+    python_requires = "=="+HERMETIC_PYTHON_VERSION+".*",
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",
     version = "0.0.6",

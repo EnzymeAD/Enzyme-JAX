@@ -1,22 +1,22 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=1000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce' | FileCheck %s --check-prefixes=TD,FL4
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=A0000000000000000000 radix=16' | FileCheck %s --check-prefixes=TD,FL64
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=reduce_pad' | FileCheck %s --check-prefixes=TD,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=10000000 radix=16' | FileCheck %s --check-prefixes=TD,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=cse_concatenate' | FileCheck %s --check-prefixes=TD,FL64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=A0000000000001000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4,FL64
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;reduce_pad' | FileCheck %s --check-prefixes=TD,FL4,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=11000000 radix=16' | FileCheck %s --check-prefixes=TD,FL4,FL64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;cse_concatenate' | FileCheck %s --check-prefixes=TD,FL4,FL64
 
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=1000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=A0000000000000000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=reduce_pad' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=10000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=cse_concatenate' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=A0000000000001000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;reduce_pad' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=11000000 radix=16' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce;cse_concatenate' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
 
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=A0000000000001000000 radix=16' --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefixes=CLEAN
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='flags=11000000 radix=16' --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefixes=CLEAN
 
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce<32>;pad_dot_general(1);iota_simplify<16>(2)' | FileCheck %s --check-prefixes=TD,PARAM
 
@@ -27,7 +27,7 @@
 // TD:    transform.apply_patterns to %[[FUNC]] {
 // FL4:     transform.apply_patterns.enzyme_hlo.broadcast_reduce
 // PARAM:   transform.apply_patterns.enzyme_hlo.broadcast_reduce {benefit = 32 : i64}
-// FL64:    transform.apply_patterns.enzyme_hlo.reduce_pad
+// FL64:    transform.apply_patterns.enzyme_hlo.cse_concatenate
 // PARAM:   transform.apply_patterns.enzyme_hlo.pad_dot_general postPad = 1
 // PARAM:   transform.apply_patterns.enzyme_hlo.iota_simplify {benefit = 16 : i64, parameter = 2 : i64}
 // TD:    } : !transform.any_op
@@ -44,13 +44,12 @@ func.func @broadcastreduce(%154: tensor<1x3072xf32>, %151: tensor<f32>) -> tenso
   return %212 : tensor<f32>
 }
 
-// INTERPCOMMON-LABEL: @reducepad
-// INTERP64: reduce
-// INTERP64: pad
-func.func @reducepad(%a : tensor<2x3x1xf32>, %b : tensor<f32>) -> tensor<6x1xf32> {
-  %pv = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-  %pad = stablehlo.pad %a, %pv, low = [1, 2, 0], high = [3, 4, 0], interior = [0, 1, 0] : (tensor<2x3x1xf32>, tensor<f32>) -> tensor<6x11x1xf32>
-  %conv = stablehlo.reduce(%pad init: %b) applies stablehlo.add across dimensions = [1] : (tensor<6x11x1xf32>, tensor<f32>) -> tensor<6x1xf32>
-  return %conv : tensor<6x1xf32>
+// INTERPCOMMON-LABEL: @cseconcat
+// INTERP64: concatenate
+// INTERP64-NOT: concatenate
+func.func @cseconcat(%a : tensor<2x3x1xf32>) -> (tensor<2x3x2xf32>, tensor<2x3x2xf32>) {
+  %pad = stablehlo.concatenate %a, %a, dim=2 : (tensor<2x3x1xf32>, tensor<2x3x1xf32>) -> tensor<2x3x2xf32>
+  %pad2 = stablehlo.concatenate %a, %a, dim=2 : (tensor<2x3x1xf32>, tensor<2x3x1xf32>) -> tensor<2x3x2xf32>
+  return %pad, %pad2 : tensor<2x3x2xf32>, tensor<2x3x2xf32>
 }
 
