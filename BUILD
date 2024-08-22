@@ -93,7 +93,7 @@ py_wheel(
     python_requires = "=="+HERMETIC_PYTHON_VERSION+".*",
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",
-    version = "0.0.6",
+    version = "0.0.7",
     deps = [
         ":enzyme_jax_data",
         "//src/enzyme_ad/jax:enzyme_jax_internal",
