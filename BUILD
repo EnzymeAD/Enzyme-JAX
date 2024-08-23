@@ -84,7 +84,7 @@ py_wheel(
     project_urls = {
         "GitHub": "https://github.com/EnzymeAD/Enzyme-JAX/",
     },
-    python_tag = "py3",
+    python_tag = "py"+HERMETIC_PYTHON_VERSION.replace(".", ""),
     requires = [
         "absl_py >= 2.0.0",
         "jax >= 0.4.21",
@@ -93,7 +93,7 @@ py_wheel(
     python_requires = "=="+HERMETIC_PYTHON_VERSION+".*",
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",
-    version = "0.0.7",
+    version = "0.0.8",
     deps = [
         ":enzyme_jax_data",
         "//src/enzyme_ad/jax:enzyme_jax_internal",
