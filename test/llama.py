@@ -533,7 +533,7 @@ pad_dot_general<1>(1);
 broadcast_reduce<1>;
             },
             transform-interpreter,
-            enzyme-hlo-remove-transform,cse,print"""
+            enzyme-hlo-remove-transform,cse"""
                 ),
             )(jrev)
         )
