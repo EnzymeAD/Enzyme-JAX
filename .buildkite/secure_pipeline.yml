@@ -32,10 +32,10 @@ steps:
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ "{{matrix.arch}}" == "aarch64" ]; then
           sed -i.bak 's~targets = \[.*\]~targets = \[\"AArch64\", \"AMDGPU\"]~g' WORKSPACE
-          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_23.3.1-0-MacOSX-arm64.sh
+          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_24.7.1-0-MacOSX-arm64.sh
         else
           sed -i.bak 's~targets = \[.*\]~targets = \[\"X86\", \"AMDGPU\"]~g' WORKSPACE
-          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_23.3.1-0-MacOSX-{{matrix.arch}}.sh
+          curl -fLO https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_24.7.1-0-MacOSX-{{matrix.arch}}.sh
         fi
         curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
         mv bazelisk-darwin .local/bin/bazel
@@ -51,12 +51,12 @@ steps:
         fi
         mv bazel* .local/bin/bazel
         chmod +x .local/bin/bazel
-        wget https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_23.3.1-0-Linux-{{matrix.arch}}.sh
+        wget https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_24.7.1-0-Linux-{{matrix.arch}}.sh
         chmod +x Miniconda*.sh
         ./Miniconda*.sh -b -p `pwd`/conda
         rm Miniconda*.sh
       else
-        wget https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_23.3.1-0-Windows-{{matrix.arch}}.exe
+        wget https://repo.anaconda.com/miniconda/Miniconda3-py3`echo {{matrix.python}} | cut -c 3-`_24.7.1-0-Windows-{{matrix.arch}}.exe
         if [ "{{matrix.arch}}" == "aarch64" ]; then
           wget https://github.com/bazelbuild/bazel/releases/download/6.2.1/bazel-6.2.1-windows-arm64.exe
         else
