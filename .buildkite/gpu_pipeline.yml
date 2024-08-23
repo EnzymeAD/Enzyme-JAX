@@ -27,7 +27,7 @@ steps:
       rm -f bazel-bin/*.whl
       HERMETIC_PYTHON_VERSION=`python -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel --output_user_root=`pwd`/.baztmp build --python_path=`which python` --define=no_nccl_support=true :enzyme_ad
       cp bazel-bin/*.whl .
-      python -m pip install *.whl "jax[cuda12]"
+      python -m pip install --user *.whl "jax[cuda12]"
 
       echo "--- :python: Test"
 
