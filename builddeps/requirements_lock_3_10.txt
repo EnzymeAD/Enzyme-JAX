@@ -20,7 +20,7 @@ jax-cuda12-pjrt==0.4.31 \
     --hash=sha256:3e77d1cfebeca06517254eb568f082037e1a2aa3ed8f63c543492ad8ab5a1585 \
     --hash=sha256:8961abb381d893a3c2392ad76ab2067a81f8f2514f3b47d2da3ac24283293fe0
     # via jax-cuda12-plugin
-jax-cuda12-plugin==0.4.31 \
+jax-cuda12-plugin==0.4.31 ; sys_platform == "linux" \
     --hash=sha256:146f26928ca719a0daa14bb9a9f5a5cbfa20211e76ea05b7bb534277a658a995 \
     --hash=sha256:5048acdf29755303b2887d948137fd82891b48cdbc086e67640ebb976457cfcc \
     --hash=sha256:5cfa46d4106f70c31944c9fafcfa7b04c6f9886a1b35df5477cde7d9c43eb8bd \

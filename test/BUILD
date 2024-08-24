@@ -43,6 +43,16 @@ exports_files(
     )
 ]
 
+TEST_DEPS = [
+        "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_absl_py//:pkg",
+    ] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg", "@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "//conditions:default": []
+    })
+
+
 [
     lit_test(
         name = "%s.test" % src,
@@ -56,11 +66,7 @@ exports_files(
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
         ] + glob(["**/*.h"]),
-        deps = [
-            "//:enzyme_ad",
-            "@pypi_jax//:pkg",
-            "@pypi_absl_py//:pkg",
-        ]
+        deps = TEST_DEPS
     )
     for src in glob(
         [
@@ -74,12 +80,7 @@ py_test(
     srcs = [
         "test.py",
     ],
-    deps = [
-        "//:enzyme_ad",
-        "@pypi_jax//:pkg",
-        "@pypi_jax_cuda12_plugin//:pkg",
-        "@pypi_absl_py//:pkg",
-    ],
+    deps = TEST_DEPS,
     imports = ["site-packages"],
     tags = ["pypi_name=enzyme-ad"]
 )
@@ -89,12 +90,7 @@ py_test(
     srcs = [
         "bench_vs_xla.py",
     ],
-    deps = [
-        "//:enzyme_ad",
-        "@pypi_jax//:pkg",
-        "@pypi_jax_cuda12_plugin//:pkg",
-        "@pypi_absl_py//:pkg",
-    ],
+    deps = TEST_DEPS,
 )
 
 py_test(
@@ -102,10 +98,5 @@ py_test(
     srcs = [
         "llama.py",
     ],
-    deps = [
-        "//:enzyme_ad",
-        "@pypi_jax//:pkg",
-        "@pypi_jax_cuda12_plugin//:pkg",
-        "@pypi_absl_py//:pkg",
-    ],
+    deps = TEST_DEPS,
 )
