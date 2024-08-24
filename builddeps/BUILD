@@ -15,13 +15,3 @@ compile_pip_requirements(
     generate_hashes = True,
     data = ["test-requirements.txt"]
 )
-
-
-py_library(
-    name = "all_py_deps",
-    deps = [
-        "@pypi_absl_py//:pkg",
-        "@jax//:pkg",
-    ]
-)
-
