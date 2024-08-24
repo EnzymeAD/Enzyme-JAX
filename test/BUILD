@@ -56,6 +56,11 @@ exports_files(
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
         ] + glob(["**/*.h"]),
+        deps = [
+            "//:enzyme_ad",
+            "@pypi_jax//:pkg",
+            "@pypi_absl_py//:pkg",
+        ]
     )
     for src in glob(
         [
@@ -71,7 +76,12 @@ py_test(
     ],
     deps = [
         "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_jax_cuda12_plugin//:pkg",
+        "@pypi_absl_py//:pkg",
     ],
+    imports = ["site-packages"],
+    tags = ["pypi_name=enzyme-ad"]
 )
 
 py_test(
@@ -81,6 +91,9 @@ py_test(
     ],
     deps = [
         "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_jax_cuda12_plugin//:pkg",
+        "@pypi_absl_py//:pkg",
     ],
 )
 
@@ -91,5 +104,8 @@ py_test(
     ],
     deps = [
         "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_jax_cuda12_plugin//:pkg",
+        "@pypi_absl_py//:pkg",
     ],
 )

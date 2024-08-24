@@ -2,3 +2,4 @@ absl-py
 jax
 numpy
 jaxlib
+jax-cuda12-plugin

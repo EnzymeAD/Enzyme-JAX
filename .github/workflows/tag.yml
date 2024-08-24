@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }} python ${{ matrix.python }}
+    name: Tag ${{ matrix.os }} python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,7 +45,7 @@ jobs:
       - run: |
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build @llvm-project//llvm:FileCheck
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :enzyme_ad
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

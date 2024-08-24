@@ -16,19 +16,9 @@ steps:
 
       mv bazel* .local/bin/bazel
       chmod +x .local/bin/bazel
-      wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-x86_64.sh
-      chmod +x Miniconda*.sh
-      ./Miniconda*.sh -b -p `pwd`/conda
-      rm Miniconda*.sh
 
-      python -m ensurepip --upgrade
-      python -m pip install --user numpy wheel
       mkdir -p .baztmp
-      rm -f bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION=`python -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel --output_user_root=`pwd`/.baztmp build --python_path=`which python` --define=no_nccl_support=true :enzyme_ad
-      cp bazel-bin/*.whl .
-      python -m pip install --user *.whl "jax[cuda12]"
 
       echo "--- :python: Test"
 
-      HERMETIC_PYTHON_VERSION=`python -c "import sys; print('{0[0]}.{0[1]}'.format(sys.version_info))"` bazel --output_user_root=`pwd`/.baztmp test --python_path=`which python` --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
