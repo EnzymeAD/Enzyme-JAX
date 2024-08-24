@@ -1,0 +1,8 @@
+#
+# test deps
+#
+-r test-requirements.txt
+
+jax >= 0.4.21
+jaxlib >= 0.4.21
+absl_py >= 2.0.0
