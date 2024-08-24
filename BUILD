@@ -70,6 +70,7 @@ py_library(
     name = "enzyme_ad",
     data = [
         "@pypi_jax//:pkg",
+        "@pypi_absl_py//:pkg",
         ":enzyme_jax_data",
         "//src/enzyme_ad/jax:enzyme_jax_internal",
     ]

@@ -31,6 +31,25 @@ exports_files(
             ":lit.cfg.py",
             ":lit_site_cfg_py",
             "//:enzymexlamlir-opt",
+            "@llvm-project//llvm:FileCheck",
+            "@llvm-project//llvm:count",
+            "@llvm-project//llvm:not",
+        ] + glob(["**/*.h"]),
+    )
+    for src in glob(
+        [
+            "**/*.mlir",
+        ],
+    )
+]
+
+[
+    lit_test(
+        name = "%s.test" % src,
+        srcs = [src],
+        data = [
+            ":lit.cfg.py",
+            ":lit_site_cfg_py",
             "//:enzyme_ad",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
@@ -41,7 +60,6 @@ exports_files(
     for src in glob(
         [
             "**/*.pyt",
-            "**/*.mlir",
         ],
     )
 ]
