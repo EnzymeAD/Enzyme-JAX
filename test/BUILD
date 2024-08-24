@@ -31,7 +31,7 @@ exports_files(
             ":lit.cfg.py",
             ":lit_site_cfg_py",
             "//:enzymexlamlir-opt",
-            "//src/enzyme_ad/jax:enzyme_jax_internal",
+            "//:enzyme_ad",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
@@ -52,7 +52,7 @@ py_test(
         "test.py",
     ],
     deps = [
-        "//src/enzyme_ad/jax:enzyme_jax_internal",
+        "//:enzyme_ad",
     ],
 )
 
@@ -62,7 +62,7 @@ py_test(
         "bench_vs_xla.py",
     ],
     deps = [
-        "//src/enzyme_ad/jax:enzyme_jax_internal",
+        "//:enzyme_ad",
     ],
 )
 
@@ -72,6 +72,6 @@ py_test(
         "llama.py",
     ],
     deps = [
-        "//src/enzyme_ad/jax:enzyme_jax_internal",
+        "//:enzyme_ad",
     ],
 )
