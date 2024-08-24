@@ -69,7 +69,7 @@ cc_binary(
 py_library(
     name = "enzyme_ad",
     data = [
-        "@jax//jax",
+        "@pypi_jax//:pkg",
         ":enzyme_jax_data",
         "//src/enzyme_ad/jax:enzyme_jax_internal",
     ]
