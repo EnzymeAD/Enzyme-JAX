@@ -48,6 +48,7 @@ jobs:
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --test_output=errors ...
           
       - name: Build Wheel
+        run: |
           sudo rm bazel-bin/*.whl || echo
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
           cp bazel-bin/*.whl .
