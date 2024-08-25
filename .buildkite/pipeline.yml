@@ -55,5 +55,7 @@ steps:
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
+      - "bazel-out/k8*/testlogs/test/llama/test.log"
+      - "bazel-out/k8*/testlogs/test/llama/bench_vs_xla.log"
 
     timeout_in_minutes: 180
