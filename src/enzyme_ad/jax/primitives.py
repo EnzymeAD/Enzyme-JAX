@@ -573,16 +573,12 @@ def absmaketup(ty):
 
 def lower(fn, vals, parameters=None):
     if hasattr(fn, "trace"):
-        if parameters is not None:
-            return fn.trace(*vals).lower(_private_parameters=parameters)
-        else:
-            return fn.trace(*vals).lower()
+        return fn.trace(*vals).lower(_private_parameters=parameters)
     else:
         if parameters is not None:
             return fn.lower(*vals, _experimental_lowering_parameters=parameters)
         else:
             return fn.lower(*vals)
-
 
 def _enzyme_aug_abstract_eval(
     *args_flat: jax.core.ShapedArray,
@@ -829,7 +825,8 @@ def _enzyme_primal_lowering(
                 print(out_shapes, "\n", results, "\n", nmod)
             assert len(results) == len(out_shapes)
         else:
-            identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
+            assert len(ctx.module_context.platforms) == 1
+            identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
                 source,
                 fn,
                 out_shapes,
@@ -839,6 +836,7 @@ def _enzyme_primal_lowering(
                 lang,
                 pipeline_options.xla_runtime(),
                 pass_pipeline,
+                ctx.module_context.platforms[0] 
             )
             identifier_attr = jax_mlir.dense_int_elements([identifier])
             identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -874,7 +872,8 @@ def _enzyme_primal_lowering(
 
         results = tuple(results2)
     else:
-        identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
+        assert len(ctx.module_context.platforms) == 1
+        identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
             source,
             fn,
             out_shapes,
@@ -884,6 +883,7 @@ def _enzyme_primal_lowering(
             lang,
             pipeline_options.xla_runtime(),
             pass_pipeline,
+            ctx.module_context.platforms[0]
         )
         identifier_attr = jax_mlir.dense_int_elements([identifier])
         identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -940,7 +940,8 @@ def _enzyme_fwd_lowering(
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
-    identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
+    assert len(ctx.module_context.platforms) == 1
+    identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
         source,
         fn,
         out_shapes,
@@ -950,6 +951,7 @@ def _enzyme_fwd_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
+        ctx.module_context.platforms[0]
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1004,7 +1006,8 @@ def _enzyme_aug_lowering(
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
-    identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
+    assert len(ctx.module_context.platforms) == 1
+    identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
         source,
         fn,
         out_shapes,
@@ -1014,6 +1017,7 @@ def _enzyme_aug_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
+        ctx.module_context.platforms[0]
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1075,7 +1079,8 @@ def _enzyme_rev_lowering(
         )
 
     argv = tuple(argv) + ("-resource-dir", resource_dir()) + cflags()
-    identifier, tmpBuf = enzyme_call.create_enzyme_cpu_kernel(
+    assert len(ctx.module_context.platforms) == 1
+    identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
         source,
         fn,
         out_shapes,
@@ -1085,6 +1090,7 @@ def _enzyme_rev_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
+        ctx.module_context.platforms[0]
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1160,7 +1166,7 @@ _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
 jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
 xla_client.register_custom_call_target(
-    "jaxzyme.primal", enzyme_call.get_cpu_callback(), platform="cpu"
+    "jaxzyme.primal", enzyme_call.get_callback()
 )
 
 _enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
@@ -1170,7 +1176,7 @@ _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
 jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering)
 
 xla_client.register_custom_call_target(
-    "jaxzyme.fwd", enzyme_call.get_cpu_callback(), platform="cpu"
+    "jaxzyme.fwd", enzyme_call.get_callback()
 )
 
 
@@ -1282,7 +1288,16 @@ _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
 jax_mlir.register_lowering(_enzyme_aug_p, _enzyme_aug_lowering)
 
 xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_cpu_callback(), platform="cpu"
+    "jaxzyme.aug", enzyme_call.get_callback(), platform="cpu"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.aug", enzyme_call.get_callback(), platform="CUDA"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.aug", enzyme_call.get_callback(), platform="ROCM"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.aug", enzyme_call.get_callback(), platform="tpu"
 )
 
 _enzyme_shadow_aug_p = jax.core.Primitive("enzyme_shadow_aug")
@@ -1297,7 +1312,16 @@ _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)
 jax_mlir.register_lowering(_enzyme_rev_p, _enzyme_rev_lowering)
 
 xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_cpu_callback(), platform="cpu"
+    "jaxzyme.rev", enzyme_call.get_callback(), platform="cpu"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM"
+)
+xla_client.register_custom_call_target(
+    "jaxzyme.rev", enzyme_call.get_callback(), platform="tpu"
 )
 
 

@@ -3,242 +3,7 @@ import jax.numpy as jnp
 from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline, JaXPipeline
 from absl.testing import absltest
 import timeit
-
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
-number = 1000
-
-devices = []
-if jax.default_backend() != "cpu":
-    devices = [jax.default_backend()]
-
-AllBackends = ["cpu"] + devices
-
-AllPipelines = [
-    ("JaX", None, AllBackends),
-    ("JaXPipeline", JaXPipeline(), AllBackends),
-    # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
-    # ("NewXLA", NewXLAPipeline()),
-    ("OldXLA", OldXLAPipeline(), ["cpu"]),
-]
-PrimalPipelines = AllPipelines[:]
-FwdPipelines = AllPipelines[:-1]
-RevPipelines = AllPipelines[:-1]
-
-
-def no_newxla(x):
-    return [(name, a, b) for (name, a, b) in x if name != "NewXLAMLIR" and name != "NewXLA"]
-
-
-def no_newxlamlir(x):
-    return [(name, a, b) for (name, a, b) in x if name != "NewXLAMLIR"]
-
-def nomlir(x):
-    return [
-        (name, a, b)
-        for (name, a, b) in x
-        if name != "NewXLAMLIR" and name != "NewXLA" # and name != "OldXLA"
-    ]
-
-def justjax(x):
-    return [
-        (name, a, b)
-        for (name, a, b) in x
-        if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
-    ]
-
-
-# @jax.jit
-# def fwd_jax(in0, in1, din0, din1):
-# .  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
-def splatjvp(in_fn):
-    def fwd(*args):
-        assert len(args) % 2 == 0
-        return jax.jvp(
-            in_fn, tuple(args[: len(args) // 2]), tuple(args[len(args) // 2 :])
-        )
-
-    return fwd
-
-
-# @jax.jit
-# def rev_jax(dout, in0, in1):
-# primals, f_vjp = jax.vjp(add_one_jax, in0, in1)
-# grads = f_vjp(dout)
-# return primals, grads
-def splatvjp(in_fn):
-    def rev(dout, *args):
-        primals, f_vjp = jax.vjp(in_fn, *args)
-        grads = f_vjp(dout)
-        return primals, grads
-
-    return rev
-
-def to_backend(x, backend):
-    return jax.device_put(x, jax.local_devices(backend=backend)[0])
-
-class EnzymeJaxTest(absltest.TestCase):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.primfilter = lambda x: x
-        self.fwdfilter = lambda x: x
-        self.revfilter = lambda x: x
-
-    def setUp(self):
-        self.name = None
-
-    def test(self):
-        if self.name is None:
-            return
-        self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
-
-    def harness(self, name, in_fn, ins, dins, douts):
-        assert len(ins) == len(dins)
-
-        assert 1 == len(douts)
-
-        primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-
-        fwdstr = (
-            "fwd("
-            + (", ".join(["in" + str(i) for i in range(len(ins))]))
-            + ", "
-            + (", ".join(["din" + str(i) for i in range(len(dins))]))
-            + ")"
-        )
-
-        revstr = (
-            "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        )
-
-        for backend in AllBackends:
-            ins_backend = [to_backend(x, backend) for x in ins]
-            dins_backend = [to_backend(x, backend) for x in dins]
-            douts_backend = [to_backend(x, backend) for x in douts]
-    
-            primalins = {("in" + str(i)): ins_backend[i] for i in range(len(ins))}
-            fwdins = primalins | {("din" + str(i)): dins_backend[i] for i in range(len(dins))}
-            revins = primalins | {"dout": douts_backend[0]}
-
-            primres = None
-
-            for (pname, pipeline, pbackends) in self.primfilter(PrimalPipelines):
-                if backend in pbackends:
-                    rfn_enzyme = jax.jit(
-                        in_fn if pipeline is None else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
-                        #backend=backend
-                    )
-                    ao = rfn_enzyme(*ins_backend)
-                    if primres is None:
-                        primres = ao
-                    else:
-                        self.assertTrue((jnp.abs(ao - primres) < 1e-6).all())
-
-                    print(
-                        name,
-                        ",",
-                        pname,
-                        ",",
-                        backend,
-                        ",",
-                        "Primal,",
-                        timeit.Timer(
-                            primalstr,
-                            globals={
-                                "fn": rfn_enzyme,
-                            }
-                            | primalins,
-                        ).timeit(number)
-                        / number,
-                    )
-
-            assert primres is not None
-            fwdres = None
-
-            for (pname, pipeline, pbackends) in self.fwdfilter(FwdPipelines):
-                if backend in pbackends:
-                    rfn_enzyme = in_fn if pipeline is None else jax.jit(
-                            enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
-                            #backend=backend
-                    )
-                    fwd_enzyme = jax.jit(splatjvp(rfn_enzyme),
-                            #backend=backend
-                    )
-
-                    primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
-
-                    self.assertTrue((jnp.abs(primals - primres) < 1e-6).all())
-
-                    if fwdres is None:
-                        fwdres = tangents
-                    else:
-                        if len(tangents.shape) == 0:
-                            self.assertTrue((jnp.abs(tangents - fwdres) < 1e-6).all())
-                        else:
-                            for t, t_p in zip(tangents, fwdres):
-                                self.assertTrue((jnp.abs(t - t_p) < 1e-6).all())
-
-                    print(
-                        name,
-                        ",",
-                        pname,
-                        ",",
-                        backend,
-                        ",",
-                        "Fwd",
-                        ",",
-                        timeit.Timer(
-                            fwdstr,
-                            globals={
-                                "fwd": fwd_enzyme,
-                            }
-                            | fwdins,
-                        ).timeit(number)
-                        / number,
-                    )
-
-            assert fwdres is not None
-
-            revres = None
-
-            for (pname, pipeline, pbackends) in self.revfilter(RevPipelines):
-                if backend in pbackends:
-                    rfn_enzyme = in_fn if pipeline is None else jax.jit(
-                        enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
-                        #backend=backend
-                    )
-                    rev_enzyme = jax.jit(splatvjp(rfn_enzyme),
-                        #backend=backend
-                    )
-
-                    primals, grads = rev_enzyme(*douts_backend, *ins_backend)
-                    self.assertTrue((jnp.abs(primals - primres) < 1e-6).all())
-
-                    if revres is None:
-                        revres = grads
-                    else:
-                        for i, (g, g_p) in enumerate(zip(grads, revres)):
-                            self.assertTrue((jnp.abs(g - g_p) < 1e-6).all())
-
-                    print(
-                        name,
-                        ",",
-                        pname,
-                        ",",
-                        backend,
-                        ",",
-                        "Rev",
-                        ",",
-                        timeit.Timer(
-                            revstr,
-                            globals={
-                                "rev": rev_enzyme,
-                            }
-                            | revins,
-                        ).timeit(number)
-                        / number,
-                    )
-            assert revres is not None
-
+from test_utils import *
 
 class AddOne(EnzymeJaxTest):
     def setUp(self):
@@ -262,7 +27,6 @@ class AddOne(EnzymeJaxTest):
         self.fn = add_one
 
         self.name = "add_one"
-
 
 class AddTwo(EnzymeJaxTest):
     def setUp(self):
@@ -295,7 +59,7 @@ class Sum(EnzymeJaxTest):
             return jnp.sum(x)
 
         self.fn = sum
-        self.name = "sum"
+        self.name = "sum   "
 
 
 class Cache(EnzymeJaxTest):
@@ -360,7 +124,7 @@ class ActivityMismatch(EnzymeJaxTest):
             return kcl
 
         self.fn = f
-        self.name = "activitymismatch"
+        self.name = "actmtch"
 
 
 class GenDot(EnzymeJaxTest):
@@ -373,13 +137,6 @@ class GenDot(EnzymeJaxTest):
                 (2, dim)
             )
         ]
-
-        def nomlir(x):
-            return [
-                (name, a)
-                for (name, a) in x
-                if name != "NewXLAMLIR" and name != "NewXLA" and name != "OldXLA"
-            ]
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -417,7 +174,8 @@ class Concat(EnzymeJaxTest):
         ]
         self.douts = [jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)]
 
-        self.revfilter = nomlir
+        self.revfilter = justjax
+        # self.revfilter = nomlir
 
         def f(x, y):
             return jnp.concat([x, y], axis=None)
@@ -468,7 +226,6 @@ class ValueAndGrad(absltest.TestCase):
                         self.assertTrue((jnp.abs(res[0][1][1] - to_backend(prevres[0][1][1], backend)) < 1e-6).all())
 
                         self.assertTrue((jnp.abs(res[1] - to_backend(prevres[1], backend)) < 1e-6).all())
-
 
 if __name__ == "__main__":
     absltest.main()

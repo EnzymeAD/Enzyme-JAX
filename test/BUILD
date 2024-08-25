@@ -104,7 +104,9 @@ py_test(
     name = "bench_vs_xla",
     srcs = [
         "bench_vs_xla.py",
+        "test_utils.py"
     ],
+    imports = ["."],
     deps = TEST_DEPS,
 )
 
@@ -112,6 +114,9 @@ py_test(
     name = "llama",
     srcs = [
         "llama.py",
+        "test_utils.py",
     ],
+    imports = ["."],
     deps = TEST_DEPS,
+    timeout='long'
 )
