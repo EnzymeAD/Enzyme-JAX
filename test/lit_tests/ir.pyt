@@ -49,15 +49,14 @@ ones = jnp.ones((2, 3), jnp.float32)
 twos = jnp.ones((5, 7), jnp.float32)
 
 
-@jax.jit
 def fwdmode(a, b, c, d):
     return jax.jvp(do_something, (a, b), (c, d))
 
 
-print(lower(fwdmode, (ones, twos, ones, twos)).compiler_ir(dialect="stablehlo"))
+print(lower(jax.jit(fwdmode, backend='cpu'), (ones, twos, ones, twos)).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_fwdmode attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
-# CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default"}, %arg2: tensor<2x3xf32> {mhlo.layout_mode = "default"}, %arg3: tensor<5x7xf32> {mhlo.layout_mode = "default"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default"}, tensor<6x9xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default"}, tensor<4x6xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default"}) 
+# CHECK-NEXT:   func.func public @main(%arg0: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg1: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg2: tensor<2x3xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, %arg3: tensor<5x7xf32> {mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}) -> (tensor<6x9xf32> {jax.result_info = "[0][0]", mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, tensor<4x6xf32> {jax.result_info = "[0][1]", mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, tensor<6x9xf32> {jax.result_info = "[1][0]", mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"}, tensor<4x6xf32> {jax.result_info = "[1][1]", mhlo.layout_mode = "default", mhlo.sharding = "{replicated}"})
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<1> : tensor<1xi64>
 # CHECK-NEXT:     %[[i1:.+]]:4 = stablehlo.custom_call @jaxzyme.fwd(%[[i0]], %arg0, %arg2, %arg1, %arg3) : (tensor<1xi64>, tensor<2x3xf32>, tensor<2x3xf32>, tensor<5x7xf32>, tensor<5x7xf32>) -> (tensor<6x9xf32>, tensor<6x9xf32>, tensor<4x6xf32>, tensor<4x6xf32>)
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#2, %[[i1]]#1, %[[i1]]#3 : tensor<6x9xf32>, tensor<4x6xf32>, tensor<6x9xf32>, tensor<4x6xf32>
@@ -65,12 +64,11 @@ print(lower(fwdmode, (ones, twos, ones, twos)).compiler_ir(dialect="stablehlo"))
 # CHECK-NEXT: }
 
 
-@jax.jit
 def f(a, b):
     return jax.vjp(do_something, a, b)
 
 
-print(lower(f, (ones, twos)).compiler_ir(dialect="stablehlo"))
+print(lower(jax.jit(f, backend='cpu'), (ones, twos)).compiler_ir(dialect="stablehlo"))
 
 # CHECK: module @jit_f attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:  func.func public @main
@@ -84,11 +82,9 @@ x = jnp.ones((6, 9), jnp.float32)
 y = jnp.ones((4, 6), jnp.float32)
 
 
-@jax.jit
 def g(a, b, x, y):
     primals, f_vjp = jax.vjp(do_something, a, b)
     return primals, f_vjp((x, y))
-
 
 # CHECK: module @jit_g attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT: func.func public @main
@@ -100,11 +96,11 @@ def g(a, b, x, y):
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 
-print(lower(g, (ones, twos, x, y)).compiler_ir(dialect="stablehlo"))
+print(lower(jax.jit(g, backend='cpu'), (ones, twos, x, y)).compiler_ir(dialect="stablehlo"))
 
-primals, f_vjp = jax.vjp(jax.jit(do_something), ones, twos)
+primals, f_vjp = jax.vjp(jax.jit(do_something, backend='cpu'), ones, twos)
 
-print(lower(jax.jit(f_vjp), ((x, y),)).compiler_ir(dialect="stablehlo"))
+print(lower(jax.jit(f_vjp, backend='cpu'), ((x, y),)).compiler_ir(dialect="stablehlo"))
 # CHECK: module @jit__unnamed_wrapped_function_ attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
 # CHECK-NEXT:   func.func public @main
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<[0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63, 0, 0, -128, 63]> : tensor<16xi8>
@@ -112,8 +108,12 @@ print(lower(jax.jit(f_vjp), ((x, y),)).compiler_ir(dialect="stablehlo"))
 # CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1 : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK:   func.func private @do_something
+# CHECK-NEXT:     %[[shard1:.+]] = stablehlo.custom_call @Sharding(%arg1) {backend_config = "", mhlo.sharding = "{replicated}"} : (tensor<6x9xf32>) -> tensor<6x9xf32>
+# CHECK-NEXT:     %[[shard2:.+]] = stablehlo.custom_call @Sharding(%arg2) {backend_config = "", mhlo.sharding = "{replicated}"} : (tensor<4x6xf32>) -> tensor<4x6xf32>
 # CHECK-NEXT:     %[[i0:.+]] = stablehlo.constant dense<6> : tensor<1xi64>
-# CHECK-NEXT:     %[[i1:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%[[i0]], %arg0, %arg1, %arg2) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
-# CHECK-NEXT:     return %[[i1]]#0, %[[i1]]#1 : tensor<2x3xf32>, tensor<5x7xf32>
+# CHECK-NEXT:     %[[i1:.+]]:2 = stablehlo.custom_call @jaxzyme.rev(%[[i0]], %arg0, %[[shard1]], %[[shard2]]) : (tensor<1xi64>, tensor<16xi8>, tensor<6x9xf32>, tensor<4x6xf32>) -> (tensor<2x3xf32>, tensor<5x7xf32>)
+# CHECK-NEXT:     %[[res1:.+]] = stablehlo.custom_call @Sharding(%[[i1]]#0) {backend_config = "", mhlo.sharding = "{replicated}"} : (tensor<2x3xf32>) -> tensor<2x3xf32>
+# CHECK-NEXT:     %[[res2:.+]] = stablehlo.custom_call @Sharding(%[[i1]]#1) {backend_config = "", mhlo.sharding = "{replicated}"} : (tensor<5x7xf32>) -> tensor<5x7xf32>
+# CHECK-NEXT:     return %[[res1]], %[[res2]] : tensor<2x3xf32>, tensor<5x7xf32>
 # CHECK-NEXT:   }
 # CHECK-NEXT: }

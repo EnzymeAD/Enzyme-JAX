@@ -43,12 +43,27 @@ exports_files(
     )
 ]
 
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+
+string_flag(
+    name = "test_tpu",
+    build_setting_default = "False",
+)
+
+config_setting(
+    name = "use_tpu",
+    flag_values = {
+        ":test_tpu": "True",
+    },
+)
+
 TEST_DEPS = [
         "//:enzyme_ad",
         "@pypi_jax//:pkg",
         "@pypi_absl_py//:pkg",
     ] + select({
-        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg", "@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
         "//conditions:default": []
     })
 

@@ -1167,7 +1167,7 @@ _enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
 _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
-jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering, platform="cpu")
+jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering)
 
 xla_client.register_custom_call_target(
     "jaxzyme.fwd", enzyme_call.get_cpu_callback(), platform="cpu"
@@ -1279,7 +1279,7 @@ _enzyme_aug_p = jax.core.Primitive("enzyme_aug")
 _enzyme_aug_p.multiple_results = True
 _enzyme_aug_p.def_impl(_enzyme_aug_impl)
 _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
-jax_mlir.register_lowering(_enzyme_aug_p, _enzyme_aug_lowering, platform="cpu")
+jax_mlir.register_lowering(_enzyme_aug_p, _enzyme_aug_lowering)
 
 xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_cpu_callback(), platform="cpu"
@@ -1294,7 +1294,7 @@ _enzyme_rev_p = jax.core.Primitive("enzyme_rev")
 _enzyme_rev_p.multiple_results = True
 _enzyme_rev_p.def_impl(_enzyme_rev_impl)
 _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)
-jax_mlir.register_lowering(_enzyme_rev_p, _enzyme_rev_lowering, platform="cpu")
+jax_mlir.register_lowering(_enzyme_rev_p, _enzyme_rev_lowering)
 
 xla_client.register_custom_call_target(
     "jaxzyme.rev", enzyme_call.get_cpu_callback(), platform="cpu"
