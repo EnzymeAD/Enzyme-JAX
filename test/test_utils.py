@@ -93,27 +93,28 @@ def to_backend(x, backend):
     return jax.device_put(x, dev)
 
 
-def recursive_check(tester, lhs, rhs):
+def recursive_check(tester, lhs, rhs, tol=1e-6):
     tester.assertEqual(type(lhs), type(rhs))
     if isinstance(lhs, jax.Array):
-        legal = (jnp.abs(lhs - rhs) < 1e-6).all()
+        legal = (jnp.abs(lhs - rhs) < tol).all()
         if not legal:
             print("lhs", lhs)
             print("rhs", rhs)
             print("abs", jnp.abs(lhs - rhs))
-            print("eq", jnp.abs(lhs - rhs) < 1e-6)
+            print("eq", jnp.abs(lhs - rhs) < tol)
+            print("max", jnp.max(jnp.abs(lhs - rhs)))
         tester.assertTrue(legal)
         return
 
     if isinstance(lhs, tuple):
         for i, (g, g_p) in enumerate(zip(lhs, rhs)):
-            recursive_check(tester, g, g_p)
+            recursive_check(tester, g, g_p, tol)
         return
 
     if isinstance(lhs, dict):
         tester.assertEqual(lhs.keys(), rhs.keys())
         for k in lhs.keys():
-            recursive_check(tester, lhs[k], rhs[k])
+            recursive_check(tester, lhs[k], rhs[k], tol)
         return
 
     print("Unknown recursive type", type(lhs), " ", type(rhs))
@@ -130,6 +131,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.AllBackends = AllBackends
         self.AllPipelines = AllPipelines
         self.revprimal = True
+        self.tol = 1e-6
 
     def setUp(self):
         self.name = None
@@ -187,7 +189,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     if primres is None:
                         primres = ao
                     else:
-                        recursive_check(self, ao, primres)
+                        recursive_check(self, ao, primres, self.tol)
 
                     print(
                         name,
@@ -229,12 +231,12 @@ class EnzymeJaxTest(absltest.TestCase):
 
                     primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
-                    recursive_check(self, primals, primres)
+                    recursive_check(self, primals, primres, self.tol)
 
                     if fwdres is None:
                         fwdres = tangents
                     else:
-                        recursive_check(self, tangents, fwdres)
+                        recursive_check(self, tangents, fwdres, self.tol)
 
                     print(
                         name,
@@ -284,12 +286,12 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres)
+                            recursive_check(self, primals, primres, self.tol)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(self, grads, revres)
+                            recursive_check(self, grads, revres, self.tol)
 
                         print(
                             name,
@@ -330,12 +332,12 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres)
+                            recursive_check(self, primals, primres, self.tol)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(self, grads, revres)
+                            recursive_check(self, grads, revres, self.tol)
 
                         print(
                             name,
@@ -383,12 +385,12 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres)
+                            recursive_check(self, primals, primres, self.tol)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(self, grads, revres)
+                            recursive_check(self, grads, revres, self.tol)
 
                         print(
                             name,

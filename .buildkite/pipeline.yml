@@ -47,8 +47,8 @@ steps:
         mv bazel* .local/bin/bazel.exe
       fi
       mkdir -p .baztmp
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test //test/...
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test i--cache_test_results=no //test:llama
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
       cat bazel-out/k8*/testlogs/test/llama/test.log
       rm -f bazel-bin/*.whl
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
