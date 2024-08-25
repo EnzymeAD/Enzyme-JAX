@@ -49,13 +49,13 @@ steps:
       mkdir -p .baztmp
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
-      cat bazel-out/k8*/testlogs/test/llama/test.log
+      cat bazel-out/*/testlogs/test/llama/test.log
       rm -f bazel-bin/*.whl
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
-      - "bazel-out/k8*/testlogs/test/llama/test.log"
-      - "bazel-out/k8*/testlogs/test/llama/bench_vs_xla.log"
+      - "bazel-out/*/testlogs/test/llama/test.log"
+      - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
 
     timeout_in_minutes: 180
