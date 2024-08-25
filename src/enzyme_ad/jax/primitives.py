@@ -427,7 +427,12 @@ def resource_dir():
     import os
 
     dn = os.path.dirname(enzyme_call.__file__)
-    res = os.path.join(dn, "..", "..", "clang", "staging")
+    if os.getenv("ENZYME_BAZEL_NOWHEEL", None) is None:
+        res = os.path.join(
+            dn, "..", "..", "..", "external", "llvm-project", "clang", "staging"
+        )
+    else:
+        res = os.path.join(dn, "..", "..", "clang", "staging")
     return res
 
 

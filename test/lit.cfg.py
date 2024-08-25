@@ -40,5 +40,6 @@ base_paths = [
 ]
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
 config.environment["PATH"] = path
+config.environment["ENZYME_TEST_NOWHEEL"] = "1"
 config.environment["PYTHONPATH"] = os.environ["PYTHONPATH"]
 config.substitutions.append(("python", sys.executable))
