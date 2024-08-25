@@ -3,6 +3,8 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call, enzyme_jax_ir, optimize_module
 
+jax.config.update("jax_platform_name", "cpu")
+
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 
@@ -63,20 +65,36 @@ class EnzymeJax(absltest.TestCase):
         ones = jnp.ones((2, 3), jnp.float32)
         x, y, z = do_something(ones)
 
-        print(x)
-        print(y)
-        print(z)
+        self.assertTrue((x == 43).all())
+        self.assertTrue((y == 85).all())
+        self.assertTrue((z[0] == 56).all())
 
         # JVP
         primals, tangents = jax.jvp(do_something, (ones,), (ones,))
-        print(primals)
-        print(tangents)
+        self.assertTrue((primals[0] == 43).all())
+        self.assertTrue((primals[1] == 85).all())
+        self.assertTrue((primals[2][0] == 56).all())
+        self.assertTrue((tangents[0] == 1).all())
+        self.assertTrue((tangents[1] == 1).all())
+        self.assertTrue((tangents[2][0] == 0).all())
 
         # VJP
         primals, f_vjp = jax.vjp(do_something, ones)
         (grads,) = f_vjp((x, y, z))
-        print(primals)
-        print(grads)
+        self.assertTrue((primals[0] == 43).all())
+        self.assertTrue((primals[1] == 85).all())
+        self.assertTrue((primals[2][0] == 56).all())
+
+        self.assertTrue(
+            (
+                grads[1]
+                == jnp.array(
+                    [
+                        [128.0, 128.0, 128.0],
+                    ]
+                )
+            ).all()
+        )
 
     def test_enzyme_mlir_jit(self):
         @jax.jit
@@ -84,7 +102,6 @@ class EnzymeJax(absltest.TestCase):
         def add_one(x: jax.Array, y) -> jax.Array:
             return x + 1 + y
 
-        # But it should print LLVM IR in the process.
         add_one(jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0]))
 
         primals, tangents = jax.jvp(
@@ -92,15 +109,61 @@ class EnzymeJax(absltest.TestCase):
             (jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])),
             (jnp.array([0.1, 0.2, 0.3]), jnp.array([50.0, 70.0, 110.0])),
         )
-        print(primals)
-        print(tangents)
+        self.assertTrue(
+            (
+                primals
+                == jnp.array(
+                    [
+                        [12.0, 23.0, 34.0],
+                    ]
+                )
+            ).all()
+        )
+        self.assertTrue(
+            (
+                tangents
+                == jnp.array(
+                    [
+                        [50.1, 70.2, 110.3],
+                    ]
+                )
+            ).all()
+        )
 
         primals, f_vjp = jax.vjp(
             add_one, jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])
         )
         grads = f_vjp(jnp.array([500.0, 700.0, 110.0]))
-        print(primals)
-        print(grads)
+        self.assertTrue(
+            (
+                primals
+                == jnp.array(
+                    [
+                        [12.0, 23.0, 34.0],
+                    ]
+                )
+            ).all()
+        )
+        self.assertTrue(
+            (
+                grads[0]
+                == jnp.array(
+                    [
+                        [500.0, 700.0, 110.0],
+                    ]
+                )
+            ).all()
+        )
+        self.assertTrue(
+            (
+                grads[1]
+                == jnp.array(
+                    [
+                        [500.0, 700.0, 110.0],
+                    ]
+                )
+            ).all()
+        )
 
 
 if __name__ == "__main__":

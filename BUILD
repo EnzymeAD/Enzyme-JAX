@@ -66,8 +66,22 @@ cc_binary(
     ],
 )
 
-py_wheel(
+py_library(
     name = "enzyme_ad",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pypi_jax//:pkg",
+        "@pypi_absl_py//:pkg",
+    ],
+    imports=["src"],
+    data = [
+        "//:enzyme_jax_data",
+        "//src/enzyme_ad/jax:enzyme_jax_internal",
+    ]
+)
+
+py_wheel(
+    name = "wheel",
     author = "Enzyme Authors",
     author_email = "wmoses@mit.edu, zinenko@google.com",
     distribution = "enzyme_ad",

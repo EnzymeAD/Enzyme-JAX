@@ -44,13 +44,13 @@ pip install enzyme-ad
 
 ## Building from source
 
-Requirements: `bazel-6.2.1`, `clang++`, `python`, `python-virtualenv`,
+Requirements: `bazel-6.5`, `clang++`, `python`, `python-virtualenv`,
 `python3-dev`.
 
 Build our extension with:
 ```sh
 # Will create a whl in bazel-bin/enzyme_ad-VERSION-SYSTEM.whl
-bazel build :enzyme_ad
+bazel build :wheel
 ```
 
 Finally, install the built library with:
@@ -61,6 +61,12 @@ Note that you cannot run code from the root of the git directory. For instance, 
 
 ## Running the test
 
+To run tests, you can simply execute the following bazel commands (this does not require building or installing the wheel).
+```sh
+bazel test //test/...
+```
+
+Alternatively, if you have installed the wheel, you can manually invoke the tests as follows
 ```sh
 cd test && python test.py
 ```
