@@ -34,7 +34,7 @@ jobs:
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-          sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+          sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\"]~g" WORKSPACE
           cat WORKSPACE
       - uses: bazel-contrib/setup-bazel@0.8.5
         with:
@@ -43,9 +43,9 @@ jobs:
           bazelisk-version: 1.x
       # - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build @llvm-project//llvm:FileCheck
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt @llvm-project//llvm:FileCheck
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt :wheel
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
