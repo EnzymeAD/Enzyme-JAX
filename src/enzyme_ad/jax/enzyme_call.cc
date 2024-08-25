@@ -1003,7 +1003,8 @@ void Callback(void *out, void **ins) {
   CpuKernel *kernel = CpuKernel::get(identifier);
   if (!kernel) {
     if (identifier == CpuKernel::UNKNOWN_PLATFORM) {
-      throw pybind11::value_error("Unknown platform callback could not be executed");
+      throw pybind11::value_error(
+          "Unknown platform callback could not be executed");
     }
     // TODO: find a way to fail more gracefully.
     llvm::report_fatal_error("couldn't find enzyme kernel");

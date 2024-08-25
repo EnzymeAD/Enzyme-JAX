@@ -5,6 +5,7 @@ from absl.testing import absltest
 import timeit
 from test_utils import *
 
+
 class AddOne(EnzymeJaxTest):
     def setUp(self):
         self.ins = [
@@ -27,6 +28,7 @@ class AddOne(EnzymeJaxTest):
         self.fn = add_one
 
         self.name = "add_one"
+
 
 class AddTwo(EnzymeJaxTest):
     def setUp(self):
@@ -207,8 +209,13 @@ class ValueAndGrad(absltest.TestCase):
                     )
 
                     g = jax.value_and_grad(
-                        f if pipeline is None else jax.jit(enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f),
-                            #backend=backend
+                        (
+                            f
+                            if pipeline is None
+                            else jax.jit(
+                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f),
+                                # backend=backend
+                            )
                         ),
                         has_aux=True,
                         allow_int=True,
@@ -221,11 +228,35 @@ class ValueAndGrad(absltest.TestCase):
                         name = "valueandgrad"
                         print(name + " JaX(", pname, "): ", prevres)
                         print(name + " EnzymeMLIR(", pname, "): ", res)
-                        self.assertTrue((jnp.abs(res[0][0] - to_backend(prevres[0][0], backend)) < 1e-6).all())
-                        self.assertTrue((jnp.abs(res[0][1][0] - to_backend(prevres[0][1][0], backend)) < 1e-6).all())
-                        self.assertTrue((jnp.abs(res[0][1][1] - to_backend(prevres[0][1][1], backend)) < 1e-6).all())
+                        self.assertTrue(
+                            (
+                                jnp.abs(res[0][0] - to_backend(prevres[0][0], backend))
+                                < 1e-6
+                            ).all()
+                        )
+                        self.assertTrue(
+                            (
+                                jnp.abs(
+                                    res[0][1][0] - to_backend(prevres[0][1][0], backend)
+                                )
+                                < 1e-6
+                            ).all()
+                        )
+                        self.assertTrue(
+                            (
+                                jnp.abs(
+                                    res[0][1][1] - to_backend(prevres[0][1][1], backend)
+                                )
+                                < 1e-6
+                            ).all()
+                        )
 
-                        self.assertTrue((jnp.abs(res[1] - to_backend(prevres[1], backend)) < 1e-6).all())
+                        self.assertTrue(
+                            (
+                                jnp.abs(res[1] - to_backend(prevres[1], backend)) < 1e-6
+                            ).all()
+                        )
+
 
 if __name__ == "__main__":
     absltest.main()

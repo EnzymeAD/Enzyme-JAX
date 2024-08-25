@@ -580,6 +580,7 @@ def lower(fn, vals, parameters=None):
         else:
             return fn.lower(*vals)
 
+
 def _enzyme_aug_abstract_eval(
     *args_flat: jax.core.ShapedArray,
     source,
@@ -836,7 +837,7 @@ def _enzyme_primal_lowering(
                 lang,
                 pipeline_options.xla_runtime(),
                 pass_pipeline,
-                ctx.module_context.platforms[0] 
+                ctx.module_context.platforms[0],
             )
             identifier_attr = jax_mlir.dense_int_elements([identifier])
             identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -883,7 +884,7 @@ def _enzyme_primal_lowering(
             lang,
             pipeline_options.xla_runtime(),
             pass_pipeline,
-            ctx.module_context.platforms[0]
+            ctx.module_context.platforms[0],
         )
         identifier_attr = jax_mlir.dense_int_elements([identifier])
         identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -951,7 +952,7 @@ def _enzyme_fwd_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
-        ctx.module_context.platforms[0]
+        ctx.module_context.platforms[0],
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1017,7 +1018,7 @@ def _enzyme_aug_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
-        ctx.module_context.platforms[0]
+        ctx.module_context.platforms[0],
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1090,7 +1091,7 @@ def _enzyme_rev_lowering(
         lang,
         pipeline_options.xla_runtime(),
         pipeline_options.pass_pipeline(),
-        ctx.module_context.platforms[0]
+        ctx.module_context.platforms[0],
     )
     identifier_attr = jax_mlir.dense_int_elements([identifier])
     identifier_op = stablehlo.ConstantOp(identifier_attr)
@@ -1165,9 +1166,7 @@ _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
 jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.primal", enzyme_call.get_callback()
-)
+xla_client.register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
 
 _enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
@@ -1175,9 +1174,7 @@ _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
 jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.fwd", enzyme_call.get_callback()
-)
+xla_client.register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
