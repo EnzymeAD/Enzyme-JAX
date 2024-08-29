@@ -17,7 +17,7 @@ def SearchablePatternDescriptorOpInterface :
   ];
 }
 
-class EnzymeHLOPatternOp<string mnemonic, list<Trait> traits = []> 
+class EnzymeHLOPatternOp<string mnemonic, list<Trait> traits = []>
     : Op<Transform_Dialect,
          "apply_patterns.enzyme_hlo." # mnemonic,
           // For some reason, inherited methods are not getting declared...
@@ -30,7 +30,7 @@ class EnzymeHLOPatternOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "attr-dict";
 }
 
-class EnzymeHLOParameterizedPatternOp<string mnemonic, list<Trait> traits = []> 
+class EnzymeHLOParameterizedPatternOp<string mnemonic, list<Trait> traits = []>
     : Op<Transform_Dialect,
          "apply_patterns.enzyme_hlo." # mnemonic,
           // For some reason, inherited methods are not getting declared...
@@ -218,6 +218,10 @@ def ApplyTransposeEinsumPatterns : EnzymeHLOPatternOp<
 def ApplyEinsumTransposePatterns : EnzymeHLOPatternOp<
     "einsum_transpose"> {
   let patterns = ["EinsumTranspose"];
+}
+def ApplyTransposeConvolutionPatterns : EnzymeHLOPatternOp<
+    "transpose_convolution"> {
+  let patterns = ["TransposeConvolution"];
 }
 def ApplyConvolutionTransposePatterns : EnzymeHLOPatternOp<
     "convolution_transpose"> {
