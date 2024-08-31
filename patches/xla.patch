@@ -1,0 +1,196 @@
+diff --git a/third_party/tsl/third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl b/third_party/tsl/third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
+index 74fafb9b32..0ab04f6f95 100755
+--- a/third_party/tsl/third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
++++ b/third_party/tsl/third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
+@@ -51,6 +51,8 @@ NVCC_PATH = '%{nvcc_path}'
+ PREFIX_DIR = os.path.dirname(HOST_COMPILER_PATH)
+ USE_CLANG_COMPILER = '%{use_clang_compiler}'
+ NVCC_VERSION = '%{cuda_version}'
++TMPDIR= '%{tmpdir}'
++
+ 
+ def Log(s):
+   print('gpus/crosstool: {0}'.format(s))
+@@ -292,6 +294,8 @@ def InvokeNvcc(argv, log=False):
+ 
+ 
+ def main():
++  if TMPDIR:
++    os.environ['TMPDIR'] = TMPDIR
+   parser = ArgumentParser()
+   parser.add_argument('-x', nargs=1)
+   parser.add_argument('--cuda_log', action='store_true')
+diff --git a/third_party/tsl/third_party/gpus/cuda/hermetic/cuda_configure.bzl b/third_party/tsl/third_party/gpus/cuda/hermetic/cuda_configure.bzl
+index a0f86081ee..258803d8b1 100644
+--- a/third_party/tsl/third_party/gpus/cuda/hermetic/cuda_configure.bzl
++++ b/third_party/tsl/third_party/gpus/cuda/hermetic/cuda_configure.bzl
+@@ -4,6 +4,7 @@
+ 
+   * `TF_NEED_CUDA`: Whether to enable building with CUDA.
+   * `TF_NVCC_CLANG`: Whether to use clang for C++ and NVCC for Cuda compilation.
++  * `TF_NVCC_GCC`: Whether to use gcc for C++ and NVCC for Cuda compilation.
+   * `CLANG_CUDA_COMPILER_PATH`: The clang compiler path that will be used for
+     both host and device code compilation.
+   * `CC`: The compiler path that will be used for both host and device code
+@@ -108,6 +109,10 @@ def _use_nvcc_and_clang(repository_ctx):
+     # Returns the flag if we need to use clang for C++ and NVCC for Cuda.
+     return _flag_enabled(repository_ctx, _TF_NVCC_CLANG)
+ 
++def _use_nvcc_and_gcc(repository_ctx):
++    # Returns the flag if we need to use gcc for C++ and NVCC for Cuda.
++    return _flag_enabled(repository_ctx, _TF_NVCC_GCC)
++
+ def _tf_sysroot(repository_ctx):
+     tf_sys_root = get_host_environ(repository_ctx, _TF_SYSROOT, "")
+     if repository_ctx.path(tf_sys_root).exists:
+@@ -174,8 +179,8 @@ def _compute_capabilities(repository_ctx):
+ 
+     return capabilities
+ 
+-def _compute_cuda_extra_copts(compute_capabilities):
+-    copts = ["--no-cuda-include-ptx=all"]
++def _compute_cuda_extra_copts(compute_capabilities, is_clang):
++    copts = ["--no-cuda-include-ptx=all"] if is_clang else []
+     for capability in compute_capabilities:
+         if capability.startswith("compute_"):
+             capability = capability.replace("compute_", "sm_")
+@@ -240,6 +245,7 @@ error_gpu_disabled()
+ 
+ def _setup_toolchains(repository_ctx, cc, cuda_version):
+     is_nvcc_and_clang = _use_nvcc_and_clang(repository_ctx)
++    is_nvcc_and_gcc = _use_nvcc_and_gcc(repository_ctx)
+     tf_sysroot = _tf_sysroot(repository_ctx)
+ 
+     host_compiler_includes = get_cxx_inc_directories(
+@@ -270,7 +276,10 @@ def _setup_toolchains(repository_ctx, cc, cuda_version):
+         cuda_defines["%{cuda_nvcc_files}"] = "[]"
+         nvcc_relative_path = ""
+     else:
+-        cuda_defines["%{cuda_toolkit_path}"] = repository_ctx.attr.nvcc_binary.workspace_root
++        if cc.endswith("clang"):
++            cuda_defines["%{cuda_toolkit_path}"] = repository_ctx.attr.nvcc_binary.workspace_root
++        else:
++            cuda_defines["%{cuda_toolkit_path}"] = ""
+         cuda_defines["%{cuda_nvcc_files}"] = "if_cuda([\"@{nvcc_archive}//:bin\", \"@{nvcc_archive}//:nvvm\"])".format(
+             nvcc_archive = repository_ctx.attr.nvcc_binary.repo_name,
+         )
+@@ -278,7 +287,12 @@ def _setup_toolchains(repository_ctx, cc, cuda_version):
+             repository_ctx.attr.nvcc_binary.workspace_root,
+             repository_ctx.attr.nvcc_binary.name,
+         )
+-    cuda_defines["%{compiler}"] = "clang"
++    if cc.endswith("clang"):
++        cuda_defines["%{compiler}"] = "clang"
++        cuda_defines["%{extra_no_canonical_prefixes_flags}"] = ""
++    else:
++        cuda_defines["%{compiler}"] = "unknown"
++        cuda_defines["%{extra_no_canonical_prefixes_flags}"] = "\"-fno-canonical-system-headers\""
+     cuda_defines["%{host_compiler_prefix}"] = "/usr/bin"
+     cuda_defines["%{linker_bin_path}"] = ""
+     cuda_defines["%{extra_no_canonical_prefixes_flags}"] = ""
+@@ -287,7 +301,7 @@ def _setup_toolchains(repository_ctx, cc, cuda_version):
+         host_compiler_includes,
+     )
+ 
+-    if not is_nvcc_and_clang:
++    if not (is_nvcc_and_clang or is_nvcc_and_gcc):
+         cuda_defines["%{host_compiler_path}"] = str(cc)
+         cuda_defines["%{host_compiler_warnings}"] = """
+           # Some parts of the codebase set -Werror and hit this warning, so
+@@ -309,7 +323,12 @@ def _setup_toolchains(repository_ctx, cc, cuda_version):
+             "%{cuda_version}": cuda_version,
+             "%{nvcc_path}": nvcc_relative_path,
+             "%{host_compiler_path}": str(cc),
+-            "%{use_clang_compiler}": "True",
++            "%{use_clang_compiler}": str(cc.endswith("clang")),
++            "%{tmpdir}": get_host_environ(
++                repository_ctx,
++                _TMPDIR,
++                "",
++            ),
+         }
+         repository_ctx.template(
+             "crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc",
+@@ -400,6 +419,7 @@ def _create_dummy_repository(repository_ctx):
+ def _create_local_cuda_repository(repository_ctx):
+     """Creates the repository containing files set up to build with CUDA."""
+     cuda_config = _get_cuda_config(repository_ctx)
++    cc = _find_cc(repository_ctx)
+ 
+     # Set up BUILD file for cuda/
+     repository_ctx.template(
+@@ -409,6 +429,7 @@ def _create_local_cuda_repository(repository_ctx):
+             "%{cuda_is_configured}": "True",
+             "%{cuda_extra_copts}": _compute_cuda_extra_copts(
+                 cuda_config.compute_capabilities,
++                cc.endswith("clang"),
+             ),
+             "%{cuda_gpu_architectures}": str(cuda_config.compute_capabilities),
+             "%{cuda_version}": cuda_config.cuda_version,
+@@ -426,7 +447,6 @@ def _create_local_cuda_repository(repository_ctx):
+     )
+ 
+     # Set up crosstool/
+-    cc = _find_cc(repository_ctx)
+     _setup_toolchains(repository_ctx, cc, cuda_config.cuda_version)
+ 
+     # Set up cuda_config.h, which is used by
+@@ -485,13 +505,16 @@ HERMETIC_CUDA_VERSION = "HERMETIC_CUDA_VERSION"
+ TF_CUDA_VERSION = "TF_CUDA_VERSION"
+ TF_NEED_CUDA = "TF_NEED_CUDA"
+ _TF_NVCC_CLANG = "TF_NVCC_CLANG"
++_TF_NVCC_GCC = "TF_NVCC_GCC"
+ _TF_SYSROOT = "TF_SYSROOT"
++_TMPDIR = "TMPDIR"
+ 
+ _ENVIRONS = [
+     _CC,
+     _CLANG_CUDA_COMPILER_PATH,
+     TF_NEED_CUDA,
+     _TF_NVCC_CLANG,
++    _TF_NVCC_GCC,
+     TF_CUDA_VERSION,
+     HERMETIC_CUDA_VERSION,
+     _TF_CUDA_COMPUTE_CAPABILITIES,
+@@ -499,7 +522,7 @@ _ENVIRONS = [
+     _TF_SYSROOT,
+     _PYTHON_BIN_PATH,
+     "TMP",
+-    "TMPDIR",
++    _TMPDIR,
+     "LOCAL_CUDA_PATH",
+     "LOCAL_CUDNN_PATH",
+ ]
+diff --git a/third_party/tsl/third_party/gpus/cuda_configure.bzl b/third_party/tsl/third_party/gpus/cuda_configure.bzl
+index a25b60c5f4..86eb571ea5 100644
+--- a/third_party/tsl/third_party/gpus/cuda_configure.bzl
++++ b/third_party/tsl/third_party/gpus/cuda_configure.bzl
+@@ -73,6 +73,7 @@ _TF_CUDA_COMPUTE_CAPABILITIES = "TF_CUDA_COMPUTE_CAPABILITIES"
+ _TF_CUDA_CONFIG_REPO = "TF_CUDA_CONFIG_REPO"
+ _TF_DOWNLOAD_CLANG = "TF_DOWNLOAD_CLANG"
+ _PYTHON_BIN_PATH = "PYTHON_BIN_PATH"
++_TMPDIR = "TMPDIR"
+ 
+ def verify_build_defines(params):
+     """Verify all variables that crosstool/BUILD.tpl expects are substituted.
+@@ -1186,6 +1187,11 @@ def _create_local_cuda_repository(repository_ctx):
+             "%{host_compiler_path}": str(cc),
+             "%{use_clang_compiler}": str(is_nvcc_and_clang),
+             "%{nvcc_tmp_dir}": _get_nvcc_tmp_dir_for_windows(repository_ctx),
++            "%{tmpdir}": get_host_environ(
++                repository_ctx,
++                _TMPDIR,
++                "",
++            ),
+         }
+         repository_ctx.template(
+             "crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc",
+@@ -1367,7 +1373,7 @@ _ENVIRONS = [
+     "NVVMIR_LIBRARY_DIR",
+     _PYTHON_BIN_PATH,
+     "TMP",
+-    "TMPDIR",
++    _TMPDIR,
+     "TF_CUDA_PATHS",
+ ] + _MSVC_ENVVARS
+ 
