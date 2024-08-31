@@ -20,7 +20,7 @@ steps:
       mkdir -p .baztmp
 
       echo "--- :python: Test"
-
+      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
       HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
       HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
       HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
