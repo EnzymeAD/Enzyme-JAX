@@ -26,13 +26,13 @@ http_archive(
 )
 
 load("@jax//third_party/xla:workspace.bzl", "XLA_COMMIT", "XLA_SHA256")
-
+XLA_COMMIT = "aeb4b1c7dd12860c3e022df5c4bf4db9d06007ba"
 http_archive(
     name = "xla",
-    sha256 = XLA_SHA256,
+    #sha256 = XLA_SHA256,
     strip_prefix = "xla-" + XLA_COMMIT,
     urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-    patch_cmds = XLA_PATCHES
+    patch_cmds = XLA_PATCHES,
 )
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
