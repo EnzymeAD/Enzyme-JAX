@@ -299,7 +299,7 @@ private:
 
     void* data = malloc(width * numElements);
 
-    auto device = ClientGetDevice(client, 0);
+    auto device = ClientGetAddressableDevice(client, 0);
     auto buffer = ArrayFromHostBuffer(client, data, wrap(elementType), shape.size(), shape.data(), device);
     
     free(data);
@@ -1181,8 +1181,8 @@ namespace {
 
     void runOnOperation() override {
       ModuleOp module = getOperation();
-      std::cout << "ORIGINAL MODULE" << "\n";
-      module.dump();
+      // std::cout << "ORIGINAL MODULE" << "\n";
+      // module.dump();
       std::vector<Operation*> blackboxIDToTensorInfo;
       auto context = module->getContext();
       OpBuilder builder(context);
@@ -1191,8 +1191,8 @@ namespace {
 
       // std::cout << "reconstructing\n";
       reconstructStablehlo(&module, &blackboxIDToTensorInfo, optimized, builder);
-      std::cout << "Optimised module" << "\n";
-      module.dump();
+      // std::cout << "Optimised module" << "\n";
+      // module.dump();
     }
   };
 }  // end anonymous namespace
