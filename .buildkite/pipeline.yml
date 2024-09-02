@@ -47,12 +47,12 @@ steps:
         mv bazel* .local/bin/bazel.exe
       fi
       mkdir -p .baztmp
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
       cat bazel-out/*/testlogs/test/llama/test.log
       rm -f bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
