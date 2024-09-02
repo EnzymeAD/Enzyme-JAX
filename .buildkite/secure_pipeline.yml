@@ -52,9 +52,9 @@ steps:
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD
-      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build @llvm-project//llvm:FileCheck
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build --check_visibility=false @llvm-project//llvm:FileCheck
       rm bazel-bin/*.whl
-      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build :wheel
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build --check_visibility=false :wheel
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install --user twine
