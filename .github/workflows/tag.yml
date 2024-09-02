@@ -43,9 +43,9 @@ jobs:
           bazelisk-version: 1.x
       # - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
       - run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt @llvm-project//llvm:FileCheck
+          CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt @llvm-project//llvm:FileCheck
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt :wheel
+          CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build -c opt :wheel
       - env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
