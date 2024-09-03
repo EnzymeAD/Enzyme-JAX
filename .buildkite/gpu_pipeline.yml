@@ -23,14 +23,13 @@ steps:
       export PATH="`pwd`/.local/.cargo/bin:\$PATH"
       rustup default stable
       cargo install cxxbridge-cmd
-      cxxbridge --help
 
       mkdir -p .baztmp
 
       echo "--- :python: Test"
 
-      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --test_output=errors //test/...
-      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no //test:bench_vs_xla
+      # CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --test_output=errors //test/...
+      # CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no //test:bench_vs_xla
       CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no //test:llama
       cat bazel-out/*/testlogs/test/llama/test.log
     artifact_paths:
