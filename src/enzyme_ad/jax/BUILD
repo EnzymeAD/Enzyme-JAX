@@ -5,8 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@tensat_crate_index//:defs.bzl", "all_crate_deps")
 load("deps/rust_cxx_bridge.bzl", "rust_cxx_bridge")
 
-exports_files(["enzymexlamlir-opt.cpp"])
-
+exports_files(["enzymexlamlir-opt.cpp", "deps/tensat/converted.txt", "deps/tensat/extractor/extract.py"])
 licenses(["notice"])
 
 package(
