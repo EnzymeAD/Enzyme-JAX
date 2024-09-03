@@ -28,8 +28,11 @@ jobs:
         with:
           submodules: recursive
       
-      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
-      
+      - run: |
+            if [ "${{matrix.os}}" == "openstack22" ]; then
+              sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
+            fi
+
       - uses: bazel-contrib/setup-bazel@0.8.5
         name: Set up Bazel
         with:
