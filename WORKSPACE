@@ -91,12 +91,13 @@ http_archive(
 load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
 bazel_skylib_workspace()
 
-http_archive(
+load("//:custom_rules_rust.bzl", "custom_rules_rust")
+
+custom_rules_rust(
     name = "rules_rust",
-    integrity = "sha256-3QBrdyIdWeTRQSB8DnrfEbH7YNFEC4/KA7+SVheTKmA=",
-    urls = ["https://github.com/bazelbuild/rules_rust/releases/download/0.49.3/rules_rust-v0.49.3.tar.gz"],
-    patch_args = ["-p1"],
-    patches = ["//:rules_rust.patch"],
+    url = "https://github.com/bazelbuild/rules_rust/releases/download/0.49.3/rules_rust-v0.49.3.tar.gz",
+    linux_patch = "//:rules_rust_linux.patch",
+    macos_patch = "//:rules_rust_macos.patch",
 )
 
 load("@rules_rust//rust:repositories.bzl", "rules_rust_dependencies", "rust_register_toolchains")

@@ -49,6 +49,14 @@ steps:
         fi
         mv bazel* .local/bin/bazel.exe
       fi
+
+      export RUSTUP_HOME=`pwd`/.local/.rustup
+      export CARGO_HOME=`pwd`/.local/.cargo 
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      export PATH="`pwd`/.local/.cargo/bin:\$PATH"
+      rustup default stable
+      cargo install cxxbridge-cmd
+
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD

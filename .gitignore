@@ -5,3 +5,4 @@ bazel-*
 *.vscode
 src/enzyme_ad/jax/deps/libReactantExtra.so
 tmp
+.local
