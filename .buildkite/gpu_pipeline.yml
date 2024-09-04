@@ -17,13 +17,20 @@ steps:
       mv bazel* .local/bin/bazel
       chmod +x .local/bin/bazel
 
+      wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.3.1-0-Linux-x86_64.sh
+      chmod +x Miniconda*.sh
+      ./Miniconda*.sh -b -p `pwd`/conda
+      rm Miniconda*.sh
+      python -m ensurepip --upgrade
+      python -m pip install --user numpy wheel "jax[cuda12]"
+
       mkdir -p .baztmp
 
       echo "--- :python: Test"
 
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
+      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --//test:local_python=True --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --//test:local_python=True --cache_test_results=no //test:bench_vs_xla
+      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --//test:local_python=True --cache_test_results=no //test:llama
       cat bazel-out/*/testlogs/test/llama/test.log
     artifact_paths:
       - "bazel-out/*/testlogs/test/llama/test.log"

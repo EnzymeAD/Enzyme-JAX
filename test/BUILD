@@ -57,8 +57,23 @@ config_setting(
     },
 )
 
+string_flag(
+    name = "local_python",
+    build_setting_default = "False",
+)
+
+config_setting(
+    name = "use_local_python",
+    flag_values = {
+        ":test_local_python": "True",
+    },
+)
+
 TEST_DEPS = [
-        "//:enzyme_ad",
+        "//:enzyme_ad"
+    ] + select({
+        ":use_local_python": [],
+    	"//conditions:default": [
         "@pypi_jax//:pkg",
         "@pypi_absl_py//:pkg",
     ] + select({
@@ -66,7 +81,7 @@ TEST_DEPS = [
         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
         "//conditions:default": []
     })
-
+    })
 
 [
     lit_test(
@@ -108,6 +123,10 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    local = select({
+        ":use_local_python": True,
+    	"//conditions:default": False
+    })
 )
 
 py_test(
@@ -118,5 +137,9 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    local = select({
+        ":use_local_python": True,
+    	"//conditions:default": False
+    })
     timeout='long'
 )
