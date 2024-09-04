@@ -18,7 +18,11 @@ CurBackends = [jax.default_backend()]
 if jax.default_backend() != "cpu":
     devices = CurBackends
 
+devices = ["gpu"]
+CurBackends = ["gpu"]
+
 AllBackends = ["cpu"] + devices
+AllBackends = ["gpu"] # cpu"] + devices
 AllPipelines = [
     ("JaX  ", None, AllBackends),
     ("JaXPipe", JaXPipeline(), AllBackends),
@@ -159,8 +163,9 @@ class EnzymeJaxTest(absltest.TestCase):
         revstr = (
             "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         )
-
+        print("all", self.AllBackends)
         for backend in self.AllBackends:
+            print("backend", backend)
             ins_backend = [to_backend(x, backend) for x in ins]
             dins_backend = [to_backend(x, backend) for x in dins]
             douts_backend = [to_backend(x, backend) for x in douts]
