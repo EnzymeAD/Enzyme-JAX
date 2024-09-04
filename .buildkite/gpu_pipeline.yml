@@ -16,6 +16,7 @@ steps:
 
       mv bazel* .local/bin/bazel
       chmod +x .local/bin/bazel
+      export PATH="`pwd`/.local/bin:$PATH"
 
       mkdir -p .baztmp
 
