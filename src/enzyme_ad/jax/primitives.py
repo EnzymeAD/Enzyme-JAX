@@ -1621,7 +1621,7 @@ def enzyme_jax_ir(
             lowered_func = lower(jitres, avals_in)
             kept = lowered_func.compile()._executable._kept_var_idx
             args_flat = [
-                arg if i in kept else zero_like(arg)
+                arg if i in kept else zero_like(i, arg)
                 for (i, arg) in enumerate(args_flat)
             ]
 
