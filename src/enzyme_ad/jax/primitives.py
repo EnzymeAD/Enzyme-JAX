@@ -1599,15 +1599,16 @@ def enzyme_jax_ir(
             # this code will get DCE'd / not traced).
             # TODO in the future we should look at mlir to determine what actual values
             # we will need and do dead arg elim ourselves based on ir in advance
-            def zero_like(arg):
-                if arg.dtype == jax.float0:
+            static_argnums = jit_options[static_argnums] if "static_argnums" in keys(jit_options) else ()
+            def zero_like(i, arg):
+                if i in static_argnums or arg.dtype == jax.float0:
                     return arg
                 else:
                     return jnp.zeros(arg.shape, dtype=arg.dtype)
 
             avals_in = jax.tree_util.tree_unflatten(
                 in_tree,
-                [zero_like(arg) for arg in args_flat],
+                [zero_like(i, arg) for (i, arg) in enumerate(args_flat)],
             )
             lowered_func = lower(jitres, avals_in)
             kept = lowered_func.compile()._executable._kept_var_idx
