@@ -1599,7 +1599,7 @@ def enzyme_jax_ir(
             # this code will get DCE'd / not traced).
             # TODO in the future we should look at mlir to determine what actual values
             # we will need and do dead arg elim ourselves based on ir in advance
-            static_argnums = jit_options[static_argnums] if "static_argnums" in keys(jit_options) else ()
+            static_argnums = jit_options[static_argnums] if "static_argnums" in jit_options.keys() else ()
             def zero_like(i, arg):
                 if i in static_argnums or arg.dtype == jax.float0:
                     return arg
