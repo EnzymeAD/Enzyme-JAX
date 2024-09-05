@@ -513,6 +513,10 @@ def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 // Derivative rules
+
+def : HLODerivative<"AbsOp", (Op $x),                                                                                                                      [(CheckedMul (DiffeRet), (Sign $x))] // TODO: support complex numbers
+                  >;
+
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
                       (DiffeRet),
