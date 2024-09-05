@@ -1535,8 +1535,13 @@ ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
 
 def export(outfile, func, *args, argv=(), jit_options={}):
-    def zero_like(arg):
-        if arg.dtype == jax.float0:
+    static_argnums = (
+        jit_options[static_argnums]
+        if "static_argnums" in jit_options.keys()
+        else ()
+    )
+    def zero_like(i, arg):
+        if i in static_argnums or arg.dtype == jax.float0:
             return arg
         else:
             return jnp.zeros(arg.shape, dtype=arg.dtype)
@@ -1548,7 +1553,7 @@ def export(outfile, func, *args, argv=(), jit_options={}):
     out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
     out_shape_flat = [jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat]
     avals_in = jax.tree_util.tree_unflatten(
-        in_tree, [zero_like(arg) for arg in args_flat],
+        in_tree, [zero_like(i, arg) for (i, arg) in enumerate(args_flat)],
     )
     lowered_func = lower(jitres, avals_in)
     mhlo = lowered_func.compiler_ir(dialect="stablehlo")
