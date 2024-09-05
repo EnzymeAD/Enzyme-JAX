@@ -72,6 +72,19 @@ public:
         nullptr,
         OperationEquivalence::IgnoreLocations);
   }
+  
+  static bool isEqual(Operation* lhs, Operation* rhs) {
+    if (lhs == rhs)
+        return true;
+    if (lhs == getTombstoneKey() || lhs == getEmptyKey() ||
+        rhs == getTombstoneKey() || rhs == getEmptyKey())
+        return false;
+    return OperationEquivalence::isEquivalentTo(
+        lhs, rhs,
+        OperationEquivalence::ignoreValueEquivalence,
+        nullptr,
+        OperationEquivalence::IgnoreLocations);
+  }
 };
 
 class OperationTimer {
@@ -696,51 +709,6 @@ namespace {
       assert(false);
     }
 
-// // Handle integral types, simply return the operand as-is
-// template<typename T>
-// typename std::enable_if<std::is_integral<T>::value, T>::type
-// handleOperand(T operand, std::unordered_map<Operation*, tensat::TensorInfo*> *opToTensorInfo,
-//               std::unordered_map<int, tensat::TensorInfo*> *blockArgToTensorInfo,
-//               std::vector<Operation*> *blackboxIDToTensorInfo,
-//               OpBuilder &builder, 
-//               Box<tensat::CppGraphConverter> &graph) {
-//     return operand;
-// }
-
-    // Handle rust::Slice<const int> directly, assuming we can pass it through without modification
-    std::unique_ptr<rust::Slice<int>> handleOperand(
-        std::unique_ptr<rust::Slice<int>> operand,
-        std::unordered_map<Operation*, tensat::TensorInfo*> *opToTensorInfo,
-        std::unordered_map<int, tensat::TensorInfo*> *blockArgToTensorInfo,
-        std::vector<Operation*> *blackboxIDToTensorInfo,
-        OpBuilder &builder, 
-        Box<tensat::CppGraphConverter> &graph) {
-        return operand;
-    }
-
-    template <typename CreateOpFunc, typename... Args>
-    tensat::TensorInfo* handleOperation(
-        Operation* op,
-        CreateOpFunc createOpFunc,
-        std::unordered_map<Operation*, tensat::TensorInfo*> *opToTensorInfo,
-        std::unordered_map<int, tensat::TensorInfo*> *blockArgToTensorInfo,
-        std::vector<Operation*> *blackboxIDToTensorInfo,
-        OpBuilder &builder,
-        Box<tensat::CppGraphConverter> &graph,
-        Args&&... args) {
-      auto args_tuple = std::forward_as_tuple(std::forward<Args>(args)...);
-      auto handleArgs = [&](auto&&... operands) {
-        return std::make_tuple(handleOperand(operands, opToTensorInfo, blockArgToTensorInfo, blackboxIDToTensorInfo, builder, graph)...);
-      };
-
-      auto operandInfos = std::apply(handleArgs, args_tuple);
-
-      // Use std::apply to unpack operandInfos into the function call
-      return std::apply([&](auto&&... unpacked) {
-        return std::invoke(createOpFunc, *graph, *unpacked...).into_raw();
-      }, operandInfos);
-    }
-
     tensat::TensorInfo *dfs(Operation* op,
       std::unordered_map<Operation*, tensat::TensorInfo*> *opToTensorInfo,
       std::unordered_map<int, tensat::TensorInfo*> *blockArgToTensorInfo,
@@ -755,19 +723,7 @@ namespace {
       auto handleOperandPartial = [&](auto operand) {
         return handleOperand(operand, opToTensorInfo, blockArgToTensorInfo, blackboxIDToTensorInfo, builder, graph); 
       };
-      // auto handleOperationPartial = [&](auto&& createOpFunc, auto&&... operands) {
-      //   return handleOperation(op, createOpFunc, opToTensorInfo, blockArgToTensorInfo, blackboxIDToTensorInfo, builder, graph, std::forward<decltype(operands)>(operands)...);
-      // }; 
 
-      /*
-      if (isa<stablehlo::ConstantOp>(op)) {
-        auto constant = cast<stablehlo::ConstantOp>(op);
-        auto output_tensor = constant->getResult(0).getType().cast<TensorType>();
-        auto shape_array = castArrayRefToInt32(output_tensor.getShape());
-	auto shape = rust::Slice<const int>{ shape_array.data(), shape_array.size() };
-
-        tensorInfo = graph->new_constant_op(shape).into_raw();
-      } */
       if (isa<stablehlo::MulOp>(op)) {
         auto mul = cast<stablehlo::MulOp>(op);
         auto output_tensor = mul->getResult(0).getType().cast<TensorType>();
@@ -1221,23 +1177,257 @@ namespace {
       }
     }
 
-    void runOnOperation() override {
-      ModuleOp module = getOperation();
-      // std::cout << "ORIGINAL MODULE\n";
-      // module.dump();
-      std::vector<Operation*> blackboxIDToTensorInfo;
-      auto context = module->getContext();
-      OpBuilder builder(context);
-      // std::cout << "creating egraph..." << "\n";
-      auto graph = createEgraph(&blackboxIDToTensorInfo, builder, module);
-      // graph->print_rec_expr();
-      // std::cout << "optimizing .." << "\n";
-      auto optimized = graph->optimize();
 
-      // std::cout << "reconstructing\n";
-      reconstructStablehlo(&module, &blackboxIDToTensorInfo, optimized, builder);
-      // std::cout << "OPTIMIZED module" << "\n";
-      // module.dump();
+bool isUsedOutsideSegment(Value result, Block &entryBlock, SmallVector<Operation *, 5000> &currentOps) {
+    for (auto *user : result.getUsers()) {
+        // Check if the user operation is not in the current segment
+        if (std::find(currentOps.begin(), currentOps.end(), user) == currentOps.end()) {
+            // Check if the user operation is still within the same block (entryBlock)
+            if (user->getBlock() == &entryBlock) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder) {
+    std::vector<ModuleOp> segmentedModules;
+    SmallVector<Operation *, 5000> currentOps;
+    SmallVector<Value, 8> segmentInputs;
+    SmallVector<Operation *, 4> endOps;
+    SmallVector<Value, 8> segmentOutputs;  // Track outputs crossing segments
+    DenseMap<Value, Value> valueMap; // Map to keep track of original to cloned values
+
+    auto context = builder.getContext();
+    Block &entryBlock = funcOp.getBody().front();
+
+    // First pass to determine segmentation points and necessary types. TODO: abstract out as separate function
+    for (Operation &op : entryBlock) {
+        currentOps.push_back(&op);
+
+        for (Value operand : op.getOperands()) {
+            if (operand.getDefiningOp() == nullptr || operand.getDefiningOp()->getBlock() != &entryBlock) {
+                if (std::find(segmentInputs.begin(), segmentInputs.end(), operand) == segmentInputs.end()) {
+                    segmentInputs.push_back(operand);
+                }
+            }
+        }
+
+        // Track outputs of this segment
+        for (Value result : op.getResults()) {
+            if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
+                segmentOutputs.push_back(result);
+            }
+        }
+
+        if (currentOps.size() >= 5000) {
+            endOps.push_back(&op);
+            currentOps.clear();
+            segmentInputs.clear();
+            segmentOutputs.clear();
+        }
+    }
+
+    // Include the end operation's outputs in the segment outputs
+    if (!currentOps.empty()) {
+        Operation &lastOp = *currentOps.back();
+        for (Value result : lastOp.getResults()) {
+            if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
+                segmentOutputs.push_back(result);
+            }
+        }
+        endOps.push_back(&lastOp);
+    }
+
+    auto opIt = entryBlock.begin();
+    for (auto endOp : endOps) {
+        ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
+        SmallVector<Type, 4> segmentOutputTypes;
+
+        for (Value result : segmentOutputs) {
+            segmentOutputTypes.push_back(result.getType());
+        }
+
+        auto funcType = FunctionType::get(context, getValueTypes(segmentInputs), segmentOutputTypes);
+        auto newFuncOp = builder.create<func::FuncOp>(builder.getUnknownLoc(), "segmented_func_" + std::to_string(segmentedModules.size()), funcType);
+        auto &newBlock = *newFuncOp.addEntryBlock();
+        
+        valueMap.clear();  // Reset value map for new segment
+        // Map original block arguments to new block arguments
+        for (unsigned i = 0; i < segmentInputs.size(); ++i) {
+            valueMap[segmentInputs[i]] = newBlock.getArguments()[i];
+        }
+
+        // Clone operations
+        while (opIt != entryBlock.end() && opIt != entryBlock.getOperations().end() && &(*opIt) != endOp) {
+            Operation *clonedOp = builder.clone(*opIt);
+            remapOperandsUsingMap(clonedOp, valueMap, newBlock.getArguments());
+            newBlock.push_back(clonedOp);
+            updateValueMap(&(*opIt), clonedOp, valueMap);
+            ++opIt;
+        }
+
+        // Clone the end operation
+        Operation *clonedEndOp = builder.clone(*opIt);
+        remapOperandsUsingMap(clonedEndOp, valueMap, newBlock.getArguments());
+        newBlock.push_back(clonedEndOp);
+        updateValueMap(&(*opIt), clonedEndOp, valueMap);
+        ++opIt;
+
+        // Only add a return op if the end operation is not a return
+        if (!isa<func::ReturnOp>(clonedEndOp)) {
+            auto returnOp = builder.create<func::ReturnOp>(builder.getUnknownLoc(), clonedEndOp->getResults());
+            newBlock.push_back(returnOp);
+        }
+
+        currentModule.push_back(newFuncOp);
+        segmentedModules.push_back(currentModule);
+        currentModule.dump();
+
+        segmentInputs.clear();
+        segmentOutputs.clear();
+    }
+
+    return segmentedModules;
+}
+
+SmallVector<Type, 8> getValueTypes(const SmallVector<Value, 8> &values) {
+    SmallVector<Type, 8> types;
+    for (auto val : values) {
+        types.push_back(val.getType());
+    }
+    return types;
+}
+
+void remapOperandsUsingMap(Operation *op, DenseMap<Value, Value> &valueMap, Block::BlockArgListType newInputs) {
+    for (auto &operand : op->getOpOperands()) {
+        auto it = valueMap.find(operand.get());
+        if (it != valueMap.end()) {
+            operand.set(it->second);
+        }
+    }
+}
+
+void updateValueMap(Operation* opIt, Operation *clonedOp, DenseMap<Value, Value> &valueMap) {
+    for (unsigned i = 0; i < opIt->getNumResults(); ++i) {
+        valueMap[opIt->getResult(i)] = clonedOp->getResult(i);
+    }
+}
+
+void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedModules, OpBuilder &builder) {
+    func::FuncOp originalFuncOp;
+
+    for (Operation &op : originalModule.getBody()->getOperations()) {
+        if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+            originalFuncOp = funcOp;
+            break;
+        }
+    }
+
+    if (!originalFuncOp) {
+        llvm::errs() << "Original function not found, aborting recombination.\n";
+        return;
+    }
+
+    Block &originalBlock = originalFuncOp.getRegion().front();
+    originalBlock.clear();
+    originalBlock.dump();
+
+    if (&originalBlock == nullptr) {
+        llvm::errs() << "\n";
+        return;
+    }
+
+    DenseMap<Value, Value> valueMap;  // Map to maintain correct value references
+
+    for (auto arg : originalFuncOp.getArguments()) {
+        valueMap[arg] = arg;
+    }
+
+    auto location = builder.getUnknownLoc();
+
+    for (ModuleOp &optimizedModule : optimizedModules) {
+        func::FuncOp optimizedFuncOp = cast<func::FuncOp>(optimizedModule.getBody()->front());
+
+        for (Operation &op : optimizedFuncOp.getBody().front().getOperations()) {
+            Operation *clonedOp = builder.clone(op);
+            llvm::errs() << "Recombining " << clonedOp->getName().getStringRef().str() << "\n";
+
+
+            // Remap operands of cloned operation
+            for (auto &operand : clonedOp->getOpOperands()) {
+                auto it = valueMap.find(operand.get());
+                if (it != valueMap.end()) {
+                    operand.set(it->second);
+                }
+            }
+
+            if (clonedOp) {
+                if (&(*originalBlock.end()) == nullptr) {
+                    llvm::errs() << "Original block end pointer is null. Aborting recombination\n";
+                    return;
+                }
+                clonedOp->moveBefore(&originalBlock, originalBlock.end());
+            } else {
+                llvm::errs() << "Failed to clone operation, skipping.\n";
+                continue;
+            }
+
+            // Update value map
+            for (unsigned i = 0; i < op.getNumResults(); ++i) {
+                valueMap[op.getResult(i)] = clonedOp->getResult(i);
+            }
+        }
+    }
+
+    // Finalize by adding a return operation if needed
+    if (!isa<func::ReturnOp>(originalBlock.back())) {
+        auto results = llvm::to_vector<4>(originalBlock.getTerminator()->getOperands());
+        builder.create<func::ReturnOp>(location, results);
+    }
+}
+  
+    void runOnOperation() override {
+        ModuleOp module = getOperation();
+        module.dump();
+        auto context = module->getContext();
+        OpBuilder builder(context);
+  
+        // We assume there's only one FuncOp
+        func::FuncOp funcOp;
+        for (Operation &op : module.getBody()->getOperations()) {
+            if (auto foundFuncOp = dyn_cast<func::FuncOp>(op)) {
+                funcOp = foundFuncOp;
+                break;
+            }
+        }
+  
+        llvm::errs() << "Running EqualitySaturationPass on the module.\n";
+        // Segment the graph
+        auto segmentedModules = segmentGraph(funcOp, builder);
+  
+        // Optimize each segmented subgraph
+        std::vector<ModuleOp> optimizedModules;
+        for (int i = 0; i < segmentedModules.size(); ++i) {
+            std::vector<Operation*> blackboxIDToTensorInfo;
+            auto &segmentedModule = segmentedModules[i];
+  
+            llvm::errs() << "Creating egraph for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
+            auto graph = createEgraph(&blackboxIDToTensorInfo, builder, segmentedModule);
+            llvm::errs() << "Optimizing segment " << i + 1 << " of " << segmentedModules.size() << "\n";
+            auto optimized = graph->optimize();
+            llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
+            reconstructStablehlo(&segmentedModule, &blackboxIDToTensorInfo, optimized, builder);
+            optimizedModules.push_back(std::move(segmentedModule));
+  
+            llvm::errs() << "Segment " << i + 1 << " optimized successfully. Extracted module:\n";
+            segmentedModule.dump();
+        }
+  
+        // Recombine the optimized segments into the original function
+        recombineGraph(module, optimizedModules, builder);
+        llvm::errs() << "EqualitySaturationPass completed.\n";
     }
   };
 }  // end anonymous namespace
