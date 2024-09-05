@@ -10,7 +10,6 @@ from enzyme_ad.jax import (
     JaXPipeline,
     hlo_opts,
 )
-
 import numpy as np
 import timeit
 from test_utils import *
@@ -437,7 +436,7 @@ class Llama(EnzymeJaxTest):
 
         self.fn = partial(forward, config)
         self.name = "llama"
-        self.count = 1 # 100 if jax.default_backend() == "cpu" else 1000
+        self.count = 100 if jax.default_backend() == "cpu" else 1000
         self.revprimal = False
         self.AllPipelines = pipelines
         self.AllBackends = CurBackends
