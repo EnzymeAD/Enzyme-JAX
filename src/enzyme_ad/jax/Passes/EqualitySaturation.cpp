@@ -479,6 +479,10 @@ Operation* createStableHloOp(
       mlirOp = builder.create<stablehlo::PadOp>(builder.getUnknownLoc(), operands[0], operands[1], other_vecs[0], other_vecs[1], other_vecs[2]);
       break;
     }
+    case tensat::Ops::IotaOp: {
+      mlirOp = builder.create<stablehlo::IotaOp>(builder.getUnknownLoc(), RankedTensorType::get(llvm::ArrayRef(other_vecs[0]), builder.getF32Type()), int_args[0]);
+      break;
+    }
     default:
       std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
       assert(false);
@@ -1010,10 +1014,20 @@ namespace {
       
       for (auto i : seq.operands) {
         assert(nodes[i].name == "Num");
-        result.push_back(nodes[i].operands[0]);
+        result.push_back(parseNumNode(nodes, nodes[i]));
       }
 
       return result;
+    }
+
+    /**
+     * Parse the Num nodes emitted by tensat node construction.
+     * Our protocol is to encode integer values as operand indices.
+     * TODO: improve this!
+     */
+    int64_t parseNumNode(rust::vec<tensat::Node> &nodes, tensat::Node &seq) {
+      assert(seq.name == "Num");
+      return seq.operands[0];
     }
 
     /**
@@ -1059,11 +1073,11 @@ namespace {
         if (node.name == "Var" || node.name == "Num" || node.name == "Vec") {
           /* do nothing */
         } else if (node.name == "Input") {
-          int blockArgNumber = nodes[node.operands[1]].operands[0];
+          int blockArgNumber = parseNumNode(nodes, nodes[node.operands[1]]);
           opVals.push_back(block.getArgument(blockArgNumber));
           continue;
         } else if (node.name == "Index") {
-          int index = nodes[node.operands[0]].operands[0];
+          int index = parseNumNode(nodes, nodes[node.operands[0]]);
           int input = node.operands[1];
           opVals.push_back(opVals[input].getDefiningOp()->getResult(index));
           continue;
@@ -1127,7 +1141,7 @@ namespace {
           newOp = builder.create<stablehlo::DotGeneralOp>(location, newType, lhs, rhs, dotDimensionNumbersAttr, mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)), nullptr);
         } else if (node.name == "ConcatenateOp") {
           auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
-          auto dimension = nodes[node.operands[1]].operands[0];
+          auto dimension = parseNumNode(nodes, nodes[node.operands[1]]);
           newOp = builder.create<stablehlo::ConcatenateOp>(location, inputs, dimension);
         } else if (node.name == "SliceOp") {
           auto operand = opVals[node.operands[0]];
@@ -1142,6 +1156,9 @@ namespace {
           auto edgePaddingHigh = parseNumVec(nodes, nodes[node.operands[3]]);
           auto interiorPadding = parseNumVec(nodes, nodes[node.operands[4]]);
           newOp = builder.create<stablehlo::PadOp>(location, operand, paddingValue, edgePaddingLow, edgePaddingHigh, interiorPadding);
+        } else if (node.name == "IotaOp") {
+          // TODO: element type handling. 
+          newOp = builder.create<stablehlo::IotaOp>(location, RankedTensorType::get(llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])), builder.getF32Type()), parseNumNode(nodes, nodes[node.operands[0]]));
         } else if (node.name == "ReturnOp") {
           auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
           newOp = builder.create<func::ReturnOp>(location, inputs);       
@@ -1149,7 +1166,7 @@ namespace {
           assert(node.operands.size() > 0);
           size_t numOperands = node.operands.size() - 1;
           assert(nodes[node.operands[numOperands]].name == "Num");
-          auto blackboxID = nodes[node.operands[numOperands]].operands[0];
+          auto blackboxID = parseNumNode(nodes, nodes[node.operands[numOperands]]);
           newOp = blackboxIDToTensorInfo->at(blackboxID);
           assert(numOperands == newOp->getNumOperands());
     
@@ -1181,12 +1198,14 @@ namespace {
 
     void runOnOperation() override {
       ModuleOp module = getOperation();
-      // std::cout << "ORIGINAL MODULE" << "\n";
       // module.dump();
       std::vector<Operation*> blackboxIDToTensorInfo;
       auto context = module->getContext();
       OpBuilder builder(context);
+      // std::cout << "creating egraph..." << "\n";
       auto graph = createEgraph(&blackboxIDToTensorInfo, builder, module);
+      // graph->print_rec_expr();
+      // std::cout << "optimizing .." << "\n";
       auto optimized = graph->optimize();
 
       // std::cout << "reconstructing\n";
