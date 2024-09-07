@@ -116,4 +116,21 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def EqualitySaturationPass : Pass<"equality-saturation-pass"> {
+  let summary = "Run equality saturation";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect"
+  ];
+  let constructor = "mlir::enzyme::createEqualitySaturationPass()";
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_iterations",
+      /*CLI argument=*/"max_iterations",
+      /*type=*/"int64_t",
+      /*default=*/"100",
+      /*description=*/"Maximum number of pattern iterations"
+    >
+    ];
+}
+
 #endif

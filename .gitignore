@@ -1,3 +1,8 @@
 *.swp
 *.swo
 bazel-*
+*.DS_Store
+*.vscode
+src/enzyme_ad/jax/deps/libReactantExtra.so
+tmp
+.local

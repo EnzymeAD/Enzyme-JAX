@@ -101,8 +101,9 @@ py_wheel(
     python_tag = "py"+HERMETIC_PYTHON_VERSION.replace(".", ""),
     requires = [
         "absl_py >= 2.0.0",
-        "jax >= 0.4.21",
-        "jaxlib >= 0.4.21",
+        "jax == 0.4.31",
+        "jaxlib == 0.4.31",
+	"ortools == 9.10.4067"
     ],
     python_requires = "=="+HERMETIC_PYTHON_VERSION+".*",
     strip_path_prefixes = ["src/"],

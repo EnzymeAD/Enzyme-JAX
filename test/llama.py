@@ -367,6 +367,14 @@ pipelines = [
     ),
     ("PartOpt", JaXPipeline(partialopt), CurBackends),
     ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    (
+        "EqualitySaturation",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "canonicalize,cse,enzyme-hlo-opt,cse,equality-saturation-pass"
+        ),
+        CurBackends,
+    ),
 ]
 
 

@@ -1,0 +1,13 @@
+diff --git a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_script.bzl
+index 244c9a70..b1fb094f 100644
+--- a/cargo/private/cargo_build_script.bzl
++++ b/cargo/private/cargo_build_script.bzl
+@@ -323,7 +323,7 @@ def _cargo_build_script_impl(ctx):
+         env = env,
+         toolchain = None,
+         # Set use_default_shell_env so that $PATH is set, as tools like cmake may want to probe $PATH for helper tools.
+-        use_default_shell_env = True,
++        use_default_shell_env = False, # https://github.com/bazelbuild/rules_rust/issues/2665
+     )
+ 
+     return [

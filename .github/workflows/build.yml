@@ -45,12 +45,12 @@ jobs:
 
       - name: test
         run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --test_output=errors ...
+          CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --test_output=errors ...
           
       - name: Build Wheel
         run: |
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
+          CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
           cp bazel-bin/*.whl .
 
       - name: Upload Build

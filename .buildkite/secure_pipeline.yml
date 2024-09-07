@@ -49,12 +49,20 @@ steps:
         fi
         mv bazel* .local/bin/bazel.exe
       fi
+
+      export RUSTUP_HOME=`pwd`/.local/.rustup
+      export CARGO_HOME=`pwd`/.local/.cargo 
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      export PATH="`pwd`/.local/.cargo/bin:\$PATH"
+      rustup default stable
+      cargo install cxxbridge-cmd
+
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build @llvm-project//llvm:FileCheck
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build --check_visibility=false @llvm-project//llvm:FileCheck
       rm bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build :wheel
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build --check_visibility=false :wheel
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install --user twine

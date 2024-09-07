@@ -67,7 +67,6 @@ TEST_DEPS = [
         "//conditions:default": []
     })
 
-
 [
     lit_test(
         name = "%s.test" % src,
@@ -118,5 +117,6 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    data = ["//src/enzyme_ad/jax:deps/tensat/converted.txt", "//src/enzyme_ad/jax:deps/tensat/extractor/extract.py"],
     timeout='long'
 )
