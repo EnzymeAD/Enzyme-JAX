@@ -1191,7 +1191,7 @@ bool isUsedOutsideSegment(Value result, Block &entryBlock, SmallVector<Operation
     return false;
 }
 
-std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder) {
+std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder, DenseMap<Value, Value> &toOriginalArg) {
     std::vector<ModuleOp> segmentedModules;
     SmallVector<Operation *, 5000> currentOps;
     SmallVector<Value, 8> segmentInputs;
@@ -1283,10 +1283,15 @@ std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder) {
 
         currentModule.push_back(newFuncOp);
         segmentedModules.push_back(currentModule);
-        currentModule.dump();
+        // currentModule.dump();
 
         segmentInputs.clear();
         segmentOutputs.clear();
+    }
+
+    for (auto arg : funcOp.getArguments()) {
+      auto mapped = valueMap.at(arg);
+      toOriginalArg[mapped] = arg;
     }
 
     return segmentedModules;
@@ -1315,7 +1320,7 @@ void updateValueMap(Operation* opIt, Operation *clonedOp, DenseMap<Value, Value>
     }
 }
 
-void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedModules, OpBuilder &builder) {
+void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedModules, OpBuilder &builder, DenseMap<Value, Value> &toOriginalArg) {
     func::FuncOp originalFuncOp;
 
     for (Operation &op : originalModule.getBody()->getOperations()) {
@@ -1332,18 +1337,9 @@ void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedMod
 
     Block &originalBlock = originalFuncOp.getRegion().front();
     originalBlock.clear();
-    originalBlock.dump();
+    // originalBlock.dump();
 
-    if (&originalBlock == nullptr) {
-        llvm::errs() << "\n";
-        return;
-    }
-
-    DenseMap<Value, Value> valueMap;  // Map to maintain correct value references
-
-    for (auto arg : originalFuncOp.getArguments()) {
-        valueMap[arg] = arg;
-    }
+    DenseMap<Value, Value> valueMap;  // values in segmented graphs to newly constructed values
 
     auto location = builder.getUnknownLoc();
 
@@ -1352,23 +1348,23 @@ void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedMod
 
         for (Operation &op : optimizedFuncOp.getBody().front().getOperations()) {
             Operation *clonedOp = builder.clone(op);
-            llvm::errs() << "Recombining " << clonedOp->getName().getStringRef().str() << "\n";
-
+            // llvm::errs() << "Recombining " << clonedOp->getName().getStringRef().str() << "\n";
 
             // Remap operands of cloned operation
             for (auto &operand : clonedOp->getOpOperands()) {
-                auto it = valueMap.find(operand.get());
+                Value operandValue = operand.get();
+                auto it = valueMap.find(operandValue);
                 if (it != valueMap.end()) {
-                    operand.set(it->second);
+                  operand.set(it->second);
+                } else {
+                  // if the value doesn't exist in the map, it must be the function argument
+                  // (assuming one outer FuncOp in the module)
+                  operand.set(toOriginalArg.at(operandValue));
                 }
             }
 
             if (clonedOp) {
-                if (&(*originalBlock.end()) == nullptr) {
-                    llvm::errs() << "Original block end pointer is null. Aborting recombination\n";
-                    return;
-                }
-                clonedOp->moveBefore(&originalBlock, originalBlock.end());
+                originalBlock.push_back(clonedOp);
             } else {
                 llvm::errs() << "Failed to clone operation, skipping.\n";
                 continue;
@@ -1390,7 +1386,7 @@ void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedMod
   
     void runOnOperation() override {
         ModuleOp module = getOperation();
-        module.dump();
+        // module.dump();
         auto context = module->getContext();
         OpBuilder builder(context);
   
@@ -1405,7 +1401,8 @@ void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedMod
   
         llvm::errs() << "Running EqualitySaturationPass on the module.\n";
         // Segment the graph
-        auto segmentedModules = segmentGraph(funcOp, builder);
+        DenseMap<Value, Value> toOriginalArg;
+        auto segmentedModules = segmentGraph(funcOp, builder, toOriginalArg);
   
         // Optimize each segmented subgraph
         std::vector<ModuleOp> optimizedModules;
@@ -1421,12 +1418,12 @@ void recombineGraph(ModuleOp originalModule, std::vector<ModuleOp> &optimizedMod
             reconstructStablehlo(&segmentedModule, &blackboxIDToTensorInfo, optimized, builder);
             optimizedModules.push_back(std::move(segmentedModule));
   
-            llvm::errs() << "Segment " << i + 1 << " optimized successfully. Extracted module:\n";
-            segmentedModule.dump();
+            llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
+            // segmentedModule.dump();
         }
   
         // Recombine the optimized segments into the original function
-        recombineGraph(module, optimizedModules, builder);
+        recombineGraph(module, optimizedModules, builder, toOriginalArg);
         llvm::errs() << "EqualitySaturationPass completed.\n";
     }
   };

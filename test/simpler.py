@@ -5,13 +5,7 @@ import jax.lax
 import enzyme_ad.jax as enzyme_jax
 
 def test(x, y, z, w):
-
-  # Define padding configurations
-  padding_config = [(1, 2, 0), (2, 1, 0)]
-
-  # Pad the array
-  padded_arr = jax.lax.pad(x, padding_value=0., padding_config=padding_config)
-  return padded_arr
+  return x @ y
 
 class Simple(absltest.TestCase):
     def test_simple_random(self):
