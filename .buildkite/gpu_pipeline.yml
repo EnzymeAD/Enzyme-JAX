@@ -4,7 +4,7 @@ steps:
       queue: "juliagpu"
       cuda: "*"
     if: build.message !~ /\[skip tests\]/
-    timeout_in_minutes: 60
+    timeout_in_minutes: 180
     commands: |
       echo "--- Setup :python: Dependencies"
       mkdir -p .local/bin
