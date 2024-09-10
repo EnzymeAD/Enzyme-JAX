@@ -13,9 +13,9 @@ import timeit
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 devices = []
-CurBackends = ["gpu"] #jax.default_backend()]
+CurBackends = ["cuda"] #jax.default_backend()]
 
-if "gpu" != "cpu":
+if "cuda" != "cpu":
     devices = CurBackends
 
 AllBackends = ["cpu"] + devices
