@@ -286,23 +286,48 @@ private:
   /**
    * Create a PjRtBuffer from a given MLIR type with random elements.
    */
-
   static xla::PjRtBuffer* getRandomInput(xla::PjRtClient* client, mlir::Type type) {
-    assert(isa<RankedTensorType>(type)); // TODO: not true in general
+    // TODO: Add support for non-ranked types
+    assert(isa<RankedTensorType>(type));
+
     auto ranked = type.cast<RankedTensorType>();
     auto elementType = ranked.getElementType();
     auto shape = ranked.getShape();
 
-    auto width = (elementType.getIntOrFloatBitWidth() + 7) / 8; // round up to nearest byte
+    // Calculate the number of elements in the tensor
     int numElements = 1;
-    for (auto i : shape) numElements *= i;
+    for (auto dim : shape) numElements *= dim;
 
-    void* data = malloc(width * numElements);
+    // Determine the element width in bytes
+    auto width = (elementType.getIntOrFloatBitWidth() + 7) / 8; // round up to nearest byte
+    
+    // Allocate random data based on the element type
+    std::vector<uint8_t> data(width * numElements);
+
+    // Fill the data with random values based on the type
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    if (elementType.isF32()) {
+        std::uniform_real_distribution<float> dist(0.0, 1.0);
+        float* typedData = reinterpret_cast<float*>(data.data());
+        for (int i = 0; i < numElements; ++i) {
+            typedData[i] = dist(gen);
+        }
+    } else if (elementType.isInteger(32)) {
+        std::uniform_int_distribution<int32_t> dist(0, INT32_MAX);
+        int32_t* typedData = reinterpret_cast<int32_t*>(data.data());
+        for (int i = 0; i < numElements; ++i) {
+            typedData[i] = dist(gen);
+        }
+    } else {
+        // TODO: Handle other element types (e.g. integers of different widths, other floating point types)
+        assert(false && "Element type not supported yet");
+    }
 
     auto device = ClientGetAddressableDevice(client, 0);
-    auto buffer = ArrayFromHostBuffer(client, data, wrap(elementType), shape.size(), shape.data(), device);
-    
-    free(data);
+    auto buffer = ArrayFromHostBuffer(client, data.data(), wrap(elementType), shape.size(), shape.data(), device);
+
     return buffer;
   }
 };
@@ -1198,6 +1223,7 @@ namespace {
 
     void runOnOperation() override {
       ModuleOp module = getOperation();
+      // std::cout << "ORIGINAL MODULE\n";
       // module.dump();
       std::vector<Operation*> blackboxIDToTensorInfo;
       auto context = module->getContext();
@@ -1210,7 +1236,7 @@ namespace {
 
       // std::cout << "reconstructing\n";
       reconstructStablehlo(&module, &blackboxIDToTensorInfo, optimized, builder);
-      // std::cout << "Optimised module" << "\n";
+      // std::cout << "OPTIMIZED module" << "\n";
       // module.dump();
     }
   };
