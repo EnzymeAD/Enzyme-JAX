@@ -469,6 +469,68 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class AutoDiffScatterRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffScatterRev,
+                                                       ScatterOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<ScatterOp>(orig);
+    auto inDiffe = gutils->diffe(op->getResult(0), builder);
+    if (op.getUpdates().size() != 1) {
+      return op.emitError() << "Expected exactly 1 update operand";
+    }
+
+    Value updates = op.getUpdates().front();
+    ScatterDimensionNumbersAttr scatterDims = op.getScatterDimensionNumbers();
+    ArrayRef<int64_t> updateWindowDims = scatterDims.getUpdateWindowDims();
+    ArrayRef<int64_t> insertedWindowDims = scatterDims.getInsertedWindowDims();
+    ArrayRef<int64_t> inputBatchingDims = scatterDims.getInputBatchingDims();
+
+    auto gatherDims = GatherDimensionNumbersAttr::get(
+        op.getContext(),
+        /*offsetDims=*/updateWindowDims,
+        /*collapsedSliceDims=*/insertedWindowDims,
+        /*operandBatchingDims=*/inputBatchingDims,
+        /*startIndicesBatchingDims=*/
+        scatterDims.getScatterIndicesBatchingDims(),
+        /*startIndexMap=*/scatterDims.getScatterDimsToOperandDims(),
+        /*indexVectorDim=*/scatterDims.getIndexVectorDim());
+
+    auto operandType = cast<RankedTensorType>(inDiffe.getType());
+    auto updatesType = cast<RankedTensorType>(updates.getType());
+
+    // Compute slice sizes
+    SmallVector<int64_t> sliceSizes(operandType.getRank(), 1);
+    DenseSet<int64_t> skippedDims;
+    skippedDims.insert(insertedWindowDims.begin(), insertedWindowDims.end());
+    skippedDims.insert(inputBatchingDims.begin(), inputBatchingDims.end());
+
+    unsigned windowIdx = 0;
+    for (int64_t i = 0; i < operandType.getRank(); ++i) {
+      if (!skippedDims.contains(i)) {
+        sliceSizes[i] = updatesType.getShape()[updateWindowDims[windowIdx++]];
+      }
+    }
+
+    Value indices = gutils->getNewFromOriginal(op.getScatterIndices());
+    auto gather =
+        builder.create<GatherOp>(op.getLoc(), inDiffe, indices, gatherDims,
+                                 sliceSizes, op.getIndicesAreSorted());
+    gutils->addToDiffe(updates, gather, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 struct SHLOConstantOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
                                              ConstantOp> {
@@ -512,6 +574,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
         ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+        ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
         ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
       });
 }
