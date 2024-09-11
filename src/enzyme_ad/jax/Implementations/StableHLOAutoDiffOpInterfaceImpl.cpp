@@ -469,6 +469,63 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class AutoDiffGatherRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffGatherRev,
+                                                       GatherOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<GatherOp>(orig);
+    auto inDiffe = gutils->diffe(op, builder);
+    GatherDimensionNumbersAttr dims = op.getDimensionNumbers();
+
+    auto scatterDims = ScatterDimensionNumbersAttr::get(
+        op.getContext(),
+        /*updateWindowDims=*/dims.getOffsetDims(),
+        /*insertedWindowDims=*/dims.getCollapsedSliceDims(),
+        /*inputBatchingDims=*/dims.getOperandBatchingDims(),
+        /*scatterIndicesBatchingDims=*/dims.getStartIndicesBatchingDims(),
+        /*scatterDimsToOperandDims=*/dims.getStartIndexMap(),
+        /*indexVectorDim=*/dims.getIndexVectorDim());
+    Value indices = gutils->getNewFromOriginal(op.getStartIndices());
+    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+
+    auto scatter = builder.create<ScatterOp>(
+        op.getLoc(), operandType, gutils->diffe(op.getOperand(), builder),
+        indices, inDiffe, scatterDims, op.getIndicesAreSorted());
+
+    // Add the update computation. This includes the plus-equalling into the
+    // gradient.
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      RankedTensorType zeroDType = operandType.clone(/*shape=*/std::nullopt);
+      SmallVector<Type> blockArgTypes(2, zeroDType);
+      Region &bodyRegion = scatter.getUpdateComputation();
+      Block::BlockArgListType blockArgs =
+          builder
+              .createBlock(&bodyRegion, bodyRegion.begin(), blockArgTypes,
+                           SmallVector(2, op.getLoc()))
+              ->getArguments();
+      Value sum =
+          builder.create<AddOp>(op.getLoc(), blockArgs[0], blockArgs[1]);
+      builder.create<ReturnOp>(op.getLoc(), sum);
+    }
+
+    gutils->setDiffe(op.getOperand(), scatter.getResult(0), builder);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 class AutoDiffScatterRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffScatterRev,
                                                        ScatterOp> {
@@ -508,11 +565,9 @@ public:
     skippedDims.insert(inputBatchingDims.begin(), inputBatchingDims.end());
 
     unsigned windowIdx = 0;
-    for (int64_t i = 0; i < operandType.getRank(); ++i) {
-      if (!skippedDims.contains(i)) {
+    for (int64_t i = 0; i < operandType.getRank(); ++i)
+      if (!skippedDims.contains(i))
         sliceSizes[i] = updatesType.getShape()[updateWindowDims[windowIdx++]];
-      }
-    }
 
     Value indices = gutils->getNewFromOriginal(op.getScatterIndices());
     auto gather =
@@ -574,6 +629,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
         ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+        GatherOp::attachInterface<AutoDiffGatherRev>(*context);
         ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
         ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
       });
