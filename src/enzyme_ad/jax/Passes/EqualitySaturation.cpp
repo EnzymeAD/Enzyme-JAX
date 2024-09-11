@@ -1312,7 +1312,7 @@ public:
   }
 
   bool isUsedOutsideSegment(Value result, Block &entryBlock,
-                            SmallVector<Operation *, 5000> &currentOps) {
+                            SmallVector<Operation *> &currentOps) {
     for (auto *user : result.getUsers()) {
       // Check if the user operation is not in the current segment
       if (std::find(currentOps.begin(), currentOps.end(), user) ==
@@ -1327,88 +1327,107 @@ public:
     return false;
   }
 
+  struct SegmentationPoint {
+    /// Operation at the end of a segment
+    Operation *endOp;
+
+    /// Values crossing into the segment
+    SmallVector<Value> inputs;
+
+    /// Values crossing out of the segment
+    SmallVector<Value> outputs;
+  };
+
   std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder,
                                      DenseMap<Value, Value> &toOriginalArg) {
-    std::vector<ModuleOp> segmentedModules;
-    SmallVector<Operation *, 5000> currentOps;
-    SmallVector<Value, 8> segmentInputs;
-    SmallVector<Operation *, 4> endOps;
-    SmallVector<Value, 8> segmentOutputs; // Track outputs crossing segments
-    DenseMap<Value, Value>
-        valueMap; // Map to keep track of original to cloned values
-
     auto context = builder.getContext();
     Block &entryBlock = funcOp.getBody().front();
 
-    // First pass to determine segmentation points and necessary types. TODO:
-    // abstract out as separate function
-    for (Operation &op : entryBlock) {
+    // First pass to determine segmentation points and necessary types.
+    // TODO: abstract out as separate function
+
+    const int segmentThreshold = 100;
+    SmallVector<SegmentationPoint> segmentationPoints;
+    SmallVector<Operation *> currentOps;
+    SegmentationPoint segment;
+
+    // We need to keep track of anything that was an output value, so that if we
+    // see it in later segments then we know to add that as an input.
+
+    // TODO: We should keep track of a mapping between function arguments
+    // created as a result of an output value, so that we can use it when
+    // reconstructing segments
+    DenseSet<Value> outputsBeforeCurrentSegment;
+
+    for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
+      Operation &op = *it;
       currentOps.push_back(&op);
 
       for (Value operand : op.getOperands()) {
         if (operand.getDefiningOp() == nullptr ||
-            operand.getDefiningOp()->getBlock() != &entryBlock) {
-          if (std::find(segmentInputs.begin(), segmentInputs.end(), operand) ==
-              segmentInputs.end()) {
-            segmentInputs.push_back(operand);
+            operand.getDefiningOp()->getBlock() != &entryBlock ||
+            outputsBeforeCurrentSegment.find(operand) !=
+                outputsBeforeCurrentSegment.end()) {
+          if (std::find(segment.inputs.begin(), segment.inputs.end(),
+                        operand) == segment.inputs.end()) {
+            segment.inputs.push_back(operand);
           }
         }
       }
 
-      // Track outputs of this segment
-      for (Value result : op.getResults()) {
-        if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
-          segmentOutputs.push_back(result);
+      if (currentOps.size() >= segmentThreshold || it == (--entryBlock.end())) {
+        // Track outputs of this segment
+        for (Operation *op : currentOps) {
+          for (Value result : op->getResults()) {
+            if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
+              segment.outputs.push_back(result);
+            }
+          }
         }
-      }
 
-      if (currentOps.size() >= 5000) {
-        endOps.push_back(&op);
+        segment.endOp = &op;
+        segmentationPoints.push_back(segment);
         currentOps.clear();
-        segmentInputs.clear();
-        segmentOutputs.clear();
+
+        outputsBeforeCurrentSegment.insert(segment.outputs.begin(),
+                                           segment.outputs.end());
+        segment = SegmentationPoint();
       }
     }
 
-    // Include the end operation's outputs in the segment outputs
-    if (!currentOps.empty()) {
-      Operation &lastOp = *currentOps.back();
-      for (Value result : lastOp.getResults()) {
-        if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
-          segmentOutputs.push_back(result);
-        }
-      }
-      endOps.push_back(&lastOp);
-    }
+    std::vector<ModuleOp> segmentedModules;
+    DenseMap<Value, Value>
+        valueMap; // Map to keep track of original to cloned values
 
     auto opIt = entryBlock.begin();
-    for (auto endOp : endOps) {
+    for (int i = 0; i < segmentationPoints.size(); i++) {
+      auto segment = segmentationPoints[i];
       ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
-      SmallVector<Type, 4> segmentOutputTypes;
+      SmallVector<Type> segmentOutputTypes;
 
-      for (Value result : segmentOutputs) {
+      for (Value result : segment.outputs) {
         segmentOutputTypes.push_back(result.getType());
       }
 
-      auto funcType = FunctionType::get(context, getValueTypes(segmentInputs),
+      auto funcType = FunctionType::get(context, getValueTypes(segment.inputs),
                                         segmentOutputTypes);
       auto newFuncOp = builder.create<func::FuncOp>(
-          builder.getUnknownLoc(),
-          "segmented_func_" + std::to_string(segmentedModules.size()),
+          builder.getUnknownLoc(), "segmented_func_" + std::to_string(i),
           funcType);
       auto &newBlock = *newFuncOp.addEntryBlock();
 
       valueMap.clear(); // Reset value map for new segment
       // Map original block arguments to new block arguments
-      for (unsigned i = 0; i < segmentInputs.size(); ++i) {
-        valueMap[segmentInputs[i]] = newBlock.getArguments()[i];
+      for (unsigned i = 0; i < segment.inputs.size(); ++i) {
+        valueMap[segment.inputs[i]] = newBlock.getArguments()[i];
       }
 
       // Clone operations
       while (opIt != entryBlock.end() &&
-             opIt != entryBlock.getOperations().end() && &(*opIt) != endOp) {
+             opIt != entryBlock.getOperations().end() &&
+             &(*opIt) != segment.endOp) {
         Operation *clonedOp = builder.clone(*opIt);
-        remapOperandsUsingMap(clonedOp, valueMap, newBlock.getArguments());
+        remapOperandsUsingMap(clonedOp, valueMap);
         newBlock.push_back(clonedOp);
         updateValueMap(&(*opIt), clonedOp, valueMap);
         ++opIt;
@@ -1416,24 +1435,26 @@ public:
 
       // Clone the end operation
       Operation *clonedEndOp = builder.clone(*opIt);
-      remapOperandsUsingMap(clonedEndOp, valueMap, newBlock.getArguments());
+      remapOperandsUsingMap(clonedEndOp, valueMap);
       newBlock.push_back(clonedEndOp);
       updateValueMap(&(*opIt), clonedEndOp, valueMap);
       ++opIt;
 
-      // Only add a return op if the end operation is not a return
-      if (!isa<func::ReturnOp>(clonedEndOp)) {
-        auto returnOp = builder.create<func::ReturnOp>(
-            builder.getUnknownLoc(), clonedEndOp->getResults());
+      // We need to return all the output values as well as endOp.
+      SmallVector<Value> returns;
+      for (auto output : segment.outputs) {
+        returns.push_back(valueMap.at(output));
+      }
+
+      if (!returns.empty()) {
+        auto returnOp =
+            builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
         newBlock.push_back(returnOp);
       }
 
       currentModule.push_back(newFuncOp);
       segmentedModules.push_back(currentModule);
-      // currentModule.dump();
-
-      segmentInputs.clear();
-      segmentOutputs.clear();
+      currentModule.dump();
     }
 
     for (auto arg : funcOp.getArguments()) {
@@ -1444,16 +1465,15 @@ public:
     return segmentedModules;
   }
 
-  SmallVector<Type, 8> getValueTypes(const SmallVector<Value, 8> &values) {
-    SmallVector<Type, 8> types;
+  SmallVector<Type> getValueTypes(SmallVector<Value> &values) {
+    SmallVector<Type> types;
     for (auto val : values) {
       types.push_back(val.getType());
     }
     return types;
   }
 
-  void remapOperandsUsingMap(Operation *op, DenseMap<Value, Value> &valueMap,
-                             Block::BlockArgListType newInputs) {
+  void remapOperandsUsingMap(Operation *op, DenseMap<Value, Value> &valueMap) {
     for (auto &operand : op->getOpOperands()) {
       auto it = valueMap.find(operand.get());
       if (it != valueMap.end()) {
