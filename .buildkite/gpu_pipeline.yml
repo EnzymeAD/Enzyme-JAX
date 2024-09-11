@@ -16,20 +16,20 @@ steps:
 
       mv bazel* .local/bin/bazel
       chmod +x .local/bin/bazel
-      export PATH="`pwd`/.local/bin:$PATH"
+      export PATH="`pwd`/.local/bin:\$PATH"
 
       mkdir -p .baztmp
 
       echo "--- :python: Test"
 
       export CUDA_DIR=`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc
-      export XLA_FLAGS=--xla_gpu_cuda_data_dir=$CUDA_DIR
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver:$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib:$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:$LD_LIBRARY_PATH"
-      export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:$PATH"
+      export XLA_FLAGS=--xla_gpu_cuda_data_dir=\$CUDA_DIR
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
+      export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:\$PATH"
       export TF_CPP_MIN_LOG_LEVEL=0
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
