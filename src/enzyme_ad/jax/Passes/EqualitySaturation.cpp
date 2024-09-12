@@ -1384,7 +1384,6 @@ public:
             }
           }
         }
-
         segment.endOp = &op;
         segmentationPoints.push_back(segment);
         currentOps.clear();
