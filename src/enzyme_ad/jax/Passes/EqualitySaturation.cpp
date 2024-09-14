@@ -1338,15 +1338,21 @@ public:
     SmallVector<Value> outputs;
   };
 
-  std::vector<ModuleOp> segmentGraph(func::FuncOp funcOp, OpBuilder &builder,
-                                     DenseMap<Value, Value> &toOriginalArg) {
+  struct SegmentedModule {
+    ModuleOp module;
+    SegmentationPoint segmentPoint;
+  };
+
+  std::vector<SegmentedModule>
+  segmentGraph(func::FuncOp funcOp, OpBuilder &builder,
+               DenseMap<Value, Value> &toOriginalArg) {
     auto context = builder.getContext();
     Block &entryBlock = funcOp.getBody().front();
 
     // First pass to determine segmentation points and necessary types.
     // TODO: abstract out as separate function
 
-    const int segmentThreshold = 100;
+    const int segmentThreshold = 50;
     SmallVector<SegmentationPoint> segmentationPoints;
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
@@ -1394,7 +1400,7 @@ public:
       }
     }
 
-    std::vector<ModuleOp> segmentedModules;
+    std::vector<SegmentedModule> segmentedModules;
     DenseMap<Value, Value>
         valueMap; // Map to keep track of original to cloned values
 
@@ -1450,9 +1456,11 @@ public:
             builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
         newBlock.push_back(returnOp);
       }
-
       currentModule.push_back(newFuncOp);
-      segmentedModules.push_back(currentModule);
+      SegmentedModule sm;
+      sm.module = currentModule;
+      sm.segmentPoint = segment;
+      segmentedModules.push_back(sm);
       currentModule.dump();
     }
 
@@ -1488,74 +1496,120 @@ public:
     }
   }
 
-  void recombineGraph(ModuleOp originalModule,
-                      std::vector<ModuleOp> &optimizedModules,
+  /// Inline the operations from each segmented module into the main function
+  void recombineGraph(ModuleOp mainModule,
+                      const std::vector<SegmentedModule> &optimizedModules,
                       OpBuilder &builder,
                       DenseMap<Value, Value> &toOriginalArg) {
-    func::FuncOp originalFuncOp;
-
-    for (Operation &op : originalModule.getBody()->getOperations()) {
+    func::FuncOp mainFunc;
+    for (auto &op : mainModule.getBody()->getOperations()) {
       if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
-        originalFuncOp = funcOp;
+        mainFunc = funcOp;
         break;
       }
     }
 
-    if (!originalFuncOp) {
-      llvm::errs() << "Original function not found, aborting recombination.\n";
+    if (!mainFunc) {
+      llvm::errs() << "Error: No main FuncOp found in the main module.\n";
       return;
     }
 
-    Block &originalBlock = originalFuncOp.getRegion().front();
-    originalBlock.clear();
-    // originalBlock.dump();
+    // Remove existing return operations in the main function
+    SmallVector<func::ReturnOp> existingReturns;
+    mainFunc.walk(
+        [&](func::ReturnOp retOp) { existingReturns.push_back(retOp); });
+    for (auto retOp : existingReturns) {
+      retOp.erase();
+    }
 
-    DenseMap<Value, Value>
-        valueMap; // values in segmented graphs to newly constructed values
+    Block &entryBlock = mainFunc.getBody().front();
+    builder.setInsertionPointToEnd(&entryBlock);
 
-    auto location = builder.getUnknownLoc();
+    // Vector to keep track of the outputs from the previous segment
+    SmallVector<Value> previousSegmentOutputs;
 
-    for (ModuleOp &optimizedModule : optimizedModules) {
-      func::FuncOp optimizedFuncOp =
-          cast<func::FuncOp>(optimizedModule.getBody()->front());
+    DenseMap<Value, Value> availableValues;
+    // Initialize with main function arguments
+    for (auto arg : mainFunc.getArguments()) {
+      availableValues[arg] = arg;
+    }
 
-      for (Operation &op : optimizedFuncOp.getBody().front().getOperations()) {
-        Operation *clonedOp = builder.clone(op);
-        // llvm::errs() << "Recombining " <<
-        // clonedOp->getName().getStringRef().str() << "\n";
+    for (size_t i = 0; i < optimizedModules.size(); ++i) {
+      SegmentedModule segmentedModule = optimizedModules[i];
+      ModuleOp module = segmentedModule.module;
+      SegmentationPoint &segmentPoint = segmentedModule.segmentPoint;
+      func::FuncOp segmentedFunc;
+      for (auto &op : module.getBody()->getOperations()) {
+        if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+          segmentedFunc = funcOp;
+          break;
+        }
+      }
 
-        // Remap operands of cloned operation
-        for (auto &operand : clonedOp->getOpOperands()) {
-          Value operandValue = operand.get();
-          auto it = valueMap.find(operandValue);
-          if (it != valueMap.end()) {
-            operand.set(it->second);
-          } else {
-            // if the value doesn't exist in the map, it must be the function
-            // argument (assuming one outer FuncOp in the module)
-            operand.set(toOriginalArg.at(operandValue));
+      if (!segmentedFunc) {
+        llvm::errs() << "Error: Segmented module " << i
+                     << " does not contain a FuncOp.\n";
+        continue;
+      }
+
+      IRMapping mapper;
+
+      // Map inputs using availableValues
+      for (unsigned argIdx = 0; argIdx < segmentedFunc.getNumArguments();
+           ++argIdx) {
+        Value segmentedArg = segmentedFunc.getArgument(argIdx);
+        Value originalValue = segmentPoint.inputs[argIdx];
+        Value correspondingMainValue = availableValues.lookup(originalValue);
+        if (!correspondingMainValue) {
+          llvm::errs() << "Error: Unable to find corresponding value for "
+                          "segmented argument.\n";
+          return;
+        }
+        mapper.map(segmentedArg, correspondingMainValue);
+      }
+
+      // Vector to collect the outputs of the current segment
+      SmallVector<Value> currentSegmentOutputs;
+
+      // Clone and insert the operations from the segmented function into the
+      // main function
+      for (auto &op : segmentedFunc.getBody().front().getOperations()) {
+        if (auto retOp = dyn_cast<func::ReturnOp>(op)) {
+          // Collect the return values mapped to the main function's values
+          for (auto operand : retOp.getOperands()) {
+            Value mappedVal = mapper.lookupOrDefault(operand);
+            currentSegmentOutputs.push_back(mappedVal);
+          }
+          // Do not clone the `func.return` operation
+          continue;
+        } else {
+          // Clone the operation with remapped operands
+          Operation *clonedOp = builder.clone(op, mapper);
+          // Map the results for subsequent operations
+          for (auto result : op.getResults()) {
+            mapper.map(result, clonedOp->getResult(result.getResultNumber()));
           }
         }
+      }
 
-        if (clonedOp) {
-          originalBlock.push_back(clonedOp);
-        } else {
-          llvm::errs() << "Failed to clone operation, skipping.\n";
-          continue;
-        }
+      // Update the previousSegmentOutputs for the next segment
+      previousSegmentOutputs = currentSegmentOutputs;
 
-        // Update value map
-        for (unsigned i = 0; i < op.getNumResults(); ++i) {
-          valueMap[op.getResult(i)] = clonedOp->getResult(i);
-        }
+      for (size_t idx = 0; idx < segmentPoint.outputs.size(); ++idx) {
+        Value originalOutput = segmentPoint.outputs[idx];
+        Value outputValue = currentSegmentOutputs[idx];
+        availableValues[originalOutput] = outputValue;
       }
     }
 
-    // Finalize by adding a return operation if needed
-    if (!isa<func::ReturnOp>(originalBlock.back())) {
-      auto results =
-          llvm::to_vector<4>(originalBlock.getTerminator()->getOperands());
-      builder.create<func::ReturnOp>(location, results);
+    // After all segments have been inlined, insert a single `func.return` at
+    // the end
+    if (!previousSegmentOutputs.empty()) {
+      builder.create<func::ReturnOp>(builder.getUnknownLoc(),
+                                     previousSegmentOutputs);
+    } else {
+      // If there are no outputs, insert a void return
+      builder.create<func::ReturnOp>(builder.getUnknownLoc(), ValueRange{});
     }
   }
 
@@ -1574,36 +1628,39 @@ public:
       }
     }
 
+    if (!funcOp) {
+      llvm::errs() << "No FuncOp found in the module.\n";
+      return;
+    }
+
     llvm::errs() << "Running EqualitySaturationPass on the module.\n";
     // Segment the graph
     DenseMap<Value, Value> toOriginalArg;
     auto segmentedModules = segmentGraph(funcOp, builder, toOriginalArg);
 
     // Optimize each segmented subgraph
-    std::vector<ModuleOp> optimizedModules;
     for (int i = 0; i < segmentedModules.size(); ++i) {
       std::vector<Operation *> blackboxIDToTensorInfo;
       auto &segmentedModule = segmentedModules[i];
 
       llvm::errs() << "Creating egraph for segment " << i + 1 << " of "
                    << segmentedModules.size() << "\n";
-      auto graph =
-          createEgraph(&blackboxIDToTensorInfo, builder, segmentedModule);
+      auto graph = createEgraph(&blackboxIDToTensorInfo, builder,
+                                segmentedModule.module);
       llvm::errs() << "Optimizing segment " << i + 1 << " of "
                    << segmentedModules.size() << "\n";
       auto optimized = graph->optimize();
       llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << " of "
                    << segmentedModules.size() << "\n";
-      reconstructStablehlo(&segmentedModule, &blackboxIDToTensorInfo, optimized,
-                           builder);
-      optimizedModules.push_back(std::move(segmentedModule));
+      reconstructStablehlo(&segmentedModule.module, &blackboxIDToTensorInfo,
+                           optimized, builder);
 
       llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
       // segmentedModule.dump();
     }
 
     // Recombine the optimized segments into the original function
-    recombineGraph(module, optimizedModules, builder, toOriginalArg);
+    recombineGraph(module, segmentedModules, builder, toOriginalArg);
     llvm::errs() << "EqualitySaturationPass completed.\n";
   }
 };
