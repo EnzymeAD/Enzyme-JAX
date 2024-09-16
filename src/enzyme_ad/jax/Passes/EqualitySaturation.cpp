@@ -1297,7 +1297,7 @@ public:
     // First pass to determine segmentation points and necessary types.
     // TODO: abstract out as separate function
 
-    const int segmentThreshold = 50;
+    const int segmentThreshold = 500;
     SmallVector<SegmentationPoint> segmentationPoints;
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
@@ -1406,7 +1406,6 @@ public:
       sm.module = currentModule;
       sm.segmentPoint = segment;
       segmentedModules.push_back(sm);
-      // currentModule.dump();
     }
 
     for (auto arg : funcOp.getArguments()) {
@@ -1468,6 +1467,7 @@ public:
     }
 
     Block &entryBlock = mainFunc.getBody().front();
+    entryBlock.clear();
     builder.setInsertionPointToEnd(&entryBlock);
 
     // Vector to keep track of the outputs from the previous segment
