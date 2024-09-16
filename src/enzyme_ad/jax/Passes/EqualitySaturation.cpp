@@ -629,13 +629,10 @@ tensat::Type mlirTypeToTensatType(mlir::Type type) {
 tensat::Tensor mlirValueToTensatTensor(mlir::Value value) {
   auto output_tensor = value.getType().cast<TensorType>();
   auto shape_data = output_tensor.getShape();
-
   rust::Vec<int64_t> shape;
-  shape.reserve(shape_data.size());
   for (const auto &dim : shape_data) {
     shape.push_back(dim);
   }
-
   auto element_type = mlirTypeToTensatType(output_tensor.getElementType());
   return {shape, element_type};
 }
@@ -688,7 +685,6 @@ tensat::get_shape(Ops op, rust::Vec<tensat::Tensor> enode_args,
   if (mlirOp) {
     rust::Vec<tensat::Tensor> tensors;
     for (auto res : mlirOp->getResults()) {
-
       tensors.push_back(mlirValueToTensatTensor(res));
     }
     mlirOp->erase();
@@ -962,12 +958,11 @@ public:
       auto padding_value = handleOperandPartial(pad.getPaddingValue());
       tensorInfo =
           graph
-              ->new_pad_op(
-                  *operand, *padding_value,
-      castArrayRefToRustVec(pad.getEdgePaddingLow()),
-      castArrayRefToRustVec(pad.getEdgePaddingHigh()),
-      castArrayRefToRustVec(pad.getInteriorPadding()),
-                  mlirValueToTensatTensor(pad->getResult(0)))
+              ->new_pad_op(*operand, *padding_value,
+                           castArrayRefToRustVec(pad.getEdgePaddingLow()),
+                           castArrayRefToRustVec(pad.getEdgePaddingHigh()),
+                           castArrayRefToRustVec(pad.getInteriorPadding()),
+                           mlirValueToTensatTensor(pad->getResult(0)))
               .into_raw();
     } else if (isa<func::ReturnOp>(op)) {
       int numOperands = op->getNumOperands();
@@ -1590,8 +1585,8 @@ public:
     // Optimize each segmented subgraph
     for (int i = 0; i < segmentedModules.size(); ++i) {
       std::vector<Operation *> blackboxIDToTensorInfo;
-      auto &segmentedModule = segmentedModules[i];
 
+      auto &segmentedModule = segmentedModules[i];
       // llvm::errs() << "Creating egraph for segment " << i + 1 << " of "
       //              << segmentedModules.size() << "\n";
       auto graph = createEgraph(&blackboxIDToTensorInfo, builder,
