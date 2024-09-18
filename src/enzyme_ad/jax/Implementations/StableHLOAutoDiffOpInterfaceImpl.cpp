@@ -539,6 +539,12 @@ public:
       return op.emitError() << "Expected exactly 1 update operand";
     }
 
+    Operation &innerOp = op.getUpdateComputation().front().front();
+    if (!isa<AddOp, ReturnOp>(innerOp)) {
+      return op.emitError()
+             << "Unsupported operation in scatter rev autodiff: " << *orig;
+    }
+
     Value updates = op.getUpdates().front();
     ScatterDimensionNumbersAttr scatterDims = op.getScatterDimensionNumbers();
     ArrayRef<int64_t> updateWindowDims = scatterDims.getUpdateWindowDims();
