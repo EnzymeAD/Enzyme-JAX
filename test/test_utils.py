@@ -8,7 +8,12 @@ from enzyme_ad.jax import (
     hlo_opts,
 )
 from absl.testing import absltest
-import timeit
+from timeit import Timer
+from statistics import mean, stdev, median
+
+def timeit(str, globals, count):
+    numbers = [x/10 for x in Timer(str, globals=globals).repeat(repeat=count, number=3)]
+    return f"{median(numbers):.6f} ({mean(numbers):.6f} ± {3*stdev(numbers):.6f})"
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
@@ -200,14 +205,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         ",",
                         "Primal",
                         ",",
-                        timeit.Timer(
-                            primalstr,
-                            globals={
-                                "fn": rfn_enzyme,
-                            }
-                            | primalins,
-                        ).timeit(self.count)
-                        / self.count,
+                        timeit(primalstr, {'fn': rfn_enzyme} | primalins, self.count),
                         sep="\t",
                     )
 
@@ -247,14 +245,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         ",",
                         "Forward",
                         ",",
-                        timeit.Timer(
-                            fwdstr,
-                            globals={
-                                "fwd": fwd_enzyme,
-                            }
-                            | fwdins,
-                        ).timeit(self.count)
-                        / self.count,
+                        timeit(fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
                         sep="\t",
                     )
 
@@ -302,14 +293,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "PreRev",
                             ",",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
 
@@ -348,14 +332,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "PostRev",
                             ",",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
 
@@ -401,14 +378,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "BothRev",
                             ",",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
             assert revres is not None
