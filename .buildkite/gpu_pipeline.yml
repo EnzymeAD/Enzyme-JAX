@@ -6,6 +6,8 @@ steps:
     if: build.message !~ /\[skip tests\]/
     timeout_in_minutes: 180
     commands: |
+      pwd
+      env
       echo "--- Setup :python: Dependencies"
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
