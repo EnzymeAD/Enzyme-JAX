@@ -37,6 +37,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -83,6 +84,33 @@ public:
   }
 };
 
+/**
+ *  Which platform the cost model is using.
+ */
+
+enum EqsatPlatform {
+  CPU,
+  GPU,
+  // TODO: TPU
+};
+
+EqsatPlatform getPlatform() {
+  auto p = getenv("EQSAT_PLATFORM");
+  auto platform = p ? std::string(p) : "";
+
+  if (platform == "cpu") {
+    return EqsatPlatform::CPU;
+  } else if (platform == "gpu") {
+    return EqsatPlatform::GPU;
+  } else {
+    // TODO: TPU
+    auto error_string =
+        "Please set environment variable EQSAT_PLATFORM=(cpu|gpu), got: " +
+        platform;
+    throw std::invalid_argument(error_string);
+  }
+}
+
 class OperationTimer {
 public:
   /**
@@ -115,8 +143,27 @@ public:
 
     ModuleOp wrapperModule = createModuleFromOperation(context, op);
 
-    // TODO: GPU
-    xla::PjRtClient *client = MakeCPUClient(0, 1, 1);
+    xla::PjRtClient *client = nullptr;
+
+    auto platform = getPlatform();
+
+    switch (platform) {
+    case CPU:
+      client = MakeCPUClient(0, 1, 1);
+      break;
+    case GPU:
+      // https://github.com/EnzymeAD/Reactant.jl/blob/65060404e19cd5a56a51e4fb2b252380477632b0/src/XLA.jl#L56
+      const char *error = "";
+      // TODO: is this correct?
+      client = MakeGPUClient(0, 1, nullptr, 0, "gpu", &error);
+      if (std::string(error) != "") {
+        auto error_string =
+            "Error while creating GPU client: " + std::string(error);
+        throw std::invalid_argument(error_string);
+      }
+      break;
+    }
+
     auto executable = prepareExecutable(client, wrapperModule);
 
     unsigned numArgs = op->getNumOperands();
@@ -591,8 +638,21 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
   Operation *mlirOp = createStableHloOp(builder, op, operands, other_vecs,
                                         int_args_as_vec, context);
 
+  int repeats = 0;
+  switch (getPlatform()) {
+  case CPU:
+    repeats = 100;
+    break;
+  case GPU:
+    // TODO: Review this number
+    repeats = 30;
+    break;
+  default:
+    assert(false);
+  }
+
   if (mlirOp) {
-    auto cost = OperationTimer::getCost(mlirOp, 100, 100);
+    auto cost = OperationTimer::getCost(mlirOp, repeats, repeats);
     mlirOp->erase();
     return cost;
   }
