@@ -690,7 +690,7 @@ tensat::Tensor mlirValueToTensatTensor(mlir::Value value) {
   auto output_tensor = value.getType().cast<TensorType>();
   auto shape_data = output_tensor.getShape();
   rust::Vec<int64_t> shape;
-  for (const auto &dim : shape_data) {
+  for (const auto dim : shape_data) {
     shape.push_back(dim);
   }
   auto element_type = mlirTypeToTensatType(output_tensor.getElementType());
@@ -779,16 +779,15 @@ public:
       Box<tensat::CppGraphConverter> &graph) {
     if (auto defOp = operand.getDefiningOp()) {
       // Use existing TensorInfo if already processed
-      int index = getValueIndex(defOp, operand);
-      assert(index >= 0);
       auto convertedOperand = dfs(defOp, opToTensorInfo, blockArgToTensorInfo,
                                   blackboxIDToTensorInfo, builder, graph);
+      int index = getValueIndex(defOp, operand);
+      assert(index >= 0);
       if (index == 0) {
         return convertedOperand;
       } else {
         auto indexOperand =
             graph->new_index(index, *convertedOperand).into_raw();
-        opToTensorInfo->insert({defOp, indexOperand});
         return indexOperand;
       }
     } else if (auto arg = operand.dyn_cast<BlockArgument>()) {
@@ -919,20 +918,22 @@ public:
                      "has non-tensor type"
                   << std::endl;
       }
-    } else if (isa<stablehlo::IotaOp>(op)) {
-      auto iota = cast<stablehlo::IotaOp>(op);
-      int32_t iota_dimension = iota.getIotaDimension();
-      if (auto output_tensor = iota.getResult().getType().cast<TensorType>()) {
-        tensorInfo =
-            graph
-                ->new_iota_op(iota_dimension,
-                              mlirValueToTensatTensor(iota.getResult()))
-                .into_raw();
-      } else {
-        std::cout << "EqualitySaturationPass: result of stablehlo::IotaOp has "
-                     "non-tensor type"
-                  << std::endl;
-      }
+      // } else if (isa<stablehlo::IotaOp>(op)) {
+      //   auto iota = cast<stablehlo::IotaOp>(op);
+      //   int32_t iota_dimension = iota.getIotaDimension();
+      //   if (auto output_tensor =
+      //   iota.getResult().getType().cast<TensorType>()) {
+      //     tensorInfo =
+      //         graph
+      //             ->new_iota_op(iota_dimension,
+      //                           mlirValueToTensatTensor(iota.getResult()))
+      //             .into_raw();
+      //   } else {
+      //     std::cout << "EqualitySaturationPass: result of stablehlo::IotaOp
+      //     has "
+      //                  "non-tensor type"
+      //               << std::endl;
+      //   }
     } else if (isa<stablehlo::DotGeneralOp>(op)) {
       // we might need more guards here
       auto dot_general = cast<stablehlo::DotGeneralOp>(op);
@@ -1042,6 +1043,8 @@ public:
         outputs.push_back(mlirValueToTensatTensor(result));
 
       std::vector<tensat::TensorInfo *> processedOperands;
+      // We shouldn't clone operands, as those values will be invalidated after
+      // a block.clear(), and we access these during reconstruction.
       auto copy = op->clone(Operation::CloneOptions(
           /* cloneRegions = */ true, /* cloneOperands = */ false));
       blackboxIDToTensorInfo->push_back(copy);
@@ -1284,14 +1287,10 @@ public:
       } else if (node.name == "blackbox") {
         assert(node.operands.size() > 0);
         size_t numOperands = node.operands.size() - 1;
-        assert(nodes[node.operands[numOperands]].name == "Num");
         auto blackboxID =
             parseNumNode(nodes, nodes[node.operands[numOperands]]);
         newOp = blackboxIDToTensorInfo->at(blackboxID);
         assert(numOperands == newOp->getNumOperands());
-
-        // Really subtle error arose here from not handling Num properly.
-        // We might want to have a Num hashmap
         std::vector<Value> operands;
         for (size_t i = 0; i < numOperands; ++i) {
           auto operandIndex = node.operands[i];
@@ -1348,9 +1347,8 @@ public:
     SegmentationPoint segmentPoint;
   };
 
-  std::vector<SegmentedModule>
-  segmentGraph(func::FuncOp funcOp, OpBuilder &builder,
-               DenseMap<Value, Value> &toOriginalArg) {
+  std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
+                                            OpBuilder &builder) {
     auto context = builder.getContext();
     Block &entryBlock = funcOp.getBody().front();
 
@@ -1406,71 +1404,57 @@ public:
     }
 
     std::vector<SegmentedModule> segmentedModules;
-    DenseMap<Value, Value>
-        valueMap; // Map to keep track of original to cloned values
 
     auto opIt = entryBlock.begin();
     for (int i = 0; i < segmentationPoints.size(); i++) {
       auto segment = segmentationPoints[i];
       ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
-      SmallVector<Type> segmentOutputTypes;
-
-      for (Value result : segment.outputs) {
-        segmentOutputTypes.push_back(result.getType());
-      }
 
       auto funcType = FunctionType::get(context, getValueTypes(segment.inputs),
-                                        segmentOutputTypes);
+                                        getValueTypes(segment.outputs));
       auto newFuncOp = builder.create<func::FuncOp>(
           builder.getUnknownLoc(), "segmented_func_" + std::to_string(i),
           funcType);
-      auto &newBlock = *newFuncOp.addEntryBlock();
+      auto newBlock = newFuncOp.addEntryBlock();
 
-      valueMap.clear(); // Reset value map for new segment
+      IRMapping originalToCloned;
       // Map original block arguments to new block arguments
       for (unsigned i = 0; i < segment.inputs.size(); ++i) {
-        valueMap[segment.inputs[i]] = newBlock.getArguments()[i];
+        originalToCloned.map(segment.inputs[i], newBlock->getArgument(i));
       }
 
       // Clone operations
       while (opIt != entryBlock.end() &&
              opIt != entryBlock.getOperations().end() &&
              &(*opIt) != segment.endOp) {
-        Operation *clonedOp = builder.clone(*opIt);
-        remapOperandsUsingMap(clonedOp, valueMap);
-        newBlock.push_back(clonedOp);
-        updateValueMap(&(*opIt), clonedOp, valueMap);
+        Operation *clonedOp = builder.clone(*opIt, originalToCloned);
+        newBlock->push_back(clonedOp);
+        updateMapper(&(*opIt), clonedOp, originalToCloned);
         ++opIt;
       }
 
       // Clone the end operation
-      Operation *clonedEndOp = builder.clone(*opIt);
-      remapOperandsUsingMap(clonedEndOp, valueMap);
-      newBlock.push_back(clonedEndOp);
-      updateValueMap(&(*opIt), clonedEndOp, valueMap);
+      Operation *clonedEndOp = builder.clone(*opIt, originalToCloned);
+      newBlock->push_back(clonedEndOp);
+      updateMapper(&(*opIt), clonedEndOp, originalToCloned);
       ++opIt;
 
       // We need to return all the output values as well as endOp.
       SmallVector<Value> returns;
       for (auto output : segment.outputs) {
-        returns.push_back(valueMap.at(output));
+        returns.push_back(originalToCloned.lookup(output));
       }
 
       if (!returns.empty()) {
         auto returnOp =
             builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
-        newBlock.push_back(returnOp);
+        newBlock->push_back(returnOp);
       }
       currentModule.push_back(newFuncOp);
       SegmentedModule sm;
       sm.module = currentModule;
       sm.segmentPoint = segment;
       segmentedModules.push_back(sm);
-    }
-
-    for (auto arg : funcOp.getArguments()) {
-      auto mapped = valueMap.at(arg);
-      toOriginalArg[mapped] = arg;
     }
 
     return segmentedModules;
@@ -1484,27 +1468,16 @@ public:
     return types;
   }
 
-  void remapOperandsUsingMap(Operation *op, DenseMap<Value, Value> &valueMap) {
-    for (auto &operand : op->getOpOperands()) {
-      auto it = valueMap.find(operand.get());
-      if (it != valueMap.end()) {
-        operand.set(it->second);
-      }
-    }
-  }
-
-  void updateValueMap(Operation *opIt, Operation *clonedOp,
-                      DenseMap<Value, Value> &valueMap) {
+  void updateMapper(Operation *opIt, Operation *clonedOp, IRMapping &mapper) {
     for (unsigned i = 0; i < opIt->getNumResults(); ++i) {
-      valueMap[opIt->getResult(i)] = clonedOp->getResult(i);
+      mapper.map(opIt->getResult(i), clonedOp->getResult(i));
     }
   }
 
   /// Inline the operations from each segmented module into the main function
   void recombineGraph(ModuleOp mainModule,
-                      const std::vector<SegmentedModule> &optimizedModules,
-                      OpBuilder &builder,
-                      DenseMap<Value, Value> &toOriginalArg) {
+                      std::vector<SegmentedModule> &optimizedModules,
+                      OpBuilder &builder) {
     func::FuncOp mainFunc;
     for (auto &op : mainModule.getBody()->getOperations()) {
       if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
@@ -1516,14 +1489,6 @@ public:
     if (!mainFunc) {
       llvm::errs() << "Error: No main FuncOp found in the main module.\n";
       return;
-    }
-
-    // Remove existing return operations in the main function
-    SmallVector<func::ReturnOp> existingReturns;
-    mainFunc.walk(
-        [&](func::ReturnOp retOp) { existingReturns.push_back(retOp); });
-    for (auto retOp : existingReturns) {
-      retOp.erase();
     }
 
     Block &entryBlock = mainFunc.getBody().front();
@@ -1541,15 +1506,17 @@ public:
 
     for (size_t i = 0; i < optimizedModules.size(); ++i) {
       SegmentedModule segmentedModule = optimizedModules[i];
-      ModuleOp module = segmentedModule.module;
-      SegmentationPoint &segmentPoint = segmentedModule.segmentPoint;
+
+      SegmentationPoint segmentPoint = segmentedModule.segmentPoint;
       func::FuncOp segmentedFunc;
-      for (auto &op : module.getBody()->getOperations()) {
-        if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
-          segmentedFunc = funcOp;
-          break;
+
+      segmentedModule.module.walk([&](func::FuncOp funcOp) {
+        if (segmentedFunc) {
+          llvm::errs() << "Error: Segmented module contains two FuncOps.\n";
+          return;
         }
-      }
+        segmentedFunc = funcOp;
+      });
 
       if (!segmentedFunc) {
         llvm::errs() << "Error: Segmented module " << i
@@ -1558,7 +1525,6 @@ public:
       }
 
       IRMapping mapper;
-
       // Map inputs using availableValues
       for (unsigned argIdx = 0; argIdx < segmentedFunc.getNumArguments();
            ++argIdx) {
@@ -1639,8 +1605,7 @@ public:
 
     // llvm::errs() << "Running EqualitySaturationPass on the module.\n";
     // Segment the graph
-    DenseMap<Value, Value> toOriginalArg;
-    auto segmentedModules = segmentGraph(funcOp, builder, toOriginalArg);
+    auto segmentedModules = segmentGraph(funcOp, builder);
 
     // Optimize each segmented subgraph
     for (int i = 0; i < segmentedModules.size(); ++i) {
@@ -1661,11 +1626,10 @@ public:
                            optimized, builder);
 
       // llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
-      // segmentedModule.dump();
     }
 
     // Recombine the optimized segments into the original function
-    recombineGraph(module, segmentedModules, builder, toOriginalArg);
+    recombineGraph(module, segmentedModules, builder);
     llvm::errs() << "EqualitySaturationPass completed.\n";
   }
 };
