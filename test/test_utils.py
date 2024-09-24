@@ -10,10 +10,27 @@ from enzyme_ad.jax import (
 from absl.testing import absltest
 from timeit import Timer
 from statistics import mean, stdev, median
+from datetime import datetime
+import os
+import csv
 
-def timeit(str, globals, count):
-    numbers = [x/10 for x in Timer(str, globals=globals).repeat(repeat=count, number=3)]
-    return f"{median(numbers):.6f} ({mean(numbers):.6f} ± {3*stdev(numbers):.6f})"
+def dump_to_csv(filename, pipeline, stage, runtime_ms):
+    file_exists = os.path.isfile(filename)
+
+    with open(filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # write the header only if the file doesn't exist
+        if not file_exists:
+            writer.writerow(['pipeline', 'stage', 'runtime_ms'])
+        for runtime in runtime_ms:
+            writer.writerow([pipeline, stage, runtime])
+
+def timeit(filename, pipeline, stage, str, globals, count, warmup=100):
+    timer = Timer(str, globals=globals)
+    _warmup = timer.repeat(repeat=1, number=warmup)
+    runtime_ms = [x * 1000 for x in timer.repeat(repeat=count, number=1)]
+    dump_to_csv(filename, pipeline, stage, runtime_ms)
+    return f"{median(runtime_ms):.6f} (min {min(runtime_ms):.6f}, max {max(runtime_ms):.6f}, mean {mean(runtime_ms):.6f} ± {stdev(runtime_ms):.6f})"
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
@@ -25,7 +42,7 @@ if jax.default_backend() != "cpu":
 
 AllBackends = ["cpu"] + devices
 AllPipelines = [
-    ("JaX  ", None, AllBackends),
+    ("JaX", None, AllBackends),
     ("JaXPipe", JaXPipeline(), AllBackends),
     # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
     # ("NewXLA", NewXLAPipeline()),
@@ -165,6 +182,8 @@ class EnzymeJaxTest(absltest.TestCase):
             "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         )
 
+        csv_filename = datetime.now().strftime("results_%Y-%m-%d_%H:%M:%S.csv")
+
         for backend in self.AllBackends:
             ins_backend = [to_backend(x, backend) for x in ins]
             dins_backend = [to_backend(x, backend) for x in dins]
@@ -205,7 +224,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         ",",
                         "Primal",
                         ",",
-                        timeit(primalstr, {'fn': rfn_enzyme} | primalins, self.count),
+                        timeit(csv_filename, pname, "Primal", primalstr, {'fn': rfn_enzyme} | primalins, self.count),
                         sep="\t",
                     )
 
@@ -245,7 +264,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         ",",
                         "Forward",
                         ",",
-                        timeit(fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
+                        timeit(csv_filename, pname, "Forward", fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
                         sep="\t",
                     )
 
@@ -293,7 +312,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "PreRev",
                             ",",
-                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
+                            timeit(csv_filename, pname, "PreRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
 
@@ -332,7 +351,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "PostRev",
                             ",",
-                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
+                            timeit(csv_filename, pname, "PostRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
 
@@ -378,7 +397,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "BothRev",
                             ",",
-                            timeit(revstr, {'rev': rev_enzyme} | revins, self.count),
+                            timeit(csv_filename, pname, "BothRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
             assert revres is not None
