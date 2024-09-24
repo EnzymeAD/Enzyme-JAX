@@ -14,6 +14,16 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
+      # No one tells us what to do
+      unset NV_LIBCUBLAS_VERSION
+      unset NVIDIA_VISIBLE_DEVICES
+      unset NV_NVML_DEV_VERSION
+      unset NV_LIBNCCL_DEV_PACKAGE
+      unset NV_LIBNCCL_DEV_PACKAGE_VERSION
+      unset NVIDIA_REQUIRE_CUDA
+      unset NV_LIBCUBLAS_DEV_PACKAGE
+      unset NV_NVTX_VERSION
+      
       curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
 
       mv bazel* .local/bin/bazel
