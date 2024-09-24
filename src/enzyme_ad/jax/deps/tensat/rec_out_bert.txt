@@ -1,0 +1,103 @@
+(noop
+  (noop
+    (weight w_28@1024_1024)
+    (reshape
+      (transpose
+        (matmul
+          0
+          (matmul
+            0
+            (transpose
+              (reshape
+                (matmul
+                  0
+                  (matmul
+                    0
+                    (matmul
+                      0
+                      (matmul
+                        0
+                        (matmul
+                          0
+                          (matmul
+                            0
+                            (matmul 0 (matmul 0 (input input_0@64_1024) (weight w_3@1024_1024)) (weight w_7@1024_1024))
+                            (weight w_11@1024_1024))
+                          (weight w_15@1024_1024))
+                        (weight w_19@1024_1024))
+                      (weight w_23@1024_1024))
+                    (weight w_27@1024_1024))
+                  (weight w_28@1024_1024))
+                64_16)
+              1_0_2
+              1)
+            (transpose
+              (reshape
+                (matmul
+                  0
+                  (matmul
+                    0
+                    (matmul
+                      0
+                      (matmul
+                        0
+                        (matmul
+                          0
+                          (matmul
+                            0
+                            (matmul 0 (matmul 0 (input input_0@64_1024) (weight w_3@1024_1024)) (weight w_7@1024_1024))
+                            (weight w_11@1024_1024))
+                          (weight w_15@1024_1024))
+                        (weight w_19@1024_1024))
+                      (weight w_23@1024_1024))
+                    (weight w_27@1024_1024))
+                  (weight w_29@1024_1024))
+                64_16)
+              1_0_2
+              1))
+          (transpose
+            (reshape
+              (matmul
+                0
+                (matmul
+                  0
+                  (matmul
+                    0
+                    (matmul
+                      0
+                      (matmul
+                        0
+                        (matmul
+                          0
+                          (matmul 0 (matmul 0 (input input_0@64_1024) (weight w_3@1024_1024)) (weight w_7@1024_1024))
+                          (weight w_11@1024_1024))
+                        (weight w_15@1024_1024))
+                      (weight w_19@1024_1024))
+                    (weight w_23@1024_1024))
+                  (weight w_27@1024_1024))
+                (weight w_30@1024_1024))
+              64_16)
+            1_0_2
+            1))
+        1_0_2
+        1)
+      64_1024))
+  (matmul
+    0
+    (matmul
+      0
+      (matmul
+        0
+        (matmul
+          0
+          (matmul
+            0
+            (matmul
+              0
+              (matmul 0 (matmul 0 (input input_0@64_1024) (weight w_3@1024_1024)) (weight w_7@1024_1024))
+              (weight w_11@1024_1024))
+            (weight w_15@1024_1024))
+          (weight w_19@1024_1024))
+        (weight w_23@1024_1024))
+      (weight w_27@1024_1024))
+    (weight w_31@1024_1024)))

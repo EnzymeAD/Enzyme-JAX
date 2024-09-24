@@ -6,3 +6,4 @@ bazel-*
 src/enzyme_ad/jax/deps/libReactantExtra.so
 tmp
 .local
+.venv

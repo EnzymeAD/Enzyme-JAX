@@ -368,10 +368,10 @@ pipelines = [
     ("PartOpt", JaXPipeline(partialopt), CurBackends),
     ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
     (
-        "EqualitySaturation",
+        "EqSat",
         JaXPipeline(
             "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse,equality-saturation-pass"
+            + "equality-saturation-pass"
         ),
         CurBackends,
     ),
@@ -444,7 +444,7 @@ class Llama(EnzymeJaxTest):
 
         self.fn = partial(forward, config)
         self.name = "llama"
-        self.count = 100 if jax.default_backend() == "cpu" else 1000
+        self.count = 1000
         self.revprimal = False
         self.AllPipelines = pipelines
         self.AllBackends = CurBackends
