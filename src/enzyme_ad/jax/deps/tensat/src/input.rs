@@ -1162,7 +1162,7 @@ fn extract_by_ilp(
     let order_var_int = false;
     let class_constraint = false;
     let no_order = true;
-    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("false")).parse().unwrap();
+    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
     if order_var_int {
         arg_vec.push("--order_var_int");
