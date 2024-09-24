@@ -1,0 +1,36 @@
+[workspace]
+
+[package]
+name = "tensat"
+version = "0.1.0"
+authors = ["Remy Wang <remywang@uw.edu>"]
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cxx = "1.0"
+cxxbridge-cmd = "1.0.122"
+env_logger = { version =  "0.7", default_features = false }
+pest = "2.0"
+pest_derive = "2.0"
+rand = "0.7"
+clap = "2.33"
+itertools = "0.9"
+arrayvec = "0.5.1"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[dependencies.egg]
+git = "https://github.com/yycdavid/egg"
+rev = "12cc1ee7731d37fe91901c81f59678fa1d08a2bb"
+
+[package.metadata.cxx]
+library = "c++"
+
+[build-dependencies]
+cxx-build = "1.0"
+cxxbridge-cmd = "1.0.122"

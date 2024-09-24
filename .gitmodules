@@ -1,3 +1,0 @@
-[submodule "src/enzyme_ad/jax/deps/tensat"]
-	path = src/enzyme_ad/jax/deps/tensat
-	url = https://github.com/smjleo/tensat
