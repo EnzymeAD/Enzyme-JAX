@@ -6,6 +6,20 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
+from math import floor, ceil, sqrt
+
+def median_confidence_interval(data, confidence):
+    # https://web.archive.org/web/20160509121216id_/http://spcl.inf.ethz.ch:80/Teaching/2015-dphpc/hoefler-scientific-benchmarking.pdf
+    n = len(data)
+    a = 1 - confidence
+    z = stats.norm.pdf(a)
+
+    lower_rank = floor((n - z * sqrt(n)) / 2)
+    upper_rank = ceil(1 + ((n + z * sqrt(n)) / 2))
+
+    data_sorted = sorted(data)
+    return (data_sorted[lower_rank], data_sorted[upper_rank])
+
 
 def compute_stats(data):
     mean = np.mean(data)
@@ -13,7 +27,12 @@ def compute_stats(data):
     stdev = np.std(data)
     min_val = np.min(data)
     max_val = np.max(data)
-    return mean, median, stdev, min_val, max_val
+    median_ci = median_confidence_interval(data, 0.95)
+    return mean, median, stdev, min_val, max_val, median_ci
+
+def t_test(other, eqsat):
+    stat = stats.ttest_ind(other, eqsat)
+    return (stat.statistic, stat.pvalue)
 
 def plot_histograms(df):
     stages = df['stage'].unique()
@@ -31,14 +50,25 @@ def plot_histograms(df):
         pipelines = stage_data['pipeline'].unique()
         for pipeline in pipelines:
             pipeline_data = stage_data[stage_data['pipeline'] == pipeline]['runtime_ms']
-            mean, median, stdev, min_val, max_val = compute_stats(pipeline_data)
+            mean, median, stdev, min_val, max_val, (median_ci_lo, median_ci_hi) = compute_stats(pipeline_data)
             print(f"{stage}, {pipeline}:")
             print(f"  mean   : {mean:.2f} ms")
-            print(f"  median : {median:.2f} ms")
+            print(f"  median : {median:.3f}")
+            print(f"     95% : [{median_ci_lo:.3f}, {median_ci_hi:.3f}]")
             print(f"  stdev  : {stdev:.2f} ms")
             print(f"  min    : {min_val:.2f} ms")
             print(f"  max    : {max_val:.2f} ms")
             print()
+
+        print(f"t-test ({stage}):")
+        eqsat_data = stage_data[stage_data['pipeline'] == "EqSat"]['runtime_ms']
+        for pipeline in pipelines:
+            if pipeline == "EqSat":
+                continue
+            pipeline_data = stage_data[stage_data['pipeline'] == pipeline]['runtime_ms']
+            (t, p) = t_test(pipeline_data, eqsat_data)
+            print(f'{pipeline} vs EqSat: t-statistic {t:.4f}, p-value {p:.4f}')
+        print()
 
         plt.show()
 
