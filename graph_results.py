@@ -30,9 +30,11 @@ def compute_stats(data):
     median_ci = median_confidence_interval(data, 0.95)
     return mean, median, stdev, min_val, max_val, median_ci
 
+
 def t_test(other, eqsat):
     stat = stats.ttest_ind(other, eqsat)
     return (stat.statistic, stat.pvalue)
+
 
 def plot_histograms(df):
     stages = df['stage'].unique()
@@ -73,11 +75,31 @@ def plot_histograms(df):
         plt.show()
 
 
+def plot_time(df):
+    stages = df['stage'].unique()
+
+    for stage in stages:
+        stage_data = df[df['stage'] == stage]
+        plt.figure(figsize=(10, 6))
+        pipelines = stage_data['pipeline'].unique()
+
+        for pipeline in pipelines:
+            pipeline_data = stage_data[stage_data['pipeline'] == pipeline]
+            plt.plot(pipeline_data.index, pipeline_data['runtime_ms'], label=pipeline)
+
+        plt.title(f'Runtime over Data Index for Stage: {stage}')
+        plt.xlabel('Data Index')
+        plt.ylabel('Runtime (ms)')
+        plt.legend(title='Pipeline')
+
+        plt.show()
+
+
 def main():
-    if len(sys.argv) != 2:
-        print("usage: ./graph_results.py <filename.csv>")
+    if len(sys.argv) != 3 or (sys.argv[1] not in ["hist", "time"]):
+        print("usage: ./graph_results.py <hist|time> <filename.csv>")
         sys.exit(1)
-    filename = sys.argv[1]
+    filename = sys.argv[2]
     try:
         df = pd.read_csv(filename)
     except FileNotFoundError:
@@ -87,7 +109,11 @@ def main():
     if not {'pipeline', 'stage', 'runtime_ms'}.issubset(df.columns):
         print("Error: The input CSV must contain 'pipeline', 'stage', and 'runtime_ms' columns.")
         sys.exit(1)
-    plot_histograms(df)
+
+    if sys.argv[1] == "hist":
+        plot_histograms(df)
+    else:
+        plot_time(df)
 
 if __name__ == "__main__":
     main()
