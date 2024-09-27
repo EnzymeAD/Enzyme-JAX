@@ -1018,7 +1018,7 @@ impl CppGraphConverter {
 
         // Configuration
         let n_sec = 30; // seconds for timeout
-        let use_multi = false; // whether to use multi patterns
+        let use_multi = true; // whether to use multi patterns
         let no_cycle = true; // is our graph by definition acyclic?
         let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
@@ -1027,20 +1027,18 @@ impl CppGraphConverter {
         let path = std::env::current_dir().unwrap();
         println!("The current directory is {}", path.display());
         let rule_file = "src/enzyme_ad/jax/deps/tensat/converted.txt";
+        let multi_file = "src/enzyme_ad/jax/deps/tensat/converted_multi.txt";
 
         let learned_rules =
             read_to_string(rule_file).expect("Something went wrong reading the rule file");
         let time_limit_sec = Duration::new(n_sec, 0);
         let pre_defined_rules = PRE_DEFINED_RULES.iter().map(|&x| x);
-        let split_rules: Vec<&str> = learned_rules.split("\n").chain(pre_defined_rules).collect();
+        let split_rules: Vec<&str> = learned_rules.split("\n")
+            .filter(|x| !x.is_empty())
+            .chain(pre_defined_rules)
+            .collect();
         let do_filter_after = no_cycle && filter_after;
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
-        let runner = Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
-            .with_node_limit(node_limit)
-            .with_time_limit(time_limit_sec)
-            .with_iter_limit(iter_limit)
-            .with_expr(&start);
-        // .with_hook(move |runner| multi_patterns.run_one(runner));
         let mut rules = rules_from_str(split_rules, do_filter_after);
 
         let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
@@ -1071,9 +1069,12 @@ impl CppGraphConverter {
 
         let iter_multi = 2;
         let node_multi = 30000;
-        let multi_rules: Vec<(&str, bool)> = PRE_DEFINED_MULTI
-            .iter()
-            .map(|&x| (x, /*symmetric=*/ false))
+        let learned_rules =
+            read_to_string(multi_file).expect("Something went wrong reading the multi rule file");
+        let multi_rules: Vec<(&str, bool)> = learned_rules
+            .split("\n")
+            .filter(|x| !x.is_empty())
+            .map(|x| (x, /*symmetric=*/ false))
             .collect();
         let mut multi_patterns = MultiPatterns::with_rules(
             multi_rules,
@@ -1083,6 +1084,21 @@ impl CppGraphConverter {
             node_multi,
             n_sec,
         );
+
+        let runner = if use_multi {
+            Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
+                .with_node_limit(node_limit)
+                .with_time_limit(time_limit_sec)
+                .with_iter_limit(iter_limit)
+                .with_expr(&start)
+                .with_hook(move |runner| multi_patterns.run_one(runner))
+        } else {
+            Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
+                .with_node_limit(node_limit)
+                .with_time_limit(time_limit_sec)
+                .with_iter_limit(iter_limit)
+                .with_expr(&start)
+        };
 
         let start_time = Instant::now();
         let mut runner = runner.run(&rules[..]);
