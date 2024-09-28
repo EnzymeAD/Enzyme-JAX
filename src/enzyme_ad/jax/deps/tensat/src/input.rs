@@ -1017,9 +1017,9 @@ impl CppGraphConverter {
         let start = &self.rec_expr;
 
         // Configuration
-        let n_sec = 30; // seconds for timeout
-        let use_multi = true; // whether to use multi patterns
-        let no_cycle = true; // is our graph by definition acyclic?
+        let n_sec = 10; // seconds for timeout
+        let use_multi = false; // whether to use multi patterns
+        let no_cycle = true; // allow cycle in egraph?
         let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
@@ -1176,7 +1176,7 @@ fn extract_by_ilp(
 
     // Call python script to run ILP
     let order_var_int = false;
-    let class_constraint = false;
+    let class_constraint = true;
     let no_order = true;
     let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];

@@ -3,7 +3,7 @@ from ortools.linear_solver import pywraplp
 import json
 import argparse
 
-MAX_FUSABLE_BONUS = 0.9
+MAX_FUSABLE_BONUS = 0.6
 
 
 def get_args():

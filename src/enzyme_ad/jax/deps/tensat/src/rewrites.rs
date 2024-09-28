@@ -102,18 +102,28 @@ pub fn rules<A: Analysis<Mdl>>() -> Vec<Rewrite<Mdl, A>> { vec![
         rw!("-concatenation-and-pooling-2"     ;"(poolmax ?kx ?ky ?sx ?sy ?p (concat 1 ?x ?y))"                                     => "(concat 1 (poolmax ?kx ?ky ?sx ?sy ?p ?x) (poolmax ?kx ?ky ?sx ?sy ?p ?y)) "               ),
 ]}
 
+fn add_to_rule_vec(rule_vec: &mut Vec<Rewrite<Mdl, TensorAnalysis>>, filter_after: bool, rule_name: String, lhs: &str, rhs: &str) {
+    let lhs: Pattern<Mdl> = lhs.parse().unwrap();
+    let rhs: Pattern<Mdl> = rhs.parse().unwrap();
+    rule_vec.push(rw!(rule_name; { lhs.clone() } => { CheckApply {
+        pat: rhs,
+        src_pat: lhs,
+        filter_after: filter_after,
+    }}));
+}
+
 pub fn rules_from_str(rs: Vec<&str>, filter_after: bool) -> Vec<Rewrite<Mdl, TensorAnalysis>> {
     let mut rule_vec = Vec::new();
     for (pos, rule) in rs.iter().enumerate() {
-        let eqn: Vec<&str> = rule.split("=>").collect();
-        let lhs: Pattern<Mdl> = eqn[0].parse().unwrap();
-        let rhs: Pattern<Mdl> = eqn[1].parse().unwrap();
-        let rule_name = format!("rule{}", pos);
-        rule_vec.push(rw!(rule_name; { lhs.clone() } => { CheckApply {
-            pat: rhs,
-            src_pat: lhs,
-            filter_after: filter_after,
-        } }));
+        if (rule.contains("<=>")) {
+            let eqn: Vec<&str> = rule.split("<=>").collect();
+            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}_l", pos), eqn[0], eqn[1]);
+            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}_r", pos), eqn[1], eqn[0]);
+        } else {
+            assert!(rule.contains("=>"));
+            let eqn: Vec<&str> = rule.split("=>").collect();
+            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}", pos), eqn[0], eqn[1]);
+        }
     }
     rule_vec
 }
