@@ -1206,46 +1206,66 @@ public:
     for (auto &node : nodes) {
       Operation *newOp = nullptr;
       // Create the new operation based on the operands
-      if (node.name == "Var" || node.name == "Num" || node.name == "Vec") {
+      using namespace tensat;
+      switch (node.op) {
+      case Ops::Var:
+      case Ops::Num:
+      case Ops::Vec:
         /* do nothing */
-      } else if (node.name == "Input") {
+        break;
+      case Ops::Input: {
         int blockArgNumber = parseNumNode(nodes, nodes[node.operands[1]]);
         opVals.push_back(block.getArgument(blockArgNumber));
         continue;
-      } else if (node.name == "Index") {
+      }
+      case Ops::Index: {
         int index = parseNumNode(nodes, nodes[node.operands[0]]);
         int input = node.operands[1];
         opVals.push_back(opVals[input].getDefiningOp()->getResult(index));
         continue;
-      } else if (node.name == "NegOp") {
+      }
+      case Ops::NegOp:
         newOp = createUnaryOp<stablehlo::NegOp>(builder, opVals, node);
-      } else if (node.name == "TanhOp") {
+        break;
+      case Ops::TanhOp:
         newOp = createUnaryOp<stablehlo::TanhOp>(builder, opVals, node);
-      } else if (node.name == "ExpOp") {
+        break;
+      case Ops::ExpOp:
         newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
-      } else if (node.name == "AddOp") {
+        break;
+      case Ops::AddOp:
         newOp = createBinaryOp<stablehlo::AddOp>(builder, opVals, node);
-      } else if (node.name == "SubtractOp") {
+        break;
+      case Ops::SubtractOp:
         newOp = createBinaryOp<stablehlo::SubtractOp>(builder, opVals, node);
-      } else if (node.name == "MulOp") {
+        break;
+      case Ops::MulOp:
         newOp = createBinaryOp<stablehlo::MulOp>(builder, opVals, node);
-      } else if (node.name == "DivOp") {
+        break;
+      case Ops::DivOp:
         newOp = createBinaryOp<stablehlo::DivOp>(builder, opVals, node);
-      } else if (node.name == "MinOp") {
+        break;
+      case Ops::MinOp:
         newOp = createBinaryOp<stablehlo::MinOp>(builder, opVals, node);
-      } else if (node.name == "MaxOp") {
+        break;
+      case Ops::MaxOp:
         newOp = createBinaryOp<stablehlo::MaxOp>(builder, opVals, node);
-      } else if (node.name == "TransposeOp") {
+        break;
+      case Ops::TransposeOp: {
         auto input = opVals[node.operands[0]];
         auto permutation = parseNumVec(nodes, nodes[node.operands[1]]);
         newOp = builder.create<stablehlo::TransposeOp>(location, input,
                                                        permutation);
-      } else if (node.name == "ReshapeOp") {
+        break;
+      }
+      case Ops::ReshapeOp: {
         auto input = opVals[node.operands[0]];
         auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
         auto newType = deriveOutputType(input, shape);
         newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
-      } else if (node.name == "DotGeneralOp") {
+        break;
+      }
+      case Ops::DotGeneralOp: {
         auto lhs = opVals[node.operands[0]];
         auto rhs = opVals[node.operands[1]];
 
@@ -1288,19 +1308,25 @@ public:
             location, newType, lhs, rhs, dotDimensionNumbersAttr,
             mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)),
             nullptr);
-      } else if (node.name == "ConcatenateOp") {
+        break;
+      }
+      case Ops::ConcatenateOp: {
         auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
         auto dimension = parseNumNode(nodes, nodes[node.operands[1]]);
         newOp = builder.create<stablehlo::ConcatenateOp>(location, inputs,
                                                          dimension);
-      } else if (node.name == "SliceOp") {
+        break;
+      }
+      case Ops::SliceOp: {
         auto operand = opVals[node.operands[0]];
         auto startIndices = parseNumVec(nodes, nodes[node.operands[1]]);
         auto limitIndices = parseNumVec(nodes, nodes[node.operands[2]]);
         auto strides = parseNumVec(nodes, nodes[node.operands[3]]);
         newOp = builder.create<stablehlo::SliceOp>(
             location, operand, startIndices, limitIndices, strides);
-      } else if (node.name == "PadOp") {
+        break;
+      }
+      case Ops::PadOp: {
         auto operand = opVals[node.operands[0]];
         auto paddingValue = opVals[node.operands[1]];
         auto edgePaddingLow = parseNumVec(nodes, nodes[node.operands[2]]);
@@ -1309,7 +1335,9 @@ public:
         newOp = builder.create<stablehlo::PadOp>(
             location, operand, paddingValue, edgePaddingLow, edgePaddingHigh,
             interiorPadding);
-      } else if (node.name == "IotaOp") {
+        break;
+      }
+      case Ops::IotaOp:
         // TODO: element type handling.
         newOp = builder.create<stablehlo::IotaOp>(
             location,
@@ -1317,10 +1345,13 @@ public:
                 llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
                 builder.getF32Type()),
             parseNumNode(nodes, nodes[node.operands[0]]));
-      } else if (node.name == "ReturnOp") {
+        break;
+      case Ops::ReturnOp: {
         auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
         newOp = builder.create<func::ReturnOp>(location, inputs);
-      } else if (node.name == "blackbox") {
+        break;
+      }
+      case Ops::BlackBox: {
         assert(node.operands.size() == 3);
         auto blackboxID = parseNumNode(nodes, nodes[node.operands[0]]);
         auto operands = parseOpVec(opVals, nodes[node.operands[1]]);
@@ -1341,9 +1372,10 @@ public:
 
         assert(numOperands == newOp->getNumOperands());
         newOp->insertOperands(0, operands);
-      } else {
-        // TODO: implement other operations
-        std::cout << "UNIMPLEMENTED " << node.name << "\n";
+        break;
+      }
+      default:
+        throw std::invalid_argument("unimplemented op");
       }
       if (newOp) {
         opsToAdd.push_back(newOp);

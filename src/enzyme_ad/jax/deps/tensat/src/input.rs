@@ -20,7 +20,11 @@ pub mod ffi {
     }
 
     enum Ops {
+        Var,
+        Num,
+        Vec,
         Input,
+        Index,
         CompareOp,
         BroadcastInDimOp,
         ConvertOp,
@@ -47,12 +51,12 @@ pub mod ffi {
         DynamicUpdateSliceOp,
         DynamicSliceOp,
         ScatterOp,
-        BlackBoxOp,
+        BlackBox,
         ReturnOp,
     }
 
     struct Node {
-        name: String,
+        op: Ops,
         label: String,
         operands: Vec<i32>,
     }
@@ -324,6 +328,46 @@ impl ffi::Type {
             "i32" => Some(ffi::Type::i32),
             "f32" => Some(ffi::Type::f32),
             _ => None,
+        }
+    }
+}
+
+impl ffi::Ops {
+    pub fn from_mdl(m: &Mdl) -> ffi::Ops {
+        use ffi::Ops;
+        match m {
+            Mdl::Var(_) => Ops::Var,
+            Mdl::Num(_) => Ops::Num,
+            Mdl::Vec(_) => Ops::Vec,
+            Mdl::Input(_) => Ops::Input,
+            Mdl::Index(_) => Ops::Index,
+            Mdl::CompareOp(_) => Ops::CompareOp,
+            Mdl::BroadcastInDimOp(_) => Ops::BroadcastInDimOp,
+            Mdl::ConvertOp(_) => Ops::ConvertOp,
+            Mdl::ReduceOp(_) => Ops::ReduceOp,
+            Mdl::ReshapeOp(_) => Ops::ReshapeOp,
+            Mdl::GatherOp(_) => Ops::GatherOp,
+            Mdl::SelectOp(_) => Ops::SelectOp,
+            Mdl::ConcatenateOp(_) => Ops::ConcatenateOp,
+            Mdl::DotGeneralOp(_) => Ops::DotGeneralOp,
+            Mdl::PadOp(_) => Ops::PadOp,
+            Mdl::SliceOp(_) => Ops::SliceOp,
+            Mdl::TransposeOp(_) => Ops::TransposeOp,
+            Mdl::MulOp(_) => Ops::MulOp,
+            Mdl::AddOp(_) => Ops::AddOp,
+            Mdl::DivOp(_) => Ops::DivOp,
+            Mdl::SubtractOp(_) => Ops::SubtractOp,
+            Mdl::MinOp(_) => Ops::MinOp,
+            Mdl::MaxOp(_) => Ops::MaxOp,
+            Mdl::NegOp(_) => Ops::NegOp,
+            Mdl::TanhOp(_) => Ops::TanhOp,
+            Mdl::ExpOp(_) => Ops::ExpOp,
+            Mdl::IotaOp(_) => Ops::IotaOp,
+            Mdl::DynamicUpdateSliceOp(_) => Ops::DynamicUpdateSliceOp,
+            Mdl::DynamicSliceOp(_) => Ops::DynamicSliceOp,
+            Mdl::ScatterOp(_) => Ops::ScatterOp,
+            Mdl::BlackBox(_) => Ops::BlackBox,
+            Mdl::ReturnOp(_) => Ops::ReturnOp,
         }
     }
 }
@@ -961,50 +1005,52 @@ impl CppGraphConverter {
                 .map(|id: &Id| index(*id))
                 .collect::<Vec<i32>>()
         };
-        let new_node = |name: &str, operands: &[Id]| ffi::Node {
-            name: name.to_string(),
-            label: "".to_string(),
-            operands: convert(operands),
-        };
 
         let rec_expr_ref = rec_expr.as_ref();
 
         for mdl in rec_expr_ref.iter() {
+            let op = ffi::Ops::from_mdl(mdl);
+
+            let new_node = |operands: &[Id]| ffi::Node {
+                op: op,
+                label: "".to_string(),
+                operands: convert(operands),
+            };
+
             let node = match mdl {
                 Mdl::Var(label) => ffi::Node {
-                    name: "Var".to_string(),
+                    op,
                     label: label.to_string(),
                     operands: vec![],
                 },
                 Mdl::Num(num) => ffi::Node {
-                    name: "Num".to_string(),
+                    op: op,
                     label: "".to_string(),
                     operands: vec![*num as i32],
                 },
                 // TODO: More clever pattern matching
-                Mdl::Vec(ops) => new_node("Vec", ops),
-                Mdl::Input(ops) => new_node("Input", ops),
-                Mdl::Index(ops) => new_node("Index", ops),
-                // Mdl::ConstantOp(ops) => new_node("ConstantOp", ops),
-                Mdl::ReshapeOp(ops) => new_node("ReshapeOp", ops),
-                Mdl::ConcatenateOp(ops) => new_node("ConcatenateOp", ops),
-                Mdl::DotGeneralOp(ops) => new_node("DotGeneralOp", ops),
-                Mdl::SliceOp(ops) => new_node("SliceOp", ops),
-                Mdl::TransposeOp(ops) => new_node("TransposeOp", ops),
-                Mdl::MulOp(ops) => new_node("MulOp", ops),
-                Mdl::AddOp(ops) => new_node("AddOp", ops),
-                Mdl::DivOp(ops) => new_node("DivOp", ops),
-                Mdl::SubtractOp(ops) => new_node("SubtractOp", ops),
-                Mdl::MinOp(ops) => new_node("MinOp", ops),
-                Mdl::MaxOp(ops) => new_node("MaxOp", ops),
-                Mdl::NegOp(ops) => new_node("NegOp", ops),
-                Mdl::TanhOp(ops) => new_node("TanhOp", ops),
-                Mdl::ExpOp(ops) => new_node("ExpOp", ops),
-                Mdl::IotaOp(ops) => new_node("IotaOp", ops),
-                Mdl::PadOp(ops) => new_node("PadOp", ops),
-                Mdl::ReturnOp(ops) => new_node("ReturnOp", ops),
-                Mdl::BlackBox(ops) => new_node("blackbox", ops),
-                _ => unimplemented!(),
+                Mdl::Vec(ops) => new_node(ops),
+                Mdl::Input(ops) => new_node(ops),
+                Mdl::Index(ops) => new_node(ops),
+                Mdl::ReshapeOp(ops) => new_node(ops),
+                Mdl::ConcatenateOp(ops) => new_node(ops),
+                Mdl::DotGeneralOp(ops) => new_node(ops),
+                Mdl::SliceOp(ops) => new_node(ops),
+                Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::MulOp(ops) => new_node(ops),
+                Mdl::AddOp(ops) => new_node(ops),
+                Mdl::DivOp(ops) => new_node(ops),
+                Mdl::SubtractOp(ops) => new_node(ops),
+                Mdl::MinOp(ops) => new_node(ops),
+                Mdl::MaxOp(ops) => new_node(ops),
+                Mdl::NegOp(ops) => new_node(ops),
+                Mdl::TanhOp(ops) => new_node(ops),
+                Mdl::ExpOp(ops) => new_node(ops),
+                Mdl::IotaOp(ops) => new_node(ops),
+                Mdl::PadOp(ops) => new_node(ops),
+                Mdl::ReturnOp(ops) => new_node(ops),
+                Mdl::BlackBox(ops) => new_node(ops),
+                _ => unimplemented!()
             };
 
             res.push(node);
