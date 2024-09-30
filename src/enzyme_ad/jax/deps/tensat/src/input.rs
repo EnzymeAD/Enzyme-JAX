@@ -53,6 +53,8 @@ pub mod ffi {
         ScatterOp,
         BlackBox,
         ReturnOp,
+        SSplit0,
+        SSplit1,
     }
 
     struct Node {
@@ -368,6 +370,8 @@ impl ffi::Ops {
             Mdl::ScatterOp(_) => Ops::ScatterOp,
             Mdl::BlackBox(_) => Ops::BlackBox,
             Mdl::ReturnOp(_) => Ops::ReturnOp,
+            Mdl::SSplit0(_) => Ops::SSplit0,
+            Mdl::SSplit1(_) => Ops::SSplit1,
         }
     }
 }
@@ -1050,6 +1054,8 @@ impl CppGraphConverter {
                 Mdl::PadOp(ops) => new_node(ops),
                 Mdl::ReturnOp(ops) => new_node(ops),
                 Mdl::BlackBox(ops) => new_node(ops),
+                Mdl::SSplit0(ops) => new_node(ops),
+                Mdl::SSplit1(ops) => new_node(ops),
                 _ => unimplemented!()
             };
 
@@ -1064,9 +1070,9 @@ impl CppGraphConverter {
 
         // Configuration
         let n_sec = 10; // seconds for timeout
-        let use_multi = false; // whether to use multi patterns
+        let use_multi = true; // whether to use multi patterns
         let no_cycle = true; // allow cycle in egraph?
-        let filter_after = false; // vanilla filtering or efficient filtering
+        let filter_after = true; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 

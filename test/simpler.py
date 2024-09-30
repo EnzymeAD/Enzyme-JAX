@@ -6,10 +6,7 @@ import jax.numpy as jnp
 import enzyme_ad.jax as enzyme_jax
 
 def test(a, b, c, d, e, f, g, h, i):
-  x = (a @ b) @ a + b @ (a @ b)
-  y = (c @ d) @ c - d @ (c @ d)
-  z = (e @ f) @ e - f @ (e @ f)
-  return x, y, z
+  return a @ b, a @ c
 
 class Simple(absltest.TestCase):
     def test_simple_random(self):
@@ -18,9 +15,9 @@ class Simple(absltest.TestCase):
         efunc = enzyme_jax.enzyme_jax_ir(pipeline_options=enzyme_jax.JaXPipeline("equality-saturation-pass"),)(test)
         
         ka, kb, kc, kd = jax.random.split(jax.random.PRNGKey(0), num=4)
-        a = jax.random.uniform(ka, shape=(300, 300))
-        b = jax.random.uniform(kb, shape=(300, 300))
-        c = jax.random.uniform(kc, shape=(10, 10))
+        a = jax.random.uniform(ka, shape=(3, 100000))
+        b = jax.random.uniform(kb, shape=(100000, ))
+        c = jax.random.uniform(kc, shape=(100000, ))
         d = jax.random.uniform(kd, shape=(10, 10))
         e = jax.random.uniform(ka, shape=(5, 5))
         f = jax.random.uniform(ka, shape=(5, 5))

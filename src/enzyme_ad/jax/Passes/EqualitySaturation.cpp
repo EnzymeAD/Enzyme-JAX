@@ -483,6 +483,37 @@ std::vector<int64_t> dotGeneralShapeComputation(
   return shape;
 }
 
+/**
+ * Get the correct start and limiting indices of a SliceOp from a SSplit0 or
+ * SSplit1.
+ *
+ * See comment in tensat/src/model.rs for details.
+ */
+std::pair<std::vector<int64_t>, std::vector<int64_t>>
+getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
+  auto input_shape = getShape(input);
+  std::vector<int64_t> start, limit;
+  for (int i = 0; i < input_shape.size(); i++) {
+    if (i != axis) {
+      start.push_back(0);
+      limit.push_back(input_shape[i]);
+    } else {
+      int slice_width = getShape(orig)[axis];
+      if (op == tensat::Ops::SSplit0) {
+        start.push_back(0);
+        limit.push_back(slice_width);
+      } else if (op == tensat::Ops::SSplit1) {
+        int input_width = input_shape[axis];
+        start.push_back(input_width - slice_width);
+        limit.push_back(input_width);
+      } else {
+        throw std::invalid_argument("op should be either SSplit0 or SSplit1");
+      }
+    }
+  }
+  return {start, limit};
+}
+
 Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
                              SmallVector<Value> &operands,
                              std::vector<std::vector<int64_t>> &other_vecs,
@@ -576,31 +607,37 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
         mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)), nullptr);
     break;
   }
-  case tensat::Ops::SliceOp: {
+  case tensat::Ops::SliceOp:
     mlirOp = builder.create<stablehlo::SliceOp>(builder.getUnknownLoc(),
                                                 operands[0], other_vecs[0],
                                                 other_vecs[1], other_vecs[2]);
     break;
+  case tensat::Ops::SSplit0:
+  case tensat::Ops::SSplit1: {
+    auto [startIndices, limitIndices] =
+        getSliceIndicesFromSplit(op, operands[0], int_args[0], operands[1]);
+    std::vector<int64_t> strides(getShape(operands[0]).size(), 1);
+    mlirOp =
+        builder.create<stablehlo::SliceOp>(builder.getUnknownLoc(), operands[0],
+                                           startIndices, limitIndices, strides);
+    break;
   }
-  case tensat::Ops::ConcatenateOp: {
+  case tensat::Ops::ConcatenateOp:
     mlirOp = builder.create<stablehlo::ConcatenateOp>(builder.getUnknownLoc(),
                                                       operands, int_args[0]);
     break;
-  }
-  case tensat::Ops::PadOp: {
+  case tensat::Ops::PadOp:
     mlirOp = builder.create<stablehlo::PadOp>(
         builder.getUnknownLoc(), operands[0], operands[1], other_vecs[0],
         other_vecs[1], other_vecs[2]);
     break;
-  }
-  case tensat::Ops::IotaOp: {
+  case tensat::Ops::IotaOp:
     mlirOp = builder.create<stablehlo::IotaOp>(
         builder.getUnknownLoc(),
         RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
                               builder.getF32Type()),
         int_args[0]);
     break;
-  }
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
     assert(false);
@@ -640,6 +677,7 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
 
   int repeats = 0;
   switch (getPlatform()) {
+
   case CPU:
     repeats = 100;
     break;
@@ -1142,6 +1180,7 @@ public:
     std::vector<int64_t> result;
 
     for (auto i : seq.operands) {
+      assert(i < nodes.size());
       assert(nodes[i].name == "Num");
       result.push_back(parseNumNode(nodes, nodes[i]));
     }
@@ -1322,6 +1361,18 @@ public:
         auto startIndices = parseNumVec(nodes, nodes[node.operands[1]]);
         auto limitIndices = parseNumVec(nodes, nodes[node.operands[2]]);
         auto strides = parseNumVec(nodes, nodes[node.operands[3]]);
+        newOp = builder.create<stablehlo::SliceOp>(
+            location, operand, startIndices, limitIndices, strides);
+        break;
+      }
+      case Ops::SSplit0:
+      case Ops::SSplit1: {
+        auto operand = opVals[node.operands[0]];
+        auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
+        auto orig = opVals[node.operands[2]];
+        auto [startIndices, limitIndices] =
+            getSliceIndicesFromSplit(node.op, operand, axis, orig);
+        std::vector<int64_t> strides(getShape(operand).size(), 1);
         newOp = builder.create<stablehlo::SliceOp>(
             location, operand, startIndices, limitIndices, strides);
         break;
