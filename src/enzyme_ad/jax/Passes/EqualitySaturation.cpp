@@ -111,6 +111,20 @@ EqsatPlatform getPlatform() {
   }
 }
 
+/**
+ * Ops to not measure cost for
+ */
+std::set<string> zeroCostOps = {
+    "stablehlo.constant",
+    "stablehlo.return",
+
+    // these ops should just be returning a view, but measuring these will
+    // make a copy since we'll end up returning the result in the module
+    "stablehlo.slice",
+    "stablehlo.reshape",
+    "stablehlo.transpose",
+};
+
 class OperationTimer {
 public:
   /**
@@ -131,8 +145,7 @@ public:
 
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
-        opName == "stablehlo.constant" || opName == "stablehlo.return" ||
-        opName == "stablehlo.compare")
+        zeroCostOps.find(opName) != zeroCostOps.end())
       return 0;
 
     if (runtimeCache.contains(op)) {
