@@ -1230,6 +1230,7 @@ fn extract_by_ilp(
     let order_var_int = false;
     let class_constraint = true;
     let no_order = true;
+    let initialise_with_greedy = false;
     let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
     if order_var_int {
@@ -1244,6 +1245,32 @@ fn extract_by_ilp(
     if fusion_costs {
         println!("running with fusion costs");
         arg_vec.push("--fusion-costs");
+    }
+    if initialise_with_greedy {
+        // Get node_to_i map
+        let node_to_i: HashMap<Mdl, usize> = (&i_to_nodes)
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.clone(), i))
+            .collect();
+
+        let tnsr_cost = TensorCost {
+            egraph: egraph,
+            cost_model: cost_model,
+        };
+        let mut extractor = Extractor::new(egraph, tnsr_cost);
+        let (i_list, m_list) = get_init_solution(egraph, root, &extractor.costs, &g_i, &node_to_i);
+
+        // Store initial solution
+        let solution_data = json!({
+            "i_list": i_list,
+            "m_list": m_list,
+        });
+        let sol_data_str =
+            serde_json::to_string(&solution_data).expect("Fail to convert json to string");
+        write("./tmp/init_sol.json", sol_data_str).expect("Unable to write file");
+
+        arg_vec.push("--initialize");
     }
     let time_lim = "1000";
     let num_thread = "8";
