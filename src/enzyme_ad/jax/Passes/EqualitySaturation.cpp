@@ -185,7 +185,9 @@ public:
 
     xla::PjRtBuffer *args[numArgs];
     uint8_t isArgDonatable[numArgs];
-    xla::PjRtBuffer *res[numResults];
+
+    int numRuns = warmup + repetitions;
+    xla::PjRtBuffer *res[numRuns * numResults];
 
     for (int i = 0; i < numArgs; i++) {
       args[i] = getRandomInput(client, op->getOperand(i).getType());
@@ -197,18 +199,18 @@ public:
     for (unsigned i = 0; i < warmup + repetitions; i++) {
       if (i == warmup)
         t1 = std::chrono::high_resolution_clock::now();
-      XLAExecute(executable, numArgs, args, isArgDonatable, numResults, res,
-                 &futures, nullptr);
-
-      // Cleanup
-      for (int i = 0; i < numResults; i++) {
-        PjRtBufferFree(res[i]);
-      }
+      XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
+                 res + i * numResults, &futures, nullptr);
     }
+
+    auto t2 = std::chrono::high_resolution_clock::now();
 
     assert(!futures);
 
-    auto t2 = std::chrono::high_resolution_clock::now();
+    // Cleanup
+    for (int i = 0; i < numRuns * numResults; i++) {
+      PjRtBufferFree(res[i]);
+    }
 
     auto duration =
         std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
