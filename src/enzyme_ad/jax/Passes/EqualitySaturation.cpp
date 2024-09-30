@@ -154,7 +154,12 @@ public:
 
     auto context = OperationTimer::getContext();
 
-    ModuleOp wrapperModule = createModuleFromOperation(context, op);
+    // For some reason, not cloning the op here leads to a segfault. Maybe
+    // prepareExecutable consumes the op?
+    auto opForMeasurement = op->clone();
+
+    ModuleOp wrapperModule =
+        createModuleFromOperation(context, opForMeasurement);
 
     xla::PjRtClient *client = nullptr;
 
@@ -205,24 +210,22 @@ public:
 
     auto t2 = std::chrono::high_resolution_clock::now();
 
+    auto duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
     assert(!futures);
+
+    auto indexOp = op->clone();
+    runtimeCache.try_emplace(indexOp, duration);
 
     // Cleanup
     for (int i = 0; i < numRuns * numResults; i++) {
       PjRtBufferFree(res[i]);
     }
 
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-
     FreeClient(executable->client());
     ExecutableFree(executable);
-
     wrapperModule.erase();
 
-    // std::cout << op->getName().getStringRef().str() << "\n";
-    auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, duration);
     return duration;
   }
 
@@ -234,11 +237,6 @@ public:
     zeroState.addAttribute("value", zeroAttr);
 
     return builder.create(zeroState);
-  }
-
-  static Operation *cloneOpInContext(OpBuilder &builder, Operation *op) {
-    IRMapping mapping;
-    return cloneOpInContext(builder, op, mapping);
   }
 
   static MLIRContext *getContext() {
@@ -257,68 +255,6 @@ private:
   inline static bool logsInitialized;
 
   /**
-   * Create a clone of the operation in the new context recursively (i.e. going
-   * down to the regions). Just using op->clone() will preserve context of the
-   * original operation, which poses a problem later since stablehlo -> mhlo
-   * legalization pass will not match the new operation.
-   *
-   * Like the normal op->clone(), any operands that use values outside of the
-   * operations are remapped using the map that is provided (leaving them alone
-   * if no entry is present).
-   *
-   * TODO: Surely there's a simpler way to do this?
-   */
-  static Operation *cloneOpInContext(OpBuilder &builder, Operation *op,
-                                     IRMapping &mapping) {
-    Location location = builder.getUnknownLoc();
-
-    // Recursively clone regions
-    llvm::SmallVector<std::unique_ptr<Region>> regions;
-
-    for (auto &region : op->getRegions()) {
-      auto newRegion = std::make_unique<Region>();
-
-      for (auto &block : region.getBlocks()) {
-        auto newBlock = new Block();
-
-        // Map from old block arguments to new ones
-        for (auto &arg : block.getArguments()) {
-          mapping.map(arg, newBlock->addArgument(arg.getType(), location));
-        }
-
-        for (auto &nestedOp : block.getOperations()) {
-          auto *newNestedOp = cloneOpInContext(builder, &nestedOp, mapping);
-          newBlock->push_back(newNestedOp);
-
-          // Map result of old operation to that of new operation, so that
-          // operations after can use it
-          for (int i = 0; i < nestedOp.getNumResults(); i++) {
-            mapping.map(nestedOp.getResult(i), newNestedOp->getResult(i));
-          }
-        }
-        newRegion->push_back(newBlock);
-      }
-      regions.push_back(std::move(newRegion));
-    }
-
-    OperationState opState(location,
-                           op->getName()
-                               .getStringRef()
-                               .str(), // Use string to make a new name, rather
-                                       // than reusing the OperationName
-                           op->getOperands(), op->getResultTypes(),
-                           op->getAttrs(), {}, regions);
-
-    auto *newOp = builder.create(opState);
-
-    for (int i = 0; i < newOp->getNumOperands(); i++) {
-      newOp->setOperand(i, mapping.lookupOrDefault(newOp->getOperand(i)));
-    }
-
-    return newOp;
-  }
-
-  /**
    * Wrap operation into a module, where its operands are mapped to inputs of
    * main. Doesn't mutate op (instead it creates a copy).
    */
@@ -331,8 +267,6 @@ private:
 
     auto block = wrapperModule.getBodyRegion().begin();
 
-    auto *newOp = cloneOpInContext(builder, op);
-
     // Create a func.func to wrap newOp around
     FunctionType funcType =
         FunctionType::get(context, op->getOperandTypes(), op->getResultTypes());
@@ -343,13 +277,12 @@ private:
     Block *entryBlock = funcOp.addEntryBlock();
 
     for (int i = 0; i < op->getNumOperands(); i++) {
-      newOp->setOperand(i, funcOp.getArgument(i));
+      op->setOperand(i, funcOp.getArgument(i));
     }
 
-    entryBlock->push_back(newOp);
+    entryBlock->push_back(op);
 
-    auto returnOp =
-        builder.create<func::ReturnOp>(location, newOp->getResults());
+    auto returnOp = builder.create<func::ReturnOp>(location, op->getResults());
     entryBlock->push_back(returnOp);
 
     return std::move(wrapperModule);
@@ -692,7 +625,6 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
 
   int repeats = 0;
   switch (getPlatform()) {
-
   case CPU:
     repeats = 100;
     break;
@@ -1500,7 +1432,7 @@ public:
     // First pass to determine segmentation points and necessary types.
     // TODO: abstract out as separate function
 
-    const int segmentThreshold = 500;
+    const int segmentThreshold = 200;
     SmallVector<SegmentationPoint> segmentationPoints;
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
