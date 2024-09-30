@@ -1,2 +1,4 @@
+(DotGeneralOp ?x ?y (Vec) (Vec) (Vec 1) (Vec 0) ?p)=>(MatchRank (SSplit0 (DotGeneralOp ?x (ConcatenateOp (Vec (MatchRank ?y ?x) (MatchRank ?z ?x)) 1) (Vec) (Vec) (Vec 1) (Vec 0) ?p) 1 (MatchRank ?y ?x)) ?y)
+(DotGeneralOp ?x ?z (Vec) (Vec) (Vec 1) (Vec 0) ?p)=>(MatchRank (SSplit1 (DotGeneralOp ?x (ConcatenateOp (Vec (MatchRank ?y ?x) (MatchRank ?z ?x)) 1) (Vec) (Vec) (Vec 1) (Vec 0) ?p) 1 (MatchRank ?z ?x)) ?z)
 (DotGeneralOp ?x ?z (Vec) (Vec) (Vec 1) (Vec 0) ?p)=>(SSplit0 (DotGeneralOp (ConcatenateOp (Vec ?x ?y) 0) ?z (Vec) (Vec) (Vec 1) (Vec 0) ?p) 0 ?x)
 (DotGeneralOp ?y ?z (Vec) (Vec) (Vec 1) (Vec 0) ?p)=>(SSplit1 (DotGeneralOp (ConcatenateOp (Vec ?x ?y) 0) ?z (Vec) (Vec) (Vec 1) (Vec 0) ?p) 0 ?y)

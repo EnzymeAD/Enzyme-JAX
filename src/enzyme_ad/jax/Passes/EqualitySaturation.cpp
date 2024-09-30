@@ -155,7 +155,7 @@ public:
     auto context = OperationTimer::getContext();
 
     // For some reason, not cloning the op here leads to a segfault. Maybe
-    // prepareExecutable consumes the op?
+    // prepareExecutable/ClientCompile consumes the op?
     auto opForMeasurement = op->clone();
 
     ModuleOp wrapperModule =
@@ -462,6 +462,34 @@ getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
   return {start, limit};
 }
 
+/**
+ * Get the Reshape output type for MatchRank.
+ *
+ * See comment in tensat/src/model.rs for details.
+ */
+Type getReshapeTypeForMatchRank(Value input, Value ref) {
+  auto initialShape = getShape(input);
+  auto refRank = getShape(ref).size();
+  int initialRank = initialShape.size();
+  SmallVector<int64_t> shape;
+  if (initialRank < refRank) {
+    for (int i = 0; i < refRank; i++) {
+      if (i < initialRank)
+        shape.push_back(initialShape[i]);
+      else
+        shape.push_back(1);
+    }
+  } else {
+    for (int i = 0; i < initialRank; i++) {
+      if (i < refRank)
+        shape.push_back(initialShape[i]);
+      else
+        assert(initialShape[i] == 1);
+    }
+  }
+  return deriveOutputType(input, shape);
+}
+
 Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
                              SmallVector<Value> &operands,
                              std::vector<std::vector<int64_t>> &other_vecs,
@@ -515,6 +543,14 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
         builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[0]),
         operands[0]);
     break;
+  case tensat::Ops::MatchRank: {
+    auto input = operands[0];
+    auto ref = operands[1];
+    auto newType = getReshapeTypeForMatchRank(input, ref);
+    mlirOp = builder.create<stablehlo::ReshapeOp>(builder.getUnknownLoc(),
+                                                  newType, input);
+    break;
+  }
   case tensat::Ops::DotGeneralOp: {
     std::vector<int64_t> lhs_batch_dim = other_vecs[0];
     std::vector<int64_t> rhs_batch_dim = other_vecs[1];
@@ -1249,6 +1285,18 @@ public:
         auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
         auto newType = deriveOutputType(input, shape);
         newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
+        break;
+      }
+      case Ops::MatchRank: {
+        auto input = opVals[node.operands[0]];
+        auto ref = opVals[node.operands[1]];
+        if (getShape(input).size() == getShape(ref).size()) {
+          /* do nothing */
+        } else {
+          auto newType = getReshapeTypeForMatchRank(input, ref);
+          newOp =
+              builder.create<stablehlo::ReshapeOp>(location, newType, input);
+        }
         break;
       }
       case Ops::DotGeneralOp: {

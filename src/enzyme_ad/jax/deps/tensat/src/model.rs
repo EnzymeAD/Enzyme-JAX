@@ -74,6 +74,16 @@ define_language! {
       // module.
       "SSplit0"             = SSplit0([Id; 3]),  // input, axis, orig_0
       "SSplit1"             = SSplit1([Id; 3]),  // input, axis, orig_1
+      // (MatchRank input ref) means:
+      // If len(shape(input)) < len(shape(ref)), reshape input such that len(shape(input')) = len(shape(ref)),
+      // and shape(input') = shape(input) + [1, 1, ...].
+      //
+      // Otherwise, reshape input such that shape(input') = shape(input)[0..len(shape(ref))).
+      // It is an error to have any index i in [len(shape(ref))..len(shape(input))) such that shape(input)[i] != 1.
+      //
+      // This allows certain rewrites with ConcatenateOps with axis larger than the rank of the operands, as
+      // StableHLO doesn't have implicit casting.
+      "MatchRank"         = MatchRank([Id; 2]),  // input, ref
       // MISC
       Num(i64),
       Var(Symbol),

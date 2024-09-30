@@ -55,6 +55,7 @@ pub mod ffi {
         ReturnOp,
         SSplit0,
         SSplit1,
+        MatchRank,
     }
 
     struct Node {
@@ -372,6 +373,7 @@ impl ffi::Ops {
             Mdl::ReturnOp(_) => Ops::ReturnOp,
             Mdl::SSplit0(_) => Ops::SSplit0,
             Mdl::SSplit1(_) => Ops::SSplit1,
+            Mdl::MatchRank(_) => Ops::MatchRank,
         }
     }
 }
@@ -1056,6 +1058,7 @@ impl CppGraphConverter {
                 Mdl::BlackBox(ops) => new_node(ops),
                 Mdl::SSplit0(ops) => new_node(ops),
                 Mdl::SSplit1(ops) => new_node(ops),
+                Mdl::MatchRank(ops) => new_node(ops),
                 _ => unimplemented!()
             };
 
