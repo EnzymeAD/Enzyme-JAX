@@ -432,7 +432,7 @@ def resource_dir():
             dn, "..", "..", "..", "external", "llvm-project", "clang", "staging"
         )
     else:
-        res = os.path.join(dn, "..", "..", "clang", "staging")
+        res = os.path.join(dn, "..", "..", "..", "llvm", "llvm-project", "clang", "staging")
     return res
 
 
@@ -455,7 +455,40 @@ def cflags():
             "-fgnuc-version=4.2.1",
         )
     else:
-        res = ()
+        dn = os.path.dirname(enzyme_call.__file__)
+        crosstool_include = os.path.join(
+            dn,
+            "..",
+            "..",
+            "..",
+            "crosstool",
+            "v18",
+            "stable",
+            "toolchain",
+            "include",
+            "c++",
+            "v1",
+        )
+        grte_include = os.path.join(
+            dn,
+            "..",
+            "..",
+            "..",
+            "grte",
+            "v5_x86",
+            "release",
+            "usr",
+            "grte",
+            "v5",
+            "include",
+        )
+        res = (
+            "-internal-isystem",
+            crosstool_include,
+            "-internal-externc-isystem",
+            grte_include,
+        )
+
         if os.getenv("ENABLE_GDBLISTENER") is not None:
             res = res + (
                 "-debug-info-kind=standalone",
