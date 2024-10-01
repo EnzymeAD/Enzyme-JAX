@@ -285,13 +285,6 @@ pybind_library(
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
         "@tsl//tsl/platform:tensor_float_32_utils",
-        "@tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
-        "@tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
-        "@tsl//tsl/profiler/utils:time_utils_impl",
-        "@tsl//tsl/protobuf:dnn_proto_cc_impl",
-        "@tsl//tsl/protobuf:histogram_proto_cc",
-        "@tsl//tsl/protobuf:histogram_proto_cc_impl",
-        "@tsl//tsl/protobuf:protos_all_cc_impl",
 
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@xla//xla:autotune_results_proto_cc",
@@ -302,7 +295,7 @@ pybind_library(
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/client:local_client",
-        "@xla//xla/hlo/builder:xla_computation",
+        "@xla//xla/client:xla_computation",
         "@xla//xla/service",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
@@ -317,7 +310,7 @@ pybind_library(
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
-        "@xla//xla/hlo/mhlo_to_hlo:type_to_shape",
+        "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -335,7 +328,7 @@ pybind_library(
 
         # MHLO stuff.
         "@xla//xla/mlir_hlo",
-        "@xla//xla/hlo/mhlo_to_hlo:mlir_hlo_to_hlo",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
         "@xla//xla/hlo/ir:hlo",
 
         # This is necessary for XLA protobufs to link
