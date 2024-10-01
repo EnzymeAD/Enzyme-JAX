@@ -1185,7 +1185,6 @@ xla_client.register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback()
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
-
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
         return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan
@@ -1434,7 +1433,6 @@ pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
 def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
     pipeline_options = kwargs["pipeline_options"]
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
-
         passes = pipeline_options.pass_pipeline()
         start = passes.rindex("enzyme-wrap{")
         prev_passes = passes[:start]
