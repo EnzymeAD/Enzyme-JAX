@@ -302,7 +302,7 @@ pybind_library(
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/client:local_client",
-        "@xla//xla/client:xla_computation",
+        "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/service",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
@@ -317,7 +317,7 @@ pybind_library(
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
-        "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
+        "@xla//xla/hlo/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -335,7 +335,7 @@ pybind_library(
 
         # MHLO stuff.
         "@xla//xla/mlir_hlo",
-        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+        "@xla//xla/hlo/mhlo_to_hlo:mlir_hlo_to_hlo",
         "@xla//xla/hlo/ir:hlo",
 
         # This is necessary for XLA protobufs to link
