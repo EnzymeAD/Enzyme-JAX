@@ -13,10 +13,11 @@ from jax.interpreters import ad
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import stablehlo, func
 from jax.lib import xla_client
-
 import jax.numpy as jnp
 
 from . import enzyme_call
+
+from .utils import default_nowheel_resource, default_linux_cflags
 
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
@@ -428,7 +429,8 @@ def resource_dir():
 
     dn = os.path.dirname(enzyme_call.__file__)
     if os.getenv("ENZYME_BAZEL_NOWHEEL", None) is None:
-        res = os.path.join(
+        res = default_nowheel_resource(dn)
+        os.path.join(
             dn, "..", "..", "..", "external", "llvm-project", "clang", "staging"
         )
     else:
@@ -455,7 +457,7 @@ def cflags():
             "-fgnuc-version=4.2.1",
         )
     else:
-        res = ()
+        res = default_linux_cflags()
         if os.getenv("ENABLE_GDBLISTENER") is not None:
             res = res + (
                 "-debug-info-kind=standalone",
