@@ -13,10 +13,11 @@ from jax.interpreters import ad
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import stablehlo, func
 from jax.lib import xla_client
-
 import jax.numpy as jnp
 
 from . import enzyme_call
+
+from .utils import default_nowheel_resource, default_linux_cflags
 
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
@@ -428,7 +429,8 @@ def resource_dir():
 
     dn = os.path.dirname(enzyme_call.__file__)
     if os.getenv("ENZYME_BAZEL_NOWHEEL", None) is None:
-        res = os.path.join(
+        res = default_nowheel_resource(dn)
+        os.path.join(
             dn, "..", "..", "..", "external", "llvm-project", "clang", "staging"
         )
     else:
@@ -455,7 +457,7 @@ def cflags():
             "-fgnuc-version=4.2.1",
         )
     else:
-        res = ()
+        res = default_linux_cflags()
         if os.getenv("ENABLE_GDBLISTENER") is not None:
             res = res + (
                 "-debug-info-kind=standalone",
@@ -1183,7 +1185,6 @@ xla_client.register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback()
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
-
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
         return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan
@@ -1432,7 +1433,6 @@ pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
 def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
     pipeline_options = kwargs["pipeline_options"]
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
-
         passes = pipeline_options.pass_pipeline()
         start = passes.rindex("enzyme-wrap{")
         prev_passes = passes[:start]

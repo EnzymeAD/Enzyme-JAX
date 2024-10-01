@@ -44,6 +44,7 @@ py_library(
     srcs = [
         "__init__.py",
         "primitives.py",
+        "utils.py",
     ],
     visibility = ["//visibility:public"],
 )
