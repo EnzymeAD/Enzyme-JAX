@@ -44,6 +44,7 @@ py_library(
     srcs = [
         "__init__.py",
         "primitives.py",
+        "utils.py",
     ],
     visibility = ["//visibility:public"],
 )
@@ -285,13 +286,13 @@ pybind_library(
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
         "@tsl//tsl/platform:tensor_float_32_utils",
-        "@tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
-        "@tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
-        "@tsl//tsl/profiler/utils:time_utils_impl",
-        "@tsl//tsl/protobuf:dnn_proto_cc_impl",
-        "@tsl//tsl/protobuf:histogram_proto_cc",
-        "@tsl//tsl/protobuf:histogram_proto_cc_impl",
-        "@tsl//tsl/protobuf:protos_all_cc_impl",
+	"@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
+        "@xla//xla/tsl/profiler/utils:time_utils_impl",
+        "@xla//xla/tsl/protobuf:dnn_proto_cc_impl",
+        "@xla//xla/tsl/protobuf:histogram_proto_cc",
+        "@xla//xla/tsl/protobuf:histogram_proto_cc_impl",
+        "@xla//xla/tsl/protobuf:protos_all_cc_impl",
 
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@xla//xla:autotune_results_proto_cc",

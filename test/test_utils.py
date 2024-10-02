@@ -13,10 +13,22 @@ import timeit
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 devices = []
-CurBackends = ["cuda"] #jax.default_backend()]
+CurBackends = []
+backends_initialized = False
 
-if "cuda" != "cpu":
-    devices = CurBackends
+
+def setup_backends():
+    global backends_initialized
+    global devices
+    global CurBackends
+    if backends_initialized:
+        return
+    backend = jax.default_backend()
+    backend = "cuda"
+    CurBackends.append(backend)
+    if jax.default_backend() != "cpu":
+        devices.append(backend)
+    backends_initialized = True
 
 AllBackends = ["cpu"] + devices
 AllPipelines = [
@@ -139,6 +151,7 @@ class EnzymeJaxTest(absltest.TestCase):
     def test(self):
         if self.name is None:
             return
+        setup_backends()
         self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
 
     def harness(self, name, in_fn, ins, dins, douts):
