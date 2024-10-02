@@ -18,9 +18,11 @@
 
 extern "C" void InitializeLogs();
 
-// extern "C" MLIR_CAPI_EXPORTED MlirAttribute enzymeActivityAttrGet(MlirContext ctx, int32_t val);
+// extern "C" MLIR_CAPI_EXPORTED MlirAttribute enzymeActivityAttrGet(MlirContext
+// ctx, int32_t val);
 
-extern "C" xla::PjRtClient *MakeCPUClient(uint8_t asynchronous, int node_id, int num_nodes);
+extern "C" xla::PjRtClient *MakeCPUClient(uint8_t asynchronous, int node_id,
+                                          int num_nodes);
 
 // xla/python/xla.cc 390
 extern "C" xla::PjRtClient *MakeGPUClient(int node_id, int num_nodes,
@@ -35,9 +37,11 @@ extern "C" int ClientNumAddressableDevices(xla::PjRtClient *client);
 
 extern "C" int ClientProcessIndex(xla::PjRtClient *client);
 
-extern "C" xla::PjRtDevice *ClientGetDevice(xla::PjRtClient *client, int device_id);
+extern "C" xla::PjRtDevice *ClientGetDevice(xla::PjRtClient *client,
+                                            int device_id);
 
-extern "C" xla::PjRtDevice *ClientGetAddressableDevice(xla::PjRtClient *client, int device_id);
+extern "C" xla::PjRtDevice *ClientGetAddressableDevice(xla::PjRtClient *client,
+                                                       int device_id);
 
 extern "C" void ExecutableFree(xla::PjRtLoadedExecutable *exec);
 
@@ -51,10 +55,9 @@ extern "C" void PjRtBufferFree(xla::PjRtBuffer *Buffer);
 
 extern "C" void *UnsafeBufferPointer(xla::PjRtBuffer *buffer);
 
-extern "C" xla::PjRtBuffer *ArrayFromHostBuffer(xla::PjRtClient *client, void *data,
-                                                MlirType mtype, size_t dim,
-                                                const int64_t *cshape,
-                                                xla::PjRtDevice *device);
+extern "C" xla::PjRtBuffer *
+ArrayFromHostBuffer(xla::PjRtClient *client, void *data, MlirType mtype,
+                    size_t dim, const int64_t *cshape, xla::PjRtDevice *device);
 
 extern "C" uint8_t BufferOnCPU(xla::PjRtBuffer *buffer);
 
@@ -79,10 +82,11 @@ extern "C" void FutureAwait(FutureType *Future);
 
 extern "C" void RunPassPipeline(const char *pass_pipeline, MlirModule cmod);
 
-extern "C" void XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
-                           xla::PjRtBuffer **op_args, uint8_t *is_arg_donatable,
-                           int num_results, xla::PjRtBuffer **op_results,
-                           uint8_t *futures, FutureType **future_results);
+extern "C" uint64_t XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
+                               xla::PjRtBuffer **op_args,
+                               uint8_t *is_arg_donatable, int num_results,
+                               xla::PjRtBuffer **op_results, uint8_t *futures,
+                               FutureType **future_results);
 
 extern "C" void RegisterDialects(MlirContext cctx);
 

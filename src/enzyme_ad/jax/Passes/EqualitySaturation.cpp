@@ -123,6 +123,10 @@ std::set<string> zeroCostOps = {
     "stablehlo.slice",
     "stablehlo.reshape",
     "stablehlo.transpose",
+
+    // We assume the best case, where memory is allocated smartly so that the
+    // concatenate never actually happens.
+    "stablehlo.concatenate",
 };
 
 bool isBlackboxed(Operation *op) {
@@ -211,21 +215,18 @@ public:
       isArgDonatable[i] = false;
     }
 
-    auto t1 = std::chrono::high_resolution_clock::now();
+    std::vector<uint64_t> durations(numRuns);
 
     for (unsigned i = 0; i < warmup + repetitions; i++) {
-      if (i == warmup)
-        t1 = std::chrono::high_resolution_clock::now();
-      XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
-                 res + i * numResults, &futures, nullptr);
+      durations[i] =
+          XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
+                     res + i * numResults, &futures, nullptr);
     }
 
-    auto t2 = std::chrono::high_resolution_clock::now();
-
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-
     assert(!futures);
+
+    uint64_t duration =
+        *std::min_element(durations.begin() + warmup, durations.end());
 
     auto indexOp = op->clone();
     runtimeCache.try_emplace(indexOp, duration);
@@ -675,7 +676,7 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
   int repeats = 0;
   switch (getPlatform()) {
   case CPU:
-    repeats = 100;
+    repeats = 200;
     break;
   case GPU:
     // TODO: Review this number
