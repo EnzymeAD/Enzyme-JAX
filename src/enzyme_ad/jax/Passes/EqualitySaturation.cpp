@@ -125,14 +125,26 @@ std::set<string> zeroCostOps = {
     "stablehlo.transpose",
 };
 
+bool isBlackboxed(Operation *op) {
+  if (isa<stablehlo::MulOp>(op) || isa<stablehlo::SubtractOp>(op) ||
+      isa<stablehlo::DivOp>(op) || isa<stablehlo::AddOp>(op) ||
+      isa<stablehlo::MinOp>(op) || isa<stablehlo::MaxOp>(op) ||
+      isa<stablehlo::TanhOp>(op) || isa<stablehlo::NegOp>(op) ||
+      isa<stablehlo::ExpOp>(op) || isa<stablehlo::TransposeOp>(op) ||
+      isa<stablehlo::ReshapeOp>(op) || isa<stablehlo::DotGeneralOp>(op) ||
+      isa<stablehlo::ConcatenateOp>(op) || isa<stablehlo::SliceOp>(op) ||
+      isa<stablehlo::PadOp>(op) || isa<func::ReturnOp>(op)) {
+    return false;
+  } else {
+    return true;
+  }
+}
+
 class OperationTimer {
 public:
   /**
    * Measure cost of operation (execution time in microseconds) by running it
    * many times and measuring the time taken.
-   * TODO: Make cloning optional
-   * TODO: Preserve context across runs so that we're not creating unnecessary
-   * contexts
    */
   static uint64_t getCost(Operation *op, unsigned warmup,
                           unsigned repetitions) {
@@ -145,7 +157,7 @@ public:
 
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
-        zeroCostOps.find(opName) != zeroCostOps.end())
+        zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
       return 0;
 
     if (runtimeCache.contains(op)) {
@@ -212,6 +224,7 @@ public:
 
     auto duration =
         std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+
     assert(!futures);
 
     auto indexOp = op->clone();
@@ -858,6 +871,8 @@ public:
                            builder, graph);
     };
 
+    bool blackboxed = false;
+
     if (isa<stablehlo::MulOp>(op)) {
       auto mul = cast<stablehlo::MulOp>(op);
       tensorInfo = graph
@@ -1062,6 +1077,8 @@ public:
           static_cast<size_t>(processedOperands.size())};
       tensorInfo = graph->new_return_op(operandPtrsSlice).into_raw();
     } else {
+      blackboxed = true;
+
       int numOperands = op->getNumOperands();
       rust::Vec<tensat::Tensor> outputs;
       for (auto result : op->getResults())
@@ -1112,10 +1129,11 @@ public:
                                 blackboxOpID, outputs)
               .into_raw();
     }
-    if (tensorInfo != nullptr) {
-      opToTensorInfo->insert({op, tensorInfo});
-      return tensorInfo;
-    }
+    assert(tensorInfo != nullptr);
+    // Check that isBlackboxed is up-to-date
+    assert(blackboxed == isBlackboxed(op));
+
+    opToTensorInfo->insert({op, tensorInfo});
     return tensorInfo;
   }
 
@@ -1480,18 +1498,16 @@ public:
     // First pass to determine segmentation points and necessary types.
     // TODO: abstract out as separate function
 
-    const int segmentThreshold = 200;
+    const int segmentThreshold = 70;
     SmallVector<SegmentationPoint> segmentationPoints;
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
 
     // We need to keep track of anything that was an output value, so that if we
     // see it in later segments then we know to add that as an input.
-
-    // TODO: We should keep track of a mapping between function arguments
-    // created as a result of an output value, so that we can use it when
-    // reconstructing segments
     DenseSet<Value> outputsBeforeCurrentSegment;
+
+    int nonBlackboxedInCurrentSegment = 0;
 
     for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
       Operation &op = *it;
@@ -1509,7 +1525,12 @@ public:
         }
       }
 
-      if (currentOps.size() >= segmentThreshold || it == (--entryBlock.end())) {
+      bool blackboxed = isBlackboxed(&op);
+
+      // TODO: This ensures the last node in segment is blackboxed, but ideally
+      // we actually want to reduce the number of segment outputs.
+      if ((blackboxed && nonBlackboxedInCurrentSegment >= segmentThreshold) ||
+          it == (--entryBlock.end())) {
         // Track outputs of this segment
         for (Operation *op : currentOps) {
           for (Value result : op->getResults()) {
@@ -1521,11 +1542,15 @@ public:
         segment.endOp = &op;
         segmentationPoints.push_back(segment);
         currentOps.clear();
+        nonBlackboxedInCurrentSegment = 0;
 
         outputsBeforeCurrentSegment.insert(segment.outputs.begin(),
                                            segment.outputs.end());
         segment = SegmentationPoint();
       }
+
+      if (!blackboxed)
+        nonBlackboxedInCurrentSegment++;
     }
 
     std::vector<SegmentedModule> segmentedModules;
