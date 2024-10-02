@@ -56,6 +56,8 @@
 #include "llvm/Support/Process.h"
 #include "llvm/TargetParser/Host.h"
 
+#include <chrono>
+
 using namespace mlir;
 using namespace llvm;
 using namespace xla;
@@ -64,9 +66,10 @@ using namespace xla;
 // int xla::_LayoutProto_default_instance_;
 
 /**
- * Copy of Reactant.jl/deps/ReactantExtra/API.cpp, except Enzyme-related bits are 
- * removed as it creates complicated dependency, and we don't actually need/want them
- * as we only use these functions for shape inference and cost model. 
+ * Copy of Reactant.jl/deps/ReactantExtra/API.cpp, except Enzyme-related bits
+ * are removed as it creates complicated dependency, and we don't actually
+ * need/want them as we only use these functions for shape inference and cost
+ * model.
  */
 
 extern "C" void InitializeLogs() {
@@ -90,7 +93,7 @@ enzymeActivityAttrGet(MlirContext ctx, int32_t val) {
   return wrap(mlir::enzyme::ActivityAttr::get(unwrap(ctx),
                                               (mlir::enzyme::Activity)val));
 }
-*/ 
+*/
 
 extern "C" PjRtClient *MakeCPUClient(uint8_t asynchronous, int node_id,
                                      int num_nodes) {
@@ -312,10 +315,10 @@ extern "C" uint8_t FutureIsReady(FutureType *Future) {
 
 extern "C" void FutureAwait(FutureType *Future) { Future->Await(); }
 
-extern "C" void XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
-                           PjRtBuffer **op_args, uint8_t *is_arg_donatable,
-                           int num_results, PjRtBuffer **op_results,
-                           uint8_t *futures, FutureType **future_results) {
+extern "C" uint64_t XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
+                               PjRtBuffer **op_args, uint8_t *is_arg_donatable,
+                               int num_results, PjRtBuffer **op_results,
+                               uint8_t *futures, FutureType **future_results) {
   std::vector<std::vector<PjRtBuffer *>> argument_handles;
   argument_handles.emplace_back(op_args, op_args + num_args);
 
@@ -327,10 +330,18 @@ extern "C" void XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
   }
   options.untuple_result = true;
   std::optional<std::vector<FutureType>> returned_futures;
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+
   auto results = xla::ValueOrThrow(
       exec->Execute(static_cast<absl::Span<const std::vector<PjRtBuffer *>>>(
                         argument_handles),
                     options, returned_futures));
+
+  auto t2 = std::chrono::high_resolution_clock::now();
+
+  auto duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
 
   assert(results.size() == 1);
 
@@ -352,6 +363,8 @@ extern "C" void XLAExecute(xla::PjRtLoadedExecutable *exec, int num_args,
   for (size_t i = 0; i < num_results; i++) {
     op_results[i] = results[0][i].release();
   }
+
+  return duration;
 }
 
 extern "C" void RegisterDialects(MlirContext cctx) {
@@ -386,9 +399,9 @@ extern "C" void InitializeRegistryAndPasses(MlirDialectRegistry creg) {
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
-  
-  // We only use these functions for shape + cost inference, so we don't need any Enzyme related passes.
-  // registry.insert<mlir::enzyme::EnzymeDialect>();
+
+  // We only use these functions for shape + cost inference, so we don't need
+  // any Enzyme related passes. registry.insert<mlir::enzyme::EnzymeDialect>();
 
   // mlir::registerenzymePasses();
   // regsiterenzymeXLAPasses();
