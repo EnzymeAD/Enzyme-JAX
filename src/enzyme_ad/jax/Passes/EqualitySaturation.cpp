@@ -225,8 +225,10 @@ public:
 
     assert(!futures);
 
-    uint64_t duration =
-        *std::min_element(durations.begin() + warmup, durations.end());
+    // TODO: This means there's no point in warmup anymore, since we're now
+    // taking individual measurements. Maybe we get rid of the parameter or do
+    // something more sophisticated
+    uint64_t duration = *std::min_element(durations.begin(), durations.end());
 
     auto indexOp = op->clone();
     runtimeCache.try_emplace(indexOp, duration);
