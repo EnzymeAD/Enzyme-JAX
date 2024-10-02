@@ -20,7 +20,11 @@ pub mod ffi {
     }
 
     enum Ops {
+        Var,
+        Num,
+        Vec,
         Input,
+        Index,
         CompareOp,
         BroadcastInDimOp,
         ConvertOp,
@@ -47,12 +51,15 @@ pub mod ffi {
         DynamicUpdateSliceOp,
         DynamicSliceOp,
         ScatterOp,
-        BlackBoxOp,
+        BlackBox,
         ReturnOp,
+        SSplit0,
+        SSplit1,
+        MatchRank,
     }
 
     struct Node {
-        name: String,
+        op: Ops,
         label: String,
         operands: Vec<i32>,
     }
@@ -324,6 +331,49 @@ impl ffi::Type {
             "i32" => Some(ffi::Type::i32),
             "f32" => Some(ffi::Type::f32),
             _ => None,
+        }
+    }
+}
+
+impl ffi::Ops {
+    pub fn from_mdl(m: &Mdl) -> ffi::Ops {
+        use ffi::Ops;
+        match m {
+            Mdl::Var(_) => Ops::Var,
+            Mdl::Num(_) => Ops::Num,
+            Mdl::Vec(_) => Ops::Vec,
+            Mdl::Input(_) => Ops::Input,
+            Mdl::Index(_) => Ops::Index,
+            Mdl::CompareOp(_) => Ops::CompareOp,
+            Mdl::BroadcastInDimOp(_) => Ops::BroadcastInDimOp,
+            Mdl::ConvertOp(_) => Ops::ConvertOp,
+            Mdl::ReduceOp(_) => Ops::ReduceOp,
+            Mdl::ReshapeOp(_) => Ops::ReshapeOp,
+            Mdl::GatherOp(_) => Ops::GatherOp,
+            Mdl::SelectOp(_) => Ops::SelectOp,
+            Mdl::ConcatenateOp(_) => Ops::ConcatenateOp,
+            Mdl::DotGeneralOp(_) => Ops::DotGeneralOp,
+            Mdl::PadOp(_) => Ops::PadOp,
+            Mdl::SliceOp(_) => Ops::SliceOp,
+            Mdl::TransposeOp(_) => Ops::TransposeOp,
+            Mdl::MulOp(_) => Ops::MulOp,
+            Mdl::AddOp(_) => Ops::AddOp,
+            Mdl::DivOp(_) => Ops::DivOp,
+            Mdl::SubtractOp(_) => Ops::SubtractOp,
+            Mdl::MinOp(_) => Ops::MinOp,
+            Mdl::MaxOp(_) => Ops::MaxOp,
+            Mdl::NegOp(_) => Ops::NegOp,
+            Mdl::TanhOp(_) => Ops::TanhOp,
+            Mdl::ExpOp(_) => Ops::ExpOp,
+            Mdl::IotaOp(_) => Ops::IotaOp,
+            Mdl::DynamicUpdateSliceOp(_) => Ops::DynamicUpdateSliceOp,
+            Mdl::DynamicSliceOp(_) => Ops::DynamicSliceOp,
+            Mdl::ScatterOp(_) => Ops::ScatterOp,
+            Mdl::BlackBox(_) => Ops::BlackBox,
+            Mdl::ReturnOp(_) => Ops::ReturnOp,
+            Mdl::SSplit0(_) => Ops::SSplit0,
+            Mdl::SSplit1(_) => Ops::SSplit1,
+            Mdl::MatchRank(_) => Ops::MatchRank,
         }
     }
 }
@@ -961,50 +1011,55 @@ impl CppGraphConverter {
                 .map(|id: &Id| index(*id))
                 .collect::<Vec<i32>>()
         };
-        let new_node = |name: &str, operands: &[Id]| ffi::Node {
-            name: name.to_string(),
-            label: "".to_string(),
-            operands: convert(operands),
-        };
 
         let rec_expr_ref = rec_expr.as_ref();
 
         for mdl in rec_expr_ref.iter() {
+            let op = ffi::Ops::from_mdl(mdl);
+
+            let new_node = |operands: &[Id]| ffi::Node {
+                op: op,
+                label: "".to_string(),
+                operands: convert(operands),
+            };
+
             let node = match mdl {
                 Mdl::Var(label) => ffi::Node {
-                    name: "Var".to_string(),
+                    op,
                     label: label.to_string(),
                     operands: vec![],
                 },
                 Mdl::Num(num) => ffi::Node {
-                    name: "Num".to_string(),
+                    op: op,
                     label: "".to_string(),
                     operands: vec![*num as i32],
                 },
                 // TODO: More clever pattern matching
-                Mdl::Vec(ops) => new_node("Vec", ops),
-                Mdl::Input(ops) => new_node("Input", ops),
-                Mdl::Index(ops) => new_node("Index", ops),
-                // Mdl::ConstantOp(ops) => new_node("ConstantOp", ops),
-                Mdl::ReshapeOp(ops) => new_node("ReshapeOp", ops),
-                Mdl::ConcatenateOp(ops) => new_node("ConcatenateOp", ops),
-                Mdl::DotGeneralOp(ops) => new_node("DotGeneralOp", ops),
-                Mdl::SliceOp(ops) => new_node("SliceOp", ops),
-                Mdl::TransposeOp(ops) => new_node("TransposeOp", ops),
-                Mdl::MulOp(ops) => new_node("MulOp", ops),
-                Mdl::AddOp(ops) => new_node("AddOp", ops),
-                Mdl::DivOp(ops) => new_node("DivOp", ops),
-                Mdl::SubtractOp(ops) => new_node("SubtractOp", ops),
-                Mdl::MinOp(ops) => new_node("MinOp", ops),
-                Mdl::MaxOp(ops) => new_node("MaxOp", ops),
-                Mdl::NegOp(ops) => new_node("NegOp", ops),
-                Mdl::TanhOp(ops) => new_node("TanhOp", ops),
-                Mdl::ExpOp(ops) => new_node("ExpOp", ops),
-                Mdl::IotaOp(ops) => new_node("IotaOp", ops),
-                Mdl::PadOp(ops) => new_node("PadOp", ops),
-                Mdl::ReturnOp(ops) => new_node("ReturnOp", ops),
-                Mdl::BlackBox(ops) => new_node("blackbox", ops),
-                _ => unimplemented!(),
+                Mdl::Vec(ops) => new_node(ops),
+                Mdl::Input(ops) => new_node(ops),
+                Mdl::Index(ops) => new_node(ops),
+                Mdl::ReshapeOp(ops) => new_node(ops),
+                Mdl::ConcatenateOp(ops) => new_node(ops),
+                Mdl::DotGeneralOp(ops) => new_node(ops),
+                Mdl::SliceOp(ops) => new_node(ops),
+                Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::MulOp(ops) => new_node(ops),
+                Mdl::AddOp(ops) => new_node(ops),
+                Mdl::DivOp(ops) => new_node(ops),
+                Mdl::SubtractOp(ops) => new_node(ops),
+                Mdl::MinOp(ops) => new_node(ops),
+                Mdl::MaxOp(ops) => new_node(ops),
+                Mdl::NegOp(ops) => new_node(ops),
+                Mdl::TanhOp(ops) => new_node(ops),
+                Mdl::ExpOp(ops) => new_node(ops),
+                Mdl::IotaOp(ops) => new_node(ops),
+                Mdl::PadOp(ops) => new_node(ops),
+                Mdl::ReturnOp(ops) => new_node(ops),
+                Mdl::BlackBox(ops) => new_node(ops),
+                Mdl::SSplit0(ops) => new_node(ops),
+                Mdl::SSplit1(ops) => new_node(ops),
+                Mdl::MatchRank(ops) => new_node(ops),
+                _ => unimplemented!()
             };
 
             res.push(node);
@@ -1017,30 +1072,28 @@ impl CppGraphConverter {
         let start = &self.rec_expr;
 
         // Configuration
-        let n_sec = 30; // seconds for timeout
-        let use_multi = false; // whether to use multi patterns
-        let no_cycle = true; // is our graph by definition acyclic?
-        let filter_after = false; // vanilla filtering or efficient filtering
+        let n_sec = 10; // seconds for timeout
+        let use_multi = true; // whether to use multi patterns
+        let no_cycle = true; // allow cycle in egraph?
+        let filter_after = true; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 
         let path = std::env::current_dir().unwrap();
         println!("The current directory is {}", path.display());
         let rule_file = "src/enzyme_ad/jax/deps/tensat/converted.txt";
+        let multi_file = "src/enzyme_ad/jax/deps/tensat/converted_multi.txt";
 
         let learned_rules =
             read_to_string(rule_file).expect("Something went wrong reading the rule file");
         let time_limit_sec = Duration::new(n_sec, 0);
         let pre_defined_rules = PRE_DEFINED_RULES.iter().map(|&x| x);
-        let split_rules: Vec<&str> = learned_rules.split("\n").chain(pre_defined_rules).collect();
+        let split_rules: Vec<&str> = learned_rules.split("\n")
+            .filter(|x| !x.is_empty())
+            .chain(pre_defined_rules)
+            .collect();
         let do_filter_after = no_cycle && filter_after;
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
-        let runner = Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
-            .with_node_limit(node_limit)
-            .with_time_limit(time_limit_sec)
-            .with_iter_limit(iter_limit)
-            .with_expr(&start);
-        // .with_hook(move |runner| multi_patterns.run_one(runner));
         let mut rules = rules_from_str(split_rules, do_filter_after);
 
         let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
@@ -1071,9 +1124,12 @@ impl CppGraphConverter {
 
         let iter_multi = 2;
         let node_multi = 30000;
-        let multi_rules: Vec<(&str, bool)> = PRE_DEFINED_MULTI
-            .iter()
-            .map(|&x| (x, /*symmetric=*/ false))
+        let learned_rules =
+            read_to_string(multi_file).expect("Something went wrong reading the multi rule file");
+        let multi_rules: Vec<(&str, bool)> = learned_rules
+            .split("\n")
+            .filter(|x| !x.is_empty())
+            .map(|x| (x, /*symmetric=*/ false))
             .collect();
         let mut multi_patterns = MultiPatterns::with_rules(
             multi_rules,
@@ -1083,6 +1139,21 @@ impl CppGraphConverter {
             node_multi,
             n_sec,
         );
+
+        let runner = if use_multi {
+            Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
+                .with_node_limit(node_limit)
+                .with_time_limit(time_limit_sec)
+                .with_iter_limit(iter_limit)
+                .with_expr(&start)
+                .with_hook(move |runner| multi_patterns.run_one(runner))
+        } else {
+            Runner::<Mdl, TensorAnalysis, ()>::new(analysis)
+                .with_node_limit(node_limit)
+                .with_time_limit(time_limit_sec)
+                .with_iter_limit(iter_limit)
+                .with_expr(&start)
+        };
 
         let start_time = Instant::now();
         let mut runner = runner.run(&rules[..]);
@@ -1160,9 +1231,10 @@ fn extract_by_ilp(
 
     // Call python script to run ILP
     let order_var_int = false;
-    let class_constraint = false;
+    let class_constraint = true;
     let no_order = true;
-    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("false")).parse().unwrap();
+    let initialise_with_greedy = false;
+    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
     if order_var_int {
         arg_vec.push("--order_var_int");
@@ -1176,6 +1248,32 @@ fn extract_by_ilp(
     if fusion_costs {
         println!("running with fusion costs");
         arg_vec.push("--fusion-costs");
+    }
+    if initialise_with_greedy {
+        // Get node_to_i map
+        let node_to_i: HashMap<Mdl, usize> = (&i_to_nodes)
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.clone(), i))
+            .collect();
+
+        let tnsr_cost = TensorCost {
+            egraph: egraph,
+            cost_model: cost_model,
+        };
+        let mut extractor = Extractor::new(egraph, tnsr_cost);
+        let (i_list, m_list) = get_init_solution(egraph, root, &extractor.costs, &g_i, &node_to_i);
+
+        // Store initial solution
+        let solution_data = json!({
+            "i_list": i_list,
+            "m_list": m_list,
+        });
+        let sol_data_str =
+            serde_json::to_string(&solution_data).expect("Fail to convert json to string");
+        write("./tmp/init_sol.json", sol_data_str).expect("Unable to write file");
+
+        arg_vec.push("--initialize");
     }
     let time_lim = "1000";
     let num_thread = "8";

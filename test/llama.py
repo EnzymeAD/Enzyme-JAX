@@ -355,7 +355,7 @@ broadcast_reduce<1>;
 )
 
 pipelines = [
-    ("JaX  ", None, CurBackends),
+    ("JaX", None, CurBackends),
     ("JaXPipe", JaXPipeline(), CurBackends),
     (
         "HLOOpt",

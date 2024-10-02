@@ -2,10 +2,11 @@ from absl.testing import absltest
 import jax.numpy as jnp
 import jax.random
 import jax.lax
+import jax.numpy as jnp
 import enzyme_ad.jax as enzyme_jax
 
-def test(x, y, z, w):
-  return (x + y) @ z
+def test(a, b, c, d, e, f, g, h, i):
+  return a @ b, a @ c
 
 class Simple(absltest.TestCase):
     def test_simple_random(self):
@@ -14,12 +15,17 @@ class Simple(absltest.TestCase):
         efunc = enzyme_jax.enzyme_jax_ir(pipeline_options=enzyme_jax.JaXPipeline("equality-saturation-pass"),)(test)
         
         ka, kb, kc, kd = jax.random.split(jax.random.PRNGKey(0), num=4)
-        a = jax.random.uniform(ka, shape=(2, 2, 2, 2))
-        b = jax.random.uniform(kb, shape=(2, 2, 2, 2))
-        c = jax.random.uniform(kc, shape=(2, 2, 2, 2))
-        d = jax.random.uniform(kd, shape=(2, 2, 2, 2))
-
-        eres = efunc(a, b, c, d)
+        a = jax.random.uniform(ka, shape=(3, 100000))
+        b = jax.random.uniform(kb, shape=(100000,))
+        c = jax.random.uniform(kc, shape=(100000,))
+        d = jax.random.uniform(kd, shape=(10, 10))
+        e = jax.random.uniform(ka, shape=(5, 5))
+        f = jax.random.uniform(ka, shape=(5, 5))
+        g = jax.random.uniform(ka, shape=(4, 80))
+        h = jax.random.uniform(ka, shape=(80, 300))
+        i = jax.random.uniform(ka, shape=(300, 90))
+        j = jax.random.uniform(ka, shape=(90, 10))
+        eres = efunc(a, b, c, d, e, f, g, h, i)
         print("enzyme forward", eres)
 
 if __name__ == "__main__":

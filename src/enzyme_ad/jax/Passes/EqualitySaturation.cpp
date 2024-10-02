@@ -111,6 +111,20 @@ EqsatPlatform getPlatform() {
   }
 }
 
+/**
+ * Ops to not measure cost for
+ */
+std::set<string> zeroCostOps = {
+    "stablehlo.constant",
+    "stablehlo.return",
+
+    // these ops should just be returning a view, but measuring these will
+    // make a copy since we'll end up returning the result in the module
+    "stablehlo.slice",
+    "stablehlo.reshape",
+    "stablehlo.transpose",
+};
+
 class OperationTimer {
 public:
   /**
@@ -131,8 +145,7 @@ public:
 
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
-        opName == "stablehlo.constant" || opName == "stablehlo.return" ||
-        opName == "stablehlo.compare")
+        zeroCostOps.find(opName) != zeroCostOps.end())
       return 0;
 
     if (runtimeCache.contains(op)) {
@@ -141,7 +154,12 @@ public:
 
     auto context = OperationTimer::getContext();
 
-    ModuleOp wrapperModule = createModuleFromOperation(context, op);
+    // For some reason, not cloning the op here leads to a segfault. Maybe
+    // prepareExecutable/ClientCompile consumes the op?
+    auto opForMeasurement = op->clone();
+
+    ModuleOp wrapperModule =
+        createModuleFromOperation(context, opForMeasurement);
 
     xla::PjRtClient *client = nullptr;
 
@@ -172,7 +190,9 @@ public:
 
     xla::PjRtBuffer *args[numArgs];
     uint8_t isArgDonatable[numArgs];
-    xla::PjRtBuffer *res[numResults];
+
+    int numRuns = warmup + repetitions;
+    xla::PjRtBuffer *res[numRuns * numResults];
 
     for (int i = 0; i < numArgs; i++) {
       args[i] = getRandomInput(client, op->getOperand(i).getType());
@@ -184,30 +204,28 @@ public:
     for (unsigned i = 0; i < warmup + repetitions; i++) {
       if (i == warmup)
         t1 = std::chrono::high_resolution_clock::now();
-      XLAExecute(executable, numArgs, args, isArgDonatable, numResults, res,
-                 &futures, nullptr);
-
-      // Cleanup
-      for (int i = 0; i < numResults; i++) {
-        PjRtBufferFree(res[i]);
-      }
+      XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
+                 res + i * numResults, &futures, nullptr);
     }
-
-    assert(!futures);
 
     auto t2 = std::chrono::high_resolution_clock::now();
 
     auto duration =
         std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+    assert(!futures);
+
+    auto indexOp = op->clone();
+    runtimeCache.try_emplace(indexOp, duration);
+
+    // Cleanup
+    for (int i = 0; i < numRuns * numResults; i++) {
+      PjRtBufferFree(res[i]);
+    }
 
     FreeClient(executable->client());
     ExecutableFree(executable);
-
     wrapperModule.erase();
 
-    // std::cout << op->getName().getStringRef().str() << "\n";
-    auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, duration);
     return duration;
   }
 
@@ -219,11 +237,6 @@ public:
     zeroState.addAttribute("value", zeroAttr);
 
     return builder.create(zeroState);
-  }
-
-  static Operation *cloneOpInContext(OpBuilder &builder, Operation *op) {
-    IRMapping mapping;
-    return cloneOpInContext(builder, op, mapping);
   }
 
   static MLIRContext *getContext() {
@@ -242,68 +255,6 @@ private:
   inline static bool logsInitialized;
 
   /**
-   * Create a clone of the operation in the new context recursively (i.e. going
-   * down to the regions). Just using op->clone() will preserve context of the
-   * original operation, which poses a problem later since stablehlo -> mhlo
-   * legalization pass will not match the new operation.
-   *
-   * Like the normal op->clone(), any operands that use values outside of the
-   * operations are remapped using the map that is provided (leaving them alone
-   * if no entry is present).
-   *
-   * TODO: Surely there's a simpler way to do this?
-   */
-  static Operation *cloneOpInContext(OpBuilder &builder, Operation *op,
-                                     IRMapping &mapping) {
-    Location location = builder.getUnknownLoc();
-
-    // Recursively clone regions
-    llvm::SmallVector<std::unique_ptr<Region>> regions;
-
-    for (auto &region : op->getRegions()) {
-      auto newRegion = std::make_unique<Region>();
-
-      for (auto &block : region.getBlocks()) {
-        auto newBlock = new Block();
-
-        // Map from old block arguments to new ones
-        for (auto &arg : block.getArguments()) {
-          mapping.map(arg, newBlock->addArgument(arg.getType(), location));
-        }
-
-        for (auto &nestedOp : block.getOperations()) {
-          auto *newNestedOp = cloneOpInContext(builder, &nestedOp, mapping);
-          newBlock->push_back(newNestedOp);
-
-          // Map result of old operation to that of new operation, so that
-          // operations after can use it
-          for (int i = 0; i < nestedOp.getNumResults(); i++) {
-            mapping.map(nestedOp.getResult(i), newNestedOp->getResult(i));
-          }
-        }
-        newRegion->push_back(newBlock);
-      }
-      regions.push_back(std::move(newRegion));
-    }
-
-    OperationState opState(location,
-                           op->getName()
-                               .getStringRef()
-                               .str(), // Use string to make a new name, rather
-                                       // than reusing the OperationName
-                           op->getOperands(), op->getResultTypes(),
-                           op->getAttrs(), {}, regions);
-
-    auto *newOp = builder.create(opState);
-
-    for (int i = 0; i < newOp->getNumOperands(); i++) {
-      newOp->setOperand(i, mapping.lookupOrDefault(newOp->getOperand(i)));
-    }
-
-    return newOp;
-  }
-
-  /**
    * Wrap operation into a module, where its operands are mapped to inputs of
    * main. Doesn't mutate op (instead it creates a copy).
    */
@@ -316,8 +267,6 @@ private:
 
     auto block = wrapperModule.getBodyRegion().begin();
 
-    auto *newOp = cloneOpInContext(builder, op);
-
     // Create a func.func to wrap newOp around
     FunctionType funcType =
         FunctionType::get(context, op->getOperandTypes(), op->getResultTypes());
@@ -328,13 +277,12 @@ private:
     Block *entryBlock = funcOp.addEntryBlock();
 
     for (int i = 0; i < op->getNumOperands(); i++) {
-      newOp->setOperand(i, funcOp.getArgument(i));
+      op->setOperand(i, funcOp.getArgument(i));
     }
 
-    entryBlock->push_back(newOp);
+    entryBlock->push_back(op);
 
-    auto returnOp =
-        builder.create<func::ReturnOp>(location, newOp->getResults());
+    auto returnOp = builder.create<func::ReturnOp>(location, op->getResults());
     entryBlock->push_back(returnOp);
 
     return std::move(wrapperModule);
@@ -483,6 +431,65 @@ std::vector<int64_t> dotGeneralShapeComputation(
   return shape;
 }
 
+/**
+ * Get the correct start and limiting indices of a SliceOp from a SSplit0 or
+ * SSplit1.
+ *
+ * See comment in tensat/src/model.rs for details.
+ */
+std::pair<std::vector<int64_t>, std::vector<int64_t>>
+getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
+  auto input_shape = getShape(input);
+  std::vector<int64_t> start, limit;
+  for (int i = 0; i < input_shape.size(); i++) {
+    if (i != axis) {
+      start.push_back(0);
+      limit.push_back(input_shape[i]);
+    } else {
+      int slice_width = getShape(orig)[axis];
+      if (op == tensat::Ops::SSplit0) {
+        start.push_back(0);
+        limit.push_back(slice_width);
+      } else if (op == tensat::Ops::SSplit1) {
+        int input_width = input_shape[axis];
+        start.push_back(input_width - slice_width);
+        limit.push_back(input_width);
+      } else {
+        throw std::invalid_argument("op should be either SSplit0 or SSplit1");
+      }
+    }
+  }
+  return {start, limit};
+}
+
+/**
+ * Get the Reshape output type for MatchRank.
+ *
+ * See comment in tensat/src/model.rs for details.
+ */
+Type getReshapeTypeForMatchRank(Value input, Value ref) {
+  auto initialShape = getShape(input);
+  auto refRank = getShape(ref).size();
+  int initialRank = initialShape.size();
+  SmallVector<int64_t> shape;
+  if (initialRank < refRank) {
+    for (int i = 0; i < refRank; i++) {
+      if (i < initialRank)
+        shape.push_back(initialShape[i]);
+      else
+        shape.push_back(1);
+    }
+  } else {
+    for (int i = 0; i < initialRank; i++) {
+      if (i < refRank)
+        shape.push_back(initialShape[i]);
+      else
+        assert(initialShape[i] == 1);
+    }
+  }
+  return deriveOutputType(input, shape);
+}
+
 Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
                              SmallVector<Value> &operands,
                              std::vector<std::vector<int64_t>> &other_vecs,
@@ -536,6 +543,14 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
         builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[0]),
         operands[0]);
     break;
+  case tensat::Ops::MatchRank: {
+    auto input = operands[0];
+    auto ref = operands[1];
+    auto newType = getReshapeTypeForMatchRank(input, ref);
+    mlirOp = builder.create<stablehlo::ReshapeOp>(builder.getUnknownLoc(),
+                                                  newType, input);
+    break;
+  }
   case tensat::Ops::DotGeneralOp: {
     std::vector<int64_t> lhs_batch_dim = other_vecs[0];
     std::vector<int64_t> rhs_batch_dim = other_vecs[1];
@@ -576,31 +591,37 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
         mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)), nullptr);
     break;
   }
-  case tensat::Ops::SliceOp: {
+  case tensat::Ops::SliceOp:
     mlirOp = builder.create<stablehlo::SliceOp>(builder.getUnknownLoc(),
                                                 operands[0], other_vecs[0],
                                                 other_vecs[1], other_vecs[2]);
     break;
+  case tensat::Ops::SSplit0:
+  case tensat::Ops::SSplit1: {
+    auto [startIndices, limitIndices] =
+        getSliceIndicesFromSplit(op, operands[0], int_args[0], operands[1]);
+    std::vector<int64_t> strides(getShape(operands[0]).size(), 1);
+    mlirOp =
+        builder.create<stablehlo::SliceOp>(builder.getUnknownLoc(), operands[0],
+                                           startIndices, limitIndices, strides);
+    break;
   }
-  case tensat::Ops::ConcatenateOp: {
+  case tensat::Ops::ConcatenateOp:
     mlirOp = builder.create<stablehlo::ConcatenateOp>(builder.getUnknownLoc(),
                                                       operands, int_args[0]);
     break;
-  }
-  case tensat::Ops::PadOp: {
+  case tensat::Ops::PadOp:
     mlirOp = builder.create<stablehlo::PadOp>(
         builder.getUnknownLoc(), operands[0], operands[1], other_vecs[0],
         other_vecs[1], other_vecs[2]);
     break;
-  }
-  case tensat::Ops::IotaOp: {
+  case tensat::Ops::IotaOp:
     mlirOp = builder.create<stablehlo::IotaOp>(
         builder.getUnknownLoc(),
         RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
                               builder.getF32Type()),
         int_args[0]);
     break;
-  }
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
     assert(false);
@@ -1142,6 +1163,7 @@ public:
     std::vector<int64_t> result;
 
     for (auto i : seq.operands) {
+      assert(i < nodes.size());
       assert(nodes[i].name == "Num");
       result.push_back(parseNumNode(nodes, nodes[i]));
     }
@@ -1206,46 +1228,78 @@ public:
     for (auto &node : nodes) {
       Operation *newOp = nullptr;
       // Create the new operation based on the operands
-      if (node.name == "Var" || node.name == "Num" || node.name == "Vec") {
+      using namespace tensat;
+      switch (node.op) {
+      case Ops::Var:
+      case Ops::Num:
+      case Ops::Vec:
         /* do nothing */
-      } else if (node.name == "Input") {
+        break;
+      case Ops::Input: {
         int blockArgNumber = parseNumNode(nodes, nodes[node.operands[1]]);
         opVals.push_back(block.getArgument(blockArgNumber));
         continue;
-      } else if (node.name == "Index") {
+      }
+      case Ops::Index: {
         int index = parseNumNode(nodes, nodes[node.operands[0]]);
         int input = node.operands[1];
         opVals.push_back(opVals[input].getDefiningOp()->getResult(index));
         continue;
-      } else if (node.name == "NegOp") {
+      }
+      case Ops::NegOp:
         newOp = createUnaryOp<stablehlo::NegOp>(builder, opVals, node);
-      } else if (node.name == "TanhOp") {
+        break;
+      case Ops::TanhOp:
         newOp = createUnaryOp<stablehlo::TanhOp>(builder, opVals, node);
-      } else if (node.name == "ExpOp") {
+        break;
+      case Ops::ExpOp:
         newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
-      } else if (node.name == "AddOp") {
+        break;
+      case Ops::AddOp:
         newOp = createBinaryOp<stablehlo::AddOp>(builder, opVals, node);
-      } else if (node.name == "SubtractOp") {
+        break;
+      case Ops::SubtractOp:
         newOp = createBinaryOp<stablehlo::SubtractOp>(builder, opVals, node);
-      } else if (node.name == "MulOp") {
+        break;
+      case Ops::MulOp:
         newOp = createBinaryOp<stablehlo::MulOp>(builder, opVals, node);
-      } else if (node.name == "DivOp") {
+        break;
+      case Ops::DivOp:
         newOp = createBinaryOp<stablehlo::DivOp>(builder, opVals, node);
-      } else if (node.name == "MinOp") {
+        break;
+      case Ops::MinOp:
         newOp = createBinaryOp<stablehlo::MinOp>(builder, opVals, node);
-      } else if (node.name == "MaxOp") {
+        break;
+      case Ops::MaxOp:
         newOp = createBinaryOp<stablehlo::MaxOp>(builder, opVals, node);
-      } else if (node.name == "TransposeOp") {
+        break;
+      case Ops::TransposeOp: {
         auto input = opVals[node.operands[0]];
         auto permutation = parseNumVec(nodes, nodes[node.operands[1]]);
         newOp = builder.create<stablehlo::TransposeOp>(location, input,
                                                        permutation);
-      } else if (node.name == "ReshapeOp") {
+        break;
+      }
+      case Ops::ReshapeOp: {
         auto input = opVals[node.operands[0]];
         auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
         auto newType = deriveOutputType(input, shape);
         newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
-      } else if (node.name == "DotGeneralOp") {
+        break;
+      }
+      case Ops::MatchRank: {
+        auto input = opVals[node.operands[0]];
+        auto ref = opVals[node.operands[1]];
+        if (getShape(input).size() == getShape(ref).size()) {
+          /* do nothing */
+        } else {
+          auto newType = getReshapeTypeForMatchRank(input, ref);
+          newOp =
+              builder.create<stablehlo::ReshapeOp>(location, newType, input);
+        }
+        break;
+      }
+      case Ops::DotGeneralOp: {
         auto lhs = opVals[node.operands[0]];
         auto rhs = opVals[node.operands[1]];
 
@@ -1288,19 +1342,37 @@ public:
             location, newType, lhs, rhs, dotDimensionNumbersAttr,
             mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)),
             nullptr);
-      } else if (node.name == "ConcatenateOp") {
+        break;
+      }
+      case Ops::ConcatenateOp: {
         auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
         auto dimension = parseNumNode(nodes, nodes[node.operands[1]]);
         newOp = builder.create<stablehlo::ConcatenateOp>(location, inputs,
                                                          dimension);
-      } else if (node.name == "SliceOp") {
+        break;
+      }
+      case Ops::SliceOp: {
         auto operand = opVals[node.operands[0]];
         auto startIndices = parseNumVec(nodes, nodes[node.operands[1]]);
         auto limitIndices = parseNumVec(nodes, nodes[node.operands[2]]);
         auto strides = parseNumVec(nodes, nodes[node.operands[3]]);
         newOp = builder.create<stablehlo::SliceOp>(
             location, operand, startIndices, limitIndices, strides);
-      } else if (node.name == "PadOp") {
+        break;
+      }
+      case Ops::SSplit0:
+      case Ops::SSplit1: {
+        auto operand = opVals[node.operands[0]];
+        auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
+        auto orig = opVals[node.operands[2]];
+        auto [startIndices, limitIndices] =
+            getSliceIndicesFromSplit(node.op, operand, axis, orig);
+        std::vector<int64_t> strides(getShape(operand).size(), 1);
+        newOp = builder.create<stablehlo::SliceOp>(
+            location, operand, startIndices, limitIndices, strides);
+        break;
+      }
+      case Ops::PadOp: {
         auto operand = opVals[node.operands[0]];
         auto paddingValue = opVals[node.operands[1]];
         auto edgePaddingLow = parseNumVec(nodes, nodes[node.operands[2]]);
@@ -1309,7 +1381,9 @@ public:
         newOp = builder.create<stablehlo::PadOp>(
             location, operand, paddingValue, edgePaddingLow, edgePaddingHigh,
             interiorPadding);
-      } else if (node.name == "IotaOp") {
+        break;
+      }
+      case Ops::IotaOp:
         // TODO: element type handling.
         newOp = builder.create<stablehlo::IotaOp>(
             location,
@@ -1317,10 +1391,13 @@ public:
                 llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
                 builder.getF32Type()),
             parseNumNode(nodes, nodes[node.operands[0]]));
-      } else if (node.name == "ReturnOp") {
+        break;
+      case Ops::ReturnOp: {
         auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
         newOp = builder.create<func::ReturnOp>(location, inputs);
-      } else if (node.name == "blackbox") {
+        break;
+      }
+      case Ops::BlackBox: {
         assert(node.operands.size() == 3);
         auto blackboxID = parseNumNode(nodes, nodes[node.operands[0]]);
         auto operands = parseOpVec(opVals, nodes[node.operands[1]]);
@@ -1341,9 +1418,10 @@ public:
 
         assert(numOperands == newOp->getNumOperands());
         newOp->insertOperands(0, operands);
-      } else {
-        // TODO: implement other operations
-        std::cout << "UNIMPLEMENTED " << node.name << "\n";
+        break;
+      }
+      default:
+        throw std::invalid_argument("unimplemented op");
       }
       if (newOp) {
         opsToAdd.push_back(newOp);
@@ -1402,7 +1480,7 @@ public:
     // First pass to determine segmentation points and necessary types.
     // TODO: abstract out as separate function
 
-    const int segmentThreshold = 500;
+    const int segmentThreshold = 200;
     SmallVector<SegmentationPoint> segmentationPoints;
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;

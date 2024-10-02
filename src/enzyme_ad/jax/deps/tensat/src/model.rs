@@ -52,9 +52,41 @@ define_language! {
       "ReturnOp"           = ReturnOp([Id; 1]),
       "BlackBox"           = BlackBox([Id; 3]),  // id, args, captured values (last two should be vecs) 
       "Vec"                = Vec(Vec<Id>),
-      "Index"              = Index([Id; 2]),
-      Var(Symbol),
+      "Index"              = Index([Id; 2]),   // index, input. for indexing into ops with multiple result Values.
+      // SHORTHANDS (not 1:1 with stablehlo)
+      //
+      // (SSplit0 input axis orig_0) means:
+      // split input on axis dimension, taking the left component. The split point is such that the result
+      // has the same shape as orig_0 on axis.
+      //
+      // (SSplit1 input axis orig_1) means:
+      // split input on axis dimension, taking the right component. The split point is such that the result
+      // has the same shape as orig_1 on axis.
+      //
+      // This translates to a StableHLO SliceOp, with all the slices being [0..shape(input)[d]) in every
+      // dimension d except axis, and the axis slice being [0..shape(orig_0)[axis]) for SSplit0,
+      // and [shape(input)[axis] - shape(orig_1)[axis]..shape(input)[axis]) for SSplit1.
+      //
+      // This allows embedding "splits" in syntactic rewrites (similarly to TASO) without keeping track of the
+      // split tree, nor having a custom Applier to get the shape of inputs.
+      //
+      // These will only be constructed by being on the RHS of rewrites, rather than from the input StableHLO
+      // module.
+      "SSplit0"             = SSplit0([Id; 3]),  // input, axis, orig_0
+      "SSplit1"             = SSplit1([Id; 3]),  // input, axis, orig_1
+      // (MatchRank input ref) means:
+      // If len(shape(input)) < len(shape(ref)), reshape input such that len(shape(input')) = len(shape(ref)),
+      // and shape(input') = shape(input) + [1, 1, ...].
+      //
+      // Otherwise, reshape input such that shape(input') = shape(input)[0..len(shape(ref))).
+      // It is an error to have any index i in [len(shape(ref))..len(shape(input))) such that shape(input)[i] != 1.
+      //
+      // This allows certain rewrites with ConcatenateOps with axis larger than the rank of the operands, as
+      // StableHLO doesn't have implicit casting.
+      "MatchRank"         = MatchRank([Id; 2]),  // input, ref
+      // MISC
       Num(i64),
+      Var(Symbol),
   }
 }
 
@@ -165,7 +197,7 @@ impl Analysis<Mdl> for TensorAnalysis {
                     .as_str()
                     .split("@")
                     .nth(1)
-                    .expect("Invalid Var name: check shape")
+                    .expect(&("Invalid Var name: check shape, name: ".to_owned() + name.as_str()))
                     .split('_')
                     .filter(|&x| !x.is_empty()) // if we have a 0-rank shape, this turns out to be [""]
                     .map(|x| x.parse().unwrap())
