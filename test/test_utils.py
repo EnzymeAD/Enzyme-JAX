@@ -16,6 +16,7 @@ devices = []
 CurBackends = []
 backends_initialized = False
 
+
 def setup_backends():
     global backends_initialized
     global devices
@@ -27,6 +28,7 @@ def setup_backends():
     if jax.default_backend() != "cpu":
         devices.append(backend)
     backends_initialized = True
+
 
 AllBackends = ["cpu"] + devices
 AllPipelines = [
