@@ -229,13 +229,11 @@ public:
       // The op we are measuring should always be the return value, which is at
       // the root.
       auto op = c->root_instruction();
-      std::cout << op->ToString() << std::endl;
 
       auto runtime =
           xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
               op, device_info, &cost_analysis,
               xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
-      std::cout << runtime.ToString() << std::endl;
       analyticalCost = absl::ToInt64Nanoseconds(runtime.exec_time);
     }
     assert(analyticalCost >= 0);
