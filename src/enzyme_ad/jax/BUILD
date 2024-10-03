@@ -321,7 +321,10 @@ cc_library(
         "@stablehlo//:chlo_capi_objects",
         "@com_google_absl//absl/hash:hash",
         "@com_google_absl//absl/log:initialize",
-        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:CAPIIRObjects",  
+
+        "@xla//xla/translate/stablehlo_to_hlo:translate",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
     ] + select({
     "@bazel_tools//src/conditions:darwin": [],
     "//conditions:default": [

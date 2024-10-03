@@ -15,12 +15,16 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+
 #include "src/enzyme_ad/jax/deps/include/ReactantExtra.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/pjrt/cpu/cpu_client.h"
 #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -28,6 +32,7 @@
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
 #include "xla/service/platform_util.h"
+#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
 #include "rust/cxx.h"
@@ -176,6 +181,14 @@ public:
 
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
+
+    std::unique_ptr<xla::HloModule> hloModule =
+        wrapperModuleToHloModule(wrapperModule);
+    for (auto c : hloModule->computations()) {
+      for (auto i : c->instructions()) {
+        std::cout << "instruction: " << i->ToString() << std::endl;
+      }
+    }
 
     xla::PjRtClient *client = nullptr;
 
@@ -371,6 +384,26 @@ private:
                                       shape.size(), shape.data(), device);
 
     return buffer;
+  }
+
+  // Analytical cost model
+  static std::unique_ptr<xla::HloModule>
+  wrapperModuleToHloModule(ModuleOp &wrapperModule) {
+    auto context = wrapperModule.getContext();
+    PassManager pm(context);
+    pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+    pm.run(wrapperModule);
+
+    MlirToHloConversionOptions options;
+
+    auto hloModule = ConvertMlirHloToHloModule(wrapperModule, options);
+    if (!hloModule.ok()) {
+      llvm::errs() << "Couldn't create hloModule: "
+                   << hloModule.status().message();
+      return nullptr;
+    } else {
+      return std::move(hloModule.value());
+    }
   }
 };
 
@@ -1088,8 +1121,8 @@ public:
         outputs.push_back(mlirValueToTensatTensor(result));
 
       std::vector<tensat::TensorInfo *> processedOperands;
-      // We shouldn't clone operands, as those values will be invalidated after
-      // a block.clear(), and we access these during reconstruction.
+      // We shouldn't clone operands, as those values will be invalidated
+      // after a block.clear(), and we access these during reconstruction.
       auto copy = op->clone(Operation::CloneOptions(
           /* cloneRegions = */ true, /* cloneOperands = */ false));
       blackboxIDToTensorInfo->push_back(copy);
@@ -1238,10 +1271,10 @@ public:
     auto &region = funcOp.getRegion();
     auto &block = funcOp.getRegion().front();
 
-    // We don't clear the block here straight away, because this will invalidate
-    // the old captured values in blackbox, and so the substitution won't work.
-    // We instead put everything in a vector, and only clear the block and
-    // insert everything at the very end.
+    // We don't clear the block here straight away, because this will
+    // invalidate the old captured values in blackbox, and so the substitution
+    // won't work. We instead put everything in a vector, and only clear the
+    // block and insert everything at the very end.
     std::vector<Operation *> opsToAdd;
 
     auto location = builder.getUnknownLoc();
@@ -1507,8 +1540,8 @@ public:
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
 
-    // We need to keep track of anything that was an output value, so that if we
-    // see it in later segments then we know to add that as an input.
+    // We need to keep track of anything that was an output value, so that if
+    // we see it in later segments then we know to add that as an input.
     DenseSet<Value> outputsBeforeCurrentSegment;
 
     int nonBlackboxedInCurrentSegment = 0;
@@ -1531,8 +1564,8 @@ public:
 
       bool blackboxed = isBlackboxed(&op);
 
-      // TODO: This ensures the last node in segment is blackboxed, but ideally
-      // we actually want to reduce the number of segment outputs.
+      // TODO: This ensures the last node in segment is blackboxed, but
+      // ideally we actually want to reduce the number of segment outputs.
       if ((blackboxed && nonBlackboxedInCurrentSegment >= segmentThreshold) ||
           it == (--entryBlock.end())) {
         // Track outputs of this segment
