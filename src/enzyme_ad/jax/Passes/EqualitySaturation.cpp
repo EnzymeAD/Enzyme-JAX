@@ -1312,7 +1312,8 @@ public:
         auto input = opVals[node.operands[0]];
         auto ref = opVals[node.operands[1]];
         if (getShape(input).size() == getShape(ref).size()) {
-          /* do nothing */
+          opVals.push_back(input);
+          continue;
         } else {
           auto newType = getReshapeTypeForMatchRank(input, ref);
           newOp =
