@@ -211,7 +211,8 @@ public:
 
     std::unique_ptr<xla::HloModule> hloModule =
         wrapperModuleToHloModule(wrapperModule);
-    tensorflow::se::DeviceDescription device_info = RTXA6000DeviceInfo();
+    tensorflow::se::DeviceDescription device_info =
+        RTXA6000DeviceInfo(); // TODO: use running GPU
     xla::HloCostAnalysis::ShapeSizeFunction shape_size_function =
         [](const xla::Shape &shape) {
           return xla::gpu::GetSizeOfShape(shape, 4);
@@ -220,20 +221,27 @@ public:
         xla::gpu::GpuHloCostAnalysis::Options{shape_size_function, {}, true},
         device_info);
 
+    int analyticalCost = -1;
+
+    assert(hloModule->computation_count() == 1);
     for (auto c : hloModule->computations()) {
-      std::cout << "[computation]" << std::endl;
       c->Accept(&cost_analysis);
-      for (auto i : c->instructions()) {
-        std::cout << "instruction: " << i->ToString();
-        std::cout
-            << "  ==>  "
-            << xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
-                   i, device_info, &cost_analysis,
-                   xla::gpu::GpuPerformanceModelOptions::ForModule(i->GetModule()))
-                   .ToString();
-        std::cout << std::endl;
-      }
+      // The op we are measuring should always be the return value, which is at
+      // the root.
+      auto op = c->root_instruction();
+      std::cout << op->ToString() << std::endl;
+
+      auto runtime =
+          xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
+              op, device_info, &cost_analysis,
+              xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
+      std::cout << runtime.ToString() << std::endl;
+      analyticalCost = absl::ToInt64Nanoseconds(runtime.exec_time);
     }
+    assert(analyticalCost >= 0);
+
+    // TODO: do this based on platform or env var
+    return analyticalCost;
 
     xla::PjRtClient *client = nullptr;
 
@@ -440,6 +448,8 @@ private:
     pm.run(wrapperModule);
 
     MlirToHloConversionOptions options;
+    options.propagate_layouts = true;
+    options.return_tuple = false;
 
     auto hloModule = ConvertMlirHloToHloModule(wrapperModule, options);
     if (!hloModule.ok()) {
