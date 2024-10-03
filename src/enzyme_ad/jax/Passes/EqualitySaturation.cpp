@@ -31,7 +31,11 @@
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
+#include "xla/service/gpu/gpu_latency_hiding_scheduler.h"
+#include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
+#include "xla/service/gpu/model/gpu_performance_model.h"
 #include "xla/service/platform_util.h"
+#include "xla/stream_executor/device_description.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
@@ -116,6 +120,29 @@ EqsatPlatform getPlatform() {
   }
 }
 
+tensorflow::se::DeviceDescription
+RTXA6000DeviceInfo(tensorflow::se::GpuComputeCapability cc =
+                       tensorflow::se::CudaComputeCapability(8, 9)) {
+  tensorflow::se::internal::DeviceDescriptionBuilder b;
+  b.set_gpu_compute_capability(cc);
+  b.set_threads_per_block_limit(1024);
+  b.set_threads_per_warp(32);
+  b.set_shared_memory_per_block(48 * 1024);
+  b.set_shared_memory_per_block_optin(99 * 1024);
+  b.set_shared_memory_per_core(100 * 1024);
+  b.set_threads_per_core_limit(1536);
+  b.set_core_count(84);
+  b.set_fpus_per_core(128);
+  b.set_block_dim_limit_x(2'147'483'647);
+  b.set_block_dim_limit_y(65535);
+  b.set_block_dim_limit_z(65535);
+  b.set_memory_bandwidth(768'096'000'000);
+  b.set_l2_cache_size(6 * 1024 * 1024);
+  b.set_clock_rate_ghz(1.410);
+  b.set_device_memory_size(51'050'250'240);
+  return b.BuildObject();
+}
+
 /**
  * Ops to not measure cost for
  */
@@ -184,9 +211,26 @@ public:
 
     std::unique_ptr<xla::HloModule> hloModule =
         wrapperModuleToHloModule(wrapperModule);
+    tensorflow::se::DeviceDescription device_info = RTXA6000DeviceInfo();
+    xla::HloCostAnalysis::ShapeSizeFunction shape_size_function =
+        [](const xla::Shape &shape) {
+          return xla::gpu::GetSizeOfShape(shape, 4);
+        };
+    xla::gpu::GpuHloCostAnalysis cost_analysis(
+        xla::gpu::GpuHloCostAnalysis::Options{shape_size_function, {}, true},
+        device_info);
+
     for (auto c : hloModule->computations()) {
+      std::cout << "[computation]" << std::endl;
       for (auto i : c->instructions()) {
-        std::cout << "instruction: " << i->ToString() << std::endl;
+        std::cout << "instruction: " << i->ToString();
+        std::cout
+            << "  ==>  "
+            << xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
+                   i, device_info, &cost_analysis,
+                   xla::gpu::GpuPerformanceModelOptions::Default())
+                   .ToString();
+        std::cout << std::endl;
       }
     }
 

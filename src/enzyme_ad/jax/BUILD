@@ -325,6 +325,11 @@ cc_library(
 
         "@xla//xla/translate/stablehlo_to_hlo:translate",
         "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+
+        "@xla//xla/service/gpu/model:gpu_performance_model",
+        "@xla//xla/service/gpu/model:gpu_hlo_cost_analysis",
+        "@xla//xla/service/gpu:gpu_latency_hiding_scheduler",
+        "@xla//xla/stream_executor:device_description",
     ] + select({
     "@bazel_tools//src/conditions:darwin": [],
     "//conditions:default": [
