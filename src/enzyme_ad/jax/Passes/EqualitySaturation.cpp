@@ -222,13 +222,14 @@ public:
 
     for (auto c : hloModule->computations()) {
       std::cout << "[computation]" << std::endl;
+      c->Accept(&cost_analysis);
       for (auto i : c->instructions()) {
         std::cout << "instruction: " << i->ToString();
         std::cout
             << "  ==>  "
             << xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
                    i, device_info, &cost_analysis,
-                   xla::gpu::GpuPerformanceModelOptions::Default())
+                   xla::gpu::GpuPerformanceModelOptions::ForModule(i->GetModule()))
                    .ToString();
         std::cout << std::endl;
       }
