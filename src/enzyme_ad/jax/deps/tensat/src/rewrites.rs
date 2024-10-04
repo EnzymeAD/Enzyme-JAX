@@ -102,7 +102,13 @@ pub fn rules<A: Analysis<Mdl>>() -> Vec<Rewrite<Mdl, A>> { vec![
         rw!("-concatenation-and-pooling-2"     ;"(poolmax ?kx ?ky ?sx ?sy ?p (concat 1 ?x ?y))"                                     => "(concat 1 (poolmax ?kx ?ky ?sx ?sy ?p ?x) (poolmax ?kx ?ky ?sx ?sy ?p ?y)) "               ),
 ]}
 
-fn add_to_rule_vec(rule_vec: &mut Vec<Rewrite<Mdl, TensorAnalysis>>, filter_after: bool, rule_name: String, lhs: &str, rhs: &str) {
+fn add_to_rule_vec(
+    rule_vec: &mut Vec<Rewrite<Mdl, TensorAnalysis>>,
+    filter_after: bool,
+    rule_name: String,
+    lhs: &str,
+    rhs: &str,
+) {
     let lhs: Pattern<Mdl> = lhs.parse().unwrap();
     let rhs: Pattern<Mdl> = rhs.parse().unwrap();
     rule_vec.push(rw!(rule_name; { lhs.clone() } => { CheckApply {
@@ -117,12 +123,30 @@ pub fn rules_from_str(rs: Vec<&str>, filter_after: bool) -> Vec<Rewrite<Mdl, Ten
     for (pos, rule) in rs.iter().enumerate() {
         if (rule.contains("<=>")) {
             let eqn: Vec<&str> = rule.split("<=>").collect();
-            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}_l", pos), eqn[0], eqn[1]);
-            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}_r", pos), eqn[1], eqn[0]);
+            add_to_rule_vec(
+                &mut rule_vec,
+                filter_after,
+                format!("rule{}_l", pos),
+                eqn[0],
+                eqn[1],
+            );
+            add_to_rule_vec(
+                &mut rule_vec,
+                filter_after,
+                format!("rule{}_r", pos),
+                eqn[1],
+                eqn[0],
+            );
         } else {
             assert!(rule.contains("=>"));
             let eqn: Vec<&str> = rule.split("=>").collect();
-            add_to_rule_vec(&mut rule_vec, filter_after, format!("rule{}", pos), eqn[0], eqn[1]);
+            add_to_rule_vec(
+                &mut rule_vec,
+                filter_after,
+                format!("rule{}", pos),
+                eqn[0],
+                eqn[1],
+            );
         }
     }
     rule_vec
@@ -151,6 +175,27 @@ pub static PRE_DEFINED_MULTI: &[&str] = &[
 ];
 
 // TODO: We should really clean these. Just dirty hacks for now to test out conditional rewrites
+
+pub fn get_matrix_option(
+    egraph: &EGraph<Mdl, TensorAnalysis>,
+    eclass: &EClass<Mdl, TensorData>,
+) -> Option<ffi::Matrix> {
+    // First, we get an optional Vec of Vec<Id> from the eclass
+    get_vec_option(eclass)
+        .map(|outer_vec| {
+            // Iterate over each Vec<Id> in the outer_vec to convert to a Vector
+            outer_vec
+                .iter()
+                .map(|&id| {
+                    // For each inner vector, get its corresponding vector of numbers
+                    get_vec_of_nums_option(egraph, &egraph[id])
+                        .map(|ffi_vec| ffi::Vector { vec: ffi_vec.vec })
+                })
+                .collect::<Option<Vec<ffi::Vector>>>()
+        })
+        // If all the vectors were successfully retrieved, wrap them in a Matrix
+        .and_then(|opt_mat| opt_mat.map(|mat| ffi::Matrix { mat }))
+}
 
 pub fn get_vec_of_nums(
     egraph: &EGraph<Mdl, TensorAnalysis>,
