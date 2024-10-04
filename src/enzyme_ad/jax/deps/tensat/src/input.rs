@@ -1191,11 +1191,9 @@ impl CppGraphConverter {
         let learned_rules =
             read_to_string(rule_file).expect("Something went wrong reading the rule file");
         let time_limit_sec = Duration::new(n_sec, 0);
-        let pre_defined_rules = PRE_DEFINED_RULES.iter().map(|&x| x);
         let split_rules: Vec<&str> = learned_rules
             .split("\n")
             .filter(|x| !x.is_empty())
-            .chain(pre_defined_rules)
             .collect();
         let do_filter_after = no_cycle && filter_after;
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);

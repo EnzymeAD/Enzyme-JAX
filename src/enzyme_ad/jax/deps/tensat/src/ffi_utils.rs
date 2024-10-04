@@ -23,7 +23,6 @@ fn process_enode_args(
         if let Some(other_vec) = get_vec_of_nums_option(egraph, &egraph[*child]) {
             other_vecs.push(other_vec)
         } else if let Some(mat) = get_matrix_option(egraph, &egraph[*child]) {
-            println!("{:?}", mat);
             matrix_args.push(mat)
         } else if let Some(vec) = get_vec_option(&egraph[*child]) {
             vec.iter()
