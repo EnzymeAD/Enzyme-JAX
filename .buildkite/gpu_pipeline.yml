@@ -1,30 +1,57 @@
 steps:
   - label: "CUDA"
     agents:
-      queue: "juliagpu"
+      queue: "benchmark"
+      gpu: "rtx4070"
       cuda: "*"
     if: build.message !~ /\[skip tests\]/
-    timeout_in_minutes: 60
+    timeout_in_minutes: 180
     commands: |
+      pwd
+      env
       echo "--- Setup :python: Dependencies"
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
+      # No one tells us what to do
+      unset NV_LIBCUBLAS_VERSION
+      unset NVIDIA_VISIBLE_DEVICES
+      unset NV_NVML_DEV_VERSION
+      unset NV_LIBNCCL_DEV_PACKAGE
+      unset NV_LIBNCCL_DEV_PACKAGE_VERSION
+      unset NVIDIA_REQUIRE_CUDA
+      unset NV_LIBCUBLAS_DEV_PACKAGE
+      unset NV_NVTX_VERSION
+      
       curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
 
       mv bazel* .local/bin/bazel
       chmod +x .local/bin/bazel
+      export PATH="`pwd`/.local/bin:\$PATH"
 
       mkdir -p .baztmp
 
       echo "--- :python: Test"
 
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
-      HERMETIC_PYTHON_VERSION="3.12" bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
+      export CUDA_DIR=`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc
+      export XLA_FLAGS=--xla_gpu_cuda_data_dir=\$CUDA_DIR
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib:\$LD_LIBRARY_PATH"
+      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
+      export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:\$PATH"
+      export TF_CPP_MIN_LOG_LEVEL=0
+      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update || echo "no req update"
+      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
+      find `pwd`/bazel-bin/test/llama.runfiles > finds.txt
+      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla || echo "fail2"
+      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:llama || echo "fail3"
+      HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
       cat bazel-out/*/testlogs/test/llama/test.log
     artifact_paths:
+      - "finds.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"

@@ -2,7 +2,7 @@ absl-py
 jax
 numpy
 jaxlib
-jax-cuda12-plugin; sys_platform == 'linux'
+jax[cuda12_pip]; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 libtpu-nightly == 0.1.dev20240729; sys_platform == 'linux' 
