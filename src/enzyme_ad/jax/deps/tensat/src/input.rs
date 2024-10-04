@@ -34,6 +34,7 @@ pub mod ffi {
         SelectOp,
         ConcatenateOp,
         DotGeneralOp,
+        ConvolutionOp,
         PadOp,
         SliceOp,
         TransposeOp,
@@ -81,6 +82,12 @@ pub mod ffi {
     #[derive(Debug)]
     struct Vector {
         pub vec: Vec<i64>,
+    }
+
+    // Similarly, we're creating a Matrix type for vecs of vecs (padding)
+    #[derive(Debug)]
+    struct Matrix {
+        pub mat: Vec<Vector>,
     }
 
     // take floats from c++ and wrap them into f32s below
@@ -157,6 +164,29 @@ pub mod ffi {
             self: &mut CppGraphConverter,
             inputs: &[*mut TensorInfo],
             dimension: i64,
+            output: Tensor,
+        ) -> Box<TensorInfo>;
+        fn new_convolution_op(
+            self: &mut CppGraphConverter,
+            lhs: &TensorInfo,
+            rhs: &TensorInfo,
+            windowStrides: Vec<i64>,
+            padding: Vec<Vector>,
+            lhsDilation: Vec<i64>,
+            rhsDilation: Vec<i64>,
+            windowReversal: Vec<bool>,
+            inputBatchDimension: i64,
+            inputFeatureDimension: i64,
+            inputSpatialDimension: Vec<i64>,
+            kernelInputFeatureDimension: i64,
+            kernelOutputFeatureDimension: i64,
+            kernelSpatialDimension: Vec<i64>,
+            outputBatchDimension: i64,
+            outputFeatureDimension: i64,
+            outputSpatialDimension: Vec<i64>,
+            featureGroupCount: i64,
+            batchGroupCount: i64,
+            precision_config: Vec<i64>,
             output: Tensor,
         ) -> Box<TensorInfo>;
         fn new_dot_general_op(
@@ -274,7 +304,7 @@ pub mod ffi {
         fn new_blackbox_op(
             self: &mut CppGraphConverter,
             inpts: &[*mut TensorInfo],
-            captured: &[*mut TensorInfo],  // values that appear in a block that was declared outside
+            captured: &[*mut TensorInfo], // values that appear in a block that was declared outside
             cpp_num: i64,
             outputs: &Vec<Tensor>,
         ) -> Box<TensorInfo>;
@@ -293,6 +323,7 @@ pub mod ffi {
             operands: Vec<Tensor>,
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
+            matrix_args: Vec<Matrix>,
         ) -> u64;
     }
 
@@ -304,6 +335,7 @@ pub mod ffi {
             operands: Vec<Tensor>,
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
+            matrix_args: Vec<Matrix>,
         ) -> Vec<Tensor>;
     }
 }
@@ -356,6 +388,7 @@ impl ffi::Ops {
             Mdl::PadOp(_) => Ops::PadOp,
             Mdl::SliceOp(_) => Ops::SliceOp,
             Mdl::TransposeOp(_) => Ops::TransposeOp,
+            Mdl::ConvolutionOp(_) => Ops::ConvolutionOp,
             Mdl::MulOp(_) => Ops::MulOp,
             Mdl::AddOp(_) => Ops::AddOp,
             Mdl::DivOp(_) => Ops::DivOp,
@@ -601,10 +634,7 @@ impl CppGraphConverter {
         Box::new(res)
     }
 
-    fn new_tensorinfo_vec(
-        &mut self,
-        inputs: &[*mut TensorInfo]
-    ) -> Id {
+    fn new_tensorinfo_vec(&mut self, inputs: &[*mut TensorInfo]) -> Id {
         let tensor_infos: Vec<&TensorInfo> = inputs.iter().map(|&ptr| unsafe { &*ptr }).collect();
         let inputs_node = Mdl::Vec(tensor_infos.iter().map(|i| i.id).collect());
         self.rec_expr.add(inputs_node)
@@ -619,6 +649,79 @@ impl CppGraphConverter {
         let inputs_id = self.new_tensorinfo_vec(inputs);
         let dimension_id = self.add_or_get_val(dimension);
         let new_node = Mdl::ConcatenateOp([inputs_id, dimension_id]);
+
+        let res = TensorInfo {
+            id: self.rec_expr.add(new_node),
+            tensor_data: TensorData {
+                tensors: vec![output],
+                name: None,
+            },
+        };
+        Box::new(res)
+    }
+
+    pub fn new_convolution_op(
+        &mut self,
+        lhs: &TensorInfo,
+        rhs: &TensorInfo,
+        window_strides: Vec<i64>,
+        padding: Vec<ffi::Vector>,
+        lhs_dilation: Vec<i64>,
+        rhs_dilation: Vec<i64>,
+        window_reversal: Vec<bool>,
+        input_batch_dimension: i64,
+        input_feature_dimension: i64,
+        input_spatial_dimensions: Vec<i64>,
+        kernel_input_feature_dimension: i64,
+        kernel_output_feature_dimension: i64,
+        kernel_spatial_dimensions: Vec<i64>,
+        output_batch_dimension: i64,
+        output_feature_dimension: i64,
+        output_spatial_dimensions: Vec<i64>,
+        feature_group_count: i64,
+        batch_group_count: i64,
+        precision_config: Vec<i64>,
+        output: ffi::Tensor,
+    ) -> Box<TensorInfo> {
+        let window_strides_node_id = self.vec_node(window_strides);
+        let lhs_dilation_node_id = self.vec_node(lhs_dilation);
+        let rhs_dilation_node_id = self.vec_node(rhs_dilation);
+
+        // We could add a bool element type vec?
+        let window_reversal_node_id =
+            self.vec_node(window_reversal.iter().map(|x| *x as i64).collect());
+        let input_spatial_dimensions_node_id = self.vec_node(input_spatial_dimensions);
+        let kernel_spatial_dimensions_node_id = self.vec_node(kernel_spatial_dimensions);
+        let output_spatial_dimensions_node_id = self.vec_node(output_spatial_dimensions);
+        let precision_config_node_id = self.vec_node(precision_config);
+
+        let padding_node_ids: Vec<Id> = padding
+            .into_iter()
+            .map(|pad| self.vec_node(pad.vec))
+            .collect::<Vec<Id>>();
+        let padding_node_id = self.rec_expr.add(Mdl::Vec(padding_node_ids));
+
+        let new_node = Mdl::ConvolutionOp([
+            lhs.id,
+            rhs.id,
+            window_strides_node_id,
+            padding_node_id,
+            lhs_dilation_node_id,
+            rhs_dilation_node_id,
+            window_reversal_node_id,
+            self.add_or_get_val(input_batch_dimension),
+            self.add_or_get_val(input_feature_dimension),
+            input_spatial_dimensions_node_id,
+            self.add_or_get_val(kernel_input_feature_dimension),
+            self.add_or_get_val(kernel_output_feature_dimension),
+            kernel_spatial_dimensions_node_id,
+            self.add_or_get_val(output_batch_dimension),
+            self.add_or_get_val(output_feature_dimension),
+            output_spatial_dimensions_node_id,
+            self.add_or_get_val(feature_group_count),
+            self.add_or_get_val(batch_group_count),
+            precision_config_node_id,
+        ]);
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
@@ -1043,6 +1146,7 @@ impl CppGraphConverter {
                 Mdl::DotGeneralOp(ops) => new_node(ops),
                 Mdl::SliceOp(ops) => new_node(ops),
                 Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::ConvolutionOp(ops) => new_node(ops),
                 Mdl::MulOp(ops) => new_node(ops),
                 Mdl::AddOp(ops) => new_node(ops),
                 Mdl::DivOp(ops) => new_node(ops),
@@ -1059,7 +1163,7 @@ impl CppGraphConverter {
                 Mdl::SSplit0(ops) => new_node(ops),
                 Mdl::SSplit1(ops) => new_node(ops),
                 Mdl::MatchRank(ops) => new_node(ops),
-                _ => unimplemented!()
+                _ => unimplemented!(),
             };
 
             res.push(node);
@@ -1088,7 +1192,8 @@ impl CppGraphConverter {
             read_to_string(rule_file).expect("Something went wrong reading the rule file");
         let time_limit_sec = Duration::new(n_sec, 0);
         let pre_defined_rules = PRE_DEFINED_RULES.iter().map(|&x| x);
-        let split_rules: Vec<&str> = learned_rules.split("\n")
+        let split_rules: Vec<&str> = learned_rules
+            .split("\n")
             .filter(|x| !x.is_empty())
             .chain(pre_defined_rules)
             .collect();
@@ -1234,7 +1339,10 @@ fn extract_by_ilp(
     let class_constraint = true;
     let no_order = true;
     let initialise_with_greedy = false;
-    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
+    let fusion_costs: bool = std::env::var("FUSION_COSTS")
+        .unwrap_or(String::from("true"))
+        .parse()
+        .unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
     if order_var_int {
         arg_vec.push("--order_var_int");

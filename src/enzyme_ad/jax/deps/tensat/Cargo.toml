@@ -25,8 +25,8 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 [dependencies.egg]
-git = "https://github.com/yycdavid/egg"
-rev = "12cc1ee7731d37fe91901c81f59678fa1d08a2bb"
+git = "https://github.com/aryavohra/egg"
+rev = "b30d14cff61bff97336323f6eb0978cc7769140d"
 
 [package.metadata.cxx]
 library = "c++"

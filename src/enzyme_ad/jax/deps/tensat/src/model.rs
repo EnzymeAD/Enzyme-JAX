@@ -26,6 +26,7 @@ define_language! {
       "GatherOp"           = GatherOp([Id; 10]),
       "SelectOp"           = SelectOp([Id; 3]), // pred, on_true, on_false
       "ConcatenateOp"      = ConcatenateOp([Id; 2]), // inputs, dimension
+      "ConvolutionOp"      = ConvolutionOp([Id; 19]), // LOTS of inputs
       "DotGeneralOp"       = DotGeneralOp([Id; 7]), // lhs, rhs, ..., shape
       "PadOp"              = PadOp([Id; 5]), // input, padding_value, edge_padding_low,
                                                        // edge_padding_high, interior_padding
@@ -50,7 +51,7 @@ define_language! {
       // Complete pain, has arity 12
       "ScatterOp"          = ScatterOp([Id; 4]), // input, scatter_indices, updates, dimension_numbers
       "ReturnOp"           = ReturnOp([Id; 1]),
-      "BlackBox"           = BlackBox([Id; 3]),  // id, args, captured values (last two should be vecs) 
+      "BlackBox"           = BlackBox([Id; 3]),  // id, args, captured values (last two should be vecs)
       "Vec"                = Vec(Vec<Id>),
       "Index"              = Index([Id; 2]),   // index, input. for indexing into ops with multiple result Values.
       // SHORTHANDS (not 1:1 with stablehlo)
