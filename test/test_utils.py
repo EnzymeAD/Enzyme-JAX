@@ -24,7 +24,6 @@ def setup_backends():
     if backends_initialized:
         return
     backend = jax.default_backend()
-    backend = "cuda"
     CurBackends.append(backend)
     if jax.default_backend() != "cpu":
         devices.append(backend)
