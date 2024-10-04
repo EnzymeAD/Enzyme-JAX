@@ -1,7 +1,8 @@
 steps:
   - label: "CUDA"
     agents:
-      queue: "juliagpu"
+      queue: "benchmark"
+      gpu: "rtx4070"
       cuda: "*"
     if: build.message !~ /\[skip tests\]/
     timeout_in_minutes: 180
