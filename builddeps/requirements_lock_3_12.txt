@@ -4,6 +4,7 @@
 #
 #    bazel run //builddeps:requirements.update
 #
+--find-links https://github.com/jax-md/jax-md
 --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 absl-py==2.1.0 \
