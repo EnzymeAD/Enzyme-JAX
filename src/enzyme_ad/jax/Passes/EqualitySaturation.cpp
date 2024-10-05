@@ -36,6 +36,7 @@
 #include "xla/service/gpu/model/gpu_performance_model.h"
 #include "xla/service/platform_util.h"
 #include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
@@ -179,11 +180,17 @@ bool isBlackboxed(Operation *op) {
 class OperationTimer {
 public:
   /**
-   * Measure cost of operation (execution time in microseconds) by running it
+   * Get cost of operation. This depends on the platform:
+   * - if CPU, then we measure the execution time in microseconds by running it
    * many times and measuring the time taken.
+   * - if GPU, we use XLA's analytical cost model to get the expected execution
+   * time in nanoseconds.
    */
   static uint64_t getCost(Operation *op, unsigned warmup,
                           unsigned repetitions) {
+    // TODO: refactor this/separate out into two functions? so that
+    // warmup/repetitions don't need to be passed for GPU.
+
     if (!logsInitialized) {
       InitializeLogs();
       logsInitialized = true;
@@ -201,6 +208,7 @@ public:
     }
 
     auto context = OperationTimer::getContext();
+    int cost = -1;
 
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
@@ -209,104 +217,88 @@ public:
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
 
-    std::unique_ptr<xla::HloModule> hloModule =
-        wrapperModuleToHloModule(wrapperModule);
-    tensorflow::se::DeviceDescription device_info =
-        RTXA6000DeviceInfo(); // TODO: use running GPU
-    xla::HloCostAnalysis::ShapeSizeFunction shape_size_function =
-        [](const xla::Shape &shape) {
-          return xla::gpu::GetSizeOfShape(shape, 4);
-        };
-    xla::gpu::GpuHloCostAnalysis cost_analysis(
-        xla::gpu::GpuHloCostAnalysis::Options{shape_size_function, {}, true},
-        device_info);
+    switch (getPlatform()) {
+    case CPU: {
+      xla::PjRtClient *client = MakeCPUClient(0, 1, 1);
+      auto executable = prepareExecutable(client, wrapperModule);
 
-    int analyticalCost = -1;
+      unsigned numArgs = op->getNumOperands();
+      unsigned numResults = op->getNumResults();
+      uint8_t futures = 0;
 
-    assert(hloModule->computation_count() == 1);
-    for (auto c : hloModule->computations()) {
-      c->Accept(&cost_analysis);
-      // The op we are measuring should always be the return value, which is at
-      // the root.
-      auto op = c->root_instruction();
+      xla::PjRtBuffer *args[numArgs];
+      uint8_t isArgDonatable[numArgs];
 
-      auto runtime =
-          xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
-              op, device_info, &cost_analysis,
-              xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
-      analyticalCost = absl::ToInt64Nanoseconds(runtime.exec_time);
-    }
-    assert(analyticalCost >= 0);
+      int numRuns = warmup + repetitions;
+      xla::PjRtBuffer *res[numRuns * numResults];
 
-    // TODO: do this based on platform or env var
-    return analyticalCost;
+      for (int i = 0; i < numArgs; i++) {
+        args[i] = getRandomInput(client, op->getOperand(i).getType());
+        isArgDonatable[i] = false;
+      }
 
-    xla::PjRtClient *client = nullptr;
+      std::vector<uint64_t> durations(numRuns);
 
-    auto platform = getPlatform();
+      for (unsigned i = 0; i < warmup + repetitions; i++) {
+        durations[i] =
+            XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
+                       res + i * numResults, &futures, nullptr);
+      }
 
-    switch (platform) {
-    case CPU:
-      client = MakeCPUClient(0, 1, 1);
+      // TODO: This means there's no point in warmup anymore, since we're now
+      // taking individual measurements. Maybe we get rid of the parameter or do
+      // something more sophisticated
+      cost = *std::min_element(durations.begin(), durations.end());
+      assert(!futures);
+
+      // Cleanup
+      for (int i = 0; i < numRuns * numResults; i++) {
+        PjRtBufferFree(res[i]);
+      }
+
+      FreeClient(executable->client());
+      ExecutableFree(executable);
       break;
-    case GPU:
-      // https://github.com/EnzymeAD/Reactant.jl/blob/65060404e19cd5a56a51e4fb2b252380477632b0/src/XLA.jl#L56
-      const char *error = "";
-      // TODO: is this correct?
-      client = MakeGPUClient(0, 1, nullptr, 0, "gpu", &error);
-      if (std::string(error) != "") {
-        auto error_string =
-            "Error while creating GPU client: " + std::string(error);
-        throw std::invalid_argument(error_string);
+    }
+    case GPU: {
+      std::unique_ptr<xla::HloModule> hloModule =
+          wrapperModuleToHloModule(wrapperModule);
+
+      auto deviceDescription = getDeviceDescription();
+
+      xla::HloCostAnalysis::ShapeSizeFunction shapeSizeFunction =
+          [](const xla::Shape &shape) {
+            return xla::gpu::GetSizeOfShape(shape, 4);
+          };
+      xla::gpu::GpuHloCostAnalysis costAnalysis(
+          xla::gpu::GpuHloCostAnalysis::Options{shapeSizeFunction, {}, true},
+          *deviceDescription);
+
+      assert(hloModule->computation_count() == 1);
+      for (auto c : hloModule->computations()) {
+        c->Accept(&costAnalysis);
+        // The op we are measuring should always be the return value, which is
+        // at the root.
+        auto op = c->root_instruction();
+
+        auto runtime =
+            xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
+                op, *deviceDescription, &costAnalysis,
+                xla::gpu::GpuPerformanceModelOptions::ForModule(
+                    op->GetModule()));
+        cost = absl::ToInt64Nanoseconds(runtime.exec_time);
       }
       break;
     }
-
-    auto executable = prepareExecutable(client, wrapperModule);
-
-    unsigned numArgs = op->getNumOperands();
-    unsigned numResults = op->getNumResults();
-    uint8_t futures = 0;
-
-    xla::PjRtBuffer *args[numArgs];
-    uint8_t isArgDonatable[numArgs];
-
-    int numRuns = warmup + repetitions;
-    xla::PjRtBuffer *res[numRuns * numResults];
-
-    for (int i = 0; i < numArgs; i++) {
-      args[i] = getRandomInput(client, op->getOperand(i).getType());
-      isArgDonatable[i] = false;
     }
 
-    std::vector<uint64_t> durations(numRuns);
-
-    for (unsigned i = 0; i < warmup + repetitions; i++) {
-      durations[i] =
-          XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
-                     res + i * numResults, &futures, nullptr);
-    }
-
-    assert(!futures);
-
-    // TODO: This means there's no point in warmup anymore, since we're now
-    // taking individual measurements. Maybe we get rid of the parameter or do
-    // something more sophisticated
-    uint64_t duration = *std::min_element(durations.begin(), durations.end());
-
+    assert(cost >= 0);
     auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, duration);
+    runtimeCache.try_emplace(indexOp, cost);
 
-    // Cleanup
-    for (int i = 0; i < numRuns * numResults; i++) {
-      PjRtBufferFree(res[i]);
-    }
-
-    FreeClient(executable->client());
-    ExecutableFree(executable);
     wrapperModule.erase();
 
-    return duration;
+    return cost;
   }
 
   static Operation *getDummyOp(OpBuilder &builder, Type type) {
@@ -437,7 +429,9 @@ private:
     return buffer;
   }
 
-  // Analytical cost model
+  /**
+   * Create XLA internal HloModule for the analytical cost model
+   */
   static std::unique_ptr<xla::HloModule>
   wrapperModuleToHloModule(ModuleOp &wrapperModule) {
     auto context = wrapperModule.getContext();
@@ -457,6 +451,18 @@ private:
     } else {
       return std::move(hloModule.value());
     }
+  }
+
+  /**
+   * Get DeviceDescription for current device.
+   */
+  static std::unique_ptr<stream_executor::DeviceDescription>
+  getDeviceDescription() {
+    auto platform = xla::PlatformUtil::GetPlatform(
+                        (getPlatform() == EqsatPlatform::CPU ? "cpu" : "cuda"))
+                        .value();
+    // assume ordinal 0
+    return std::move(platform->DescriptionForDevice(0).value());
   }
 };
 
