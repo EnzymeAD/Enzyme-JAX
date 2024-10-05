@@ -213,7 +213,7 @@ class JAXMD(EnzymeJaxTest):
           chain = simulate.NoseHooverChain(c_position, c_momentum, c_mass, c_tau, c_KE, degrees_of_freedom) 
           state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
           new_state, new_nbrs = lax.fori_loop(0, 10, step, (state, nbrs))
-          return (new_state.position, new_state.momentum, new_state.force, new_state.mass, new_state.chain.position, new_state.chain.mass, new_state.chain.tau, new_state.chain.kinetic_energy)
+          return (new_state.position, new_state.momentum, new_state.force, new_state.mass, new_state.chain.position, new_state.chain.momentum, new_state.chain.mass, new_state.chain.tau, new_state.chain.kinetic_energy)
           
         self.fn = forward
         self.name = "jaxmd40"
@@ -227,7 +227,8 @@ class JAXMD(EnzymeJaxTest):
         self.douts = [x.copy() for x in self.ins]
         self.AllPipelines = pipelines
         # No support for stablehlo.while atm
-        self.revfilter = justjax
+        # self.revfilter = justjax
+        self.mlirad = False
 
         self.tol = 5e-5
 

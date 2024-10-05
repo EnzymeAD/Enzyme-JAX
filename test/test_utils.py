@@ -144,6 +144,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.AllPipelines = AllPipelines
         self.revprimal = True
         self.tol = 1e-6
+        self.mlirad = True
 
     def setUp(self):
         self.name = None
@@ -229,47 +230,48 @@ class EnzymeJaxTest(absltest.TestCase):
 
             for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
                 if backend in pbackends:
-                    rfn_enzyme = (
-                        in_fn
-                        if pipeline is None
-                        else jax.jit(
-                            enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
+                    if self.mlirad or pipeline is None:
+                        rfn_enzyme = (
+                            in_fn
+                            if pipeline is None
+                            else jax.jit(
+                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
+                                # backend=backend
+                            )
+                        )
+                        fwd_enzyme = jax.jit(
+                            splatjvp(rfn_enzyme),
                             # backend=backend
                         )
-                    )
-                    fwd_enzyme = jax.jit(
-                        splatjvp(rfn_enzyme),
-                        # backend=backend
-                    )
 
-                    primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
+                        primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
-                    recursive_check(self, primals, primres, self.tol)
+                        recursive_check(self, primals, primres, self.tol)
 
-                    if fwdres is None:
-                        fwdres = tangents
-                    else:
-                        recursive_check(self, tangents, fwdres, self.tol)
+                        if fwdres is None:
+                            fwdres = tangents
+                        else:
+                            recursive_check(self, tangents, fwdres, self.tol)
 
-                    print(
-                        name,
-                        ",",
-                        pname,
-                        ",",
-                        backend,
-                        ",",
-                        "Forward",
-                        ",",
-                        timeit.Timer(
-                            fwdstr,
-                            globals={
-                                "fwd": fwd_enzyme,
-                            }
-                            | fwdins,
-                        ).timeit(self.count)
-                        / self.count,
-                        sep="\t",
-                    )
+                        print(
+                            name,
+                            ",",
+                            pname,
+                            ",",
+                            backend,
+                            ",",
+                            "Forward",
+                            ",",
+                            timeit.Timer(
+                                fwdstr,
+                                globals={
+                                    "fwd": fwd_enzyme,
+                                }
+                                | fwdins,
+                            ).timeit(self.count)
+                            / self.count,
+                            sep="\t",
+                        )
 
             # assert fwdres is not None
 
@@ -279,52 +281,57 @@ class EnzymeJaxTest(absltest.TestCase):
 
             for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
                 if backend in pbackends:
+
+                    adout = douts_backend
+                    if len(douts) != 1:
+                        adout = [tuple(douts_backend)]
                     if pipeline is not None:
-                        rfn_enzyme = (
-                            in_fn
-                            if pipeline is None
-                            else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                        if self.mlirad or pipeline is None:
+                            rfn_enzyme = (
                                 in_fn
+                                if pipeline is None
+                                else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                                    in_fn
+                                )
                             )
-                        )
-                        rev_enzyme = jax.jit(
-                            revtransform(rfn_enzyme),
-                            # backend=backend
-                        )
+                            rev_enzyme = jax.jit(
+                                revtransform(rfn_enzyme),
+                                # backend=backend
+                            )
 
-                        if self.revprimal:
-                            primals, grads = rev_enzyme(*douts_backend, *ins_backend)
-                        else:
-                            grads = rev_enzyme(*douts_backend, *ins_backend)
-                            assert grads is not None
+                            if self.revprimal:
+                                primals, grads = rev_enzyme(*adout, *ins_backend)
+                            else:
+                                grads = rev_enzyme(*adout, *ins_backend)
+                                assert grads is not None
 
-                        if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres, self.tol)
+                            if self.revprimal and primres is not None:
+                                recursive_check(self, primals, primres, self.tol)
 
-                        if revres is None:
-                            revres = grads
-                        else:
-                            recursive_check(self, grads, revres, self.tol)
+                            if revres is None:
+                                revres = grads
+                            else:
+                                recursive_check(self, grads, revres, self.tol)
 
-                        print(
-                            name,
-                            ",",
-                            pname,
-                            ",",
-                            backend,
-                            ",",
-                            "PreRev",
-                            ",",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
-                            sep="\t",
-                        )
+                            print(
+                                name,
+                                ",",
+                                pname,
+                                ",",
+                                backend,
+                                ",",
+                                "PreRev",
+                                ",",
+                                timeit.Timer(
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
+                                ).timeit(self.count)
+                                / self.count,
+                                sep="\t",
+                            )
 
                         rfn_enzyme = in_fn
                         rev_enzyme = jax.jit(
@@ -339,9 +346,9 @@ class EnzymeJaxTest(absltest.TestCase):
                         )
 
                         if self.revprimal:
-                            primals, grads = rev_enzyme(*douts_backend, *ins_backend)
+                            primals, grads = rev_enzyme(*adout, *ins_backend)
                         else:
-                            grads = rev_enzyme(*douts_backend, *ins_backend)
+                            grads = rev_enzyme(*adout, *ins_backend)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
@@ -372,7 +379,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             sep="\t",
                         )
 
-                    if pipeline is None or pipeline.mlir_ad():
+                    if pipeline is None or (pipeline.mlir_ad() and self.mlirad):
                         rfn_enzyme = (
                             in_fn
                             if pipeline is None
@@ -392,9 +399,9 @@ class EnzymeJaxTest(absltest.TestCase):
                         )
 
                         if self.revprimal:
-                            primals, grads = rev_enzyme(*douts_backend, *ins_backend)
+                            primals, grads = rev_enzyme(*adout, *ins_backend)
                         else:
-                            grads = rev_enzyme(*douts_backend, *ins_backend)
+                            grads = rev_enzyme(*adout, *ins_backend)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
