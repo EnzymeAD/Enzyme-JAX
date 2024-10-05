@@ -36,6 +36,7 @@
 #include "xla/service/gpu/model/gpu_performance_model.h"
 #include "xla/service/platform_util.h"
 #include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
@@ -211,29 +212,33 @@ public:
 
     std::unique_ptr<xla::HloModule> hloModule =
         wrapperModuleToHloModule(wrapperModule);
-    tensorflow::se::DeviceDescription device_info =
-        RTXA6000DeviceInfo(); // TODO: use running GPU
-    xla::HloCostAnalysis::ShapeSizeFunction shape_size_function =
+
+    auto deviceDescription = getDeviceDescription();
+
+    std::cout << "device description: \n"
+              << deviceDescription->ToString() << std::endl;
+
+    xla::HloCostAnalysis::ShapeSizeFunction shapeSizeFunction =
         [](const xla::Shape &shape) {
           return xla::gpu::GetSizeOfShape(shape, 4);
         };
-    xla::gpu::GpuHloCostAnalysis cost_analysis(
-        xla::gpu::GpuHloCostAnalysis::Options{shape_size_function, {}, true},
-        device_info);
+    xla::gpu::GpuHloCostAnalysis costAnalysis(
+        xla::gpu::GpuHloCostAnalysis::Options{shapeSizeFunction, {}, true},
+        *deviceDescription);
 
     int analyticalCost = -1;
 
     assert(hloModule->computation_count() == 1);
     std::cout << "\n--- COST " << opName << ":" << std::endl;
     for (auto c : hloModule->computations()) {
-      c->Accept(&cost_analysis);
+      c->Accept(&costAnalysis);
       // The op we are measuring should always be the return value, which is at
       // the root.
       auto op = c->root_instruction();
 
       auto runtime =
           xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
-              op, device_info, &cost_analysis,
+              op, *deviceDescription, &costAnalysis,
               xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
       analyticalCost = absl::ToInt64Nanoseconds(runtime.exec_time);
       std::cout << "analytical: " << analyticalCost << std::endl;
@@ -442,7 +447,9 @@ private:
     return buffer;
   }
 
-  // Analytical cost model
+  /**
+   * Create XLA internal HloModule for the analytical cost model
+   */
   static std::unique_ptr<xla::HloModule>
   wrapperModuleToHloModule(ModuleOp &wrapperModule) {
     auto context = wrapperModule.getContext();
@@ -462,6 +469,18 @@ private:
     } else {
       return std::move(hloModule.value());
     }
+  }
+
+  /**
+   * Get DeviceDescription for current device.
+   */
+  static std::unique_ptr<stream_executor::DeviceDescription>
+  getDeviceDescription() {
+    auto platform = xla::PlatformUtil::GetPlatform(
+                        (getPlatform() == EqsatPlatform::CPU ? "cpu" : "cuda"))
+                        .value();
+    // assume ordinal 0
+    return std::move(platform->DescriptionForDevice(0).value());
   }
 };
 
