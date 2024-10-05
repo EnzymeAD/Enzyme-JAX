@@ -29,6 +29,7 @@ def setup_backends():
         devices.append(backend)
     backends_initialized = True
 
+
 AllBackends = ["cpu"] + devices
 AllPipelines = [
     ("JaX  ", None, AllBackends),
