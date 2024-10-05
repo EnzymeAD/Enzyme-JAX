@@ -176,8 +176,6 @@ public:
     }
     Operation *shadow = builder.clone(*orig, map);
 
-    Value shadowRes = shadow->getResult(0);
-
     auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
     gutils->invertedPointers.erase(innerOp.getResult(0));
     gutils->erase(invAdd.getDefiningOp());
@@ -189,7 +187,13 @@ public:
     }
     cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
 
-    gutils->setDiffe(orig->getResult(0), shadowRes, builder);
+    size_t shadowCnt = 0;
+    for (auto origRes : orig->getResults()) {
+      if (!gutils->isConstantValue(origRes)) {
+	gutils->setDiffe(origRes, shadow->getResult(shadowCnt), builder);
+	shadowCnt++;
+      }
+    }
     gutils->eraseIfUnused(orig);
     return success();
   }
@@ -499,6 +503,93 @@ struct SHLOConstantOpBatchInterface
   }
 };
 
+struct RegionBranchCaseOp
+: public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
+                                             CaseOp> {
+
+ void getEntrySuccessorRegions(Operation* op,
+    ArrayRef<Attribute> operands,
+    SmallVectorImpl<RegionSuccessor> &successors) const {
+  for (auto &reg : op->getRegions())
+    successors.push_back(RegionSuccessor(&reg));
+}
+
+mlir::OperandRange getEntrySuccessorOperands(Operation* op, RegionBranchPoint bp) const {
+   auto end = op->operand_end();
+   return ::mlir::OperandRange(end, end);
+}
+
+void getRegionInvocationBounds(Operation* op,
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) const {
+  bounds.append(op->getNumRegions(), InvocationBounds(/*lb=*/0, /*ub=*/1));
+}
+
+bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
+  return lhs == rhs;
+}
+
+void getSuccessorRegions(Operation *op, RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> & regions) const {
+  // The `then` and the `else` region branch back to the parent operation.
+  if (!point.isParent()) {
+    regions.push_back(RegionSuccessor(op->getResults()));
+    return;
+  }
+
+  for (auto &reg : op->getRegions())
+  	regions.push_back(RegionSuccessor(&reg));
+}
+
+};
+
+struct RegionBranchWhileOp
+: public RegionBranchOpInterface::ExternalModel<RegionBranchWhileOp,
+                                             	WhileOp> {
+
+ void getEntrySuccessorRegions(Operation* op,
+    ArrayRef<Attribute> operands,
+    SmallVectorImpl<RegionSuccessor> &successors) const {
+    successors.emplace_back(&cast<WhileOp>(op).getCond(), cast<WhileOp>(op).getCond().getArguments());
+}
+
+mlir::OperandRange getEntrySuccessorOperands(Operation* op, RegionBranchPoint point) const {
+   assert(point == cast<WhileOp>(op).getCond() &&
+         "WhileOp is expected to branch only to the first region");
+  return cast<WhileOp>(op).getODSOperands(0); //getInits();
+}
+
+void getRegionInvocationBounds(Operation* op,
+    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) const {
+  bounds.append(op->getNumRegions(), InvocationBounds::getUnknown());
+}
+
+bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
+  return lhs == rhs;
+}
+
+void getSuccessorRegions(Operation *op, RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> & regions) const {
+
+  auto wop = cast<WhileOp>(op);
+
+  // The parent op always branches to the condition region.
+  if (point.isParent()) {
+    regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
+    return;
+  }
+
+  assert(llvm::is_contained({&wop.getBody(), &wop.getCond()}, point) &&
+         "there are only two regions in a WhileOp");
+  // The body region always branches back to the condition region.
+  if (point == wop.getBody()) {
+    regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
+    return;
+  }
+
+  regions.emplace_back(wop.getResults());
+  regions.emplace_back(&wop.getBody(), wop.getBody().getArguments());
+}
+
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -506,7 +597,12 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
   registry.addExtension(
       +[](MLIRContext *context, stablehlo::StablehloDialect *) {
         registerInterfaces(context);
-        ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        
+	CaseOp::attachInterface<RegionBranchCaseOp>(*context);
+	
+	WhileOp::attachInterface<RegionBranchWhileOp>(*context);
+        
+	ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
         BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);

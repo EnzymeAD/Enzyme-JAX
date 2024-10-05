@@ -532,6 +532,8 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
+def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
+
 def : HLOInactiveOp<"CeilOp">;
 
 def : HLODerivative<"CbrtOp", (Op $x), [
@@ -676,6 +678,13 @@ def : HLODerivative<"RsqrtOp", (Op $x),
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
                     ]
+                  >;
+
+def : HLODerivative<"ConvertOp", (Op $x),
+                    [
+                        (Convert (TypeOf $x), (DiffeRet))
+                    ],
+                    (Convert (ResultTypes), (Shadow $x))
                   >;
 
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
