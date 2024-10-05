@@ -606,6 +606,25 @@ struct ScatterActivity
   }
 };
 
+class AutoDiffScatter
+    : public AutoDiffOpInterface::ExternalModel<
+          AutoDiffScatter, ScatterOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto scat = cast<ScatterOp>(op);
+    SmallVector<int> inds;
+   
+    for (auto idx = scat.getInputs().getBeginOperandIndex(); idx < scat.getInputs().getBeginOperandIndex() + scat.getInputs().size(); idx++)
+	    inds.push_back((int)idx);
+    
+    for (auto idx = scat.getUpdates().getBeginOperandIndex(); idx < scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size(); idx++)
+	    inds.push_back((int)idx);
+
+    return mlir::enzyme::detail::memoryIdentityForwardHandler(
+        op, builder, gutils, inds);
+  }
+};
 
 
 class AutoDiffHLOReturn
