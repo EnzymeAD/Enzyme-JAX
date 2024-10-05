@@ -215,9 +215,6 @@ public:
 
     auto deviceDescription = getDeviceDescription();
 
-    std::cout << "device description: \n"
-              << deviceDescription->ToString() << std::endl;
-
     xla::HloCostAnalysis::ShapeSizeFunction shapeSizeFunction =
         [](const xla::Shape &shape) {
           return xla::gpu::GetSizeOfShape(shape, 4);
