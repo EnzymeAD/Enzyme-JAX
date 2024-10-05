@@ -590,6 +590,60 @@ void getSuccessorRegions(Operation *op, RegionBranchPoint point, SmallVectorImpl
 
 };
 
+struct ScatterActivity
+    : public ActivityOpInterface::ExternalModel<ScatterActivity,
+                                                ScatterOp> {
+  bool isInactive(Operation *op) const {
+    return false;
+  }
+  bool isArgInactive(Operation *op, size_t idx) const {
+    auto scat = cast<ScatterOp>(op);
+   if (idx >= scat.getInputs().getBeginOperandIndex() && idx < scat.getInputs().getBeginOperandIndex() + scat.getInputs().size())
+		return false;
+   if (idx >= scat.getUpdates().getBeginOperandIndex() && idx < scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size())
+		return false;
+	return true;
+  }
+};
+
+
+
+class AutoDiffHLOReturn
+    : public AutoDiffOpInterface::ExternalModel<
+          AutoDiffHLOReturn, ReturnOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *origTerminator, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+  auto parentOp = origTerminator->getParentOp();
+
+  llvm::SmallDenseSet<unsigned> operandsToShadow;
+  if (isa<WhileOp>(parentOp) && origTerminator->getParentRegion() == &cast<WhileOp>(parentOp).getCond()) {
+  } else {
+    assert(parentOp->getNumResults() == origTerminator->getNumOperands());
+    for (auto res : parentOp->getResults()) {
+      if (!gutils->isConstantValue(res))
+        operandsToShadow.insert(res.getResultNumber());
+    }
+  }
+
+  SmallVector<Value> newOperands;
+  newOperands.reserve(origTerminator->getNumOperands() +
+                      operandsToShadow.size());
+  for (OpOperand &operand : origTerminator->getOpOperands()) {
+    newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
+    if (operandsToShadow.contains(operand.getOperandNumber()))
+      newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
+  }
+
+  // Assuming shadows following the originals are fine.
+  // TODO: consider extending to have a ShadowableTerminatorOpInterface
+  Operation *replTerminator = gutils->getNewFromOriginal(origTerminator);
+  replTerminator->setOperands(newOperands);
+    return success();
+  }
+};
+
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -602,6 +656,10 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 	
 	WhileOp::attachInterface<RegionBranchWhileOp>(*context);
         
+	ScatterOp::attachInterface<ScatterActivity>(*context);
+	
+	ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
+
 	ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
         BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);

@@ -661,8 +661,6 @@ def : HLODerivative<"RemOp", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
-def : HLORegionTerminatorOp<"ReturnOp">;
-
 def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
 def : HLOInactiveOp<"RoundOp">;
