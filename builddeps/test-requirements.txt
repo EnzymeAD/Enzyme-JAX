@@ -2,8 +2,7 @@ absl-py
 jax
 numpy
 jaxlib
--f https://github.com/jax-md/jax-md
-jax-md==0.2.8
+git+https://github.com/wsmoses/jax-md.git
 jax[cuda12_pip]; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html

@@ -22,15 +22,13 @@ from jax import jit
 from jax import random
 from jax import lax
 
-from jax.config import config
-config.update('jax_enable_x64', True)
+jax.config.update("jax_enable_x64", True)
 
 from jax_md import space
 from jax_md import energy
 from jax_md import simulate
 from jax_md import quantity
 from jax_md import partition
-
 
 partialopt = (
     "inline{default-pipeline=canonicalize max-iterations=4},"
@@ -210,9 +208,12 @@ class JAXMD(EnzymeJaxTest):
           return apply(state, neighbor=nbrs), nbrs
 
         iters = 10
-        def forward(state):
+        degrees_of_freedom = state.chain.degrees_of_freedom
+        def forward(position, momentum, force, mass, c_position, c_momentum, c_mass, c_tau, c_KE):
+          chain = simulate.NoseHooverChain(c_position, c_momentum, c_mass, c_tau, c_KE, degrees_of_freedom) 
+          state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
           new_state, new_nbrs = lax.fori_loop(0, 10, step, (state, nbrs))
-          return new_state
+          return (new_state.position, new_state.momentum, new_state.force, new_state.mass, new_state.chain.position, new_state.chain.mass, new_state.chain.tau, new_state.chain.kinetic_energy)
           
         self.fn = forward
         self.name = "jaxmd40"
@@ -221,9 +222,13 @@ class JAXMD(EnzymeJaxTest):
         # self.AllPipelines = pipelines
         # self.AllBackends = CurBackends
 
-        self.ins = [state]
-        self.dins = [state]
-        self.douts = [state]
+        self.ins = [state.position, state.momentum, state.force, state.mass, state.chain.position, state.chain.momentum, state.chain.mass, state.chain.tau, state.chain.kinetic_energy]
+        self.dins = [x.copy() for x in self.ins]
+        self.douts = [x.copy() for x in self.ins]
+        self.AllPipelines = pipelines
+        # No support for stablehlo.while atm
+        self.revfilter = justjax
+
         self.tol = 5e-5
 
 

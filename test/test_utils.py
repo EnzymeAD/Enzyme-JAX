@@ -157,8 +157,6 @@ class EnzymeJaxTest(absltest.TestCase):
     def harness(self, name, in_fn, ins, dins, douts):
         assert len(ins) == len(dins)
 
-        assert 1 == len(douts)
-
         primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
 
         fwdstr = (
@@ -182,8 +180,10 @@ class EnzymeJaxTest(absltest.TestCase):
             fwdins = primalins | {
                 ("din" + str(i)): dins_backend[i] for i in range(len(dins))
             }
-            revins = primalins | {"dout": douts_backend[0]}
-
+            if len(douts) == 1:
+                revins = primalins | {"dout": douts_backend[0]}
+            else:
+                revins = primalins | {"dout": tuple(douts_backend)}
             primres = None
 
             for pname, pipeline, pbackends in self.primfilter(self.AllPipelines):
