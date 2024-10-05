@@ -235,7 +235,9 @@ class EnzymeJaxTest(absltest.TestCase):
                             in_fn
                             if pipeline is None
                             else jax.jit(
-                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
+                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                                    in_fn
+                                ),
                                 # backend=backend
                             )
                         )
@@ -290,9 +292,9 @@ class EnzymeJaxTest(absltest.TestCase):
                             rfn_enzyme = (
                                 in_fn
                                 if pipeline is None
-                                else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
-                                    in_fn
-                                )
+                                else enzyme_jax_ir(
+                                    pipeline_options=pipeline, argv=argv
+                                )(in_fn)
                             )
                             rev_enzyme = jax.jit(
                                 revtransform(rfn_enzyme),

@@ -90,7 +90,8 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
   return false;
 }
 
-static bool tablegenMain(llvm::raw_ostream &os, const llvm::RecordKeeper &records) {
+static bool tablegenMain(llvm::raw_ostream &os,
+                         const llvm::RecordKeeper &records) {
   switch (action) {
   case GenPopulatePatternsFuncDecl:
     return emitPopulatePatternsFuncDecls(os, records);

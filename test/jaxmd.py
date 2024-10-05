@@ -168,25 +168,20 @@ class JAXMD(EnzymeJaxTest):
 
         R = []
         for i in range(N_rep):
-          for j in range(N_rep):
-            for k in range(N_rep):
-              R += [[i, j, k]]
+            for j in range(N_rep):
+                for k in range(N_rep):
+                    R += [[i, j, k]]
         R = np.array(R, dtype=dtype) * lattice_constant
-
 
         N = R.shape[0]
         phi = N / (lattice_constant * N_rep) ** 3
-        print(f'Created a system of {N} LJ particles with number density {phi:.3f}')
+        print(f"Created a system of {N} LJ particles with number density {phi:.3f}")
 
-        neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(displacement,
-                                                                    box_size,
-                                                                    r_cutoff=3.0,
-                                                                    dr_threshold=1.,
-                                                                    format=format)
-
+        neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(
+            displacement, box_size, r_cutoff=3.0, dr_threshold=1.0, format=format
+        )
 
         init, apply = simulate.nvt_nose_hoover(energy_fn, shift, 5e-3, kT=1.2)
-
 
         key = random.PRNGKey(0)
 
@@ -195,27 +190,41 @@ class JAXMD(EnzymeJaxTest):
         # robust to changes in the number of particles, in this case we only
         # need to actually add more capacity for dense neighbor lists.
         if format is partition.Dense:
-          nbrs = neighbor_fn.allocate(R, extra_capacity=55)
+            nbrs = neighbor_fn.allocate(R, extra_capacity=55)
         else:
-          nbrs = neighbor_fn.allocate(R)
+            nbrs = neighbor_fn.allocate(R)
 
         state = init(key, R, neighbor=nbrs)
 
-
         def step(i, state_and_nbrs):
-          state, nbrs = state_and_nbrs
-          nbrs = nbrs.update(state.position)
-          return apply(state, neighbor=nbrs), nbrs
+            state, nbrs = state_and_nbrs
+            nbrs = nbrs.update(state.position)
+            return apply(state, neighbor=nbrs), nbrs
 
         iters = 10
         degrees_of_freedom = state.chain.degrees_of_freedom
-        def forward(position, momentum, force, mass, c_position, c_momentum, c_mass, c_tau, c_KE):
-          chain = simulate.NoseHooverChain(c_position, c_momentum, c_mass, c_tau, c_KE, degrees_of_freedom) 
-          state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
-          # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
-          new_state, new_nbrs = step(0, (state, nbrs))
-          return (new_state.position, new_state.momentum, new_state.force, new_state.mass, new_state.chain.position, new_state.chain.momentum, new_state.chain.mass, new_state.chain.tau, new_state.chain.kinetic_energy)
-          
+
+        def forward(
+            position, momentum, force, mass, c_position, c_momentum, c_mass, c_tau, c_KE
+        ):
+            chain = simulate.NoseHooverChain(
+                c_position, c_momentum, c_mass, c_tau, c_KE, degrees_of_freedom
+            )
+            state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
+            # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
+            new_state, new_nbrs = step(0, (state, nbrs))
+            return (
+                new_state.position,
+                new_state.momentum,
+                new_state.force,
+                new_state.mass,
+                new_state.chain.position,
+                new_state.chain.momentum,
+                new_state.chain.mass,
+                new_state.chain.tau,
+                new_state.chain.kinetic_energy,
+            )
+
         self.fn = forward
         self.name = "jaxmd40"
         self.count = 10
@@ -223,7 +232,17 @@ class JAXMD(EnzymeJaxTest):
         # self.AllPipelines = pipelines
         # self.AllBackends = CurBackends
 
-        self.ins = [state.position, state.momentum, state.force, state.mass, state.chain.position, state.chain.momentum, state.chain.mass, state.chain.tau, state.chain.kinetic_energy]
+        self.ins = [
+            state.position,
+            state.momentum,
+            state.force,
+            state.mass,
+            state.chain.position,
+            state.chain.momentum,
+            state.chain.mass,
+            state.chain.tau,
+            state.chain.kinetic_energy,
+        ]
         self.dins = [x.copy() for x in self.ins]
         self.douts = [x.copy() for x in self.ins]
         self.AllPipelines = pipelines
