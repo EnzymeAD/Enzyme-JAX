@@ -586,9 +586,10 @@ matrixToDenseAttr(const std::vector<std::vector<int64_t>> &matrix,
 // https://github.com/jax-ml/jax/blob/b8a066a90790a900d370812263dea51e4b262b43/jax/_src/lax/convolution.py#L351
 // Define ConvDimensionNumbers similar to JAX's implementation
 struct ConvDimensionNumbers {
-    std::vector<int64_t> lhs_spec;  // (batch_dim, feature_dim, spatial_dims...)
-    std::vector<int64_t> rhs_spec;  // (out_feature_dim, in_feature_dim, spatial_dims...)
-    std::vector<int64_t> out_spec;  // (batch_dim, feature_dim, spatial_dims...)
+  std::vector<int64_t> lhs_spec; // (batch_dim, feature_dim, spatial_dims...)
+  std::vector<int64_t>
+      rhs_spec; // (out_feature_dim, in_feature_dim, spatial_dims...)
+  std::vector<int64_t> out_spec; // (batch_dim, feature_dim, spatial_dims...)
 };
 
 std::vector<int64_t> convolutionShapeComputation(
@@ -599,65 +600,67 @@ std::vector<int64_t> convolutionShapeComputation(
     std::vector<int64_t> &lhs_dilation,   // Dilation for input
     std::vector<int64_t> &rhs_dilation,   // Dilation for kernel
     ConvDimensionNumbers dimension_numbers,
-    int64_t feature_group_count,          // Feature group count
-    int64_t batch_group_count             // Batch group count
+    int64_t feature_group_count, // Feature group count
+    int64_t batch_group_count    // Batch group count
 ) {
-    // Ensure input shape has at least 2 dimensions
-    assert(lhs_shape.size() >= 2 && "Input shape must have at least 2 dimensions.");
-    assert(rhs_shape.size() >= 2 && "Kernel shape must have at least 2 dimensions.");
+  // Ensure input shape has at least 2 dimensions
+  assert(lhs_shape.size() >= 2 &&
+         "Input shape must have at least 2 dimensions.");
+  assert(rhs_shape.size() >= 2 &&
+         "Kernel shape must have at least 2 dimensions.");
 
-    auto lhs_spec = dimension_numbers.lhs_spec;
-    auto rhs_spec = dimension_numbers.rhs_spec;
-    auto out_spec = dimension_numbers.out_spec;
+  auto lhs_spec = dimension_numbers.lhs_spec;
+  auto rhs_spec = dimension_numbers.rhs_spec;
+  auto out_spec = dimension_numbers.out_spec;
 
-    std::vector<int64_t> lhs_spatial_dims(lhs_spec.begin() + 2, lhs_spec.end());
-    std::vector<int64_t> rhs_spatial_dims(rhs_spec.begin() + 2, rhs_spec.end());
-    std::vector<int64_t> out_spatial_dims(out_spec.begin() + 2, out_spec.end());
+  std::vector<int64_t> lhs_spatial_dims(lhs_spec.begin() + 2, lhs_spec.end());
+  std::vector<int64_t> rhs_spatial_dims(rhs_spec.begin() + 2, rhs_spec.end());
+  std::vector<int64_t> out_spatial_dims(out_spec.begin() + 2, out_spec.end());
 
-    std::vector<std::pair<int64_t, int64_t>> padding;
-    auto padding_values = padding_attr.getValues<int64_t>();
-    auto it = padding_values.begin();
-    while (it != padding_values.end()) {
-        int64_t low = *it++;
-        int64_t high = *it++;
-        padding.emplace_back(low, high);
-    }
+  std::vector<std::pair<int64_t, int64_t>> padding;
+  auto padding_values = padding_attr.getValues<int64_t>();
+  auto it = padding_values.begin();
+  while (it != padding_values.end()) {
+    int64_t low = *it++;
+    int64_t high = *it++;
+    padding.emplace_back(low, high);
+  }
 
-    assert(padding.size() == lhs_spatial_dims.size() && "Padding size does not match number of spatial dimensions.");
+  assert(padding.size() == lhs_spatial_dims.size() &&
+         "Padding size does not match number of spatial dimensions.");
 
-    int64_t output_batch_dim = lhs_shape[lhs_spec[0]] / batch_group_count;
-    int64_t output_feature_dim = rhs_shape[rhs_spec[0]] / feature_group_count;
+  int64_t output_batch_dim = lhs_shape[lhs_spec[0]] / batch_group_count;
+  int64_t output_feature_dim = rhs_shape[rhs_spec[0]] / feature_group_count;
 
-    std::vector<int64_t> output_shape(lhs_shape.size(), -1);
-    output_shape[out_spec[0]] = output_batch_dim;
+  std::vector<int64_t> output_shape(lhs_shape.size(), -1);
+  output_shape[out_spec[0]] = output_batch_dim;
 
-    // Compute spatial dimensions
-    for (size_t i = 0; i < lhs_spatial_dims.size(); ++i) {
-        int64_t lhs_dim = lhs_shape[lhs_spatial_dims[i]];
-        int64_t rhs_dim = rhs_shape[rhs_spatial_dims[i]];
+  // Compute spatial dimensions
+  for (size_t i = 0; i < lhs_spatial_dims.size(); ++i) {
+    int64_t lhs_dim = lhs_shape[lhs_spatial_dims[i]];
+    int64_t rhs_dim = rhs_shape[rhs_spatial_dims[i]];
 
-        // Apply dilation to input size
-        int64_t dilated_lhs = (lhs_dim - 1) * lhs_dilation[i] + 1;
+    // Apply dilation to input size
+    int64_t dilated_lhs = (lhs_dim - 1) * lhs_dilation[i] + 1;
 
-        // Apply padding
-        int64_t padded_lhs = dilated_lhs + padding[i].first + padding[i].second;
+    // Apply padding
+    int64_t padded_lhs = dilated_lhs + padding[i].first + padding[i].second;
 
-        // Effective kernel size after dilation
-        int64_t dilated_rhs = (rhs_dim - 1) * rhs_dilation[i] + 1;
+    // Effective kernel size after dilation
+    int64_t dilated_rhs = (rhs_dim - 1) * rhs_dilation[i] + 1;
 
-        // Calculate output dimension
-        int64_t out_dim = (padded_lhs - dilated_rhs) / window_strides[i] + 1;
-        output_shape[out_spatial_dims[i]] = out_dim;
-    }
-    output_shape[out_spec[1]] = output_feature_dim;
-    std::cout << "Computed Output Shape: ";
-    for (int64_t dim : output_shape) {
-        std::cout << dim << " ";
-    }
-    std::cout << std::endl;
-    return output_shape;
+    // Calculate output dimension
+    int64_t out_dim = (padded_lhs - dilated_rhs) / window_strides[i] + 1;
+    output_shape[out_spatial_dims[i]] = out_dim;
+  }
+  output_shape[out_spec[1]] = output_feature_dim;
+  std::cout << "Computed Output Shape: ";
+  for (int64_t dim : output_shape) {
+    std::cout << dim << " ";
+  }
+  std::cout << std::endl;
+  return output_shape;
 }
-
 
 /**
  * Get the correct start and limiting indices of a SliceOp from a SSplit0 or
@@ -813,15 +816,22 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
             outputBatchDimension, outputFeatureDimension,
             outputSpatialDimensions);
 
-ConvDimensionNumbers convDims;
+    ConvDimensionNumbers convDims;
     convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
-    convDims.lhs_spec.insert(convDims.lhs_spec.end(), inputSpatialDimensions.begin(), inputSpatialDimensions.end());
+    convDims.lhs_spec.insert(convDims.lhs_spec.end(),
+                             inputSpatialDimensions.begin(),
+                             inputSpatialDimensions.end());
 
-    convDims.rhs_spec = {kernelOutputFeatureDimension, kernelInputFeatureDimension};
-    convDims.rhs_spec.insert(convDims.rhs_spec.end(), kernelSpatialDimensions.begin(), kernelSpatialDimensions.end());
+    convDims.rhs_spec = {kernelOutputFeatureDimension,
+                         kernelInputFeatureDimension};
+    convDims.rhs_spec.insert(convDims.rhs_spec.end(),
+                             kernelSpatialDimensions.begin(),
+                             kernelSpatialDimensions.end());
 
     convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
-    convDims.out_spec.insert(convDims.out_spec.end(), outputSpatialDimensions.begin(), outputSpatialDimensions.end());
+    convDims.out_spec.insert(convDims.out_spec.end(),
+                             outputSpatialDimensions.begin(),
+                             outputSpatialDimensions.end());
     auto featureGroupCount = int_args[6];
     auto batchGroupCount = int_args[7];
     auto precisionConfig = other_vecs[7];
@@ -844,7 +854,7 @@ ConvDimensionNumbers convDims;
       }
     }
 
-auto shape = convolutionShapeComputation(
+    auto shape = convolutionShapeComputation(
         getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
         rhsDilation, convDims, featureGroupCount, batchGroupCount);
 
@@ -1813,15 +1823,22 @@ public:
                 outputBatchDimension, outputFeatureDimension,
                 outputSpatialDimensions);
 
-ConvDimensionNumbers convDims;
-    convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
-    convDims.lhs_spec.insert(convDims.lhs_spec.end(), inputSpatialDimensions.begin(), inputSpatialDimensions.end());
+        ConvDimensionNumbers convDims;
+        convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
+        convDims.lhs_spec.insert(convDims.lhs_spec.end(),
+                                 inputSpatialDimensions.begin(),
+                                 inputSpatialDimensions.end());
 
-    convDims.rhs_spec = {kernelOutputFeatureDimension, kernelInputFeatureDimension};
-    convDims.rhs_spec.insert(convDims.rhs_spec.end(), kernelSpatialDimensions.begin(), kernelSpatialDimensions.end());
+        convDims.rhs_spec = {kernelOutputFeatureDimension,
+                             kernelInputFeatureDimension};
+        convDims.rhs_spec.insert(convDims.rhs_spec.end(),
+                                 kernelSpatialDimensions.begin(),
+                                 kernelSpatialDimensions.end());
 
-    convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
-    convDims.out_spec.insert(convDims.out_spec.end(), outputSpatialDimensions.begin(), outputSpatialDimensions.end());
+        convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
+        convDims.out_spec.insert(convDims.out_spec.end(),
+                                 outputSpatialDimensions.begin(),
+                                 outputSpatialDimensions.end());
         auto featureGroupCount = parseNumNode(nodes, nodes[node.operands[16]]);
         auto batchGroupCount = parseNumNode(nodes, nodes[node.operands[17]]);
         auto precisionConfig = parseNumVec(nodes, nodes[node.operands[18]]);
@@ -1844,9 +1861,9 @@ ConvDimensionNumbers convDims;
           }
         }
 
-auto shape = convolutionShapeComputation(
-        getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
-        rhsDilation, convDims, featureGroupCount, batchGroupCount);
+        auto shape = convolutionShapeComputation(
+            getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
+            rhsDilation, convDims, featureGroupCount, batchGroupCount);
 
         auto newType = deriveOutputType(lhs, shape);
         newOp = builder.create<stablehlo::ConvolutionOp>(
