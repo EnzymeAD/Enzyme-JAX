@@ -29,14 +29,14 @@ static llvm::cl::opt<ActionType> action(
     llvm::cl::values(clEnumValN(GenPopulatePatternsInterfaceImpl,
                                 "gen-populate-patterns-interface-impl", "")));
 
-llvm::StringRef getPopulateFunctionNameSuffix(llvm::Record *rec) {
+llvm::StringRef getPopulateFunctionNameSuffix(const llvm::Record *rec) {
   return rec->getName().ends_with("Op") ? rec->getName().drop_back(2)
                                         : rec->getName();
 }
 
 static bool emitPopulatePatterns(llvm::raw_ostream &os,
-                                 llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
+                                 const llvm::RecordKeeper &records) {
+  for (const llvm::Record *rec :
        records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
     os << "void ";
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
@@ -54,8 +54,8 @@ static bool emitPopulatePatterns(llvm::raw_ostream &os,
 }
 
 static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
-                                          llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
+                                          const llvm::RecordKeeper &records) {
+  for (const llvm::Record *rec :
        records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
     if (ns.starts_with("::"))
@@ -70,8 +70,8 @@ static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
 }
 
 static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
-                                         llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
+                                         const llvm::RecordKeeper &records) {
+  for (const llvm::Record *rec :
        records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
     os << "void ";
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
@@ -90,7 +90,7 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
   return false;
 }
 
-static bool tablegenMain(llvm::raw_ostream &os, llvm::RecordKeeper &records) {
+static bool tablegenMain(llvm::raw_ostream &os, const llvm::RecordKeeper &records) {
   switch (action) {
   case GenPopulatePatternsFuncDecl:
     return emitPopulatePatternsFuncDecls(os, records);

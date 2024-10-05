@@ -456,6 +456,7 @@ def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
 }]>;
 
 /// Helpers - Max/Min
+def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 
@@ -642,6 +643,17 @@ def : HLODerivative<"PowOp", (Op $x, $y),
                   [
                     (CheckedMul (DiffeRet), (Mul $y, (Pow $x, (Sub $y, (HLOConstantFP<"1"> $y))))),
                     (CheckedMul (DiffeRet), (Mul (Pow $x, $y), (Log $x)))
+                  ]
+                  >;
+
+def : HLODerivative<"AbsOp", (Op $x), [
+  (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet)))
+]>;
+
+def : HLODerivative<"RemOp", (Op $x, $y), 
+                  [
+	            (DiffeRet),
+                    (CheckedMul (DiffeRet), (Neg (Mul (Sign (Div $x, $y):$div),(Floor (Abs $div)))))
                   ]
                   >;
 
