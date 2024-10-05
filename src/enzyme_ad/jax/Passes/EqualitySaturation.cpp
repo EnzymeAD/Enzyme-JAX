@@ -224,6 +224,7 @@ public:
     int analyticalCost = -1;
 
     assert(hloModule->computation_count() == 1);
+    std::cout << "\n--- COST " << opName << ":" << std::endl;
     for (auto c : hloModule->computations()) {
       c->Accept(&cost_analysis);
       // The op we are measuring should always be the return value, which is at
@@ -235,11 +236,10 @@ public:
               op, device_info, &cost_analysis,
               xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
       analyticalCost = absl::ToInt64Nanoseconds(runtime.exec_time);
+      std::cout << "analytical: " << analyticalCost << std::endl;
+      std::cout << op->ToString() << std::endl;
     }
     assert(analyticalCost >= 0);
-
-    // TODO: do this based on platform or env var
-    return analyticalCost;
 
     xla::PjRtClient *client = nullptr;
 
@@ -293,6 +293,11 @@ public:
     // taking individual measurements. Maybe we get rid of the parameter or do
     // something more sophisticated
     uint64_t duration = *std::min_element(durations.begin(), durations.end());
+
+    std::cout << "measured: " << duration << std::endl;
+
+    // TODO: do this based on platform or env var
+    duration = analyticalCost;
 
     auto indexOp = op->clone();
     runtimeCache.try_emplace(indexOp, duration);
