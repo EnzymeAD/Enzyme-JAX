@@ -503,6 +503,21 @@ struct SHLOConstantOpBatchInterface
   }
 };
 
+struct ADDataFlowSortOp
+: public ADDataFlowOpInterface::ExternalModel<ADDataFlowSortOp,
+                                             SortOp> {
+
+ SmallVector<Value> getPotentialIncomingValuesRes(Operation* op, mlir::OpResult v) const {
+    auto srt = cast<SortOp>(op);
+    return {srt.getInputs()[v.getResultNumber()]};
+ }
+ SmallVector<Value> getPotentialIncomingValuesArg(Operation* op, mlir::BlockArgument v) const {
+    auto srt = cast<SortOp>(op);
+    size_t num = v.getArgNumber() / 2;
+    return {srt.getInputs()[num]};
+ }
+};
+
 struct RegionBranchCaseOp
 : public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
                                              CaseOp> {
@@ -676,23 +691,11 @@ public:
   llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
   llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
 
-    auto operandRange = sop.getInputs();
-
-    auto targetValues = sop->getRegion(0).front().getArguments();
-
-    // Need to know which of the arguments are being forwarded to from
-    // operands.
-    for (auto &&[i, regionValue, operand] :
-         llvm::enumerate(targetValues, operandRange)) {
-      if (gutils->isConstantValue(regionValue))
-        continue;
-      operandPositionsToShadow.insert(operandRange.getBeginOperandIndex() + i);
-      resultPositionsToShadow.insert(i);
-    }
-
   for (auto res : op->getResults())
-    if (!gutils->isConstantValue(res))
+    if (!gutils->isConstantValue(res)) {
+      operandPositionsToShadow.insert(res.getResultNumber());
       resultPositionsToShadow.insert(res.getResultNumber());
+    }
 
   return mlir::enzyme::detail::controlFlowForwardHandler(
       op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
@@ -710,7 +713,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
       +[](MLIRContext *context, stablehlo::StablehloDialect *) {
         registerInterfaces(context);
         
-	SortOp::attachInterface<AutoDiffSort>(*context);
+	// SortOp::attachInterface<AutoDiffSort>(*context);
+	SortOp::attachInterface<ADDataFlowSortOp>(*context);
 	CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 	
 	WhileOp::attachInterface<RegionBranchWhileOp>(*context);
