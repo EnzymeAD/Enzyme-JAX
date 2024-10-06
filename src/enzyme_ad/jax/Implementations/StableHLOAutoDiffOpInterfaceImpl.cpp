@@ -662,6 +662,45 @@ public:
   }
 };
 
+class AutoDiffSort
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffSort,
+                                                SortOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+
+   auto sop = cast<SortOp>(op);
+
+  // TODO: we may need to record, for every successor, which of its inputs
+  // need a shadow to recreate the body correctly.
+  llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+  llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+    auto operandRange = sop.getInputs();
+
+    auto targetValues = sop->getRegion(0).front().getArguments();
+
+    // Need to know which of the arguments are being forwarded to from
+    // operands.
+    for (auto &&[i, regionValue, operand] :
+         llvm::enumerate(targetValues, operandRange)) {
+      if (gutils->isConstantValue(regionValue))
+        continue;
+      operandPositionsToShadow.insert(operandRange.getBeginOperandIndex() + i);
+      resultPositionsToShadow.insert(i);
+    }
+
+  for (auto res : op->getResults())
+    if (!gutils->isConstantValue(res))
+      resultPositionsToShadow.insert(res.getResultNumber());
+
+  return mlir::enzyme::detail::controlFlowForwardHandler(
+      op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+
+  }
+};
+
+
 
 } // namespace
 
@@ -671,12 +710,15 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
       +[](MLIRContext *context, stablehlo::StablehloDialect *) {
         registerInterfaces(context);
         
+	SortOp::attachInterface<AutoDiffSort>(*context);
 	CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 	
 	WhileOp::attachInterface<RegionBranchWhileOp>(*context);
+	
         
 	ScatterOp::attachInterface<ScatterActivity>(*context);
-	
+	ScatterOp::attachInterface<AutoDiffScatter>(*context);
+
 	ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
 	ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);

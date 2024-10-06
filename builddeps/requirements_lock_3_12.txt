@@ -4,7 +4,6 @@
 #
 #    bazel run //builddeps:requirements.update
 #
---find-links https://github.com/jax-md/jax-md
 --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 absl-py==2.1.0 \
@@ -127,10 +126,6 @@ contextlib2==21.6.0 \
     --hash=sha256:3fbdb64466afd23abaf6c977627b75b6139a5a3e8ce38405c5b413aed7a0471f \
     --hash=sha256:ab1e2bfe1d01d968e1b7e8d9023bc51ef3509bba217bb730cee3827e1ee82869
     # via ml-collections
-dataclasses==0.6 \
-    --hash=sha256:454a69d788c7fda44efd71e259be79577822f5e3f53f029a22d08004e951dc9f \
-    --hash=sha256:6988bd2b895eef432d562370bb707d540f32f7360ab13da45340101bc2307d84
-    # via jax-md
 dm-haiku==0.0.12 \
     --hash=sha256:7448a43a6486bff95253f84e18eacc607d9c1256592573117a9d1d23e2780706 \
     --hash=sha256:ba0b3acf71433156737fe342c486da11727e5e6c9e054245f4f9b8f0b53eb608
@@ -155,6 +150,41 @@ flax==0.9.0 \
     # via
     #   dm-haiku
     #   jax-md
+frozendict==2.4.4 \
+    --hash=sha256:07c3a5dee8bbb84cba770e273cdbf2c87c8e035903af8f781292d72583416801 \
+    --hash=sha256:12a342e439aef28ccec533f0253ea53d75fe9102bd6ea928ff530e76eac38906 \
+    --hash=sha256:1697793b5f62b416c0fc1d94638ec91ed3aa4ab277f6affa3a95216ecb3af170 \
+    --hash=sha256:199a4d32194f3afed6258de7e317054155bc9519252b568d9cfffde7e4d834e5 \
+    --hash=sha256:259528ba6b56fa051bc996f1c4d8b57e30d6dd3bc2f27441891b04babc4b5e73 \
+    --hash=sha256:2b70b431e3a72d410a2cdf1497b3aba2f553635e0c0f657ce311d841bf8273b6 \
+    --hash=sha256:2bd009cf4fc47972838a91e9b83654dc9a095dc4f2bb3a37c3f3124c8a364543 \
+    --hash=sha256:2d8536e068d6bf281f23fa835ac07747fb0f8851879dd189e9709f9567408b4d \
+    --hash=sha256:3148062675536724502c6344d7c485dd4667fdf7980ca9bd05e338ccc0c4471e \
+    --hash=sha256:3f7c031b26e4ee6a3f786ceb5e3abf1181c4ade92dce1f847da26ea2c96008c7 \
+    --hash=sha256:4297d694eb600efa429769125a6f910ec02b85606f22f178bafbee309e7d3ec7 \
+    --hash=sha256:4a59578d47b3949437519b5c39a016a6116b9e787bb19289e333faae81462e59 \
+    --hash=sha256:4ae8d05c8d0b6134bfb6bfb369d5fa0c4df21eabb5ca7f645af95fdc6689678e \
+    --hash=sha256:5d58d9a8d9e49662c6dafbea5e641f97decdb3d6ccd76e55e79818415362ba25 \
+    --hash=sha256:63aa49f1919af7d45fb8fd5dec4c0859bc09f46880bd6297c79bb2db2969b63d \
+    --hash=sha256:6874fec816b37b6eb5795b00e0574cba261bf59723e2de607a195d5edaff0786 \
+    --hash=sha256:6eb716e6a6d693c03b1d53280a1947716129f5ef9bcdd061db5c17dea44b80fe \
+    --hash=sha256:705efca8d74d3facbb6ace80ab3afdd28eb8a237bfb4063ed89996b024bc443d \
+    --hash=sha256:78c94991944dd33c5376f720228e5b252ee67faf3bac50ef381adc9e51e90d9d \
+    --hash=sha256:7f79c26dff10ce11dad3b3627c89bb2e87b9dd5958c2b24325f16a23019b8b94 \
+    --hash=sha256:7fee9420475bb6ff357000092aa9990c2f6182b2bab15764330f4ad7de2eae49 \
+    --hash=sha256:812ab17522ba13637826e65454115a914c2da538356e85f43ecea069813e4b33 \
+    --hash=sha256:85375ec6e979e6373bffb4f54576a68bf7497c350861d20686ccae38aab69c0a \
+    --hash=sha256:87ebcde21565a14fe039672c25550060d6f6d88cf1f339beac094c3b10004eb0 \
+    --hash=sha256:93a7b19afb429cbf99d56faf436b45ef2fa8fe9aca89c49eb1610c3bd85f1760 \
+    --hash=sha256:b3b967d5065872e27b06f785a80c0ed0a45d1f7c9b85223da05358e734d858ca \
+    --hash=sha256:c6bf9260018d653f3cab9bd147bd8592bf98a5c6e338be0491ced3c196c034a3 \
+    --hash=sha256:c8f92425686323a950337da4b75b4c17a3327b831df8c881df24038d560640d4 \
+    --hash=sha256:d13b4310db337f4d2103867c5a05090b22bc4d50ca842093779ef541ea9c9eea \
+    --hash=sha256:d9647563e76adb05b7cde2172403123380871360a114f546b4ae1704510801e5 \
+    --hash=sha256:dc2228874eacae390e63fd4f2bb513b3144066a977dc192163c9f6c7f6de6474 \
+    --hash=sha256:e1b941132d79ce72d562a13341d38fc217bc1ee24d8c35a20d754e79ff99e038 \
+    --hash=sha256:fefeb700bc7eb8b4c2dc48704e4221860d254c8989fb53488540bc44e44a1ac2
+    # via jax-md
 fsspec==2024.9.0 \
     --hash=sha256:4b0afb90c2f21832df142f292649035d80b421f60a9e1c027802e5a0da2b04e8 \
     --hash=sha256:a0947d552d8a6efa72cc2c730b12c41d043509156966cca4fb157b0f2a0c574b
@@ -196,7 +226,7 @@ jax-cuda12-plugin[with-cuda]==0.4.31 \
     --hash=sha256:a3727a332fbeac625ab6d5ae63d0ed9e62d1e0b5011f72130c9bc96e797395d5 \
     --hash=sha256:cdb6d0c4009438a6a6bd7997ab8a1194beda9ae7322b8d265eea9e551b6c2b4e
     # via jax
-jax-md==0.2.8 \
+jax-md @ git+https://github.com/wsmoses/jax-md.git \
     --hash=sha256:ad74e443c8e89933e38b0e2654b52f7f5aeabbd81a0934c765f09417eaa2e95b \
     --hash=sha256:ca8dd37343a324151a89716b0fd39f67c0658c4f8da7ec52a250bc2c98e277dc
     # via -r builddeps/test-requirements.txt

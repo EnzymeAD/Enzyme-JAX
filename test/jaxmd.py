@@ -243,6 +243,8 @@ class JAXMD(EnzymeJaxTest):
             state.chain.tau,
             state.chain.kinetic_energy,
         ]
+        for (i, v) in enumerate(self.ins):
+            print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
         self.douts = [x.copy() for x in self.ins]
         self.AllPipelines = pipelines
