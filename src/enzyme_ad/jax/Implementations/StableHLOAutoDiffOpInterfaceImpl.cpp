@@ -621,6 +621,28 @@ struct ScatterActivity
   }
 };
 
+struct ADDataFlowScatterOp
+: public ADDataFlowOpInterface::ExternalModel<ADDataFlowScatterOp,
+                                             ScatterOp> {
+
+ SmallVector<Value> getPotentialIncomingValuesRes(Operation* op, mlir::OpResult v) const {
+    auto srt = cast<ScatterOp>(op);
+    auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
+    return {
+        srt.getInputs()[v.getResultNumber()],
+        resvals.getOperands()[v.getResultNumber()],
+        resvals.getOperands()[v.getResultNumber() + srt.getInputs().size()],
+    };
+ }
+ SmallVector<Value> getPotentialIncomingValuesArg(Operation* op, mlir::BlockArgument v) const {
+    auto srt = cast<ScatterOp>(op);
+    if (v.getArgNumber() < srt.getInputs().size())
+        return { srt.getInputs()[v.getArgNumber()] };
+    else
+        return { srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()] };
+ }
+};
+
 class AutoDiffScatter
     : public AutoDiffOpInterface::ExternalModel<
           AutoDiffScatter, ScatterOp> {
@@ -636,8 +658,71 @@ public:
     for (auto idx = scat.getUpdates().getBeginOperandIndex(); idx < scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size(); idx++)
 	    inds.push_back((int)idx);
 
-    return mlir::enzyme::detail::memoryIdentityForwardHandler(
-        op, builder, gutils, inds);
+
+    SmallVector<Type> ResultTypes;
+    SmallVector<Value> Inputs;
+    SmallVector<Value> Updates;
+    for (auto &&[res, inp, up] : llvm::zip(op->getResults(), scat.getInputs(), scat.getUpdates())) {
+      ResultTypes.push_back(res.getType());
+      Inputs.push_back(gutils->getNewFromOriginal(inp));
+      Updates.push_back(gutils->getNewFromOriginal(up));
+      if (!gutils->isConstantValue(res)) {
+          ResultTypes.push_back(cast<AutoDiffTypeInterface>(res.getType()).getShadowType());
+          if (!gutils->isConstantValue(inp)) {
+            Inputs.push_back(gutils->invertPointerM(inp, builder));
+          } else {
+            Inputs.push_back(cast<AutoDiffTypeInterface>(inp.getType()).createNullValue(builder, op->getLoc()));
+          }
+          if (!gutils->isConstantValue(up)) {
+            Updates.push_back(gutils->invertPointerM(up, builder));
+          } else {
+            Updates.push_back(cast<AutoDiffTypeInterface>(up.getType()).createNullValue(builder, op->getLoc()));
+          }
+      
+      }
+    }
+  
+    auto replacement = builder.create<ScatterOp>(scat.getLoc(), ResultTypes, Inputs, gutils->getNewFromOriginal(scat.getScatterIndices()), Updates, scat.getScatterDimensionNumbersAttr(), scat.getIndicesAreSortedAttr(), scat.getUniqueIndicesAttr());
+    auto newOp = gutils->getNewFromOriginal(op);
+    for (auto &&[region, replacementRegion] :
+           llvm::zip(newOp->getRegions(), replacement->getRegions())) {
+        replacementRegion.takeBody(region);
+    }
+
+      // Inject the mapping for the new results into GradientUtil's shadow
+      // table.
+      SmallVector<Value> reps;
+      size_t idx = 0;
+      for (Value r : op->getResults()) {
+        // TODO only if used
+        reps.push_back(replacement->getResult(idx));
+        idx++;
+        if (!gutils->isConstantValue(r)) {
+          auto inverted = gutils->invertedPointers.lookupOrNull(r);
+          assert(inverted);
+          gutils->invertedPointers.map(r, replacement->getResult(idx));
+          inverted.replaceAllUsesWith(replacement->getResult(idx));
+          gutils->erase(inverted.getDefiningOp());
+          idx++;
+        }
+      }
+
+      // Differentiate body.
+      for (auto &origRegion : op->getRegions()) {
+        for (auto &origBlock : origRegion) {
+          for (Operation &o : origBlock) {
+            if (failed(gutils->visitChild(&o))) {
+              return failure();
+            }
+          }
+        }
+      }
+
+      // Replace all uses of original results
+      gutils->replaceOrigOpWith(op, reps);
+      gutils->erase(newOp);
+    gutils->originalToNewFnOps[op] = replacement;
+    return success();
   }
 };
 
