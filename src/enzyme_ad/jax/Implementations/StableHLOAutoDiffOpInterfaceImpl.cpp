@@ -195,6 +195,14 @@ public:
       }
     }
     gutils->eraseIfUnused(orig);
+    llvm::errs() << " orig: " << *orig << "\n";
+    for (auto res : orig->getResults()) {
+      llvm::errs() << " - res: icv=" << gutils->isConstantValue(res) << "\n"; 
+    }
+    for (auto res : orig->getOperands()) {
+      llvm::errs() << " - op: icv=" << gutils->isConstantValue(res) << " " << res << "\n"; 
+    }
+    llvm::errs() << " shadow: " << *shadow << "\n";
     return success();
   }
 };
