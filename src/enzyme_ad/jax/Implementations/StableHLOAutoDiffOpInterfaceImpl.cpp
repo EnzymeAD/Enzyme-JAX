@@ -190,8 +190,8 @@ public:
     size_t shadowCnt = 0;
     for (auto origRes : orig->getResults()) {
       if (!gutils->isConstantValue(origRes)) {
-	gutils->setDiffe(origRes, shadow->getResult(shadowCnt), builder);
-	shadowCnt++;
+        gutils->setDiffe(origRes, shadow->getResult(shadowCnt), builder);
+        shadowCnt++;
       }
     }
     gutils->eraseIfUnused(orig);
@@ -504,128 +504,135 @@ struct SHLOConstantOpBatchInterface
 };
 
 struct ADDataFlowSortOp
-: public ADDataFlowOpInterface::ExternalModel<ADDataFlowSortOp,
-                                             SortOp> {
+    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowSortOp, SortOp> {
 
- SmallVector<Value> getPotentialIncomingValuesRes(Operation* op, mlir::OpResult v) const {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   mlir::OpResult v) const {
     auto srt = cast<SortOp>(op);
     return {srt.getInputs()[v.getResultNumber()]};
- }
- SmallVector<Value> getPotentialIncomingValuesArg(Operation* op, mlir::BlockArgument v) const {
+  }
+  SmallVector<Value>
+  getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
     auto srt = cast<SortOp>(op);
     size_t num = v.getArgNumber() / 2;
     return {srt.getInputs()[num]};
- }
+  }
 };
 
 struct RegionBranchCaseOp
-: public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
-                                             CaseOp> {
+    : public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
+                                                    CaseOp> {
 
- void getEntrySuccessorRegions(Operation* op,
-    ArrayRef<Attribute> operands,
-    SmallVectorImpl<RegionSuccessor> &successors) const {
-  for (auto &reg : op->getRegions())
-    successors.push_back(RegionSuccessor(&reg));
-}
-
-mlir::OperandRange getEntrySuccessorOperands(Operation* op, RegionBranchPoint bp) const {
-   auto end = op->operand_end();
-   return ::mlir::OperandRange(end, end);
-}
-
-void getRegionInvocationBounds(Operation* op,
-    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) const {
-  bounds.append(op->getNumRegions(), InvocationBounds(/*lb=*/0, /*ub=*/1));
-}
-
-bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
-  return lhs == rhs;
-}
-
-void getSuccessorRegions(Operation *op, RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> & regions) const {
-  // The `then` and the `else` region branch back to the parent operation.
-  if (!point.isParent()) {
-    regions.push_back(RegionSuccessor(op->getResults()));
-    return;
+  void
+  getEntrySuccessorRegions(Operation *op, ArrayRef<Attribute> operands,
+                           SmallVectorImpl<RegionSuccessor> &successors) const {
+    for (auto &reg : op->getRegions())
+      successors.push_back(RegionSuccessor(&reg));
   }
 
-  for (auto &reg : op->getRegions())
-  	regions.push_back(RegionSuccessor(&reg));
-}
+  mlir::OperandRange getEntrySuccessorOperands(Operation *op,
+                                               RegionBranchPoint bp) const {
+    auto end = op->operand_end();
+    return ::mlir::OperandRange(end, end);
+  }
 
+  void
+  getRegionInvocationBounds(Operation *op, ArrayRef<Attribute> operands,
+                            SmallVectorImpl<InvocationBounds> &bounds) const {
+    bounds.append(op->getNumRegions(), InvocationBounds(/*lb=*/0, /*ub=*/1));
+  }
+
+  bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
+    return lhs == rhs;
+  }
+
+  void getSuccessorRegions(Operation *op, RegionBranchPoint point,
+                           SmallVectorImpl<RegionSuccessor> &regions) const {
+    // The `then` and the `else` region branch back to the parent operation.
+    if (!point.isParent()) {
+      regions.push_back(RegionSuccessor(op->getResults()));
+      return;
+    }
+
+    for (auto &reg : op->getRegions())
+      regions.push_back(RegionSuccessor(&reg));
+  }
 };
 
 struct RegionBranchWhileOp
-: public RegionBranchOpInterface::ExternalModel<RegionBranchWhileOp,
-                                             	WhileOp> {
+    : public RegionBranchOpInterface::ExternalModel<RegionBranchWhileOp,
+                                                    WhileOp> {
 
- void getEntrySuccessorRegions(Operation* op,
-    ArrayRef<Attribute> operands,
-    SmallVectorImpl<RegionSuccessor> &successors) const {
-    successors.emplace_back(&cast<WhileOp>(op).getCond(), cast<WhileOp>(op).getCond().getArguments());
-}
-
-mlir::OperandRange getEntrySuccessorOperands(Operation* op, RegionBranchPoint point) const {
-   assert(point == cast<WhileOp>(op).getCond() &&
-         "WhileOp is expected to branch only to the first region");
-  return cast<WhileOp>(op).getODSOperands(0); //getInits();
-}
-
-void getRegionInvocationBounds(Operation* op,
-    ArrayRef<Attribute> operands, SmallVectorImpl<InvocationBounds> &bounds) const {
-  bounds.append(op->getNumRegions(), InvocationBounds::getUnknown());
-}
-
-bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
-  return lhs == rhs;
-}
-
-void getSuccessorRegions(Operation *op, RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> & regions) const {
-
-  auto wop = cast<WhileOp>(op);
-
-  // The parent op always branches to the condition region.
-  if (point.isParent()) {
-    regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
-    return;
+  void
+  getEntrySuccessorRegions(Operation *op, ArrayRef<Attribute> operands,
+                           SmallVectorImpl<RegionSuccessor> &successors) const {
+    successors.emplace_back(&cast<WhileOp>(op).getCond(),
+                            cast<WhileOp>(op).getCond().getArguments());
   }
 
-  assert(llvm::is_contained({&wop.getBody(), &wop.getCond()}, point) &&
-         "there are only two regions in a WhileOp");
-  // The body region always branches back to the condition region.
-  if (point == wop.getBody()) {
-    regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
-    return;
+  mlir::OperandRange getEntrySuccessorOperands(Operation *op,
+                                               RegionBranchPoint point) const {
+    assert(point == cast<WhileOp>(op).getCond() &&
+           "WhileOp is expected to branch only to the first region");
+    return cast<WhileOp>(op).getODSOperands(0); // getInits();
   }
 
-  regions.emplace_back(wop.getResults());
-  regions.emplace_back(&wop.getBody(), wop.getBody().getArguments());
-}
+  void
+  getRegionInvocationBounds(Operation *op, ArrayRef<Attribute> operands,
+                            SmallVectorImpl<InvocationBounds> &bounds) const {
+    bounds.append(op->getNumRegions(), InvocationBounds::getUnknown());
+  }
 
+  bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
+    return lhs == rhs;
+  }
+
+  void getSuccessorRegions(Operation *op, RegionBranchPoint point,
+                           SmallVectorImpl<RegionSuccessor> &regions) const {
+
+    auto wop = cast<WhileOp>(op);
+
+    // The parent op always branches to the condition region.
+    if (point.isParent()) {
+      regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
+      return;
+    }
+
+    assert(llvm::is_contained({&wop.getBody(), &wop.getCond()}, point) &&
+           "there are only two regions in a WhileOp");
+    // The body region always branches back to the condition region.
+    if (point == wop.getBody()) {
+      regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
+      return;
+    }
+
+    regions.emplace_back(wop.getResults());
+    regions.emplace_back(&wop.getBody(), wop.getBody().getArguments());
+  }
 };
 
 struct ScatterActivity
-    : public ActivityOpInterface::ExternalModel<ScatterActivity,
-                                                ScatterOp> {
-  bool isInactive(Operation *op) const {
-    return false;
-  }
+    : public ActivityOpInterface::ExternalModel<ScatterActivity, ScatterOp> {
+  bool isInactive(Operation *op) const { return false; }
   bool isArgInactive(Operation *op, size_t idx) const {
     auto scat = cast<ScatterOp>(op);
-   if (idx >= scat.getInputs().getBeginOperandIndex() && idx < scat.getInputs().getBeginOperandIndex() + scat.getInputs().size())
-		return false;
-   if (idx >= scat.getUpdates().getBeginOperandIndex() && idx < scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size())
-		return false;
-	return true;
+    if (idx >= scat.getInputs().getBeginOperandIndex() &&
+        idx < scat.getInputs().getBeginOperandIndex() + scat.getInputs().size())
+      return false;
+    if (idx >= scat.getUpdates().getBeginOperandIndex() &&
+        idx <
+            scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size())
+      return false;
+    return true;
   }
 };
 
 struct ADDataFlowScatterOp
-: public ADDataFlowOpInterface::ExternalModel<ADDataFlowScatterOp,
-                                             ScatterOp> {
+    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowScatterOp,
+                                                  ScatterOp> {
 
- SmallVector<Value> getPotentialIncomingValuesRes(Operation* op, mlir::OpResult v) const {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   mlir::OpResult v) const {
     auto srt = cast<ScatterOp>(op);
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     return {
@@ -633,162 +640,170 @@ struct ADDataFlowScatterOp
         resvals.getOperands()[v.getResultNumber()],
         resvals.getOperands()[v.getResultNumber() + srt.getInputs().size()],
     };
- }
- SmallVector<Value> getPotentialIncomingValuesArg(Operation* op, mlir::BlockArgument v) const {
+  }
+  SmallVector<Value>
+  getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
     auto srt = cast<ScatterOp>(op);
     if (v.getArgNumber() < srt.getInputs().size())
-        return { srt.getInputs()[v.getArgNumber()] };
+      return {srt.getInputs()[v.getArgNumber()]};
     else
-        return { srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()] };
- }
+      return {srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()]};
+  }
 };
 
 class AutoDiffScatter
-    : public AutoDiffOpInterface::ExternalModel<
-          AutoDiffScatter, ScatterOp> {
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffScatter, ScatterOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
     auto scat = cast<ScatterOp>(op);
     SmallVector<int> inds;
-   
-    for (auto idx = scat.getInputs().getBeginOperandIndex(); idx < scat.getInputs().getBeginOperandIndex() + scat.getInputs().size(); idx++)
-	    inds.push_back((int)idx);
-    
-    for (auto idx = scat.getUpdates().getBeginOperandIndex(); idx < scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size(); idx++)
-	    inds.push_back((int)idx);
 
+    for (auto idx = scat.getInputs().getBeginOperandIndex();
+         idx <
+         scat.getInputs().getBeginOperandIndex() + scat.getInputs().size();
+         idx++)
+      inds.push_back((int)idx);
+
+    for (auto idx = scat.getUpdates().getBeginOperandIndex();
+         idx <
+         scat.getUpdates().getBeginOperandIndex() + scat.getUpdates().size();
+         idx++)
+      inds.push_back((int)idx);
 
     SmallVector<Type> ResultTypes;
     SmallVector<Value> Inputs;
     SmallVector<Value> Updates;
-    for (auto &&[res, inp, up] : llvm::zip(op->getResults(), scat.getInputs(), scat.getUpdates())) {
+    for (auto &&[res, inp, up] :
+         llvm::zip(op->getResults(), scat.getInputs(), scat.getUpdates())) {
       ResultTypes.push_back(res.getType());
       Inputs.push_back(gutils->getNewFromOriginal(inp));
       Updates.push_back(gutils->getNewFromOriginal(up));
       if (!gutils->isConstantValue(res)) {
-          ResultTypes.push_back(cast<AutoDiffTypeInterface>(res.getType()).getShadowType());
-          if (!gutils->isConstantValue(inp)) {
-            Inputs.push_back(gutils->invertPointerM(inp, builder));
-          } else {
-            Inputs.push_back(cast<AutoDiffTypeInterface>(inp.getType()).createNullValue(builder, op->getLoc()));
-          }
-          if (!gutils->isConstantValue(up)) {
-            Updates.push_back(gutils->invertPointerM(up, builder));
-          } else {
-            Updates.push_back(cast<AutoDiffTypeInterface>(up.getType()).createNullValue(builder, op->getLoc()));
-          }
-      
+        ResultTypes.push_back(
+            cast<AutoDiffTypeInterface>(res.getType()).getShadowType());
+        if (!gutils->isConstantValue(inp)) {
+          Inputs.push_back(gutils->invertPointerM(inp, builder));
+        } else {
+          Inputs.push_back(cast<AutoDiffTypeInterface>(inp.getType())
+                               .createNullValue(builder, op->getLoc()));
+        }
+        if (!gutils->isConstantValue(up)) {
+          Updates.push_back(gutils->invertPointerM(up, builder));
+        } else {
+          Updates.push_back(cast<AutoDiffTypeInterface>(up.getType())
+                                .createNullValue(builder, op->getLoc()));
+        }
       }
     }
-  
-    auto replacement = builder.create<ScatterOp>(scat.getLoc(), ResultTypes, Inputs, gutils->getNewFromOriginal(scat.getScatterIndices()), Updates, scat.getScatterDimensionNumbersAttr(), scat.getIndicesAreSortedAttr(), scat.getUniqueIndicesAttr());
+
+    auto replacement = builder.create<ScatterOp>(
+        scat.getLoc(), ResultTypes, Inputs,
+        gutils->getNewFromOriginal(scat.getScatterIndices()), Updates,
+        scat.getScatterDimensionNumbersAttr(), scat.getIndicesAreSortedAttr(),
+        scat.getUniqueIndicesAttr());
     auto newOp = gutils->getNewFromOriginal(op);
     for (auto &&[region, replacementRegion] :
-           llvm::zip(newOp->getRegions(), replacement->getRegions())) {
-        replacementRegion.takeBody(region);
+         llvm::zip(newOp->getRegions(), replacement->getRegions())) {
+      replacementRegion.takeBody(region);
     }
 
-      // Inject the mapping for the new results into GradientUtil's shadow
-      // table.
-      SmallVector<Value> reps;
-      size_t idx = 0;
-      for (Value r : op->getResults()) {
-        // TODO only if used
-        reps.push_back(replacement->getResult(idx));
+    // Inject the mapping for the new results into GradientUtil's shadow
+    // table.
+    SmallVector<Value> reps;
+    size_t idx = 0;
+    for (Value r : op->getResults()) {
+      // TODO only if used
+      reps.push_back(replacement->getResult(idx));
+      idx++;
+      if (!gutils->isConstantValue(r)) {
+        auto inverted = gutils->invertedPointers.lookupOrNull(r);
+        assert(inverted);
+        gutils->invertedPointers.map(r, replacement->getResult(idx));
+        inverted.replaceAllUsesWith(replacement->getResult(idx));
+        gutils->erase(inverted.getDefiningOp());
         idx++;
-        if (!gutils->isConstantValue(r)) {
-          auto inverted = gutils->invertedPointers.lookupOrNull(r);
-          assert(inverted);
-          gutils->invertedPointers.map(r, replacement->getResult(idx));
-          inverted.replaceAllUsesWith(replacement->getResult(idx));
-          gutils->erase(inverted.getDefiningOp());
-          idx++;
-        }
       }
+    }
 
-      // Differentiate body.
-      for (auto &origRegion : op->getRegions()) {
-        for (auto &origBlock : origRegion) {
-          for (Operation &o : origBlock) {
-            if (failed(gutils->visitChild(&o))) {
-              return failure();
-            }
+    // Differentiate body.
+    for (auto &origRegion : op->getRegions()) {
+      for (auto &origBlock : origRegion) {
+        for (Operation &o : origBlock) {
+          if (failed(gutils->visitChild(&o))) {
+            return failure();
           }
         }
       }
+    }
 
-      // Replace all uses of original results
-      gutils->replaceOrigOpWith(op, reps);
-      gutils->erase(newOp);
+    // Replace all uses of original results
+    gutils->replaceOrigOpWith(op, reps);
+    gutils->erase(newOp);
     gutils->originalToNewFnOps[op] = replacement;
     return success();
   }
 };
 
-
 class AutoDiffHLOReturn
-    : public AutoDiffOpInterface::ExternalModel<
-          AutoDiffHLOReturn, ReturnOp> {
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffHLOReturn, ReturnOp> {
 public:
-  LogicalResult createForwardModeTangent(Operation *origTerminator, OpBuilder &builder,
+  LogicalResult createForwardModeTangent(Operation *origTerminator,
+                                         OpBuilder &builder,
                                          MGradientUtils *gutils) const {
-  auto parentOp = origTerminator->getParentOp();
+    auto parentOp = origTerminator->getParentOp();
 
-  llvm::SmallDenseSet<unsigned> operandsToShadow;
-  if (isa<WhileOp>(parentOp) && origTerminator->getParentRegion() == &cast<WhileOp>(parentOp).getCond()) {
-  } else {
-    assert(parentOp->getNumResults() == origTerminator->getNumOperands());
-    for (auto res : parentOp->getResults()) {
-      if (!gutils->isConstantValue(res))
-        operandsToShadow.insert(res.getResultNumber());
+    llvm::SmallDenseSet<unsigned> operandsToShadow;
+    if (isa<WhileOp>(parentOp) && origTerminator->getParentRegion() ==
+                                      &cast<WhileOp>(parentOp).getCond()) {
+    } else {
+      assert(parentOp->getNumResults() == origTerminator->getNumOperands());
+      for (auto res : parentOp->getResults()) {
+        if (!gutils->isConstantValue(res))
+          operandsToShadow.insert(res.getResultNumber());
+      }
     }
-  }
 
-  SmallVector<Value> newOperands;
-  newOperands.reserve(origTerminator->getNumOperands() +
-                      operandsToShadow.size());
-  for (OpOperand &operand : origTerminator->getOpOperands()) {
-    newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
-    if (operandsToShadow.contains(operand.getOperandNumber()))
-      newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
-  }
+    SmallVector<Value> newOperands;
+    newOperands.reserve(origTerminator->getNumOperands() +
+                        operandsToShadow.size());
+    for (OpOperand &operand : origTerminator->getOpOperands()) {
+      newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
+      if (operandsToShadow.contains(operand.getOperandNumber()))
+        newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
+    }
 
-  // Assuming shadows following the originals are fine.
-  // TODO: consider extending to have a ShadowableTerminatorOpInterface
-  Operation *replTerminator = gutils->getNewFromOriginal(origTerminator);
-  replTerminator->setOperands(newOperands);
+    // Assuming shadows following the originals are fine.
+    // TODO: consider extending to have a ShadowableTerminatorOpInterface
+    Operation *replTerminator = gutils->getNewFromOriginal(origTerminator);
+    replTerminator->setOperands(newOperands);
     return success();
   }
 };
 
 class AutoDiffSort
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffSort,
-                                                SortOp> {
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffSort, SortOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
 
-   auto sop = cast<SortOp>(op);
+    auto sop = cast<SortOp>(op);
 
-  // TODO: we may need to record, for every successor, which of its inputs
-  // need a shadow to recreate the body correctly.
-  llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
-  llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+    // TODO: we may need to record, for every successor, which of its inputs
+    // need a shadow to recreate the body correctly.
+    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
 
-  for (auto res : op->getResults())
-    if (!gutils->isConstantValue(res)) {
-      operandPositionsToShadow.insert(res.getResultNumber());
-      resultPositionsToShadow.insert(res.getResultNumber());
-    }
+    for (auto res : op->getResults())
+      if (!gutils->isConstantValue(res)) {
+        operandPositionsToShadow.insert(res.getResultNumber());
+        resultPositionsToShadow.insert(res.getResultNumber());
+      }
 
-  return mlir::enzyme::detail::controlFlowForwardHandler(
-      op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
-
+    return mlir::enzyme::detail::controlFlowForwardHandler(
+        op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
   }
 };
-
-
 
 } // namespace
 
@@ -797,20 +812,19 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
   registry.addExtension(
       +[](MLIRContext *context, stablehlo::StablehloDialect *) {
         registerInterfaces(context);
-        
-	// SortOp::attachInterface<AutoDiffSort>(*context);
-	SortOp::attachInterface<ADDataFlowSortOp>(*context);
-	CaseOp::attachInterface<RegionBranchCaseOp>(*context);
-	
-	WhileOp::attachInterface<RegionBranchWhileOp>(*context);
-	
-        
-	ScatterOp::attachInterface<ScatterActivity>(*context);
-	ScatterOp::attachInterface<AutoDiffScatter>(*context);
 
-	ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
+        // SortOp::attachInterface<AutoDiffSort>(*context);
+        SortOp::attachInterface<ADDataFlowSortOp>(*context);
+        CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
-	ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        WhileOp::attachInterface<RegionBranchWhileOp>(*context);
+
+        ScatterOp::attachInterface<ScatterActivity>(*context);
+        ScatterOp::attachInterface<AutoDiffScatter>(*context);
+
+        ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
+
+        ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
         BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
