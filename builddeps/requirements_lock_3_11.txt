@@ -226,8 +226,8 @@ jax-cuda12-plugin[with-cuda]==0.4.31 \
     --hash=sha256:a3727a332fbeac625ab6d5ae63d0ed9e62d1e0b5011f72130c9bc96e797395d5 \
     --hash=sha256:cdb6d0c4009438a6a6bd7997ab8a1194beda9ae7322b8d265eea9e551b6c2b4e
     # via jax
-jax-md @ https://github.com/wsmoses/jax-md/archive/71625557c34cf26cd16cce070e1f00263c809ba0.tar.gz \
-    --hash=sha256:f520ddc0f4828189a8ff8e42443eae92720ae95f58b88838bbda29b2ad102b05
+jax-md @ https://github.com/wsmoses/jax-md/archive/1188490610b95023f8a51166c3f6b92da31e78fe.tar.gz \
+    --hash=sha256:d84b17f0604986364818d5b320e0c6bfa8c898b30095f3f0dc43aeab141d2dde
     # via -r builddeps/test-requirements.txt
 jaxlib==0.4.31 \
     --hash=sha256:185fb615ab6bd95315fbcbd951d84e71f9835d603db8c03c91faee98ce95ff4d \
