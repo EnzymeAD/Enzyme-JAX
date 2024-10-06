@@ -1,6 +1,0 @@
-read -r -d '' VAR << EOM
-builtin.module(enzyme-wrap{infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup,enzyme_dup,enzyme_dup,enzyme_dup,enzyme_dup,enzyme_dup,enzyme_dup mode=ForwardMode},arith-raise{stablehlo=true} 
-)
-EOM
-
-./bazel-bin/enzymexlamlir-opt -pass-pipeline="$VAR" ./inp.mlir
