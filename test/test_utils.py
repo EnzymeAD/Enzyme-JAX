@@ -233,20 +233,19 @@ class EnzymeJaxTest(absltest.TestCase):
 
             for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
                 if backend in pbackends:
-                    rfn_enzyme = (
-                        in_fn
-                        if pipeline is None
-                        else jax.jit(
-                            enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(in_fn),
-                            # backend=backend
-                        )
-                    )
+                    rfn_enzyme = in_fn
                     fwd_enzyme = jax.jit(
-                        splatjvp(rfn_enzyme),
+                        (
+                            splatjvp(rfn_enzyme)
+                            if pipeline is None
+                            else enzyme_jax_ir(
+                                pipeline_options=pipeline, argv=argv
+                            )(splatjvp(rfn_enzyme))
+                        ),
                         # backend=backend
                     )
 
-                    primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
+                    primals, tangents = fwd_enzyme(*(ins_backend+dins_backend))
 
                     recursive_check(self, primals, primres, self.tol)
 
