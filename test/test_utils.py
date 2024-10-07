@@ -144,7 +144,8 @@ class EnzymeJaxTest(absltest.TestCase):
         self.AllPipelines = AllPipelines
         self.revprimal = True
         self.tol = 1e-6
-        self.mlirad = True
+        self.mlirad_fwd = True
+        self.mlirad_rev = True
 
     def setUp(self):
         self.name = None
@@ -230,7 +231,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
             for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
                 if backend in pbackends:
-                    if self.mlirad or pipeline is None:
+                    if self.mlirad_fwd or pipeline is None:
                         rfn_enzyme = (
                             in_fn
                             if pipeline is None
@@ -288,7 +289,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     if len(douts) != 1:
                         adout = [tuple(douts_backend)]
                     if pipeline is not None:
-                        if self.mlirad or pipeline is None:
+                        if self.mlirad_rev or pipeline is None:
                             rfn_enzyme = (
                                 in_fn
                                 if pipeline is None
@@ -381,7 +382,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             sep="\t",
                         )
 
-                    if pipeline is None or (pipeline.mlir_ad() and self.mlirad):
+                    if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
                         rfn_enzyme = (
                             in_fn
                             if pipeline is None
