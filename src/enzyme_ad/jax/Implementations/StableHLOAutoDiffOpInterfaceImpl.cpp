@@ -518,10 +518,8 @@ struct ADDataFlowSortOp
     return {srt.getInputs()[num]};
   }
   // The return of region is a comparison, non differentiable, and non flowing
-  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
-                                                 Operation *term,
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
-    auto srt = cast<SortOp>(op);
     return {};
   }
 };
@@ -645,8 +643,7 @@ struct ADDataFlowReduceOp
           srt.getInputs()[v.getArgNumber() - srt.getInitValues().size()],
           resvals.getOperands()[v.getArgNumber() - srt.getInitValues().size()]};
   }
-  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
-                                                 Operation *term,
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
     auto srt = cast<ScatterOp>(op);
     SmallVector<Value> sv;
@@ -684,8 +681,7 @@ struct ADDataFlowScatterOp
     else
       return {srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()]};
   }
-  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
-                                                 Operation *term,
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
     auto srt = cast<ScatterOp>(op);
     SmallVector<Value> sv;
