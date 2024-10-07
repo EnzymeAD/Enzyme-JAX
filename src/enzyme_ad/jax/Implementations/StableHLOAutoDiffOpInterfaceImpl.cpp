@@ -199,6 +199,45 @@ public:
   }
 };
 
+class AutoDiffWhileFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+  auto op = cast<WhileOp>(orig);
+ 
+  llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+  llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+  for (auto &&[res, arg] : llvm::zip(op->getResults(), op.getBody().front().getArguments()))
+    if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
+      operandPositionsToShadow.insert(res.getResultNumber());
+      resultPositionsToShadow.insert(res.getResultNumber());
+    }
+
+  auto res = mlir::enzyme::detail::controlFlowForwardHandler(
+      op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+    
+  auto nb = gutils->getNewFromOriginal(op.getCond().front());
+    // Rewrite block arguments to match the shadowing
+  size_t curidx = 0;
+  for (auto arg : op.getCond().front().getArguments()) {
+    curidx++;
+    auto idx = arg.getArgNumber();
+    if (resultPositionsToShadow.count(idx) {
+        curidx++;
+        if (gutils->isConstantValue(arg)) {
+        nb->insertArgument(
+            curidx, cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
+            s.getLoc());
+        }
+    }
+  }
+
+  return res;
+  }
+};
+
 class AutoDiffBroadcastInDimRev
     : public ReverseAutoDiffOpInterface::ExternalModel<
           AutoDiffBroadcastInDimRev, BroadcastInDimOp> {
@@ -586,7 +625,7 @@ struct ADDataFlowWhileOp
   SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
                                                    mlir::OpResult v) const {
     auto srt = cast<WhileOp>(op);
-    auto resvals = cast<ReturnOp>(srt.getBody().back());
+    auto resvals = cast<ReturnOp>(srt.getBody().front().back());
     return {
         srt.getOperand()[v.getResultNumber()],
         resvals.getOperands()[v.getResultNumber()],
@@ -596,17 +635,16 @@ struct ADDataFlowWhileOp
   SmallVector<Value>
   getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
     auto srt = cast<WhileOp>(op);
-    auto resvals = cast<ReturnOp>(srt.getBody().back());
+    auto resvals = cast<ReturnOp>(srt.getBody().front().back());
     return {
         srt.getOperand()[v.getArgNumber()],
         resvals.getOperands()[v.getArgNumber()],
     };
   }
-  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
-                                                 Operation *term,
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
     auto srt = cast<WhileOp>(op);
-    if (srt.getCond() == term->getParentRegion())
+    if (&srt.getCond() == term->getParentRegion())
       return {};
     SmallVector<Value> sv;
     for (auto &&[res, arg] : llvm::zip(srt.getResults(), term->getOperands())) {
@@ -645,12 +683,12 @@ struct ADDataFlowReduceOp
   }
   SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
-    auto srt = cast<ScatterOp>(op);
+    auto srt = cast<ReduceOp>(op);
     SmallVector<Value> sv;
     for (size_t i = 0; i < srt.getInputs().size(); i++) {
       if (term->getOperands()[i] == v) {
         sv.push_back(srt.getResults()[i]);
-        sv.push_back(op->getRegion()
+        sv.push_back(op->getRegion(0)
                          .front()
                          .getArguments()[srt.getInitValues().size() + i]);
       }
@@ -763,13 +801,14 @@ public:
         if (gutils->isConstantValue(inp) && gutils->isConstantValue(up)) {
           continue;
         }
+        // shadow
+        curidx++;
         auto ba = scat->getRegion(0)
                       .front()
                       .getArguments()[i + j * scat.getInputs().size()];
         nb->insertArgument(
             curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
             scat.getLoc());
-        curidx++;
       }
     }
 
@@ -893,7 +932,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
         ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
+        WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
         BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);

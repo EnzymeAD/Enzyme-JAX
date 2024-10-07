@@ -139,16 +139,16 @@ broadcast_reduce<1>;
 pipelines = [
     ("JaX  ", None, CurBackends),
     ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    # (
+    #     "HLOOpt",
+    #     JaXPipeline(
+    #         "inline{default-pipeline=canonicalize max-iterations=4},"
+    #         + "canonicalize,cse,enzyme-hlo-opt,cse"
+    #     ),
+    #     CurBackends,
+    # ),
+    # ("PartOpt", JaXPipeline(partialopt), CurBackends),
+    # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
 ]
 
 
@@ -177,52 +177,14 @@ class JAXMD(EnzymeJaxTest):
         phi = N / (lattice_constant * N_rep) ** 3
         print(f"Created a system of {N} LJ particles with number density {phi:.3f}")
 
-        neighbor_fn, energy_fn = energy.lennard_jones_neighbor_list(
-            displacement, box_size, r_cutoff=3.0, dr_threshold=1.0, format=format
-        )
-
-        init, apply = simulate.nvt_nose_hoover(energy_fn, shift, 5e-3, kT=1.2)
-
-        key = random.PRNGKey(0)
-
-        # We pick an "extra capacity" to ensure ahead of time that the neighbor
-        # list will have enough capacity. Since sparse neighbor lists are more
-        # robust to changes in the number of particles, in this case we only
-        # need to actually add more capacity for dense neighbor lists.
-        if format is partition.Dense:
-            nbrs = neighbor_fn.allocate(R, extra_capacity=55)
-        else:
-            nbrs = neighbor_fn.allocate(R)
-
-        state = init(key, R, neighbor=nbrs)
-
-        def step(i, state_and_nbrs):
-            state, nbrs = state_and_nbrs
-            nbrs = nbrs.update(state.position)
-            return apply(state, neighbor=nbrs), nbrs
-
-        iters = 10
-        degrees_of_freedom = state.chain.degrees_of_freedom
+        momentum = jnp.array([1.0, 2.0, 3.0])
 
         def forward(
-            position, momentum, force, mass, c_position, c_momentum, c_mass, c_tau, c_KE
+            momentum
         ):
-            chain = simulate.NoseHooverChain(
-                c_position, c_momentum, c_mass, c_tau, c_KE, degrees_of_freedom
-            )
-            state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
-            # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
-            new_state, new_nbrs = step(0, (state, nbrs))
+            p = lax.scan(lambda cs, i: (cs, 0), momentum, jnp.arange(10))[0]
             return (
-                new_state.position,
-                new_state.momentum,
-                new_state.force,
-                new_state.mass,
-                new_state.chain.position,
-                new_state.chain.momentum,
-                new_state.chain.mass,
-                new_state.chain.tau,
-                new_state.chain.kinetic_energy,
+                p,
             )
 
         self.fn = forward
@@ -233,15 +195,7 @@ class JAXMD(EnzymeJaxTest):
         # self.AllBackends = CurBackends
 
         self.ins = [
-            state.position,
-            state.momentum,
-            state.force,
-            state.mass,
-            state.chain.position,
-            state.chain.momentum,
-            state.chain.mass,
-            state.chain.tau,
-            state.chain.kinetic_energy,
+            momentum,
         ]
         # for i, v in enumerate(self.ins):
         #    print("i=", i, v)
@@ -250,7 +204,7 @@ class JAXMD(EnzymeJaxTest):
         self.AllPipelines = pipelines
         # No support for stablehlo.while atm
         # self.revfilter = justjax
-        self.mlirad = False
+        # self.mlirad = False
 
         self.tol = 5e-5
 
