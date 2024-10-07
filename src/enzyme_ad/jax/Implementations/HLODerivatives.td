@@ -550,6 +550,7 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
 def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
+def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     [
