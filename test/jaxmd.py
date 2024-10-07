@@ -250,7 +250,7 @@ class JAXMD(EnzymeJaxTest):
         self.AllPipelines = pipelines
         # No support for stablehlo.while atm
         # self.revfilter = justjax
-        # self.mlirad = False
+        self.mlirad = False
 
         self.tol = 5e-5
 
