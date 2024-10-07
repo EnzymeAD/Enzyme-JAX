@@ -549,6 +549,8 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
+
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     [
                         (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
