@@ -517,6 +517,13 @@ struct ADDataFlowSortOp
     size_t num = v.getArgNumber() / 2;
     return {srt.getInputs()[num]};
   }
+  // The return of region is a comparison, non differentiable, and non flowing
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
+                                                 Operation *term,
+                                                 Value v) const {
+    auto srt = cast<SortOp>(op);
+    return {};
+  }
 };
 
 struct RegionBranchCaseOp
@@ -559,58 +566,6 @@ struct RegionBranchCaseOp
   }
 };
 
-struct RegionBranchWhileOp
-    : public RegionBranchOpInterface::ExternalModel<RegionBranchWhileOp,
-                                                    WhileOp> {
-
-  void
-  getEntrySuccessorRegions(Operation *op, ArrayRef<Attribute> operands,
-                           SmallVectorImpl<RegionSuccessor> &successors) const {
-    successors.emplace_back(&cast<WhileOp>(op).getCond(),
-                            cast<WhileOp>(op).getCond().getArguments());
-  }
-
-  mlir::OperandRange getEntrySuccessorOperands(Operation *op,
-                                               RegionBranchPoint point) const {
-    assert(point == cast<WhileOp>(op).getCond() &&
-           "WhileOp is expected to branch only to the first region");
-    return cast<WhileOp>(op).getODSOperands(0); // getInits();
-  }
-
-  void
-  getRegionInvocationBounds(Operation *op, ArrayRef<Attribute> operands,
-                            SmallVectorImpl<InvocationBounds> &bounds) const {
-    bounds.append(op->getNumRegions(), InvocationBounds::getUnknown());
-  }
-
-  bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
-    return lhs == rhs;
-  }
-
-  void getSuccessorRegions(Operation *op, RegionBranchPoint point,
-                           SmallVectorImpl<RegionSuccessor> &regions) const {
-
-    auto wop = cast<WhileOp>(op);
-
-    // The parent op always branches to the condition region.
-    if (point.isParent()) {
-      regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
-      return;
-    }
-
-    assert(llvm::is_contained({&wop.getBody(), &wop.getCond()}, point) &&
-           "there are only two regions in a WhileOp");
-    // The body region always branches back to the condition region.
-    if (point == wop.getBody()) {
-      regions.emplace_back(&wop.getCond(), wop.getCond().getArguments());
-      return;
-    }
-
-    regions.emplace_back(wop.getResults());
-    regions.emplace_back(&wop.getBody(), wop.getBody().getArguments());
-  }
-};
-
 struct ScatterActivity
     : public ActivityOpInterface::ExternalModel<ScatterActivity, ScatterOp> {
   bool isInactive(Operation *op) const { return false; }
@@ -627,6 +582,86 @@ struct ScatterActivity
   }
 };
 
+struct ADDataFlowWhileOp
+    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowWhileOp, WhileOp> {
+
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   mlir::OpResult v) const {
+    auto srt = cast<WhileOp>(op);
+    auto resvals = cast<ReturnOp>(srt.getBody().back());
+    return {
+        srt.getOperand()[v.getResultNumber()],
+        resvals.getOperands()[v.getResultNumber()],
+    };
+  }
+
+  SmallVector<Value>
+  getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
+    auto srt = cast<WhileOp>(op);
+    auto resvals = cast<ReturnOp>(srt.getBody().back());
+    return {
+        srt.getOperand()[v.getArgNumber()],
+        resvals.getOperands()[v.getArgNumber()],
+    };
+  }
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
+                                                 Operation *term,
+                                                 Value v) const {
+    auto srt = cast<WhileOp>(op);
+    if (srt.getCond() == term->getParentRegion())
+      return {};
+    SmallVector<Value> sv;
+    for (auto &&[res, arg] : llvm::zip(srt.getResults(), term->getOperands())) {
+      if (arg == v)
+        sv.push_back(res);
+    }
+    return sv;
+  }
+};
+
+struct ADDataFlowReduceOp
+    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowReduceOp,
+                                                  ReduceOp> {
+
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   mlir::OpResult v) const {
+    auto srt = cast<ReduceOp>(op);
+    auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
+    return {
+        srt.getInputs()[v.getResultNumber()],
+        srt.getInitValues()[v.getResultNumber()],
+        resvals.getOperands()[v.getResultNumber()],
+    };
+  }
+  SmallVector<Value>
+  getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
+    auto srt = cast<ReduceOp>(op);
+    auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
+    if (v.getArgNumber() < srt.getInitValues().size())
+      return {srt.getInitValues()[v.getArgNumber()],
+              resvals.getOperands()[v.getArgNumber()]};
+    else
+      return {
+          srt.getInputs()[v.getArgNumber() - srt.getInitValues().size()],
+          resvals.getOperands()[v.getArgNumber() - srt.getInitValues().size()]};
+  }
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
+                                                 Operation *term,
+                                                 Value v) const {
+    auto srt = cast<ScatterOp>(op);
+    SmallVector<Value> sv;
+    for (size_t i = 0; i < srt.getInputs().size(); i++) {
+      if (term->getOperands()[i] == v) {
+        sv.push_back(srt.getResults()[i]);
+        sv.push_back(op->getRegion()
+                         .front()
+                         .getArguments()[srt.getInitValues().size() + i]);
+      }
+    }
+    return sv;
+  }
+};
+
 struct ADDataFlowScatterOp
     : public ADDataFlowOpInterface::ExternalModel<ADDataFlowScatterOp,
                                                   ScatterOp> {
@@ -637,8 +672,8 @@ struct ADDataFlowScatterOp
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     return {
         srt.getInputs()[v.getResultNumber()],
+        srt.getUpdates()[v.getResultNumber()],
         resvals.getOperands()[v.getResultNumber()],
-        resvals.getOperands()[v.getResultNumber() + srt.getInputs().size()],
     };
   }
   SmallVector<Value>
@@ -648,6 +683,18 @@ struct ADDataFlowScatterOp
       return {srt.getInputs()[v.getArgNumber()]};
     else
       return {srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()]};
+  }
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *parent,
+                                                 Operation *term,
+                                                 Value v) const {
+    auto srt = cast<ScatterOp>(op);
+    SmallVector<Value> sv;
+    for (size_t i = 0; i < srt.getInputs().size(); i++) {
+      if (term->getOperands()[i] == v) {
+        sv.push_back(srt.getResults()[i]);
+      }
+    }
+    return sv;
   }
 };
 
@@ -706,6 +753,28 @@ public:
     for (auto &&[region, replacementRegion] :
          llvm::zip(newOp->getRegions(), replacement->getRegions())) {
       replacementRegion.takeBody(region);
+    }
+
+    auto nb = gutils->getNewFromOriginal(&scat->getRegion(0).front());
+    // Rewrite block arguments to match the shadowing
+    size_t curidx = 0;
+    for (int j = 0; j < 2; j++) {
+      for (size_t i = 0; i < scat.getInputs().size(); i++) {
+        auto inp = scat.getInputs()[i];
+        auto up = scat.getInputs()[i];
+        // primal
+        curidx++;
+        if (gutils->isConstantValue(inp) && gutils->isConstantValue(up)) {
+          continue;
+        }
+        auto ba = scat->getRegion(0)
+                      .front()
+                      .getArguments()[i + j * scat.getInputs().size()];
+        nb->insertArgument(
+            curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
+            scat.getLoc());
+        curidx++;
+      }
     }
 
     // Inject the mapping for the new results into GradientUtil's shadow
@@ -814,10 +883,13 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         registerInterfaces(context);
 
         // SortOp::attachInterface<AutoDiffSort>(*context);
-        SortOp::attachInterface<ADDataFlowSortOp>(*context);
-        CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
-        WhileOp::attachInterface<RegionBranchWhileOp>(*context);
+        WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
+        SortOp::attachInterface<ADDataFlowSortOp>(*context);
+        ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
+        ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
+
+        CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
         ScatterOp::attachInterface<ScatterActivity>(*context);
         ScatterOp::attachInterface<AutoDiffScatter>(*context);
