@@ -10,3 +10,15 @@ module {
   }
 }
 
+// FORWARD:  func.func @main(%arg0: tensor<64000x3xf32>, %arg1: tensor<64000x3xf32>) -> (tensor<i32>, tensor<i32>) {
+// FORWARD-NEXT:    %c = stablehlo.constant dense<64000> : tensor<i32>
+// FORWARD-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// FORWARD-NEXT:    %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<64000x3xf32>, tensor<f32>) -> tensor<64000xf32>
+// FORWARD-NEXT:    %cst_0 = arith.constant dense<0> : tensor<i32>
+// FORWARD-NEXT:    return %c, %cst_0 : tensor<i32>, tensor<i32>
+// FORWARD-NEXT:  }
+
+// REVERSE:  func.func @main(%arg0: tensor<64000x3xf32>, %arg1: tensor<i32>) -> tensor<64000x3xf32> {
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<64000x3xf32>
+// REVERSE-NEXT:    return %cst : tensor<64000x3xf32>
+// REVERSE-NEXT:  }
