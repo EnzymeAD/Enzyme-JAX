@@ -4,8 +4,6 @@
 #
 #    bazel run //builddeps:requirements.update
 #
---find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
-
 absl-py==2.1.0 \
     --hash=sha256:526a04eadab8b4ee719ce68f204172ead1027549089702d99b9059f129ff1308 \
     --hash=sha256:7820790efbb316739cde8b4e19357243fc3608a152024288513dd968d7d959ff
@@ -263,9 +261,6 @@ jraph==0.0.6.dev0 \
     --hash=sha256:350fe37bf717f934f1f84fd3370a480b3178bfcb61dfa217c738971308c57625 \
     --hash=sha256:c3ac3a0b224b344eb6d367e8bc312d95ea41bf825d01ea31b80dd8c22c0dd8b8
     # via jax-md
-libtpu-nightly==0.1.dev20240729+default ; sys_platform == "linux" \
-    --hash=sha256:86b41687dd5f77751454460850ee792710002f570bb9ec0775a3dabe039c5d4a
-    # via -r builddeps/test-requirements.txt
 markdown-it-py==3.0.0 \
     --hash=sha256:355216845c60bd96232cd8d8c40e8f9765cc86f46880e43a8fd22dc1a1a8cab1 \
     --hash=sha256:e3f60a94fa066dc52ec76661e37c851cb232d92f9886b15cb560aaada2df8feb

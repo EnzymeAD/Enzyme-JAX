@@ -204,37 +204,39 @@ class AutoDiffWhileFwd
 public:
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
-  auto op = cast<WhileOp>(orig);
- 
-  llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
-  llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+    auto op = cast<WhileOp>(orig);
 
-  for (auto &&[res, arg] : llvm::zip(op->getResults(), op.getBody().front().getArguments()))
-    if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
-      operandPositionsToShadow.insert(res.getResultNumber());
-      resultPositionsToShadow.insert(res.getResultNumber());
-    }
+    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
 
-  auto res = mlir::enzyme::detail::controlFlowForwardHandler(
-      op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
-    
-  auto nb = gutils->getNewFromOriginal(op.getCond().front());
+    for (auto &&[res, arg] :
+         llvm::zip(op->getResults(), op.getBody().front().getArguments()))
+      if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
+        operandPositionsToShadow.insert(res.getResultNumber());
+        resultPositionsToShadow.insert(res.getResultNumber());
+      }
+
+    auto res = mlir::enzyme::detail::controlFlowForwardHandler(
+        op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+
+    auto nb = gutils->getNewFromOriginal(&op.getCond().front());
     // Rewrite block arguments to match the shadowing
-  size_t curidx = 0;
-  for (auto arg : op.getCond().front().getArguments()) {
-    curidx++;
-    auto idx = arg.getArgNumber();
-    if (resultPositionsToShadow.count(idx) {
-        curidx++;
+    size_t curidx = 0;
+    for (auto arg : op.getCond().front().getArguments()) {
+      curidx++;
+      auto idx = arg.getArgNumber();
+      if (resultPositionsToShadow.count(idx)) {
         if (gutils->isConstantValue(arg)) {
-        nb->insertArgument(
-            curidx, cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
-            s.getLoc());
+          nb->insertArgument(
+              curidx,
+              cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
+              op.getLoc());
         }
+        curidx++;
+      }
     }
-  }
 
-  return res;
+    return res;
   }
 };
 
@@ -801,14 +803,14 @@ public:
         if (gutils->isConstantValue(inp) && gutils->isConstantValue(up)) {
           continue;
         }
-        // shadow
-        curidx++;
         auto ba = scat->getRegion(0)
                       .front()
                       .getArguments()[i + j * scat.getInputs().size()];
         nb->insertArgument(
             curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
             scat.getLoc());
+        // shadow
+        curidx++;
       }
     }
 
