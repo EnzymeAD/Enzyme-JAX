@@ -3037,6 +3037,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         bool contiguous = true;
         size_t offset = 0;
         auto inshape = op.getOperand().getType().getShape();
+        auto outshape = op.getType().getShape();
         size_t total = 1;
         for (int i = inshape.size() - 1; i >= 0; i--) {
           if (op.getStrides()[i] != 1) {
@@ -3051,10 +3052,8 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           }
           offset *= inshape[i];
           offset += start;
-          total *= inshape[i];
+          total *= outshape[i];
         }
-
-        auto ten = mlir::stablehlo::constantOp(inp);
 
         if (contiguous) {
           auto elementType = op.getOperand().getType().getElementType();
@@ -3064,10 +3063,12 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           auto values = ArrayRef((char *)elementPtr, total);
           out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
                                                            values);
-        } else
+        } else {
+          auto ten = mlir::stablehlo::constantOp(inp);
           out = fromTensor(mlir::stablehlo::sliceOp(
               ten, stablehlo::Sizes(op.getStartIndices()),
               stablehlo::Sizes(op.getStrides()), op.getType()));
+	}
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
