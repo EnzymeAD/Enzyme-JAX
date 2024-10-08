@@ -19,10 +19,8 @@ func.func @main(%x : tensor<5xf32>) -> tensor<5xf32> {
 // FORWARD-NEXT:    %0:2 = "stablehlo.scatter"(%arg0, %arg1, %c, %cst, %cst_0) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
 // FORWARD-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>, %arg4: tensor<f32>, %arg5: tensor<f32>):
 // FORWARD-NEXT:      %1 = stablehlo.multiply %arg3, %arg4 : tensor<f32>
-// FORWARD-NEXT:      %2 = stablehlo.multiply %arg5, %arg2 : tensor<f32>
-// FORWARD-NEXT:      %3 = arith.addf %1, %2 : tensor<f32>
-// FORWARD-NEXT:      %4 = stablehlo.multiply %arg2, %arg4 : tensor<f32>
-// FORWARD-NEXT:      stablehlo.return %4, %3 : tensor<f32>, tensor<f32>
+// FORWARD-NEXT:      %2 = stablehlo.multiply %arg2, %arg4 : tensor<f32>
+// FORWARD-NEXT:      stablehlo.return %2, %1 : tensor<f32>, tensor<f32>
 // FORWARD-NEXT:    }) : (tensor<5xf32>, tensor<5xf32>, tensor<1xi32>, tensor<f32>, tensor<f32>) -> (tensor<5xf32>, tensor<5xf32>)
 // FORWARD-NEXT:    return %0#0, %0#1 : tensor<5xf32>, tensor<5xf32>
 // FORWARD-NEXT:  }

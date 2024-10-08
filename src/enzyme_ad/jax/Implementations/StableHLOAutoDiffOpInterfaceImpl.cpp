@@ -797,7 +797,7 @@ public:
     for (int j = 0; j < 2; j++) {
       for (size_t i = 0; i < scat.getInputs().size(); i++) {
         auto inp = scat.getInputs()[i];
-        auto up = scat.getInputs()[i];
+        auto up = scat.getUpdates()[i];
         // primal
         curidx++;
         if (gutils->isConstantValue(inp) && gutils->isConstantValue(up)) {
@@ -806,10 +806,12 @@ public:
         auto ba = scat->getRegion(0)
                       .front()
                       .getArguments()[i + j * scat.getInputs().size()];
-        nb->insertArgument(
-            curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
-            scat.getLoc());
-        // shadow
+        if (gutils->isConstantValue(ba)) {
+          nb->insertArgument(
+              curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
+              scat.getLoc());
+	}
+	// shadow
         curidx++;
       }
     }
