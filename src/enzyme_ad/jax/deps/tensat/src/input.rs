@@ -1338,7 +1338,7 @@ fn extract_by_ilp(
     let no_order = true;
     let initialise_with_greedy = false;
     let fusion_costs: bool = std::env::var("FUSION_COSTS")
-        .unwrap_or(String::from("true"))
+        .unwrap_or(String::from("false"))
         .parse()
         .unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
