@@ -219,20 +219,22 @@ public:
     auto res = mlir::enzyme::detail::controlFlowForwardHandler(
         op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
 
-    auto nb = gutils->getNewFromOriginal(&op.getCond().front());
     // Rewrite block arguments to match the shadowing
-    size_t curidx = 0;
-    for (auto arg : op.getCond().front().getArguments()) {
-      curidx++;
-      auto idx = arg.getArgNumber();
-      if (resultPositionsToShadow.count(idx)) {
-        if (gutils->isConstantValue(arg)) {
-          nb->insertArgument(
-              curidx,
-              cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
-              op.getLoc());
-        }
+    for (auto reg : {&op.getCond(), &op.getBody()}) {
+      auto nb = gutils->getNewFromOriginal(&reg->front());
+      size_t curidx = 0;
+      for (auto arg : reg->front().getArguments()) {
         curidx++;
+        auto idx = arg.getArgNumber();
+        if (resultPositionsToShadow.count(idx)) {
+          if (gutils->isConstantValue(arg)) {
+            nb->insertArgument(
+                curidx,
+                cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
+                op.getLoc());
+          }
+          curidx++;
+        }
       }
     }
 
@@ -810,8 +812,8 @@ public:
           nb->insertArgument(
               curidx, cast<AutoDiffTypeInterface>(ba.getType()).getShadowType(),
               scat.getLoc());
-	}
-	// shadow
+        }
+        // shadow
         curidx++;
       }
     }
@@ -862,8 +864,18 @@ public:
     auto parentOp = origTerminator->getParentOp();
 
     llvm::SmallDenseSet<unsigned> operandsToShadow;
-    if (isa<WhileOp>(parentOp) && origTerminator->getParentRegion() ==
-                                      &cast<WhileOp>(parentOp).getCond()) {
+    if (auto wop = dyn_cast<WhileOp>(parentOp)) {
+      if (origTerminator->getParentRegion() ==
+          &cast<WhileOp>(parentOp).getCond()) {
+      } else {
+        llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+        for (auto &&[res, arg] :
+             llvm::zip(wop.getResults(), wop.getBody().front().getArguments()))
+          if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
+            operandsToShadow.insert(res.getResultNumber());
+          }
+      }
     } else {
       assert(parentOp->getNumResults() == origTerminator->getNumOperands());
       for (auto res : parentOp->getResults()) {
