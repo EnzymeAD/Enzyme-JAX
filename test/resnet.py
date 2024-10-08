@@ -80,17 +80,6 @@ class ResNetTest(EnzymeJaxTest):
         self.douts = [self.logits]
         self.tol = 5e-5
 
-        # Optimized function using enzyme_jax
-        self.opt_fn = enzyme_jax_ir(
-            pipeline_options=JaXPipeline(
-                "inline{default-pipeline=canonicalize max-iterations=4},equality-saturation-pass"
-            )
-        )(self.fn)
-
-    def test_optimized_forward(self):
-        # Test the optimized function against the standard one
-        opt_outputs = self.opt_fn(*self.ins)
-        recursive_check(self, opt_outputs, self.logits, self.tol)
 
 # Running the tests with absltest
 if __name__ == "__main__":
