@@ -3011,18 +3011,21 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
 struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
 
-  static int64_t getSizeInBytes(Type type) {
-    if (auto shapedType = dyn_cast<ShapedType>(type))
-      return shapedType.getNumElements() *
-             getSizeInBytes(shapedType.getElementType());
+  static size_t getDenseElementBitWidth(Type eltType) {
+    // Align the width for complex to 8 to make storage and interpretation easier.
+    if (ComplexType comp = llvm::dyn_cast<ComplexType>(eltType))
+      return llvm::alignTo<8>(getDenseElementBitWidth(comp.getElementType())) * 2;
+    if (eltType.isIndex())
+      return IndexType::kInternalStorageBitWidth;
+    return eltType.getIntOrFloatBitWidth();
+  }
 
-    if (type.isIntOrFloat())
-      return std::max(type.getIntOrFloatBitWidth(), (unsigned)8) / 8;
 
-    if (auto complexType = dyn_cast<mlir::ComplexType>(type))
-      return getSizeInBytes(complexType.getElementType()) * 2;
-
-    llvm::report_fatal_error("Unsupported type");
+  static size_t getDenseElementStorageWidth(size_t origWidth) {
+    return origWidth == 1 ? origWidth : llvm::alignTo<8>(origWidth);
+  }
+  static size_t getDenseElementStorageWidth(Type elementType) {
+    return getDenseElementStorageWidth(getDenseElementBitWidth(elementType));
   }
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
@@ -3054,13 +3057,13 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           offset += start;
           total *= outshape[i];
         }
-
-        if (contiguous) {
-          auto elementType = op.getOperand().getType().getElementType();
+        auto elementType = op.getOperand().getType().getElementType();
+	auto bw = getDenseElementStorageWidth(elementType);
+        if (contiguous && bw != 1) {
           const char *elementPtr =
-              inp.getRawData().data() + getSizeInBytes(elementType) * offset;
+              inp.getRawData().data() + (bw / 8) * offset;
 
-          auto values = ArrayRef((char *)elementPtr, total);
+          auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
           out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
                                                            values);
         } else {
