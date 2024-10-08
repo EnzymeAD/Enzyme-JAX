@@ -3022,8 +3022,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (auto complexType = dyn_cast<mlir::ComplexType>(type))
       return getSizeInBytes(complexType.getElementType()) * 2;
 
-    report_fatal_error(
-        invalidArgument("Unsupported type: %s", debugString(type).c_str()));
+    llvm::report_fatal_error("Unsupported type");
   }
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
@@ -3064,7 +3063,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
 
           auto values = ArrayRef((char *)elementPtr, total);
           out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
-                                                           floatValues);
+                                                           values);
         } else
           out = fromTensor(mlir::stablehlo::sliceOp(
               ten, stablehlo::Sizes(op.getStartIndices()),
