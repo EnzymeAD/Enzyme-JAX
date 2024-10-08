@@ -3011,7 +3011,6 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
 struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
 
-
   static int64_t getSizeInBytes(Type type) {
     if (auto shapedType = dyn_cast<ShapedType>(type))
       return shapedType.getNumElements() *
@@ -3040,7 +3039,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         size_t offset = 0;
         auto inshape = op.getOperand().getType().getShape();
         size_t total = 1;
-        for (int i=inshape.size()-1; i>=0; i--) {
+        for (int i = inshape.size() - 1; i >= 0; i--) {
           if (op.getStrides()[i] != 1) {
             contiguous = false;
           }
@@ -3061,16 +3060,15 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         if (contiguous) {
           auto elementType = op.getOperand().getType().getElementType();
           const char *elementPtr =
-              out.getRawData().data() +
-              getSizeInBytes(elementType) * offset;
+              out.getRawData().data() + getSizeInBytes(elementType) * offset;
 
-          auto values =
-              ArrayRef((char *)elementPtr, total);
-          out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), floatValues);
-        } else 
+          auto values = ArrayRef((char *)elementPtr, total);
+          out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
+                                                           floatValues);
+        } else
           out = fromTensor(mlir::stablehlo::sliceOp(
-            ten, stablehlo::Sizes(op.getStartIndices()),
-            stablehlo::Sizes(op.getStrides()), op.getType()));
+              ten, stablehlo::Sizes(op.getStartIndices()),
+              stablehlo::Sizes(op.getStrides()), op.getType()));
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
