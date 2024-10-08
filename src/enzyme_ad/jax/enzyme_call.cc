@@ -290,6 +290,9 @@ public:
           case xla::PrimitiveType::F64:
             ty = "double";
             break;
+          case xla::PrimitiveType::PRED:
+            ty = "bool";
+            break;
           default: {
             std::string err;
             llvm::raw_string_ostream ess(err);
@@ -844,8 +847,10 @@ public:
 
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
-    if (!mod)
+    if (!mod) {
+      llvm::errs() << "Source:\n" << ss.str() << "\n";
       throw pybind11::value_error("failed to compile C++");
+    }
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
   }
