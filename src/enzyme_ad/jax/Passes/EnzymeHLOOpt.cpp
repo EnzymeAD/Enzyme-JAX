@@ -3059,7 +3059,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         if (contiguous) {
           auto elementType = op.getOperand().getType().getElementType();
           const char *elementPtr =
-              out.getRawData().data() + getSizeInBytes(elementType) * offset;
+              inp.getRawData().data() + getSizeInBytes(elementType) * offset;
 
           auto values = ArrayRef((char *)elementPtr, total);
           out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
