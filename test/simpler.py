@@ -15,9 +15,9 @@ class Simple(absltest.TestCase):
         efunc = enzyme_jax.enzyme_jax_ir(pipeline_options=enzyme_jax.JaXPipeline("equality-saturation-pass"),)(test)
         
         ka, kb, kc, kd = jax.random.split(jax.random.PRNGKey(0), num=4)
-        a = jax.random.uniform(ka, shape=(10, 10))
-        b = jax.random.uniform(kb, shape=(10, 10))
-        c = jax.random.uniform(kc, shape=(10, 10))
+        a = jax.random.uniform(ka, shape=(3, 10, 10))
+        b = jax.random.uniform(kb, shape=(3, 10, 10))
+        c = jax.random.uniform(kc, shape=(3, 10, 10))
         d = jax.random.uniform(kd, shape=(20, 500))
         e = jax.random.uniform(ka, shape=(20, 500))
         f = jax.random.uniform(ka, shape=(5, 5))
