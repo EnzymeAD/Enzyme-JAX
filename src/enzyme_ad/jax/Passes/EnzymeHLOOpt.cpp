@@ -3120,25 +3120,6 @@ struct BroadcastInDimSimplify
   }
 };
 
-struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const final {
-    DenseElementsAttr inp;
-    matchPattern(op->getOperand(0), m_Constant(&inp));
-    if (inp) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(),
-          inp.isSplat() ? inp.resizeSplat(op.getType())
-                        : inp.reshape(op.getType()));
-      return success();
-    }
-
-    return failure();
-  }
-};
-
 struct DotGeneralSimplify
     : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
@@ -6217,21 +6198,12 @@ struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     }
 
     // Fold reshape of a constant.
-    ElementsAttr cstAttr;
+    DenseElementsAttr cstAttr;
     if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
       return failure();
 
-    if (auto splat = cstAttr.dyn_cast<SplatElementsAttr>()) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
-          op, SplatElementsAttr::get(op.getType(),
-                                     splat.getSplatValue<Attribute>()));
-      return success();
-    }
-
-    auto elements =
-        llvm::to_vector_of<Attribute>(cstAttr.getValues<Attribute>());
     rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
-        op, DenseElementsAttr::get(op.getType(), elements));
+          op, cstAttr.reshape(op.getType()));
     return success();
   }
 };
@@ -6441,7 +6413,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
              SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
              NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, ReshapeSimplify, TransposeSimplify,
+             ConvertSimplify, TransposeSimplify,
              DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
              ReduceToReshape, BroadcastToReshape, GatherSimplify,
              ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier>(
