@@ -57,16 +57,16 @@ define_language! {
       // SHORTHANDS (not 1:1 with stablehlo)
       //
       // (SSplit0 input axis orig_0) means:
-      // split input on axis dimension, taking the left component. The split point is such that the result
-      // has the same shape as orig_0 on axis.
+      // split input on axis' dimension, taking the left component, where axis' = axis.
+      // The split point is such that the result has the same shape as orig_0 on axis'.
       //
       // (SSplit1 input axis orig_1) means:
-      // split input on axis dimension, taking the right component. The split point is such that the result
-      // has the same shape as orig_1 on axis.
-      //
+      // split input on axis' dimension, taking the right component, where axis' = max(0, len(shape(input)) - len(shape(orig_1))) + axis.
+      // The split point is such that the result has the same shape as axis'.
+
       // This translates to a StableHLO SliceOp, with all the slices being [0..shape(input)[d]) in every
-      // dimension d except axis, and the axis slice being [0..shape(orig_0)[axis]) for SSplit0,
-      // and [shape(input)[axis] - shape(orig_1)[axis]..shape(input)[axis]) for SSplit1.
+      // dimension d except axis', and the axis slice being [0..shape(orig_0)[axis']) for SSplit0,
+      // and [shape(input)[axis'] - shape(orig_1)[axis']..shape(input)[axis']) for SSplit1.
       //
       // This allows embedding "splits" in syntactic rewrites (similarly to TASO) without keeping track of the
       // split tree, nor having a custom Applier to get the shape of inputs.

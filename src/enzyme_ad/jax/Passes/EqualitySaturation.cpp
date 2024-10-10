@@ -677,18 +677,28 @@ std::vector<int64_t> convolutionShapeComputation(
 std::pair<std::vector<int64_t>, std::vector<int64_t>>
 getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
   auto input_shape = getShape(input);
+  auto orig_shape = getShape(orig);
+
+  int input_rank = input_shape.size();
+  int orig_rank = orig_shape.size();
+
+  int axis1 =
+      (op == tensat::Ops::SSplit0 ? axis
+                                  : std::max(0, input_rank - orig_rank) + axis);
+
   std::vector<int64_t> start, limit;
+
   for (int i = 0; i < input_shape.size(); i++) {
-    if (i != axis) {
+    if (i != axis1) {
       start.push_back(0);
       limit.push_back(input_shape[i]);
     } else {
-      int slice_width = getShape(orig)[axis];
+      int slice_width = orig_shape[axis];
       if (op == tensat::Ops::SSplit0) {
         start.push_back(0);
         limit.push_back(slice_width);
       } else if (op == tensat::Ops::SSplit1) {
-        int input_width = input_shape[axis];
+        int input_width = input_shape[axis1];
         start.push_back(input_width - slice_width);
         limit.push_back(input_width);
       } else {
