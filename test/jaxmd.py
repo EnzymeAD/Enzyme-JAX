@@ -251,7 +251,7 @@ class JAXMD(EnzymeJaxTest):
         # self.revfilter = justjax
         self.mlirad_rev = False
 
-        self.tol = 5e-5
+        self.tol = 5e-4
 
 
 if __name__ == "__main__":

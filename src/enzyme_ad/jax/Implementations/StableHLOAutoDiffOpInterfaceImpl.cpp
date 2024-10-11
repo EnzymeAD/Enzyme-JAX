@@ -718,8 +718,9 @@ struct ADDataFlowScatterOp
   SmallVector<Value>
   getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
     auto srt = cast<ScatterOp>(op);
+    auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     if (v.getArgNumber() < srt.getInputs().size())
-      return {srt.getInputs()[v.getArgNumber()]};
+      return {resvals.getOperands()[v.getArgNumber()]};
     else
       return {srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()]};
   }
@@ -863,7 +864,11 @@ public:
                                          MGradientUtils *gutils) const {
     auto parentOp = origTerminator->getParentOp();
 
+    llvm::SmallDenseSet<unsigned> operandsToPrimal;
     llvm::SmallDenseSet<unsigned> operandsToShadow;
+    for (OpOperand &operand : origTerminator->getOpOperands()) {
+      operandsToPrimal.insert(operand.getOperandNumber());
+    }
     if (auto wop = dyn_cast<WhileOp>(parentOp)) {
       if (origTerminator->getParentRegion() ==
           &cast<WhileOp>(parentOp).getCond()) {
@@ -876,6 +881,15 @@ public:
             operandsToShadow.insert(res.getResultNumber());
           }
       }
+    } else if (isa<FunctionOpInterface>(parentOp)) {
+      operandsToPrimal.clear();
+      for (OpOperand &operand : origTerminator->getOpOperands()) {
+        auto idx = operand.getOperandNumber();
+        if (gutils->returnPrimals[idx])
+            operandsToPrimal.insert(idx);
+        if (gutils->returnShadows[idx])
+            operandsToShadow.insert(idx);
+      }
     } else {
       assert(parentOp->getNumResults() == origTerminator->getNumOperands());
       for (auto res : parentOp->getResults()) {
@@ -885,12 +899,19 @@ public:
     }
 
     SmallVector<Value> newOperands;
-    newOperands.reserve(origTerminator->getNumOperands() +
+    newOperands.reserve(operandsToPrimal.size() +
                         operandsToShadow.size());
     for (OpOperand &operand : origTerminator->getOpOperands()) {
-      newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
-      if (operandsToShadow.contains(operand.getOperandNumber()))
-        newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
+      if (operandsToPrimal.contains(operand.getOperandNumber()))
+        newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
+      if (operandsToShadow.contains(operand.getOperandNumber())) {
+        if (!gutils->isConstantValue(operand.get())) {
+          newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
+        } else {
+          Type retTy = operand.get().getType().cast<AutoDiffTypeInterface>().getShadowType();
+          newOperands.push_back(retTy.cast<AutoDiffTypeInterface>().createNullValue(builder, origTerminator->getLoc()));
+        }
+      }
     }
 
     // Assuming shadows following the originals are fine.

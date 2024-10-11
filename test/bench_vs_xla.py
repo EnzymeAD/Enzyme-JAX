@@ -257,6 +257,34 @@ class ValueAndGrad(absltest.TestCase):
                             ).all()
                         )
 
+class ScatterSum(EnzymeJaxTest):
+    def setUp(self):
+        
+        def energy_fn(R, neighbor):
+            dR = R[neighbor[0]]
+            return jnp.sum(jnp.sin(dR))
+
+        nbrs = jnp.array([[2, 2]])
+
+        def forward(
+            position
+        ):
+            e = jax.grad(energy_fn)(position, neighbor=nbrs)
+            return (e,)
+
+        self.fn = forward
+        self.name = "scatter_sum"
+
+        self.ins = [
+            [2., 4., 6., 8.]
+        ]
+        self.dins = [2.7, 3.1, 5.9, 4.2]
+        self.douts = [x.copy() for x in self.dins]
+        self.AllPipelines = pipelines
+        # No support for stablehlo.scatter atm
+        self.mlirad_rev = False
+
+        self.tol = 5e-5
 
 if __name__ == "__main__":
     absltest.main()

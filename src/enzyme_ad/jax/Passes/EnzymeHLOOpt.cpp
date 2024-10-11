@@ -3042,7 +3042,7 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         auto inshape = op.getOperand().getType().getShape();
         auto outshape = op.getType().getShape();
         size_t total = 1;
-        for (int i = inshape.size() - 1; i >= 0; i--) {
+        for (int i = 0; i < inshape.size(); i++) {
           if (op.getStrides()[i] != 1) {
             contiguous = false;
           }
