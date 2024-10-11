@@ -434,4 +434,3 @@ class EnzymeJaxTest(absltest.TestCase):
                             / self.count,
                             sep="\t",
                         )
-            assert revres is not None

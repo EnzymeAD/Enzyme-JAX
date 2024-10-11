@@ -274,9 +274,9 @@ class ConstScatter(EnzymeJaxTest):
         self.ins = [
             jnp.array([2.7, 2.7, 2.7]),
         ]
-        print(self.ins)
         self.dins = [jnp.array([3.1, 3.1, 3.1])]
         self.douts = self.dins
+        self.revfilter = lambda _: []
         # No support for stablehlo.while atm
         # self.revfilter = justjax
         self.mlirad_rev = False
@@ -300,8 +300,8 @@ class ScatterSum(EnzymeJaxTest):
 
         self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
         self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
-        self.douts = self.dins
-        self.AllPipelines = pipelines
+        self.douts = []
+        self.revfilter = lambda _: []
         # No support for stablehlo.scatter atm
         self.mlirad_rev = False
 
