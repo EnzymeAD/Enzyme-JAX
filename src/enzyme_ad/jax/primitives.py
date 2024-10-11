@@ -794,16 +794,12 @@ def _enzyme_primal_lowering(
             for f in mod.regions[0].blocks[0]:
                 fns.append(f.sym_name.value)
 
-            print("pass_pipeline:\n", pass_pipeline)
-            print("source:\n", source)
             name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             if print_mlir:
                 if type(print_mlir) != type(True):
                     print_mlir.write(nmod)
                 else:
                     print(str(nmod), flush=True)
-            print("post pass_pipeline:\n", pass_pipeline)
-            print("post source:\n", source)
             nmod = ir.Module.parse(nmod)
             fn = None
             pushtop = []

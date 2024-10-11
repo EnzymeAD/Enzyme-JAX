@@ -299,9 +299,9 @@ class ScatterSum(EnzymeJaxTest):
         self.fn = forward
         self.name = "scatter_sum"
 
-        self.ins = [[2.0, 4.0, 6.0, 8.0]]
-        self.dins = [2.7, 3.1, 5.9, 4.2]
-        self.douts = [x.copy() for x in self.dins]
+        self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
+        self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
+        self.douts = self.dins
         self.AllPipelines = pipelines
         # No support for stablehlo.scatter atm
         self.mlirad_rev = False
