@@ -3011,19 +3011,22 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
 struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
 
-  static int64_t getSizeInBytes(Type type) {
-    if (auto shapedType = dyn_cast<ShapedType>(type))
-      return shapedType.getNumElements() *
-             getSizeInBytes(shapedType.getElementType());
+  static size_t getDenseElementBitWidth(Type eltType) {
+    // Align the width for complex to 8 to make storage and interpretation
+    // easier.
+    if (ComplexType comp = llvm::dyn_cast<ComplexType>(eltType))
+      return llvm::alignTo<8>(getDenseElementBitWidth(comp.getElementType())) *
+             2;
+    if (eltType.isIndex())
+      return IndexType::kInternalStorageBitWidth;
+    return eltType.getIntOrFloatBitWidth();
+  }
 
-    if (type.isIntOrFloat())
-      return std::max(type.getIntOrFloatBitWidth(), (unsigned)8) / 8;
-
-    if (auto complexType = dyn_cast<mlir::ComplexType>(type))
-      return getSizeInBytes(complexType.getElementType()) * 2;
-
-    report_fatal_error(
-        invalidArgument("Unsupported type: %s", debugString(type).c_str()));
+  static size_t getDenseElementStorageWidth(size_t origWidth) {
+    return origWidth == 1 ? origWidth : llvm::alignTo<8>(origWidth);
+  }
+  static size_t getDenseElementStorageWidth(Type elementType) {
+    return getDenseElementStorageWidth(getDenseElementBitWidth(elementType));
   }
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
@@ -3038,8 +3041,9 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
         bool contiguous = true;
         size_t offset = 0;
         auto inshape = op.getOperand().getType().getShape();
+        auto outshape = op.getType().getShape();
         size_t total = 1;
-        for (int i = inshape.size() - 1; i >= 0; i--) {
+        for (int i = 0; i < inshape.size(); i++) {
           if (op.getStrides()[i] != 1) {
             contiguous = false;
           }
@@ -3052,23 +3056,22 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           }
           offset *= inshape[i];
           offset += start;
-          total *= inshape[i];
+          total *= outshape[i];
         }
+        auto elementType = op.getOperand().getType().getElementType();
+        auto bw = getDenseElementStorageWidth(elementType);
+        if (contiguous && bw != 1) {
+          const char *elementPtr = inp.getRawData().data() + (bw / 8) * offset;
 
-        auto ten = mlir::stablehlo::constantOp(inp);
-
-        if (contiguous) {
-          auto elementType = op.getOperand().getType().getElementType();
-          const char *elementPtr =
-              out.getRawData().data() + getSizeInBytes(elementType) * offset;
-
-          auto values = ArrayRef((char *)elementPtr, total);
-          out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
-                                                           floatValues);
-        } else
+          auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
+          out =
+              DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), values);
+        } else {
+          auto ten = mlir::stablehlo::constantOp(inp);
           out = fromTensor(mlir::stablehlo::sliceOp(
               ten, stablehlo::Sizes(op.getStartIndices()),
               stablehlo::Sizes(op.getStrides()), op.getType()));
+        }
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
@@ -3110,25 +3113,6 @@ struct BroadcastInDimSimplify
       }
 
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-struct ReshapeSimplify : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const final {
-    DenseElementsAttr inp;
-    matchPattern(op->getOperand(0), m_Constant(&inp));
-    if (inp) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(),
-          inp.isSplat() ? inp.resizeSplat(op.getType())
-                        : inp.reshape(op.getType()));
       return success();
     }
 
@@ -6214,21 +6198,12 @@ struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     }
 
     // Fold reshape of a constant.
-    ElementsAttr cstAttr;
+    DenseElementsAttr cstAttr;
     if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
       return failure();
 
-    if (auto splat = cstAttr.dyn_cast<SplatElementsAttr>()) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
-          op, SplatElementsAttr::get(op.getType(),
-                                     splat.getSplatValue<Attribute>()));
-      return success();
-    }
-
-    auto elements =
-        llvm::to_vector_of<Attribute>(cstAttr.getValues<Attribute>());
     rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
-        op, DenseElementsAttr::get(op.getType(), elements));
+        op, cstAttr.reshape(op.getType()));
     return success();
   }
 };
@@ -6438,11 +6413,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
              SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
              NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, ReshapeSimplify, TransposeSimplify,
-             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
-             ReduceToReshape, BroadcastToReshape, GatherSimplify,
-             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier>(
-            context, PatternBenefit(65000));
+             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
+             BroadcastReshape, ConstPropThroughBarrier>(context,
+                                                        PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
