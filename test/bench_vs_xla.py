@@ -260,7 +260,6 @@ class ValueAndGrad(absltest.TestCase):
 
 class ConstScatter(EnzymeJaxTest):
     def setUp(self):
-        dtype = np.float32
 
         def forward(c_tau):
             Q = c_tau
