@@ -9,6 +9,6 @@ module {
 }
 
 // CHECK:  func.func @wrapped() -> (tensor<1x3xf32> {mhlo.layout_mode = "default"}) {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<[[0.000000e+00, 0.000000e+00, 1.378200e+00]]> : tensor<1x3xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<{{\[\[}}0.000000e+00, 0.000000e+00, 1.378200e+00{{\]\]}}> : tensor<1x3xf32>
 // CHECK-NEXT:    return %cst : tensor<1x3xf32>
 // CHECK-NEXT:  }

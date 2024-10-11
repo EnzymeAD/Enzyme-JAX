@@ -257,34 +257,55 @@ class ValueAndGrad(absltest.TestCase):
                             ).all()
                         )
 
+
+class ConstScatter(EnzymeJaxTest):
+    def setUp(self):
+        dtype = np.float32
+
+        def forward(c_tau):
+            Q = c_tau
+            Q = Q.at[0].multiply(3)
+            chain = (Q,)
+            return (chain[0],)
+
+        self.fn = forward
+        self.name = "const_scatter"
+        self.count = 10
+
+        self.ins = [
+            jnp.array([2.7, 2.7, 2.7]),
+        ]
+        print(self.ins)
+        self.dins = [jnp.array([3.1, 3.1, 3.1])]
+        self.douts = self.dins
+        # No support for stablehlo.while atm
+        # self.revfilter = justjax
+        self.mlirad_rev = False
+
+
 class ScatterSum(EnzymeJaxTest):
     def setUp(self):
-        
+
         def energy_fn(R, neighbor):
             dR = R[neighbor[0]]
             return jnp.sum(jnp.sin(dR))
 
         nbrs = jnp.array([[2, 2]])
 
-        def forward(
-            position
-        ):
+        def forward(position):
             e = jax.grad(energy_fn)(position, neighbor=nbrs)
             return (e,)
 
         self.fn = forward
         self.name = "scatter_sum"
 
-        self.ins = [
-            [2., 4., 6., 8.]
-        ]
+        self.ins = [[2.0, 4.0, 6.0, 8.0]]
         self.dins = [2.7, 3.1, 5.9, 4.2]
         self.douts = [x.copy() for x in self.dins]
         self.AllPipelines = pipelines
         # No support for stablehlo.scatter atm
         self.mlirad_rev = False
 
-        self.tol = 5e-5
 
 if __name__ == "__main__":
     absltest.main()

@@ -3012,14 +3012,15 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
 
   static size_t getDenseElementBitWidth(Type eltType) {
-    // Align the width for complex to 8 to make storage and interpretation easier.
+    // Align the width for complex to 8 to make storage and interpretation
+    // easier.
     if (ComplexType comp = llvm::dyn_cast<ComplexType>(eltType))
-      return llvm::alignTo<8>(getDenseElementBitWidth(comp.getElementType())) * 2;
+      return llvm::alignTo<8>(getDenseElementBitWidth(comp.getElementType())) *
+             2;
     if (eltType.isIndex())
       return IndexType::kInternalStorageBitWidth;
     return eltType.getIntOrFloatBitWidth();
   }
-
 
   static size_t getDenseElementStorageWidth(size_t origWidth) {
     return origWidth == 1 ? origWidth : llvm::alignTo<8>(origWidth);
@@ -3058,20 +3059,19 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           total *= outshape[i];
         }
         auto elementType = op.getOperand().getType().getElementType();
-	auto bw = getDenseElementStorageWidth(elementType);
+        auto bw = getDenseElementStorageWidth(elementType);
         if (contiguous && bw != 1) {
-          const char *elementPtr =
-              inp.getRawData().data() + (bw / 8) * offset;
+          const char *elementPtr = inp.getRawData().data() + (bw / 8) * offset;
 
           auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
-          out = DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
-                                                           values);
+          out =
+              DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), values);
         } else {
           auto ten = mlir::stablehlo::constantOp(inp);
           out = fromTensor(mlir::stablehlo::sliceOp(
               ten, stablehlo::Sizes(op.getStartIndices()),
               stablehlo::Sizes(op.getStrides()), op.getType()));
-	}
+        }
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
@@ -6203,7 +6203,7 @@ struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
-          op, cstAttr.reshape(op.getType()));
+        op, cstAttr.reshape(op.getType()));
     return success();
   }
 };
@@ -6413,11 +6413,11 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
              SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
              NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, TransposeSimplify,
-             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
-             ReduceToReshape, BroadcastToReshape, GatherSimplify,
-             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier>(
-            context, PatternBenefit(65000));
+             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
+             BroadcastReshape, ConstPropThroughBarrier>(context,
+                                                        PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));

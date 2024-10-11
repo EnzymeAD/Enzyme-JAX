@@ -711,7 +711,6 @@ struct ADDataFlowScatterOp
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     return {
         srt.getInputs()[v.getResultNumber()],
-        srt.getUpdates()[v.getResultNumber()],
         resvals.getOperands()[v.getResultNumber()],
     };
   }
@@ -720,7 +719,8 @@ struct ADDataFlowScatterOp
     auto srt = cast<ScatterOp>(op);
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     if (v.getArgNumber() < srt.getInputs().size())
-      return {resvals.getOperands()[v.getArgNumber()]};
+      return {resvals.getOperands()[v.getArgNumber()],
+              srt.getInputs()[v.getArgNumber()]};
     else
       return {srt.getUpdates()[v.getArgNumber() - srt.getInputs().size()]};
   }
@@ -886,9 +886,9 @@ public:
       for (OpOperand &operand : origTerminator->getOpOperands()) {
         auto idx = operand.getOperandNumber();
         if (gutils->returnPrimals[idx])
-            operandsToPrimal.insert(idx);
+          operandsToPrimal.insert(idx);
         if (gutils->returnShadows[idx])
-            operandsToShadow.insert(idx);
+          operandsToShadow.insert(idx);
       }
     } else {
       assert(parentOp->getNumResults() == origTerminator->getNumOperands());
@@ -899,8 +899,7 @@ public:
     }
 
     SmallVector<Value> newOperands;
-    newOperands.reserve(operandsToPrimal.size() +
-                        operandsToShadow.size());
+    newOperands.reserve(operandsToPrimal.size() + operandsToShadow.size());
     for (OpOperand &operand : origTerminator->getOpOperands()) {
       if (operandsToPrimal.contains(operand.getOperandNumber()))
         newOperands.push_back(gutils->getNewFromOriginal(operand.get()));
@@ -908,8 +907,13 @@ public:
         if (!gutils->isConstantValue(operand.get())) {
           newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
         } else {
-          Type retTy = operand.get().getType().cast<AutoDiffTypeInterface>().getShadowType();
-          newOperands.push_back(retTy.cast<AutoDiffTypeInterface>().createNullValue(builder, origTerminator->getLoc()));
+          Type retTy = operand.get()
+                           .getType()
+                           .cast<AutoDiffTypeInterface>()
+                           .getShadowType();
+          newOperands.push_back(
+              retTy.cast<AutoDiffTypeInterface>().createNullValue(
+                  builder, origTerminator->getLoc()));
         }
       }
     }
