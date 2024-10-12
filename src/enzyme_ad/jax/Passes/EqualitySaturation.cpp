@@ -51,6 +51,9 @@
 #include <string>
 #include <thread>
 
+#undef NDEBUG
+#include <cassert>
+
 #define DEBUG_TYPE "enzyme"
 
 using namespace mlir;
@@ -294,6 +297,10 @@ public:
 
     assert(cost >= 0);
     auto indexOp = op->clone();
+
+    if (opName == "stablehlo.dot_general")
+      std::cout << "dot_general cost " << cost << std::endl;
+
     runtimeCache.try_emplace(indexOp, cost);
 
     wrapperModule.erase();
@@ -682,9 +689,7 @@ getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
   int input_rank = input_shape.size();
   int orig_rank = orig_shape.size();
 
-  int axis1 =
-      (op == tensat::Ops::SSplit0 ? axis
-                                  : std::max(0, input_rank - orig_rank) + axis);
+  int axis1 = std::max(0, input_rank - orig_rank) + axis;
 
   std::vector<int64_t> start, limit;
 
@@ -706,6 +711,14 @@ getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
       }
     }
   }
+  std::cout << "slice\nstart:";
+  for (auto i : start)
+    std::cout << i << ' ';
+  std::cout << "\nlimit:";
+  for (auto i : limit)
+    std::cout << i << ' ';
+  std::cout << std::endl;
+
   return {start, limit};
 }
 
@@ -730,8 +743,13 @@ Type getReshapeTypeForMatchRank(Value input, Value ref) {
     for (int i = 0; i < initialRank; i++) {
       if (i < refRank)
         shape.push_back(initialShape[i]);
-      else
-        assert(initialShape[i] == 1);
+      else {
+        if (initialShape[i] != 1) {
+          throw std::invalid_argument(
+              "initial shape index " + std::to_string(i) +
+              " is not 1, found: " + std::to_string(initialShape[i]));
+        }
+      }
     }
   }
   return deriveOutputType(input, shape);
@@ -1371,6 +1389,7 @@ public:
       //               << std::endl;
       //   }
     } else if (isa<stablehlo::DotGeneralOp>(op)) {
+      op->dump();
       // we might need more guards here
       auto dot_general = cast<stablehlo::DotGeneralOp>(op);
       auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
@@ -1639,12 +1658,12 @@ public:
    */
   std::vector<int64_t> parseNumVec(rust::vec<tensat::Node> &nodes,
                                    tensat::Node &seq) {
-    assert(seq.name == "Vec");
+    assert(seq.op == tensat::Ops::Vec);
     std::vector<int64_t> result;
 
     for (auto i : seq.operands) {
       assert(i < nodes.size());
-      assert(nodes[i].name == "Num");
+      assert(nodes[i].op == tensat::Ops::Num);
       result.push_back(parseNumNode(nodes, nodes[i]));
     }
 
@@ -1658,12 +1677,12 @@ public:
   mlir::DenseIntElementsAttr
   parseNumMatrixToDenseAttr(rust::vec<tensat::Node> &nodes, tensat::Node &seq,
                             mlir::Builder &builder) {
-    assert(seq.name == "Vec");
+    assert(seq.op == tensat::Ops::Vec);
 
     std::vector<std::vector<int64_t>> matrix;
     for (auto i : seq.operands) {
       assert(i < nodes.size());
-      assert(nodes[i].name == "Vec");
+      assert(nodes[i].op == tensat::Ops::Vec);
       matrix.push_back(parseNumVec(nodes, nodes[i]));
     }
     return matrixToDenseAttr(matrix, builder);
@@ -1675,7 +1694,7 @@ public:
    * TODO: improve this!
    */
   int64_t parseNumNode(rust::vec<tensat::Node> &nodes, tensat::Node &seq) {
-    assert(seq.name == "Num");
+    assert(seq.op == tensat::Ops::Num);
     return seq.operands[0];
   }
 
@@ -1684,7 +1703,7 @@ public:
    * AddOp(...))) emitted by tensat node construction.
    */
   std::vector<Value> parseOpVec(std::vector<Value> &opVals, tensat::Node &seq) {
-    assert(seq.name == "Vec");
+    assert(seq.op == tensat::Ops::Vec);
     std::vector<Value> result;
 
     for (auto i : seq.operands) {
@@ -1786,6 +1805,7 @@ public:
         break;
       }
       case Ops::MatchRank: {
+        std::cout << "MATCHRANK MENTIONED" << std::endl;
         auto input = opVals[node.operands[0]];
         auto ref = opVals[node.operands[1]];
         if (getShape(input).size() == getShape(ref).size()) {
@@ -1960,6 +1980,8 @@ public:
       }
       case Ops::SSplit0:
       case Ops::SSplit1: {
+        std::cout << "UHH" << std::endl;
+        std::cout << "SPLIT MENTIONED" << std::endl;
         auto operand = opVals[node.operands[0]];
         auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
         auto orig = opVals[node.operands[2]];
@@ -2013,8 +2035,6 @@ public:
           subst.map(oldCapturedValues[i], capturedValues[i]);
         }
         newOp = newOp->clone(subst);
-
-        assert(numOperands == newOp->getNumOperands());
         newOp->insertOperands(0, operands);
         break;
       }
