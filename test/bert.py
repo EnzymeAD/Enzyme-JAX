@@ -14,24 +14,24 @@ import llama
 pipelines = [
     # ("JaX", None, CurBackends),
     ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
     # (
-    #     "EqSat",
+    #     "HLOOpt",
     #     JaXPipeline(
     #         "inline{default-pipeline=canonicalize max-iterations=4},"
-    #         + "equality-saturation-pass"
+    #         + "canonicalize,cse,enzyme-hlo-opt,cse"
     #     ),
     #     CurBackends,
     # ),
+    # ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
+    # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    (
+        "EqSat",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "equality-saturation-pass"
+        ),
+        CurBackends,
+    ),
 ]
 
 # Load the tokenizer and model
@@ -59,7 +59,7 @@ class BertTransformerTest(EnzymeJaxTest):
         # Setup for the test harness
         self.fn = bert_forward
         self.name = "bert"
-        self.count = 1000
+        self.count = 200
         self.revprimal = False
         self.AllPipelines = pipelines
         self.AllBackends = CurBackends

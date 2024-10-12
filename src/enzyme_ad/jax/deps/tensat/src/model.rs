@@ -56,12 +56,16 @@ define_language! {
       "Index"              = Index([Id; 2]),   // index, input. for indexing into ops with multiple result Values.
       // SHORTHANDS (not 1:1 with stablehlo)
       //
+      // Let axis' = max(0, len(shape(input)) - len(shape(orig_1))) + axis.
+      //
+      // TODO: We might need a symmetric "left leaning" version for a different rewrite
+      //
       // (SSplit0 input axis orig_0) means:
-      // split input on axis' dimension, taking the left component, where axis' = axis.
+      // split input on axis' dimension, taking the left component.
       // The split point is such that the result has the same shape as orig_0 on axis'.
       //
       // (SSplit1 input axis orig_1) means:
-      // split input on axis' dimension, taking the right component, where axis' = max(0, len(shape(input)) - len(shape(orig_1))) + axis.
+      // split input on axis' dimension, taking the right component.
       // The split point is such that the result has the same shape as axis'.
 
       // This translates to a StableHLO SliceOp, with all the slices being [0..shape(input)[d]) in every
@@ -85,6 +89,10 @@ define_language! {
       // This allows certain rewrites with ConcatenateOps with axis larger than the rank of the operands, as
       // StableHLO doesn't have implicit casting.
       "MatchRank"         = MatchRank([Id; 2]),  // input, ref
+      // (InferReshape input) means:
+      // When this node is being merged into an eclass, use the shape of an existing eclass to create a ReshapeOp.
+      // Hence, this should only appear as the root node of RHS of a rewrite.
+      "InferReshape"      = InferReshape([Id; 1]),  // input
       // MISC
       Num(i64),
       Var(Symbol),
@@ -122,8 +130,11 @@ pub struct TensorData {
     // the operation.
     /// The list of results of this tensor
     pub tensors: Vec<ffi::Tensor>,
+    /// Is the root node InferReshape?
+    pub need_infer_shape: bool,
     /// The name string of this eclass if it is a Name type
     pub name: Option<&'static str>,
+
 }
 
 // Struct for storing information of a tensor. This is passed between functions
@@ -161,8 +172,22 @@ impl Analysis<Mdl> for TensorAnalysis {
     type Data = TensorData;
 
     fn merge(&self, to: &mut Self::Data, from: Self::Data) -> bool {
-        assert!(to.tensors == from.tensors, "{:?}{:?}", to, from);
-        false
+        assert!(!to.need_infer_shape || !from.need_infer_shape);
+        if !to.need_infer_shape && !from.need_infer_shape {
+            assert!(to.tensors == from.tensors, "to: {:?}, from: {:?}", to, from);
+            false
+        } else {
+            assert!(to.tensors.len() == from.tensors.len());
+            for i in 0..to.tensors.len() {
+                assert!(to.tensors[i].element_type == from.tensors[i].element_type);
+            }
+            if to.need_infer_shape {
+                *to = from;
+                true
+            } else {
+                false
+            }
+        }
     }
 
     fn make(egraph: &EGraph<Mdl, Self>, enode: &Mdl) -> Self::Data {
@@ -172,7 +197,7 @@ impl Analysis<Mdl> for TensorAnalysis {
         fn map_to_tensor(vec: Vec<i32>) -> ffi::Tensor {
             ffi::Tensor {
                 shape: vec.into_iter().map(|x| x as i64).collect(),
-                element_type: ffi::Type::i32, // Example: assuming i32 element type, modify as needed
+                element_type: ffi::Type::i32, 
             }
         }
 
@@ -188,10 +213,11 @@ impl Analysis<Mdl> for TensorAnalysis {
         match enode {
             Mdl::Num(_) | Mdl::Vec(_) => TensorData {
                 tensors: vec![ffi::Tensor {
-                    shape: vec![0],
+                    shape: vec![],
                     element_type: ffi::Type::i32,
                 }],
                 name: Some("num"),
+                need_infer_shape: false,
             },
             Mdl::Var(name) => {
                 let shape: Vec<i64> = name
@@ -218,6 +244,7 @@ impl Analysis<Mdl> for TensorAnalysis {
                         element_type,
                     }],
                     name: Some(name.as_str()),
+                    need_infer_shape: false,
                 }
             }
             Mdl::Input([node, _block_arg_number]) => x(node).clone(),
@@ -227,6 +254,7 @@ impl Analysis<Mdl> for TensorAnalysis {
                 TensorData {
                     tensors: vec![input.tensors[index].clone()],
                     name: None,
+                    need_infer_shape: false,
                 }
             }
             Mdl::BlackBox(inputs) => {
@@ -240,15 +268,29 @@ impl Analysis<Mdl> for TensorAnalysis {
                 TensorData {
                     tensors: shape_vec,
                     name: None,
+                    need_infer_shape: false,
                 }
             }
             Mdl::ReturnOp(_) => TensorData {
                 tensors: vec![],
                 name: None,
+                need_infer_shape: false,
+            },
+            Mdl::InferReshape([input]) => {
+                let input = x(input);
+                TensorData {
+                    tensors: vec![ffi::Tensor {
+                        shape: vec![],
+                        element_type: input.tensors[0].element_type,
+                    }],
+                    name: None,
+                    need_infer_shape: true,
+                }
             },
             x => TensorData {
                 tensors: create_stablehlo_op(egraph, x, ffi::get_shape),
                 name: None,
+                need_infer_shape: false,
             },
         }
     }

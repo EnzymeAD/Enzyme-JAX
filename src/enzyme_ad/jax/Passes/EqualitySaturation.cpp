@@ -297,14 +297,9 @@ public:
 
     assert(cost >= 0);
     auto indexOp = op->clone();
-
-    if (opName == "stablehlo.dot_general")
-      std::cout << "dot_general cost " << cost << std::endl;
-
     runtimeCache.try_emplace(indexOp, cost);
 
     wrapperModule.erase();
-
     return cost;
   }
 
@@ -711,14 +706,6 @@ getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
       }
     }
   }
-  std::cout << "slice\nstart:";
-  for (auto i : start)
-    std::cout << i << ' ';
-  std::cout << "\nlimit:";
-  for (auto i : limit)
-    std::cout << i << ' ';
-  std::cout << std::endl;
-
   return {start, limit};
 }
 
@@ -1389,7 +1376,6 @@ public:
       //               << std::endl;
       //   }
     } else if (isa<stablehlo::DotGeneralOp>(op)) {
-      op->dump();
       // we might need more guards here
       auto dot_general = cast<stablehlo::DotGeneralOp>(op);
       auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
@@ -1805,7 +1791,6 @@ public:
         break;
       }
       case Ops::MatchRank: {
-        std::cout << "MATCHRANK MENTIONED" << std::endl;
         auto input = opVals[node.operands[0]];
         auto ref = opVals[node.operands[1]];
         if (getShape(input).size() == getShape(ref).size()) {
@@ -1817,6 +1802,21 @@ public:
               builder.create<stablehlo::ReshapeOp>(location, newType, input);
         }
         break;
+      }
+      case Ops::InferReshape: {
+        auto input = opVals[node.operands[0]];
+        llvm::SmallVector<int64_t> shape;
+        for (int i = 1; i < node.operands.size(); i++)
+          shape.push_back(node.operands[i]);
+        if (shape == getShape(input)) {
+          opVals.push_back(input);
+          continue;
+        } else {
+          auto newType = deriveOutputType(input, shape);
+          newOp =
+              builder.create<stablehlo::ReshapeOp>(location, newType, input);
+          break;
+        }
       }
       case Ops::ConvolutionOp: {
         auto lhs = opVals[node.operands[0]];
@@ -1980,8 +1980,6 @@ public:
       }
       case Ops::SSplit0:
       case Ops::SSplit1: {
-        std::cout << "UHH" << std::endl;
-        std::cout << "SPLIT MENTIONED" << std::endl;
         auto operand = opVals[node.operands[0]];
         auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
         auto orig = opVals[node.operands[2]];
