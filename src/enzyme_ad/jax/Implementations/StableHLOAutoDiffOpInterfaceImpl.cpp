@@ -546,6 +546,40 @@ struct SHLOConstantOpBatchInterface
   }
 };
 
+struct SHLOTransposeOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOTransposeOpBatchInterface,
+                                             TransposeOp> {
+
+  mlir::Operation *createBatch(Operation *src, IRMapping &mapper,
+                               Operation::CloneOptions options,
+                               std::map<Operation *, Operation *> &opMap,
+                               ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+    mlir::NamedAttrList attrs;
+    for (auto attr : src->getAttrs()) {
+      auto eattr = cast<DenseI64ArrayAttr>(attr.getValue());
+      SmallVector<int64_t> shape;
+      for (size_t i = 0; i < batchSizes.size(); i++)
+        shape.push_back(i);
+      for (auto val : eattr.asArrayRef())
+        shape.push_back(val + batchSizes.size());
+      attr.setValue(DenseI64ArrayAttr::get(src->getContext(), shape));
+      attrs.append(attr);
+    }
+    auto cop = mlir::Operation::create(
+        src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
+        OpaqueProperties(nullptr), mlir::BlockRange(), 0);
+    return cop;
+  }
+};
+
 struct ADDataFlowSortOp
     : public ADDataFlowOpInterface::ExternalModel<ADDataFlowSortOp, SortOp> {
 
@@ -981,5 +1015,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
         ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
         ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+        TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
       });
 }
