@@ -3,7 +3,7 @@ jax
 numpy
 jaxlib
 https://github.com/wsmoses/jax-md/archive/1188490610b95023f8a51166c3f6b92da31e78fe.tar.gz
-https://github.com/wsmoses/maxtext/archive/46e199f9e998c9a26b96bc025833ea9caa46912c.tar.gz
+https://github.com/wsmoses/maxtext/archive/cdd85d82b3496020b2575e11ca243be4812bac66.tar.gz
 jax[cuda12_pip]; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
