@@ -136,7 +136,6 @@ py_test(
     name = "maxtext",
     srcs = [
         "maxtext.py",
-        "test_utils.py",
     ],
     imports = ["."],
     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
