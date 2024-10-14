@@ -120,3 +120,14 @@ py_test(
     data = ["//src/enzyme_ad/jax:deps/tensat/converted.txt", "//src/enzyme_ad/jax:deps/tensat/extractor/extract.py"],
     timeout='long'
 )
+
+py_test(
+    name = "jaxmd",
+    srcs = [
+        "jaxmd.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
+    timeout='long'
+)
