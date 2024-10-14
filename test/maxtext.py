@@ -1,3 +1,10 @@
+# Steps for getting results here
+# Run:
+#   1) pip install https://github.com/wsmoses/maxtext
+#   2) bazel build -c opt //:wheel
+#   3) pip install ./bazel-bin/*whl
+#   4) python test/maxtext.py
+
 from absl.testing import absltest
 import jax.numpy as jnp
 import jax.random
