@@ -85,16 +85,7 @@ class EnzymeJax(absltest.TestCase):
         self.assertTrue((primals[1] == 85).all())
         self.assertTrue((primals[2][0] == 56).all())
 
-        self.assertTrue(
-            (
-                grads[1]
-                == jnp.array(
-                    [
-                        [128.0, 128.0, 128.0],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((grads[1] == jnp.array([[128.0, 128.0, 128.0],])).all())
 
     def test_enzyme_mlir_jit(self):
         @jax.jit
@@ -109,61 +100,16 @@ class EnzymeJax(absltest.TestCase):
             (jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])),
             (jnp.array([0.1, 0.2, 0.3]), jnp.array([50.0, 70.0, 110.0])),
         )
-        self.assertTrue(
-            (
-                primals
-                == jnp.array(
-                    [
-                        [12.0, 23.0, 34.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                tangents
-                == jnp.array(
-                    [
-                        [50.1, 70.2, 110.3],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((primals == jnp.array([[12.0, 23.0, 34.0],])).all())
+        self.assertTrue((tangents == jnp.array([[50.1, 70.2, 110.3],])).all())
 
         primals, f_vjp = jax.vjp(
             add_one, jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])
         )
         grads = f_vjp(jnp.array([500.0, 700.0, 110.0]))
-        self.assertTrue(
-            (
-                primals
-                == jnp.array(
-                    [
-                        [12.0, 23.0, 34.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                grads[0]
-                == jnp.array(
-                    [
-                        [500.0, 700.0, 110.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                grads[1]
-                == jnp.array(
-                    [
-                        [500.0, 700.0, 110.0],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((primals == jnp.array([[12.0, 23.0, 34.0],])).all())
+        self.assertTrue((grads[0] == jnp.array([[500.0, 700.0, 110.0],])).all())
+        self.assertTrue((grads[1] == jnp.array([[500.0, 700.0, 110.0],])).all())
 
 
 if __name__ == "__main__":
