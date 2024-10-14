@@ -282,7 +282,6 @@ cc_library(
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
-        "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:TransformUtils",
 
         "@stablehlo//:reference_ops",
