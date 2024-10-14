@@ -18,13 +18,15 @@ steps:
       chmod +x .local/bin/bazel
 
       export RUSTUP_HOME=`pwd`/.local/.rustup
-      export CARGO_HOME=`pwd`/.local/.cargo bash 
+      export CARGO_HOME=`pwd`/.local/.cargo bash
+
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
       export PATH="`pwd`/.local/.cargo/bin:\$PATH"
       rustup default stable
       cargo install cxxbridge-cmd
 
       mkdir -p .baztmp
+      touch src/enzyme_ad/jax/deps/tensat/cargo-bazel-lock.json
 
       echo "--- :python: Test"
 
