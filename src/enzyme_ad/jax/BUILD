@@ -339,7 +339,8 @@ cc_library(
         "@xla//xla/service/gpu:nvptx_compiler",
         # "@xla//xla/service/gpu:amdgpu_compiler",
         "@xla//xla/service/gpu:gpu_transfer_manager",
-        "@xla//xla/stream_executor:kernel", 
+        "@xla//xla/stream_executor:kernel",
+        "@xla//xla/stream_executor/gpu:redzone_allocator",
     ]}),
     alwayslink = 1,
     linkstatic = 1
@@ -394,6 +395,7 @@ pybind_library(
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/stream_executor/gpu:redzone_allocator",
         "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
