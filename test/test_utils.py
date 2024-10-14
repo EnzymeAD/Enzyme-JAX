@@ -216,7 +216,11 @@ class EnzymeJaxTest(absltest.TestCase):
                         "Primal",
                         ",",
                         timeit.Timer(
-                            primalstr, globals={"fn": rfn_enzyme,} | primalins,
+                            primalstr,
+                            globals={
+                                "fn": rfn_enzyme,
+                            }
+                            | primalins,
                         ).timeit(self.count)
                         / self.count,
                         sep="\t",
@@ -262,7 +266,11 @@ class EnzymeJaxTest(absltest.TestCase):
                             "Forward",
                             ",",
                             timeit.Timer(
-                                fwdstr, globals={"fwd": fwd_enzyme,} | fwdins,
+                                fwdstr,
+                                globals={
+                                    "fwd": fwd_enzyme,
+                                }
+                                | fwdins,
                             ).timeit(self.count)
                             / self.count,
                             sep="\t",
@@ -318,7 +326,11 @@ class EnzymeJaxTest(absltest.TestCase):
                                 "PreRev",
                                 ",",
                                 timeit.Timer(
-                                    revstr, globals={"rev": rev_enzyme,} | revins,
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
                                 ).timeit(self.count)
                                 / self.count,
                                 sep="\t",
@@ -360,7 +372,11 @@ class EnzymeJaxTest(absltest.TestCase):
                             "PostRev",
                             ",",
                             timeit.Timer(
-                                revstr, globals={"rev": rev_enzyme,} | revins,
+                                revstr,
+                                globals={
+                                    "rev": rev_enzyme,
+                                }
+                                | revins,
                             ).timeit(self.count)
                             / self.count,
                             sep="\t",
@@ -409,7 +425,11 @@ class EnzymeJaxTest(absltest.TestCase):
                             "BothRev",
                             ",",
                             timeit.Timer(
-                                revstr, globals={"rev": rev_enzyme,} | revins,
+                                revstr,
+                                globals={
+                                    "rev": rev_enzyme,
+                                }
+                                | revins,
                             ).timeit(self.count)
                             / self.count,
                             sep="\t",

@@ -169,7 +169,7 @@ class MaxText(absltest.TestCase):
 
         config = MaxText.pyconfig.config
 
-        for (name, pipeline) in pipelines:
+        for name, pipeline in pipelines:
             print("name=", name)
 
             def rewrite(fn):
