@@ -127,25 +127,23 @@ broadcast_reduce<1>;
 )
 
 pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
+    ("JaX  ", None),
+    ("JaXPipe", JaXPipeline()),
     (
         "HLOOpt",
         JaXPipeline(
             "inline{default-pipeline=canonicalize max-iterations=4},"
             + "canonicalize,cse,enzyme-hlo-opt,cse"
         ),
-        CurBackends,
     ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    ("PartOpt", JaXPipeline(partialopt)),
+    ("DefOpt", JaXPipeline(hlo_opts())),
 ]
-
-import MaxText
-import MaxText.pyconfig
 
 class MaxText(absltest.TestCase):
     def setUp(self):
+        import MaxText
+        import MaxText.pyconfig
         MaxText.pyconfig.initialize([
             None,
             "test/maxtext_configs/base.yml",
@@ -154,14 +152,19 @@ class MaxText(absltest.TestCase):
         ])
 
     def test(self):
-
-        config = MaxText.pyconfig.config
-
+        import MaxText
+        import MaxText.pyconfig
         import MaxText.train
+        config = MaxText.pyconfig.config
 
         for (name, pipeline) in pipelines:
             print("name=", name)
-            res1 = MaxText.train.train_loop(config)
+            def rewrite(fn):
+                if pipeline is None:
+                    return fn
+                else:
+                    return enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(fn)
+            res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)
 
 if __name__ == "__main__":
