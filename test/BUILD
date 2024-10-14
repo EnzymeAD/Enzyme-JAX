@@ -131,3 +131,13 @@ py_test(
     deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
     timeout='long'
 )
+
+# py_test(
+#     name = "maxtext",
+#     srcs = [
+#         "maxtext.py",
+#     ],
+#     imports = ["."],
+#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+#     timeout='long'
+# )

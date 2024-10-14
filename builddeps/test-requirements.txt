@@ -2,7 +2,9 @@ absl-py
 jax
 numpy
 jaxlib
-https://github.com/wsmoses/jax-md/archive/1188490610b95023f8a51166c3f6b92da31e78fe.tar.gz
+https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487e7.tar.gz
+# maxtext can't be installed concurrently, but installing it fixes
+# https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
 jax[cuda12_pip]; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
