@@ -335,7 +335,7 @@ cc_library(
     "@bazel_tools//src/conditions:darwin": [],
     "//conditions:default": [
         "@xla//xla/stream_executor/cuda:all_runtime", 
-        "@xla//xla/stream_executor/rocm:all_runtime",
+        # "@xla//xla/stream_executor/rocm:all_runtime",
         "@xla//xla/service/gpu/model:hlo_op_profiles",
         "@xla//xla/service/gpu:nvptx_compiler",
         # "@xla//xla/service/gpu:amdgpu_compiler",
