@@ -77,12 +77,21 @@ steps:
       BAZEL_BUILD_FLAGS+=(--action_env=TMP=\$TMPDIR --action_env=TEMP=\$TMPDIR --action_env=TMPDIR=\$TMPDIR --sandbox_tmpfs_path=\$TMPDIR)
       BAZEL_BUILD_FLAGS+=(--config=cuda)
 
+      export EQSAT_PLATFORM=gpu
+
       CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update || echo "no req update"
       # HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
       # find `pwd`/bazel-bin/test/llama.runfiles > finds.txt
       # HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla || echo "fail2"
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s \${BAZEL_BUILD_FLAGS[@]} //test:llama || echo "fail3"
-      HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
+
+      ls bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver
+      ls bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib
+      ls bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib
+      ls bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib
+      ls bazel-bin/test/test.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib
+
+      # HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
       cat bazel-out/*/testlogs/test/llama/test.log
     artifact_paths:
       - "finds.txt"
