@@ -189,8 +189,8 @@ public:
    * - if GPU, we use XLA's analytical cost model to get the expected execution
    * time in nanoseconds.
    */
-  static uint64_t getCost(Operation *op, unsigned warmup,
-                          unsigned repetitions) {
+  static std::pair<uint64_t, uint64_t> getCost(Operation *op, unsigned warmup,
+                                          unsigned repetitions) {
     // TODO: refactor this/separate out into two functions? so that
     // warmup/repetitions don't need to be passed for GPU.
 
@@ -204,14 +204,14 @@ public:
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
         zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
-      return 0;
+      return {0, 0};
 
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
     }
 
     auto context = OperationTimer::getContext();
-    int cost = -1;
+    int64_t cost = -1, fus_cost = -1;
 
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
@@ -252,6 +252,7 @@ public:
       // taking individual measurements. Maybe we get rid of the parameter or do
       // something more sophisticated
       cost = *std::min_element(durations.begin(), durations.end());
+      fus_cost = cost;
       assert(!futures);
 
       // Cleanup
@@ -291,17 +292,18 @@ public:
                 xla::gpu::GpuPerformanceModelOptions::ForModule(
                     op->GetModule()));
         cost = absl::ToInt64Nanoseconds(runtime.exec_time);
+        fus_cost = absl::ToInt64Nanoseconds(runtime.compute_time);
       }
       break;
     }
     }
 
-    assert(cost >= 0);
+    assert(cost >= 0 && fus_cost >= 0);
     auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, cost);
+    runtimeCache.try_emplace(indexOp, std::pair(cost, fus_cost));
 
     wrapperModule.erase();
-    return cost;
+    return {cost, fus_cost};
   }
 
   static Operation *getDummyOp(OpBuilder &builder, Type type) {
@@ -325,7 +327,9 @@ public:
   }
 
 private:
-  static llvm::DenseMap<Operation *, uint64_t, OperationMapInfo> runtimeCache;
+  static llvm::DenseMap<Operation *, std::pair<uint64_t, uint64_t>,
+                        OperationMapInfo>
+      runtimeCache;
   static MLIRContext *context;
   inline static bool logsInitialized;
 
@@ -469,7 +473,7 @@ private:
   }
 };
 
-llvm::DenseMap<Operation *, uint64_t, OperationMapInfo>
+llvm::DenseMap<Operation *, std::pair<uint64_t, uint64_t>, OperationMapInfo>
     OperationTimer::runtimeCache;
 MLIRContext *OperationTimer::context = nullptr;
 
@@ -977,10 +981,11 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
 
 // TODO: Avoid creating dummy inputs (we need them again for cost measurement,
 // so duplicated)
-uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
-                          rust::Vec<tensat::Vector> other_vector_args,
-                          rust::Vec<int64_t> int_args,
-                          rust::Vec<tensat::Matrix> matrix_args) {
+rust::Vec<uint64_t>
+tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
+                 rust::Vec<tensat::Vector> other_vector_args,
+                 rust::Vec<int64_t> int_args,
+                 rust::Vec<tensat::Matrix> matrix_args) {
   auto context = OperationTimer::getContext();
   OpBuilder builder(context);
 
@@ -1032,11 +1037,11 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
   }
 
   if (mlirOp) {
-    auto cost = OperationTimer::getCost(mlirOp, repeats, repeats);
+    auto [cost, fus_cost] = OperationTimer::getCost(mlirOp, repeats, repeats);
     mlirOp->erase();
-    return cost;
+    return {cost, fus_cost};
   }
-  return 100000;
+  assert(false);
 }
 
 mlir::Type tensat::newTensorType(OpBuilder &builder, tensat::Tensor tensor) {
