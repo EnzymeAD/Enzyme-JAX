@@ -1325,6 +1325,11 @@ fn extract_by_ilp(
     arg_vec.push(time_lim);
     arg_vec.push("--num_thread");
     arg_vec.push(num_thread);
+
+    let which_python = Command::new("which").arg("python3").spawn().expect("failed to execute child");
+    let which_python_output = String::from_utf8(which_python.wait_with_output().expect("failed to get output").stdout).unwrap();
+    println!("which python3: {}", which_python_output);
+
     let child = Command::new("python3")
         .args(&arg_vec)
         .spawn()
