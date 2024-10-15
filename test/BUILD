@@ -64,7 +64,7 @@ TEST_DEPS = [
     ] + select({
         ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg", "@pypi_nvidia_cuda_nvrtc_cu12//:pkg"],
-        "//conditions:default": []
+        "//conditions:default": ["@pypi_ortools//:pkg"]
     })
 
 [
