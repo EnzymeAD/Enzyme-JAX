@@ -124,10 +124,10 @@ EqsatPlatform getPlatform() {
   }
 }
 
-tensorflow::se::DeviceDescription
+stream_executor::DeviceDescription
 RTXA6000DeviceInfo(tensorflow::se::GpuComputeCapability cc =
                        tensorflow::se::CudaComputeCapability(8, 9)) {
-  tensorflow::se::internal::DeviceDescriptionBuilder b;
+  stream_executor::DeviceDescription b;
   b.set_gpu_compute_capability(cc);
   b.set_threads_per_block_limit(1024);
   b.set_threads_per_warp(32);
@@ -144,7 +144,7 @@ RTXA6000DeviceInfo(tensorflow::se::GpuComputeCapability cc =
   b.set_l2_cache_size(6 * 1024 * 1024);
   b.set_clock_rate_ghz(1.410);
   b.set_device_memory_size(51'050'250'240);
-  return b.BuildObject();
+  return b;
 }
 
 /**
@@ -274,7 +274,8 @@ public:
             return xla::gpu::GetSizeOfShape(shape, 4);
           };
       xla::gpu::GpuHloCostAnalysis costAnalysis(
-          xla::gpu::GpuHloCostAnalysis::Options{shapeSizeFunction, {}, true},
+          xla::gpu::GpuHloCostAnalysis::Options{
+              shapeSizeFunction, {}, {}, true},
           *deviceDescription);
 
       assert(hloModule->computation_count() == 1);
