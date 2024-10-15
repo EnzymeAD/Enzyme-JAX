@@ -77,6 +77,7 @@ steps:
       export TMP=$TMPDIR
       export TEMP=$TMPDIR
       BAZEL_BUILD_FLAGS+=(--action_env=TMP=\$TMPDIR --action_env=TEMP=\$TMPDIR --action_env=TMPDIR=\$TMPDIR --sandbox_tmpfs_path=\$TMPDIR)
+      BAZEL_BUILD_FLAGS+=(--action_env=EQSAT_PLATFORM=gpu)
       BAZEL_BUILD_FLAGS+=(--config=cuda)
 
       export EQSAT_PLATFORM=gpu
