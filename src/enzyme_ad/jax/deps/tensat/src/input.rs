@@ -1325,7 +1325,7 @@ fn extract_by_ilp(
     arg_vec.push(time_lim);
     arg_vec.push("--num_thread");
     arg_vec.push(num_thread);
-    let child = Command::new("python")
+    let child = Command::new("python3")
         .args(&arg_vec)
         .spawn()
         .expect("failed to execute child");

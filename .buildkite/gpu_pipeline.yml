@@ -53,6 +53,7 @@ steps:
       export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
       export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvrtc_cu12/site-packages/nvidia/cuda_nvrtc/lib:\$LD_LIBRARY_PATH"
       export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:\$PATH"
+      export PATH="`pwd`/bazel-bin/test/llama.runfiles/python_x86_64-unknown-linux-gnu/bin:\$PATH"
       export TF_CPP_MIN_LOG_LEVEL=0
 
       BAZEL_BUILD_FLAGS=()
@@ -91,3 +92,4 @@ steps:
       - "finds.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
+      - "results_*.csv"
