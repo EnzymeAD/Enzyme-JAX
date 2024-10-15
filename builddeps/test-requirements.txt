@@ -5,5 +5,6 @@ jaxlib
 https://github.com/wsmoses/jax-md/archive/1188490610b95023f8a51166c3f6b92da31e78fe.tar.gz
 jax[cuda12_pip]; sys_platform == 'linux'
 requests; sys_platform == 'linux'
+nvidia-cuda-nvrtc-cu12; sys_platform == 'linux'
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # libtpu-nightly == 0.1.dev20240729; sys_platform == 'linux' 
