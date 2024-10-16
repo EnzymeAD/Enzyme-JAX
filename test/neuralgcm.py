@@ -132,7 +132,7 @@ class NeuralGCM(absltest.TestCase):
 
         self.sub = sub
         self.model = model
-        self.eval_era5 = self.eval_era5
+        self.eval_era5 = eval_era5
         self.all_forcings = all_forcings
         self.outer_steps = outer_steps
 
