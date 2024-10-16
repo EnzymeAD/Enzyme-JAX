@@ -138,9 +138,9 @@ class NeuralGCM(absltest.TestCase):
 
     def test(self):
         for name, pipe, _ in pipelines:
-            print("name=", name, res)
+            print("name=", name)
             if pipe is None:
-                nfn = jax.jit(sub)
+                nfn = jax.jit(self.sub)
             else:
                 nfn = jax.jit(enzyme_jax_ir(pipeline_options=pipe)(self.sub))
 
