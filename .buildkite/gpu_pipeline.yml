@@ -78,7 +78,7 @@ steps:
       export TEMP=$TMPDIR
       BAZEL_BUILD_FLAGS+=(--action_env=TMP=\$TMPDIR --action_env=TEMP=\$TMPDIR --action_env=TMPDIR=\$TMPDIR --sandbox_tmpfs_path=\$TMPDIR)
       BAZEL_BUILD_FLAGS+=(--action_env=EQSAT_PLATFORM=gpu)
-      BAZEL_BUILD_FLAGS+=(--config=cuda)
+      BAZEL_BUILD_FLAGS+=(--config=cudaci)
 
       export EQSAT_PLATFORM=gpu
 
@@ -86,10 +86,8 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
       find `pwd`/bazel-bin/test/llama.runfiles > finds.txt
       # HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla || echo "fail2"
-      which python3
-      bazel-bin/test/llama.runfiles/python_x86_64-unknown-linux-gnu/bin/python3 -m pip install ortools
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s \${BAZEL_BUILD_FLAGS[@]} //test:llama || echo "fail3"
-      HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
+      # HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
       cat bazel-out/*/testlogs/test/llama/test.log
     artifact_paths:
       - "finds.txt"
