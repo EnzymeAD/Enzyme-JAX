@@ -966,8 +966,6 @@ public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
 
-    auto sop = cast<SortOp>(op);
-
     // TODO: we may need to record, for every successor, which of its inputs
     // need a shadow to recreate the body correctly.
     llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
