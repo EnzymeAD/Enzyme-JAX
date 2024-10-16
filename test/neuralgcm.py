@@ -135,6 +135,11 @@ class NeuralGCM(absltest.TestCase):
         self.eval_era5 = eval_era5
         self.all_forcings = all_forcings
         self.outer_steps = outer_steps
+        
+        inputs = self.model.inputs_from_xarray(self.eval_era5.isel(time=0))
+        input_forcings = self.model.forcings_from_xarray(self.eval_era5.isel(time=0))
+        rng_key = jax.random.key(42)  # optional for deterministic models
+        self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
 
     def test(self):
         for name, pipe, _ in pipelines:
@@ -148,14 +153,10 @@ class NeuralGCM(absltest.TestCase):
             print("name=", name, res)
 
     def run_on_fn(self, fn, steps=1):
-        inputs = self.model.inputs_from_xarray(self.eval_era5.isel(time=0))
-        input_forcings = self.model.forcings_from_xarray(self.eval_era5.isel(time=0))
-        rng_key = jax.random.key(42)  # optional for deterministic models
-        initial_state = self.model.encode(inputs, input_forcings, rng_key)
         map(
             lambda x: x.block_until_ready(),
             fn(
-                initial_state,
+                self.initial_state,
                 self.all_forcings,
             ),
         )
@@ -166,7 +167,7 @@ class NeuralGCM(absltest.TestCase):
     ))""",
             globals={
                 "fn": fn,
-                "initial_state": initial_state,
+                "initial_state": self.initial_state,
                 "all_forcings": self.all_forcings,
             },
         ).timeit(steps)
