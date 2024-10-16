@@ -145,7 +145,6 @@ broadcast_reduce<1>;
 )
 
 
-
 def no_newxla(x):
     return [
         (name, a, b) for (name, a, b) in x if name != "NewXLAMLIR" and name != "NewXLA"
@@ -183,6 +182,26 @@ def splatjvp(in_fn):
     return fwd
 
 
+def sync(x):
+    return x.block_until_ready()
+
+
+def syncall(x):
+    return map(sync, x)
+
+
+def fwdsync1(x):
+    return (sync(x[0]), sync(x[1]))
+
+
+def fwdsync2(x):
+    return (sync(x[0][0]), sync(x[1][0]))
+
+
+def fwdsync3(x):
+    return (syncall(x[0]), syncall(x[1]))
+
+
 # @jax.jit
 # def rev_jax(dout, in0, in1):
 # primals, f_vjp = jax.vjp(add_one_jax, in0, in1)
@@ -201,9 +220,25 @@ def splatvjp_noprim(in_fn):
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
-        return primals, grads
+        return grads
 
     return rev
+
+
+def revsync0_0(x):
+    return (sync(x[0]), sync(x[1][0]))
+
+
+def revsync0_1(x):
+    return (syncall(x[0]), sync(x[1][0]))
+
+
+def revsync1_0(x):
+    return (sync(x[0]), syncall(x[1]))
+
+
+def revsync1_1(x):
+    return (syncall(x[0]), syncall(x[1]))
 
 
 def to_backend(x, backend):
@@ -266,6 +301,12 @@ class EnzymeJaxTest(absltest.TestCase):
         assert len(ins) == len(dins)
 
         primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
+        if isinstance(douts, jax.Array):
+            primalstr = "sync(" + primalstr + ")"
+        elif len(douts) == 1:
+            primalstr = "sync(" + primalstr + "[0])"
+        else:
+            primalstr = "syncall(" + primalstr + "[0])"
 
         fwdstr = (
             "fwd("
@@ -274,24 +315,57 @@ class EnzymeJaxTest(absltest.TestCase):
             + (", ".join(["din" + str(i) for i in range(len(dins))]))
             + ")"
         )
+        if isinstance(douts, jax.Array):
+            fwdstr = "fwdsync1(" + fwdstr + ")"
+        elif len(douts) == 1:
+            fwdstr = "fwdsync2(" + fwdstr + ")"
+        else:
+            fwdstr = "fwdsync3(" + fwdstr + ")"
 
-        revstr = (
+        revstr0 = (
             "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         )
+        if self.revprimal:
+            if len(dins) == 1:
+                if isinstance(douts, jax.Array):
+                    revstr = "revsync0_0(" + revstr0 + ")"
+                else:
+                    revstr = "revsync0_1(" + revstr0 + ")"
+            else:
+                if isinstance(douts, jax.Array):
+                    revstr = "revsync1_0(" + revstr0 + ")"
+                else:
+                    revstr = "revsync1_1(" + revstr0 + ")"
+        else:
+            if len(dins) == 1:
+                revstr = "sync(" + revstr0 + "[0])"
+            else:
+                revstr = "syncall(" + revstr0 + ")"
+        revtransform = splatvjp if self.revprimal else splatvjp_noprim
 
         for backend in self.AllBackends:
             ins_backend = [to_backend(x, backend) for x in ins]
             dins_backend = [to_backend(x, backend) for x in dins]
-            douts_backend = [to_backend(x, backend) for x in douts]
+            douts_backend = None
+            if isinstance(douts, jax.Array):
+                douts_backend = to_backend(douts, backend)
+            else:
+                douts_backend = tuple([to_backend(x, backend) for x in douts])
 
             primalins = {("in" + str(i)): ins_backend[i] for i in range(len(ins))}
+            primalins["sync"] = sync
+            primalins["syncall"] = syncall
+            primalins["fwdsync1"] = fwdsync1
+            primalins["fwdsync2"] = fwdsync2
+            primalins["fwdsync3"] = fwdsync3
+            primalins["revsync0_0"] = revsync0_0
+            primalins["revsync0_1"] = revsync0_1
+            primalins["revsync1_0"] = revsync1_0
+            primalins["revsync1_1"] = revsync1_1
             fwdins = primalins | {
                 ("din" + str(i)): dins_backend[i] for i in range(len(dins))
             }
-            if len(douts) == 1:
-                revins = primalins | {"dout": douts_backend[0]}
-            else:
-                revins = primalins | {"dout": tuple(douts_backend)}
+            revins = primalins | {"dout": douts_backend}
             primres = None
 
             for pname, pipeline, pbackends in self.primfilter(self.AllPipelines):
@@ -386,14 +460,10 @@ class EnzymeJaxTest(absltest.TestCase):
 
             revres = None
 
-            revtransform = splatvjp if self.revprimal else splatvjp_noprim
-
             for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
                 if backend in pbackends:
 
                     adout = douts_backend
-                    if len(douts) != 1:
-                        adout = [tuple(douts_backend)]
                     if pipeline is not None:
                         if self.mlirad_rev or pipeline is None:
                             rfn_enzyme = (
@@ -409,9 +479,9 @@ class EnzymeJaxTest(absltest.TestCase):
                             )
 
                             if self.revprimal:
-                                primals, grads = rev_enzyme(*adout, *ins_backend)
+                                primals, grads = rev_enzyme(adout, *ins_backend)
                             else:
-                                grads = rev_enzyme(*adout, *ins_backend)
+                                grads = rev_enzyme(adout, *ins_backend)
                                 assert grads is not None
 
                             if self.revprimal and primres is not None:
@@ -455,9 +525,9 @@ class EnzymeJaxTest(absltest.TestCase):
                         )
 
                         if self.revprimal:
-                            primals, grads = rev_enzyme(*adout, *ins_backend)
+                            primals, grads = rev_enzyme(adout, *ins_backend)
                         else:
-                            grads = rev_enzyme(*adout, *ins_backend)
+                            grads = rev_enzyme(adout, *ins_backend)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
@@ -508,9 +578,9 @@ class EnzymeJaxTest(absltest.TestCase):
                         )
 
                         if self.revprimal:
-                            primals, grads = rev_enzyme(*adout, *ins_backend)
+                            primals, grads = rev_enzyme(adout, *ins_backend)
                         else:
-                            grads = rev_enzyme(*adout, *ins_backend)
+                            grads = rev_enzyme(adout, *ins_backend)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:

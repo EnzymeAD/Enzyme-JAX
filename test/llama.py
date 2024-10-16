@@ -247,6 +247,7 @@ def forward(x, config, weights, key_cache, value_cache):
 
     return x
 
+
 pipelines = [
     ("JaX  ", None, CurBackends),
     ("JaXPipe", JaXPipeline(), CurBackends),
@@ -336,7 +337,7 @@ class Llama(EnzymeJaxTest):
 
         self.ins = [x, weights, key_cache, value_cache]
         self.dins = [dx, weights, key_cache, value_cache]
-        self.douts = [dx]
+        self.douts = dx
         self.tol = 5e-5
 
 

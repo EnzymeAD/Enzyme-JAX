@@ -146,7 +146,7 @@ class JAXMD(EnzymeJaxTest):
         # for i, v in enumerate(self.ins):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
-        self.douts = [x.copy() for x in self.ins]
+        self.douts = tuple(x.copy() for x in self.ins)
         self.AllPipelines = pipelines
         # No support for stablehlo.while atm
         # self.revfilter = justjax
