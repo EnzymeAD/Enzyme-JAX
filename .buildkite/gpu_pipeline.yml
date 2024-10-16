@@ -93,4 +93,4 @@ steps:
       - "finds.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
-      - "results_*.csv"
+      - "bazel-out/*/results_*.csv"
