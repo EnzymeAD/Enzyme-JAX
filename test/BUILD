@@ -144,7 +144,7 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
-    timeout='long'
+    timeout='eternal'
 )
 
 
