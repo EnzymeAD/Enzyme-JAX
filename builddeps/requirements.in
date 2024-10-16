@@ -6,3 +6,4 @@
 jax >= 0.4.21
 jaxlib >= 0.4.21
 absl_py >= 2.0.0
+ortools >= 9.10
