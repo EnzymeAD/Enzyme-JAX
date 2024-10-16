@@ -1,4 +1,3 @@
-from absl.testing import absltest
 import jax.numpy as jnp
 import jax.random
 import jax.lax
@@ -51,7 +50,7 @@ from dinosaur import xarray_utils
 import neuralgcm
 
 
-class NeuralGCM(absltest.TestCase):
+class NeuralGCM:
     def setUp(self):
         gcs = gcsfs.GCSFileSystem(token="anon")
 
@@ -94,10 +93,10 @@ class NeuralGCM(absltest.TestCase):
         eval_era5 = xarray_utils.regrid(sliced_era5, regridder)
         eval_era5 = xarray_utils.fill_nan_with_nearest(eval_era5)
 
-        inner_steps = 24  # save model outputs once every 24 hours
-        outer_steps = 4 * 24 // inner_steps  # total of 4 days
-        # inner_steps = 4  # save model outputs once every 24 hours
-        # outer_steps = 4 * 4 // inner_steps  # total of 4 days
+        # inner_steps = 24  # save model outputs once every 24 hours
+        # outer_steps = 4 * 24 // inner_steps  # total of 4 days
+        inner_steps = 4  # save model outputs once every 24 hours
+        outer_steps = 4 * 4 // inner_steps  # total of 4 days
 
         timedelta = np.timedelta64(1, "h") * inner_steps
         # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
@@ -174,4 +173,6 @@ class NeuralGCM(absltest.TestCase):
 
 
 if __name__ == "__main__":
-    absltest.main()
+    c = NeuralGCM()
+    c.setUp()
+    c.test()
