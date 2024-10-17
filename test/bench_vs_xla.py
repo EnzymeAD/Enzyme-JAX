@@ -260,7 +260,6 @@ class ValueAndGrad(absltest.TestCase):
 
 class ConstScatter(EnzymeJaxTest):
     def setUp(self):
-
         def forward(c_tau):
             Q = c_tau
             Q = Q.at[0].multiply(3)
@@ -284,7 +283,6 @@ class ConstScatter(EnzymeJaxTest):
 
 class ScatterSum(EnzymeJaxTest):
     def setUp(self):
-
         def energy_fn(R, neighbor):
             dR = R[neighbor[0]]
             return jnp.sum(jnp.sin(dR))

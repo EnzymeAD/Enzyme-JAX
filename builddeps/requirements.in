@@ -3,7 +3,7 @@
 #
 -r test-requirements.txt
 
-jax >= 0.4.21
-jaxlib >= 0.4.21
+jax
+jaxlib
 absl_py >= 2.0.0
 ortools >= 9.10
