@@ -125,10 +125,6 @@ def ApplyConvertSimplifyPatterns : EnzymeHLOPatternOp<
     "convert_simplify"> {
   let patterns = ["ConvertSimplify"];
 }
-def ApplyReshapeSimplifyPatterns : EnzymeHLOPatternOp<
-    "reshape_simplify"> {
-  let patterns = ["ReshapeSimplify"];
-}
 def ApplyDynamicSliceToStaticPatterns : EnzymeHLOPatternOp<
     "dynamic_slice_to_static"> {
   let patterns = ["DynamicSliceToStatic"];

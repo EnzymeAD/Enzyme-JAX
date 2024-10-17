@@ -61,10 +61,11 @@ TEST_DEPS = [
         "//:enzyme_ad",
         "@pypi_jax//:pkg",
         "@pypi_absl_py//:pkg",
+        "@pypi_ortools//:pkg",
     ] + select({
         ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
-        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
-        "//conditions:default": []
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg", "@pypi_nvidia_cuda_nvrtc_cu12//:pkg"],
+        "//conditions:default": [],
     })
 
 [
@@ -117,6 +118,27 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
-    data = ["//src/enzyme_ad/jax:deps/tensat/converted.txt", "//src/enzyme_ad/jax:deps/tensat/extractor/extract.py"],
+    data = ["//src/enzyme_ad/jax:deps/tensat/converted.txt", "//src/enzyme_ad/jax:deps/tensat/converted_multi.txt", "//src/enzyme_ad/jax:deps/tensat/extractor/extract.py"],
     timeout='long'
 )
+
+py_test(
+    name = "jaxmd",
+    srcs = [
+        "jaxmd.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
+    timeout='long'
+)
+
+# py_test(
+#     name = "maxtext",
+#     srcs = [
+#         "maxtext.py",
+#     ],
+#     imports = ["."],
+#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+#     timeout='long'
+# )

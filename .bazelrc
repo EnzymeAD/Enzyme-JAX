@@ -1,5 +1,6 @@
 build --announce_rc
 
+query --experimental_repo_remote_exec
 build --experimental_repo_remote_exec
 build --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 build --cxxopt=-w --host_cxxopt=-w
@@ -11,6 +12,7 @@ build --define framework_shared_object=true
 build --define tsl_protobuf_header_only=true
 build --define=use_fast_cpp_protos=true
 build --define=allow_oversize_protos=true
+build --check_visibility=false
 
 build -c opt
 
@@ -28,3 +30,21 @@ build:cuda --@xla//xla/python:jax_cuda_pip_rpaths=true
 # Default hermetic CUDA and CUDNN versions.
 build:cuda --@local_config_cuda//cuda:include_cuda_libs=true
 build:cuda --@local_config_cuda//:cuda_compiler=nvcc
+
+build:cudaci --repo_env TF_NEED_CUDA=1
+build:cudaci --repo_env TF_NVCC_CLANG=0
+build:cudaci --repo_env CUDA_NVCC=1
+build:cudaci --repo_env CC="/usr/bin/gcc"
+build:cudaci --repo_env TF_NCCL_USE_STUB=1
+build:cudaci --repo_env=HERMETIC_CUDA_VERSION="12.6.1"
+build:cudaci --repo_env=HERMETIC_CUDNN_VERSION="9.4.0"
+# "sm" means we emit only cubin, which is forward compatible within a GPU generation.
+# "compute" means we emit both cubin and PTX, which is larger but also forward compatible to future GPU generations.
+build:cudaci --repo_env HERMETIC_CUDA_COMPUTE_CAPABILITIES="sm_50,sm_60,sm_70,sm_80,compute_90"
+build:cudaci --crosstool_top="@local_config_cuda//crosstool:toolchain"
+build:cudaci --@local_config_cuda//:enable_cuda
+build:cudaci --@xla//xla/python:jax_cuda_pip_rpaths=true
+# Default hermetic CUDA and CUDNN versions.
+build:cudaci --@local_config_cuda//cuda:include_cuda_libs=true
+build:cudaci --@local_config_cuda//:cuda_compiler=nvcc
+

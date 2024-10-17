@@ -10,6 +10,9 @@ compile_pip_requirements(
         "--build-isolation",
         "--rebuild",
     ],
+    extra_deps = [
+        # "@pypi_wheel//:pkg"
+    ],
     requirements_in = "requirements.in",
     requirements_txt = REQUIREMENTS,
     generate_hashes = True,

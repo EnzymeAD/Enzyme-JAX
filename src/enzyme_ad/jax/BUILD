@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@tensat_crate_index//:defs.bzl", "all_crate_deps")
 load("deps/rust_cxx_bridge.bzl", "rust_cxx_bridge")
 
-exports_files(["enzymexlamlir-opt.cpp", "deps/tensat/converted.txt", "deps/tensat/extractor/extract.py"])
+exports_files(["enzymexlamlir-opt.cpp", "deps/tensat/converted.txt", "deps/tensat/converted_multi.txt", "deps/tensat/extractor/extract.py"])
 licenses(["notice"])
 
 package(
@@ -47,6 +47,7 @@ py_library(
     srcs = [
         "__init__.py",
         "primitives.py",
+        "utils.py",
     ],
     visibility = ["//visibility:public"],
 )
@@ -282,7 +283,6 @@ cc_library(
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
-        "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:TransformUtils",
 
         "@stablehlo//:reference_ops",
@@ -311,9 +311,9 @@ cc_library(
         "@xla//xla/python/ifrt/hlo:hlo_program",
         "@xla//xla/ffi:call_frame",
         "@com_google_protobuf//:protobuf",
-        "@tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
-        "@tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
-        "@tsl//tsl/profiler/utils:time_utils_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
+        "@xla//xla/tsl/profiler/utils:time_utils_impl",
         "@tsl//tsl/platform:env_impl",
         "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/mlir/utils:type_util",
@@ -321,18 +321,27 @@ cc_library(
         "@stablehlo//:chlo_capi_objects",
         "@com_google_absl//absl/hash:hash",
         "@com_google_absl//absl/log:initialize",
-        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:CAPIIRObjects",  
+
+        "@xla//xla/translate/stablehlo_to_hlo:translate",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+
+        "@xla//xla/service/gpu/model:gpu_performance_model",
+        "@xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
+        "@xla//xla/service/gpu/model:gpu_hlo_cost_analysis",
+        "@xla//xla/service/gpu:gpu_latency_hiding_scheduler",
+        "@xla//xla/stream_executor:device_description",
     ] + select({
     "@bazel_tools//src/conditions:darwin": [],
     "//conditions:default": [
         "@xla//xla/stream_executor/cuda:all_runtime", 
-        "@xla//xla/stream_executor/rocm:all_runtime",
+        # "@xla//xla/stream_executor/rocm:all_runtime",
         "@xla//xla/service/gpu/model:hlo_op_profiles",
-        "@xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
         "@xla//xla/service/gpu:nvptx_compiler",
         # "@xla//xla/service/gpu:amdgpu_compiler",
         "@xla//xla/service/gpu:gpu_transfer_manager",
-        "@xla//xla/stream_executor:kernel", 
+        "@xla//xla/stream_executor:kernel",
+        "@xla//xla/stream_executor/gpu:redzone_allocator",
     ]}),
     alwayslink = 1,
     linkstatic = 1
@@ -355,14 +364,14 @@ pybind_library(
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
         "@tsl//tsl/platform:tensor_float_32_utils",
-        "@tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
-        "@tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
-        "@tsl//tsl/profiler/utils:time_utils_impl",
-        "@tsl//tsl/protobuf:dnn_proto_cc_impl",
-        "@tsl//tsl/protobuf:histogram_proto_cc",
-        "@tsl//tsl/protobuf:histogram_proto_cc_impl",
-        "@tsl//tsl/protobuf:protos_all_cc_impl",
- 
+        "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
+        "@xla//xla/tsl/profiler/utils:time_utils_impl",
+        "@xla//xla/tsl/protobuf:dnn_proto_cc_impl",
+        "@xla//xla/tsl/protobuf:histogram_proto_cc",
+        "@xla//xla/tsl/protobuf:histogram_proto_cc_impl",
+        "@xla//xla/tsl/protobuf:protos_all_cc_impl",
+
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         "@xla//xla:autotune_results_proto_cc",
         "@xla//xla:autotune_results_proto_cc_impl",
@@ -387,6 +396,7 @@ pybind_library(
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/stream_executor/gpu:redzone_allocator",
         "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",

@@ -456,6 +456,7 @@ def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
 }]>;
 
 /// Helpers - Max/Min
+def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 
@@ -531,6 +532,8 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
+def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
+
 def : HLOInactiveOp<"CeilOp">;
 
 def : HLODerivative<"CbrtOp", (Op $x), [
@@ -545,6 +548,9 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
 ], (Complex (Shadow $re), (Shadow $im))>;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
+
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
+def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     [
@@ -645,9 +651,18 @@ def : HLODerivative<"PowOp", (Op $x, $y),
                   ]
                   >;
 
-def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+def : HLODerivative<"AbsOp", (Op $x), [
+  (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet)))
+]>;
 
-def : HLORegionTerminatorOp<"ReturnOp">;
+def : HLODerivative<"RemOp", (Op $x, $y), 
+                  [
+	            (DiffeRet),
+                    (CheckedMul (DiffeRet), (Neg (Mul (Sign (Div $x, $y):$div),(Floor (Abs $div)))))
+                  ]
+                  >;
+
+def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 
 def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
@@ -664,6 +679,13 @@ def : HLODerivative<"RsqrtOp", (Op $x),
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
                       (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
                     ]
+                  >;
+
+def : HLODerivative<"ConvertOp", (Op $x),
+                    [
+                        (Convert (TypeOf $x), (DiffeRet))
+                    ],
+                    (Convert (ResultTypes), (Shadow $x))
                   >;
 
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),

@@ -207,7 +207,7 @@ dependencies = [
 [[package]]
 name = "egg"
 version = "0.6.1-dev"
-source = "git+https://github.com/yycdavid/egg?rev=12cc1ee7731d37fe91901c81f59678fa1d08a2bb#12cc1ee7731d37fe91901c81f59678fa1d08a2bb"
+source = "git+https://github.com/aryavohra/egg?rev=b30d14cff61bff97336323f6eb0978cc7769140d#b30d14cff61bff97336323f6eb0978cc7769140d"
 dependencies = [
  "indexmap",
  "instant",

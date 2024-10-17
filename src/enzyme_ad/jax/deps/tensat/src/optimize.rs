@@ -54,7 +54,10 @@ impl CostModel {
             | Mdl::Vec(_)
             | Mdl::BlackBox(_)
             | Mdl::Index(_)
-            | Mdl::ReturnOp(_) => 0.0,
+            | Mdl::ReturnOp(_)
+            // InferReshape at most adds a ReshapeOp without changing the underlying data, which should be free
+            // TODO: Gather all the "zero cost ops" assumptions together (the other bits currently being in EqualitySaturation.cpp)
+            | Mdl::InferReshape(_) => 0.0,
             x => create_stablehlo_op(egraph, x, ffi::get_cost) as f32,
         }
     }
@@ -191,6 +194,7 @@ pub struct SolvedResults {
 /// - `node_picked`: hashmap storing which node is picked for each EClass ID
 /// - `eclass`: The EClass ID that we aim to construct as root
 /// - `added_memo`: Map from EClass ID to RecExpr ID. Storing the eclasses that were already added
+/// - `to_egraph`: Map from RecExpr ID to EClass ID
 /// - `egraph`: E-graph of interest
 /// - `expr`: the RecExpr storing the optimized graph, it is constructed within this function
 ///
@@ -201,6 +205,7 @@ pub fn construct_best_rec(
     node_picked: &HashMap<Id, Mdl>,
     eclass: Id,
     added_memo: &mut HashMap<Id, Id>,
+    to_egraph: &mut HashMap<Id, Id>,
     egraph: &EGraph<Mdl, TensorAnalysis>,
     expr: &mut RecExpr<Mdl>,
 ) -> Id {
@@ -210,10 +215,11 @@ pub fn construct_best_rec(
         Some(id_expr) => *id_expr,
         None => {
             let node = node_picked.get(&id).unwrap().clone().map_children(|child| {
-                construct_best_rec(node_picked, child, added_memo, egraph, expr)
+                construct_best_rec(node_picked, child, added_memo, to_egraph, egraph, expr)
             });
             let id_expr = expr.add(node);
             assert!(added_memo.insert(id, id_expr).is_none());
+            assert!(to_egraph.insert(id_expr, id).is_none());
             id_expr
         }
     }

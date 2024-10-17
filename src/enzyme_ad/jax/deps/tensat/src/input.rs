@@ -34,6 +34,7 @@ pub mod ffi {
         SelectOp,
         ConcatenateOp,
         DotGeneralOp,
+        ConvolutionOp,
         PadOp,
         SliceOp,
         TransposeOp,
@@ -56,6 +57,7 @@ pub mod ffi {
         SSplit0,
         SSplit1,
         MatchRank,
+        InferReshape,
     }
 
     struct Node {
@@ -81,6 +83,12 @@ pub mod ffi {
     #[derive(Debug)]
     struct Vector {
         pub vec: Vec<i64>,
+    }
+
+    // Similarly, we're creating a Matrix type for vecs of vecs (padding)
+    #[derive(Debug)]
+    struct Matrix {
+        pub mat: Vec<Vector>,
     }
 
     // take floats from c++ and wrap them into f32s below
@@ -157,6 +165,29 @@ pub mod ffi {
             self: &mut CppGraphConverter,
             inputs: &[*mut TensorInfo],
             dimension: i64,
+            output: Tensor,
+        ) -> Box<TensorInfo>;
+        fn new_convolution_op(
+            self: &mut CppGraphConverter,
+            lhs: &TensorInfo,
+            rhs: &TensorInfo,
+            windowStrides: Vec<i64>,
+            padding: Vec<Vector>,
+            lhsDilation: Vec<i64>,
+            rhsDilation: Vec<i64>,
+            windowReversal: Vec<bool>,
+            inputBatchDimension: i64,
+            inputFeatureDimension: i64,
+            inputSpatialDimension: Vec<i64>,
+            kernelInputFeatureDimension: i64,
+            kernelOutputFeatureDimension: i64,
+            kernelSpatialDimension: Vec<i64>,
+            outputBatchDimension: i64,
+            outputFeatureDimension: i64,
+            outputSpatialDimension: Vec<i64>,
+            featureGroupCount: i64,
+            batchGroupCount: i64,
+            precision_config: Vec<i64>,
             output: Tensor,
         ) -> Box<TensorInfo>;
         fn new_dot_general_op(
@@ -274,7 +305,7 @@ pub mod ffi {
         fn new_blackbox_op(
             self: &mut CppGraphConverter,
             inpts: &[*mut TensorInfo],
-            captured: &[*mut TensorInfo],  // values that appear in a block that was declared outside
+            captured: &[*mut TensorInfo], // values that appear in a block that was declared outside
             cpp_num: i64,
             outputs: &Vec<Tensor>,
         ) -> Box<TensorInfo>;
@@ -293,6 +324,7 @@ pub mod ffi {
             operands: Vec<Tensor>,
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
+            matrix_args: Vec<Matrix>,
         ) -> u64;
     }
 
@@ -304,6 +336,7 @@ pub mod ffi {
             operands: Vec<Tensor>,
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
+            matrix_args: Vec<Matrix>,
         ) -> Vec<Tensor>;
     }
 }
@@ -356,6 +389,7 @@ impl ffi::Ops {
             Mdl::PadOp(_) => Ops::PadOp,
             Mdl::SliceOp(_) => Ops::SliceOp,
             Mdl::TransposeOp(_) => Ops::TransposeOp,
+            Mdl::ConvolutionOp(_) => Ops::ConvolutionOp,
             Mdl::MulOp(_) => Ops::MulOp,
             Mdl::AddOp(_) => Ops::AddOp,
             Mdl::DivOp(_) => Ops::DivOp,
@@ -374,6 +408,7 @@ impl ffi::Ops {
             Mdl::SSplit0(_) => Ops::SSplit0,
             Mdl::SSplit1(_) => Ops::SSplit1,
             Mdl::MatchRank(_) => Ops::MatchRank,
+            Mdl::InferReshape(_) => Ops::InferReshape,
         }
     }
 }
@@ -404,6 +439,14 @@ impl CppGraphConverter {
         }
     }
 
+    fn tensor_data(tensors: Vec<ffi::Tensor>) -> TensorData {
+        TensorData {
+            tensors,
+            name: None,
+            need_infer_shape: false,
+        }
+    }
+
     // Wrapper functions for C++ side
     pub fn new_input(&mut self, block_arg_number: i64, tensor: ffi::Tensor) -> Box<TensorInfo> {
         let name = format!("input_{}", block_arg_number)
@@ -417,10 +460,7 @@ impl CppGraphConverter {
         let new_node = Mdl::Input([name_id, block_arg_node_id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![tensor],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![tensor]),
         };
         Box::new(res)
     }
@@ -430,10 +470,7 @@ impl CppGraphConverter {
         let new_node = Mdl::Index([index_num_node, inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![inpt.tensor_data.tensors[index as usize].clone()],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![inpt.tensor_data.tensors[index as usize].clone()]),
         };
         Box::new(res)
     }
@@ -457,10 +494,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -476,10 +510,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -495,10 +526,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -514,10 +542,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: outputs.clone(),
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(outputs.clone()),
         };
         Box::new(res)
     }
@@ -528,10 +553,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -574,10 +596,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -593,18 +612,12 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
 
-    fn new_tensorinfo_vec(
-        &mut self,
-        inputs: &[*mut TensorInfo]
-    ) -> Id {
+    fn new_tensorinfo_vec(&mut self, inputs: &[*mut TensorInfo]) -> Id {
         let tensor_infos: Vec<&TensorInfo> = inputs.iter().map(|&ptr| unsafe { &*ptr }).collect();
         let inputs_node = Mdl::Vec(tensor_infos.iter().map(|i| i.id).collect());
         self.rec_expr.add(inputs_node)
@@ -622,10 +635,77 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
+        };
+        Box::new(res)
+    }
+
+    pub fn new_convolution_op(
+        &mut self,
+        lhs: &TensorInfo,
+        rhs: &TensorInfo,
+        window_strides: Vec<i64>,
+        padding: Vec<ffi::Vector>,
+        lhs_dilation: Vec<i64>,
+        rhs_dilation: Vec<i64>,
+        window_reversal: Vec<bool>,
+        input_batch_dimension: i64,
+        input_feature_dimension: i64,
+        input_spatial_dimensions: Vec<i64>,
+        kernel_input_feature_dimension: i64,
+        kernel_output_feature_dimension: i64,
+        kernel_spatial_dimensions: Vec<i64>,
+        output_batch_dimension: i64,
+        output_feature_dimension: i64,
+        output_spatial_dimensions: Vec<i64>,
+        feature_group_count: i64,
+        batch_group_count: i64,
+        precision_config: Vec<i64>,
+        output: ffi::Tensor,
+    ) -> Box<TensorInfo> {
+        let window_strides_node_id = self.vec_node(window_strides);
+        let lhs_dilation_node_id = self.vec_node(lhs_dilation);
+        let rhs_dilation_node_id = self.vec_node(rhs_dilation);
+
+        // We could add a bool element type vec?
+        let window_reversal_node_id =
+            self.vec_node(window_reversal.iter().map(|x| *x as i64).collect());
+        let input_spatial_dimensions_node_id = self.vec_node(input_spatial_dimensions);
+        let kernel_spatial_dimensions_node_id = self.vec_node(kernel_spatial_dimensions);
+        let output_spatial_dimensions_node_id = self.vec_node(output_spatial_dimensions);
+        let precision_config_node_id = self.vec_node(precision_config);
+
+        let padding_node_ids: Vec<Id> = padding
+            .into_iter()
+            .map(|pad| self.vec_node(pad.vec))
+            .collect::<Vec<Id>>();
+        let padding_node_id = self.rec_expr.add(Mdl::Vec(padding_node_ids));
+
+        let new_node = Mdl::ConvolutionOp([
+            lhs.id,
+            rhs.id,
+            window_strides_node_id,
+            padding_node_id,
+            lhs_dilation_node_id,
+            rhs_dilation_node_id,
+            window_reversal_node_id,
+            self.add_or_get_val(input_batch_dimension),
+            self.add_or_get_val(input_feature_dimension),
+            input_spatial_dimensions_node_id,
+            self.add_or_get_val(kernel_input_feature_dimension),
+            self.add_or_get_val(kernel_output_feature_dimension),
+            kernel_spatial_dimensions_node_id,
+            self.add_or_get_val(output_batch_dimension),
+            self.add_or_get_val(output_feature_dimension),
+            output_spatial_dimensions_node_id,
+            self.add_or_get_val(feature_group_count),
+            self.add_or_get_val(batch_group_count),
+            precision_config_node_id,
+        ]);
+
+        let res = TensorInfo {
+            id: self.rec_expr.add(new_node),
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -659,10 +739,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -690,10 +767,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -713,10 +787,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -732,10 +803,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -749,10 +817,7 @@ impl CppGraphConverter {
         let new_node = Mdl::MulOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -766,10 +831,7 @@ impl CppGraphConverter {
         let new_node = Mdl::AddOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -783,10 +845,7 @@ impl CppGraphConverter {
         let new_node = Mdl::DivOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -800,10 +859,7 @@ impl CppGraphConverter {
         let new_node = Mdl::SubtractOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -817,10 +873,7 @@ impl CppGraphConverter {
         let new_node = Mdl::MinOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -834,10 +887,7 @@ impl CppGraphConverter {
         let new_node = Mdl::MaxOp([lhs.id, rhs.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -846,10 +896,7 @@ impl CppGraphConverter {
         let new_node = Mdl::NegOp([inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -858,10 +905,7 @@ impl CppGraphConverter {
         let new_node = Mdl::TanhOp([inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -870,10 +914,7 @@ impl CppGraphConverter {
         let new_node = Mdl::ExpOp([inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -884,10 +925,7 @@ impl CppGraphConverter {
         let new_node = Mdl::IotaOp([iota_dim_id, shape_id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -902,10 +940,7 @@ impl CppGraphConverter {
         let new_node = Mdl::DynamicUpdateSliceOp([operand.id, update.id, start_indices.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -922,10 +957,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![output],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
         };
         Box::new(res)
     }
@@ -947,10 +979,7 @@ impl CppGraphConverter {
         ]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: outputs.clone(),
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(outputs.clone()),
         };
         Box::new(res)
     }
@@ -969,10 +998,7 @@ impl CppGraphConverter {
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: outputs.clone(),
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(outputs.clone()),
         };
         self.blackbox_cpp_num_to_tensorinfo
             .insert(cpp_num, res.clone());
@@ -985,10 +1011,7 @@ impl CppGraphConverter {
         // Returns do not produce values!
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: TensorData {
-                tensors: vec![],
-                name: None,
-            },
+            tensor_data: CppGraphConverter::tensor_data(vec![]),
         };
         Box::new(res)
     }
@@ -1001,7 +1024,12 @@ impl CppGraphConverter {
         println!("{}", self.rec_expr.pretty(width as usize))
     }
 
-    fn convert_to_node(&self, rec_expr: RecExpr<Mdl>) -> Vec<ffi::Node> {
+    fn convert_to_node(
+        &self,
+        egraph: &EGraph<Mdl, TensorAnalysis>,
+        to_egraph: &HashMap<Id, Id>,
+        rec_expr: RecExpr<Mdl>
+    ) -> Vec<ffi::Node> {
         let mut res: Vec<ffi::Node> = Vec::new();
 
         let index = |id: Id| (usize::from(id) as i32); // TODO: this is probably wrong
@@ -1014,11 +1042,11 @@ impl CppGraphConverter {
 
         let rec_expr_ref = rec_expr.as_ref();
 
-        for mdl in rec_expr_ref.iter() {
+        for (i, mdl) in rec_expr_ref.iter().enumerate() {
             let op = ffi::Ops::from_mdl(mdl);
 
             let new_node = |operands: &[Id]| ffi::Node {
-                op: op,
+                op,
                 label: "".to_string(),
                 operands: convert(operands),
             };
@@ -1030,10 +1058,23 @@ impl CppGraphConverter {
                     operands: vec![],
                 },
                 Mdl::Num(num) => ffi::Node {
-                    op: op,
+                    op,
                     label: "".to_string(),
                     operands: vec![*num as i32],
                 },
+                Mdl::InferReshape([input]) => {
+                    let input_index = index(*input);
+                    let id = to_egraph[&Id::from(i)];
+                    let mut operands: Vec<i32> =
+                        (&egraph[id]).data.tensors[0].shape
+                            .iter().map(|x| *x as i32).collect();
+                    operands.insert(0, input_index);
+                    ffi::Node {
+                        op,
+                        label: "".to_string(),
+                        operands,
+                    }
+                }
                 // TODO: More clever pattern matching
                 Mdl::Vec(ops) => new_node(ops),
                 Mdl::Input(ops) => new_node(ops),
@@ -1043,6 +1084,7 @@ impl CppGraphConverter {
                 Mdl::DotGeneralOp(ops) => new_node(ops),
                 Mdl::SliceOp(ops) => new_node(ops),
                 Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::ConvolutionOp(ops) => new_node(ops),
                 Mdl::MulOp(ops) => new_node(ops),
                 Mdl::AddOp(ops) => new_node(ops),
                 Mdl::DivOp(ops) => new_node(ops),
@@ -1059,7 +1101,7 @@ impl CppGraphConverter {
                 Mdl::SSplit0(ops) => new_node(ops),
                 Mdl::SSplit1(ops) => new_node(ops),
                 Mdl::MatchRank(ops) => new_node(ops),
-                _ => unimplemented!()
+                _ => unimplemented!(),
             };
 
             res.push(node);
@@ -1087,10 +1129,9 @@ impl CppGraphConverter {
         let learned_rules =
             read_to_string(rule_file).expect("Something went wrong reading the rule file");
         let time_limit_sec = Duration::new(n_sec, 0);
-        let pre_defined_rules = PRE_DEFINED_RULES.iter().map(|&x| x);
-        let split_rules: Vec<&str> = learned_rules.split("\n")
+        let split_rules: Vec<&str> = learned_rules
+            .split("\n")
             .filter(|x| !x.is_empty())
-            .chain(pre_defined_rules)
             .collect();
         let do_filter_after = no_cycle && filter_after;
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
@@ -1179,11 +1220,11 @@ impl CppGraphConverter {
 
         let (egraph, root) = (runner.egraph, runner.roots[0]);
         let cost_model: CostModel = CostModel::new();
-        let (best, ext_secs) = extract_by_ilp(&egraph, root, &cost_model);
+        let (best, ext_secs, to_egraph) = extract_by_ilp(&egraph, root, &cost_model);
         // let (best, ext_secs) = extract_by_greedy(&egraph, root, &cost_model);
 
         // println!("{}", best);
-        self.convert_to_node(best)
+        self.convert_to_node(&egraph, &to_egraph, best)
     }
 }
 
@@ -1210,7 +1251,7 @@ fn extract_by_ilp(
     egraph: &EGraph<Mdl, TensorAnalysis>,
     root: Id,
     cost_model: &CostModel,
-) -> (RecExpr<Mdl>, f32) {
+) -> (RecExpr<Mdl>, f32, HashMap<Id, Id>) {
     // Prepare data for ILP formulation, save to json
     let (m_id_map, e_m, h_i, cost_i, fus_i, g_i, root_m, i_to_nodes, blacklist_i) =
         prep_ilp_data(egraph, root, cost_model);
@@ -1234,7 +1275,10 @@ fn extract_by_ilp(
     let class_constraint = true;
     let no_order = true;
     let initialise_with_greedy = false;
-    let fusion_costs: bool = std::env::var("FUSION_COSTS").unwrap_or(String::from("true")).parse().unwrap();
+    let fusion_costs: bool = std::env::var("FUSION_COSTS")
+        .unwrap_or(String::from("false"))
+        .parse()
+        .unwrap();
     let mut arg_vec = vec!["src/enzyme_ad/jax/deps/tensat/extractor/extract.py"];
     if order_var_int {
         arg_vec.push("--order_var_int");
@@ -1281,7 +1325,8 @@ fn extract_by_ilp(
     arg_vec.push(time_lim);
     arg_vec.push("--num_thread");
     arg_vec.push(num_thread);
-    let child = Command::new("python")
+
+    let child = Command::new("python3")
         .args(&arg_vec)
         .spawn()
         .expect("failed to execute child");
@@ -1311,8 +1356,9 @@ fn extract_by_ilp(
 
         let mut expr = RecExpr::default();
         let mut added_memo: HashMap<Id, Id> = Default::default();
-        let _ = construct_best_rec(&node_picked, root, &mut added_memo, egraph, &mut expr);
-        (expr, solved_data.time)
+        let mut to_egraph: HashMap<Id, Id> = Default::default();
+        let _ = construct_best_rec(&node_picked, root, &mut added_memo, &mut to_egraph, egraph, &mut expr);
+        (expr, solved_data.time, to_egraph)
     } else {
         panic!("Python script failed");
     }
