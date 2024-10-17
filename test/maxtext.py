@@ -145,6 +145,13 @@ pipelines = [
     ),
     ("PartOpt", JaXPipeline(partialopt)),
     ("DefOpt", JaXPipeline(hlo_opts())),
+    (
+        "EqSat",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "equality-saturation-pass"
+        ),
+    ),
 ]
 
 
