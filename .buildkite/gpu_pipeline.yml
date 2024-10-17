@@ -89,8 +89,10 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s \${BAZEL_BUILD_FLAGS[@]} //test:llama || echo "fail3"
       # HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
       cat bazel-out/*/testlogs/test/llama/test.log
+      find `pwd`/bazel-bin/test/llama.runfiles > finds2.txt
     artifact_paths:
       - "finds.txt"
+      - "finds2.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
-      - "bazel-out/*/results_*.csv"
+      - "bazel-bin/test/llama.runfiles/results_*.csv"
