@@ -9,6 +9,7 @@ namespace tensat {
 enum class Type : uint8_t;
 enum class Ops : uint8_t;
 struct Vector;
+struct Matrix;
 struct Tensor;
 
 /**
@@ -17,12 +18,14 @@ struct Tensor;
 
 uint64_t get_cost(Ops op, rust::Vec<tensat::Tensor> operands,
                   rust::Vec<tensat::Vector> other_vector_args,
-                  rust::Vec<int64_t> int_args);
+                  rust::Vec<int64_t> int_args,
+                  rust::Vec<tensat::Matrix> matrix_args);
 
 mlir::Type newTensorType(mlir::OpBuilder &builder, Tensor tensor); 
 mlir::Type tensatTypeToMlirType(mlir::OpBuilder &builder, Type type);
 
 rust::Vec<Tensor> get_shape(Ops op, rust::Vec<tensat::Tensor> operands,
                            rust::Vec<tensat::Vector> other_vector_args,
-                           rust::Vec<int64_t> int_args);
+                           rust::Vec<int64_t> int_args,
+                  rust::Vec<tensat::Matrix> matrix_args);
 } // namespace tensat

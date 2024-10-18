@@ -15,19 +15,29 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+
 #include "src/enzyme_ad/jax/deps/include/ReactantExtra.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/pjrt/cpu/cpu_client.h"
 #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
+#include "xla/service/gpu/gpu_latency_hiding_scheduler.h"
+#include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
+#include "xla/service/gpu/model/gpu_performance_model.h"
 #include "xla/service/platform_util.h"
+#include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
 #include "rust/cxx.h"
@@ -40,6 +50,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+#undef NDEBUG
+#include <cassert>
 
 #define DEBUG_TYPE "enzyme"
 
@@ -111,6 +124,29 @@ EqsatPlatform getPlatform() {
   }
 }
 
+stream_executor::DeviceDescription
+RTXA6000DeviceInfo(tensorflow::se::GpuComputeCapability cc =
+                       tensorflow::se::CudaComputeCapability(8, 9)) {
+  stream_executor::DeviceDescription b;
+  b.set_gpu_compute_capability(cc);
+  b.set_threads_per_block_limit(1024);
+  b.set_threads_per_warp(32);
+  b.set_shared_memory_per_block(48 * 1024);
+  b.set_shared_memory_per_block_optin(99 * 1024);
+  b.set_shared_memory_per_core(100 * 1024);
+  b.set_threads_per_core_limit(1536);
+  b.set_core_count(84);
+  b.set_fpus_per_core(128);
+  b.set_block_dim_limit_x(2'147'483'647);
+  b.set_block_dim_limit_y(65535);
+  b.set_block_dim_limit_z(65535);
+  b.set_memory_bandwidth(768'096'000'000);
+  b.set_l2_cache_size(6 * 1024 * 1024);
+  b.set_clock_rate_ghz(1.410);
+  b.set_device_memory_size(51'050'250'240);
+  return b;
+}
+
 /**
  * Ops to not measure cost for
  */
@@ -147,11 +183,17 @@ bool isBlackboxed(Operation *op) {
 class OperationTimer {
 public:
   /**
-   * Measure cost of operation (execution time in microseconds) by running it
+   * Get cost of operation. This depends on the platform:
+   * - if CPU, then we measure the execution time in microseconds by running it
    * many times and measuring the time taken.
+   * - if GPU, we use XLA's analytical cost model to get the expected execution
+   * time in nanoseconds.
    */
   static uint64_t getCost(Operation *op, unsigned warmup,
                           unsigned repetitions) {
+    // TODO: refactor this/separate out into two functions? so that
+    // warmup/repetitions don't need to be passed for GPU.
+
     if (!logsInitialized) {
       InitializeLogs();
       logsInitialized = true;
@@ -169,6 +211,7 @@ public:
     }
 
     auto context = OperationTimer::getContext();
+    int cost = -1;
 
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
@@ -177,72 +220,88 @@ public:
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
 
-    xla::PjRtClient *client = nullptr;
+    switch (getPlatform()) {
+    case CPU: {
+      xla::PjRtClient *client = MakeCPUClient(0, 1, 1);
+      auto executable = prepareExecutable(client, wrapperModule);
 
-    auto platform = getPlatform();
+      unsigned numArgs = op->getNumOperands();
+      unsigned numResults = op->getNumResults();
+      uint8_t futures = 0;
 
-    switch (platform) {
-    case CPU:
-      client = MakeCPUClient(0, 1, 1);
+      xla::PjRtBuffer *args[numArgs];
+      uint8_t isArgDonatable[numArgs];
+
+      int numRuns = warmup + repetitions;
+      xla::PjRtBuffer *res[numRuns * numResults];
+
+      for (int i = 0; i < numArgs; i++) {
+        args[i] = getRandomInput(client, op->getOperand(i).getType());
+        isArgDonatable[i] = false;
+      }
+
+      std::vector<uint64_t> durations(numRuns);
+
+      for (unsigned i = 0; i < warmup + repetitions; i++) {
+        durations[i] =
+            XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
+                       res + i * numResults, &futures, nullptr);
+      }
+
+      // TODO: This means there's no point in warmup anymore, since we're now
+      // taking individual measurements. Maybe we get rid of the parameter or do
+      // something more sophisticated
+      cost = *std::min_element(durations.begin(), durations.end());
+      assert(!futures);
+
+      // Cleanup
+      for (int i = 0; i < numRuns * numResults; i++) {
+        PjRtBufferFree(res[i]);
+      }
+
+      FreeClient(executable->client());
+      ExecutableFree(executable);
       break;
-    case GPU:
-      // https://github.com/EnzymeAD/Reactant.jl/blob/65060404e19cd5a56a51e4fb2b252380477632b0/src/XLA.jl#L56
-      const char *error = "";
-      // TODO: is this correct?
-      client = MakeGPUClient(0, 1, nullptr, 0, "gpu", &error);
-      if (std::string(error) != "") {
-        auto error_string =
-            "Error while creating GPU client: " + std::string(error);
-        throw std::invalid_argument(error_string);
+    }
+    case GPU: {
+      std::unique_ptr<xla::HloModule> hloModule =
+          wrapperModuleToHloModule(wrapperModule);
+
+      auto deviceDescription = getDeviceDescription();
+
+      xla::HloCostAnalysis::ShapeSizeFunction shapeSizeFunction =
+          [](const xla::Shape &shape) {
+            return xla::gpu::GetSizeOfShape(shape, 4);
+          };
+      xla::gpu::GpuHloCostAnalysis costAnalysis(
+          xla::gpu::GpuHloCostAnalysis::Options{
+              shapeSizeFunction, {}, {}, true},
+          *deviceDescription);
+
+      assert(hloModule->computation_count() == 1);
+      for (auto c : hloModule->computations()) {
+        c->Accept(&costAnalysis);
+        // The op we are measuring should always be the return value, which is
+        // at the root.
+        auto op = c->root_instruction();
+
+        auto runtime =
+            xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
+                op, *deviceDescription, &costAnalysis,
+                xla::gpu::GpuPerformanceModelOptions::ForModule(
+                    op->GetModule()));
+        cost = absl::ToInt64Nanoseconds(runtime.exec_time);
       }
       break;
     }
-
-    auto executable = prepareExecutable(client, wrapperModule);
-
-    unsigned numArgs = op->getNumOperands();
-    unsigned numResults = op->getNumResults();
-    uint8_t futures = 0;
-
-    xla::PjRtBuffer *args[numArgs];
-    uint8_t isArgDonatable[numArgs];
-
-    int numRuns = warmup + repetitions;
-    xla::PjRtBuffer *res[numRuns * numResults];
-
-    for (int i = 0; i < numArgs; i++) {
-      args[i] = getRandomInput(client, op->getOperand(i).getType());
-      isArgDonatable[i] = false;
     }
 
-    std::vector<uint64_t> durations(numRuns);
-
-    for (unsigned i = 0; i < warmup + repetitions; i++) {
-      durations[i] =
-          XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
-                     res + i * numResults, &futures, nullptr);
-    }
-
-    assert(!futures);
-
-    // TODO: This means there's no point in warmup anymore, since we're now
-    // taking individual measurements. Maybe we get rid of the parameter or do
-    // something more sophisticated
-    uint64_t duration = *std::min_element(durations.begin(), durations.end());
-
+    assert(cost >= 0);
     auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, duration);
+    runtimeCache.try_emplace(indexOp, cost);
 
-    // Cleanup
-    for (int i = 0; i < numRuns * numResults; i++) {
-      PjRtBufferFree(res[i]);
-    }
-
-    FreeClient(executable->client());
-    ExecutableFree(executable);
     wrapperModule.erase();
-
-    return duration;
+    return cost;
   }
 
   static Operation *getDummyOp(OpBuilder &builder, Type type) {
@@ -372,6 +431,42 @@ private:
 
     return buffer;
   }
+
+  /**
+   * Create XLA internal HloModule for the analytical cost model
+   */
+  static std::unique_ptr<xla::HloModule>
+  wrapperModuleToHloModule(ModuleOp &wrapperModule) {
+    auto context = wrapperModule.getContext();
+    PassManager pm(context);
+    pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+    pm.run(wrapperModule);
+
+    MlirToHloConversionOptions options;
+    options.propagate_layouts = true;
+    options.return_tuple = false;
+
+    auto hloModule = ConvertMlirHloToHloModule(wrapperModule, options);
+    if (!hloModule.ok()) {
+      llvm::errs() << "Couldn't create hloModule: "
+                   << hloModule.status().message();
+      return nullptr;
+    } else {
+      return std::move(hloModule.value());
+    }
+  }
+
+  /**
+   * Get DeviceDescription for current device.
+   */
+  static std::unique_ptr<stream_executor::DeviceDescription>
+  getDeviceDescription() {
+    auto platform = xla::PlatformUtil::GetPlatform(
+                        (getPlatform() == EqsatPlatform::CPU ? "cpu" : "cuda"))
+                        .value();
+    // assume ordinal 0
+    return std::move(platform->DescriptionForDevice(0).value());
+  }
 };
 
 llvm::DenseMap<Operation *, uint64_t, OperationMapInfo>
@@ -446,6 +541,135 @@ std::vector<int64_t> dotGeneralShapeComputation(
 
   return shape;
 }
+/**
+ * Convert a vector of vectors into a DenseIntElementsAttr
+ */
+mlir::DenseIntElementsAttr
+matrixToDenseAttr(const std::vector<std::vector<int64_t>> &matrix,
+                  mlir::Builder &builder) {
+  std::vector<int64_t> flattenedResult;
+  std::vector<int64_t> shape;
+
+  if (matrix.empty()) {
+    std::cerr << "Error: Input matrix is empty." << std::endl;
+    return {};
+  }
+
+  for (const auto &row : matrix) {
+    if (row.empty()) {
+      std::cerr << "Error: Row in matrix is empty." << std::endl;
+      return {};
+    }
+
+    flattenedResult.insert(flattenedResult.end(), row.begin(), row.end());
+    shape.push_back(row.size());
+  }
+
+  if (shape.size() == 1) {
+    shape = {static_cast<long long>(flattenedResult.size())};
+  } else {
+    int64_t row_size = shape[0];
+    for (const auto &row : matrix) {
+      if (row.size() != row_size) {
+        std::cerr << "Error: Non-rectangular matrix detected." << std::endl;
+        return {};
+      }
+    }
+  }
+
+  int64_t expected_elements = 1;
+  for (auto dim : shape) {
+    expected_elements *= dim;
+  }
+
+  if (flattenedResult.size() != expected_elements) {
+    std::cerr << "Error: Mismatch between flattened result size and shape."
+              << " Expected " << expected_elements << " elements but got "
+              << flattenedResult.size() << "." << std::endl;
+    return {};
+  }
+  auto type = mlir::RankedTensorType::get(shape, builder.getIntegerType(64));
+  return mlir::DenseIntElementsAttr::get(type, flattenedResult);
+}
+
+// https://github.com/jax-ml/jax/blob/b8a066a90790a900d370812263dea51e4b262b43/jax/_src/lax/convolution.py#L351
+// Define ConvDimensionNumbers similar to JAX's implementation
+struct ConvDimensionNumbers {
+  std::vector<int64_t> lhs_spec; // (batch_dim, feature_dim, spatial_dims...)
+  std::vector<int64_t>
+      rhs_spec; // (out_feature_dim, in_feature_dim, spatial_dims...)
+  std::vector<int64_t> out_spec; // (batch_dim, feature_dim, spatial_dims...)
+};
+
+std::vector<int64_t> convolutionShapeComputation(
+    llvm::ArrayRef<int64_t> lhs_shape,    // Input shape
+    llvm::ArrayRef<int64_t> rhs_shape,    // Kernel shape
+    std::vector<int64_t> &window_strides, // Strides for each spatial dimension
+    mlir::DenseElementsAttr padding_attr, // Padding as DenseElementsAttr
+    std::vector<int64_t> &lhs_dilation,   // Dilation for input
+    std::vector<int64_t> &rhs_dilation,   // Dilation for kernel
+    ConvDimensionNumbers dimension_numbers,
+    int64_t feature_group_count, // Feature group count
+    int64_t batch_group_count    // Batch group count
+) {
+  // Ensure input shape has at least 2 dimensions
+  assert(lhs_shape.size() >= 2 &&
+         "Input shape must have at least 2 dimensions.");
+  assert(rhs_shape.size() >= 2 &&
+         "Kernel shape must have at least 2 dimensions.");
+
+  auto lhs_spec = dimension_numbers.lhs_spec;
+  auto rhs_spec = dimension_numbers.rhs_spec;
+  auto out_spec = dimension_numbers.out_spec;
+
+  std::vector<int64_t> lhs_spatial_dims(lhs_spec.begin() + 2, lhs_spec.end());
+  std::vector<int64_t> rhs_spatial_dims(rhs_spec.begin() + 2, rhs_spec.end());
+  std::vector<int64_t> out_spatial_dims(out_spec.begin() + 2, out_spec.end());
+
+  std::vector<std::pair<int64_t, int64_t>> padding;
+  auto padding_values = padding_attr.getValues<int64_t>();
+  auto it = padding_values.begin();
+  while (it != padding_values.end()) {
+    int64_t low = *it++;
+    int64_t high = *it++;
+    padding.emplace_back(low, high);
+  }
+
+  assert(padding.size() == lhs_spatial_dims.size() &&
+         "Padding size does not match number of spatial dimensions.");
+
+  int64_t output_batch_dim = lhs_shape[lhs_spec[0]] / batch_group_count;
+  int64_t output_feature_dim = rhs_shape[rhs_spec[0]] / feature_group_count;
+
+  std::vector<int64_t> output_shape(lhs_shape.size(), -1);
+  output_shape[out_spec[0]] = output_batch_dim;
+
+  // Compute spatial dimensions
+  for (size_t i = 0; i < lhs_spatial_dims.size(); ++i) {
+    int64_t lhs_dim = lhs_shape[lhs_spatial_dims[i]];
+    int64_t rhs_dim = rhs_shape[rhs_spatial_dims[i]];
+
+    // Apply dilation to input size
+    int64_t dilated_lhs = (lhs_dim - 1) * lhs_dilation[i] + 1;
+
+    // Apply padding
+    int64_t padded_lhs = dilated_lhs + padding[i].first + padding[i].second;
+
+    // Effective kernel size after dilation
+    int64_t dilated_rhs = (rhs_dim - 1) * rhs_dilation[i] + 1;
+
+    // Calculate output dimension
+    int64_t out_dim = (padded_lhs - dilated_rhs) / window_strides[i] + 1;
+    output_shape[out_spatial_dims[i]] = out_dim;
+  }
+  output_shape[out_spec[1]] = output_feature_dim;
+  std::cout << "Computed Output Shape: ";
+  for (int64_t dim : output_shape) {
+    std::cout << dim << " ";
+  }
+  std::cout << std::endl;
+  return output_shape;
+}
 
 /**
  * Get the correct start and limiting indices of a SliceOp from a SSplit0 or
@@ -456,18 +680,26 @@ std::vector<int64_t> dotGeneralShapeComputation(
 std::pair<std::vector<int64_t>, std::vector<int64_t>>
 getSliceIndicesFromSplit(tensat::Ops op, Value input, int axis, Value orig) {
   auto input_shape = getShape(input);
+  auto orig_shape = getShape(orig);
+
+  int input_rank = input_shape.size();
+  int orig_rank = orig_shape.size();
+
+  int axis1 = std::max(0, input_rank - orig_rank) + axis;
+
   std::vector<int64_t> start, limit;
+
   for (int i = 0; i < input_shape.size(); i++) {
-    if (i != axis) {
+    if (i != axis1) {
       start.push_back(0);
       limit.push_back(input_shape[i]);
     } else {
-      int slice_width = getShape(orig)[axis];
+      int slice_width = orig_shape[axis];
       if (op == tensat::Ops::SSplit0) {
         start.push_back(0);
         limit.push_back(slice_width);
       } else if (op == tensat::Ops::SSplit1) {
-        int input_width = input_shape[axis];
+        int input_width = input_shape[axis1];
         start.push_back(input_width - slice_width);
         limit.push_back(input_width);
       } else {
@@ -499,18 +731,25 @@ Type getReshapeTypeForMatchRank(Value input, Value ref) {
     for (int i = 0; i < initialRank; i++) {
       if (i < refRank)
         shape.push_back(initialShape[i]);
-      else
-        assert(initialShape[i] == 1);
+      else {
+        if (initialShape[i] != 1) {
+          throw std::invalid_argument(
+              "initial shape index " + std::to_string(i) +
+              " is not 1, found: " + std::to_string(initialShape[i]));
+        }
+      }
     }
   }
   return deriveOutputType(input, shape);
 }
 
-Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
-                             SmallVector<Value> &operands,
-                             std::vector<std::vector<int64_t>> &other_vecs,
-                             std::vector<int64_t> &int_args,
-                             MLIRContext *context) {
+Operation *
+createStableHloOp(OpBuilder &builder, tensat::Ops op,
+                  SmallVector<Value> &operands,
+                  std::vector<std::vector<int64_t>> &other_vecs,
+                  std::vector<int64_t> &int_args,
+                  std::vector<std::vector<std::vector<int64_t>>> &matrix_args,
+                  MLIRContext *context) {
   Operation *mlirOp = nullptr;
 
   switch (op) {
@@ -565,6 +804,95 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
     auto newType = getReshapeTypeForMatchRank(input, ref);
     mlirOp = builder.create<stablehlo::ReshapeOp>(builder.getUnknownLoc(),
                                                   newType, input);
+    break;
+  }
+  case tensat::Ops::ConvolutionOp: {
+    auto lhs = operands[0];
+    auto rhs = operands[1];
+
+    auto windowStrides = other_vecs[0];
+    auto padding = matrixToDenseAttr(matrix_args[0], builder);
+    auto lhsDilation = other_vecs[1];
+    auto rhsDilation = other_vecs[2];
+    auto windowReversal = other_vecs[3];
+    std::vector<uint8_t> windowReversalBool;
+    windowReversalBool.reserve(windowReversal.size());
+    for (int64_t val : windowReversal) {
+      windowReversalBool.push_back(static_cast<uint8_t>(val != 0));
+    }
+    // dimension numbers
+    auto inputBatchDimension = int_args[0];
+    auto inputFeatureDimension = int_args[1];
+    auto inputSpatialDimensions = other_vecs[4];
+    auto kernelInputFeatureDimension = int_args[2];
+    auto kernelOutputFeatureDimension = int_args[3];
+    auto kernelSpatialDimensions = other_vecs[5];
+    auto outputBatchDimension = int_args[4];
+    auto outputFeatureDimension = int_args[5];
+    auto outputSpatialDimensions = other_vecs[6];
+    auto convolutionDimensionNumbersAttr =
+        stablehlo::ConvDimensionNumbersAttr::get(
+            context, inputBatchDimension, inputFeatureDimension,
+            inputSpatialDimensions, kernelInputFeatureDimension,
+            kernelOutputFeatureDimension, kernelSpatialDimensions,
+            outputBatchDimension, outputFeatureDimension,
+            outputSpatialDimensions);
+
+    ConvDimensionNumbers convDims;
+    convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
+    convDims.lhs_spec.insert(convDims.lhs_spec.end(),
+                             inputSpatialDimensions.begin(),
+                             inputSpatialDimensions.end());
+
+    convDims.rhs_spec = {kernelOutputFeatureDimension,
+                         kernelInputFeatureDimension};
+    convDims.rhs_spec.insert(convDims.rhs_spec.end(),
+                             kernelSpatialDimensions.begin(),
+                             kernelSpatialDimensions.end());
+
+    convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
+    convDims.out_spec.insert(convDims.out_spec.end(),
+                             outputSpatialDimensions.begin(),
+                             outputSpatialDimensions.end());
+    auto featureGroupCount = int_args[6];
+    auto batchGroupCount = int_args[7];
+    auto precisionConfig = other_vecs[7];
+
+    std::vector<Attribute> precisionVec;
+    for (auto &precision : precisionConfig) {
+      switch (precision) {
+      case 0:
+        precisionVec.push_back(stablehlo::PrecisionAttr::get(
+            context, stablehlo::Precision::DEFAULT));
+        break;
+      case 1:
+        precisionVec.push_back(
+            stablehlo::PrecisionAttr::get(context, stablehlo::Precision::HIGH));
+        break;
+      case 2:
+        precisionVec.push_back(stablehlo::PrecisionAttr::get(
+            context, stablehlo::Precision::HIGHEST));
+        break;
+      }
+    }
+
+    auto shape = convolutionShapeComputation(
+        getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
+        rhsDilation, convDims, featureGroupCount, batchGroupCount);
+
+    auto newType = deriveOutputType(lhs, shape);
+    mlirOp = builder.create<stablehlo::ConvolutionOp>(
+        builder.getUnknownLoc(), newType, lhs, rhs,
+        mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(windowStrides)),
+        padding,
+        mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(lhsDilation)),
+        mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(rhsDilation)),
+        mlir::DenseBoolArrayAttr::get(
+            context, llvm::ArrayRef<bool>(reinterpret_cast<const bool *>(
+                                              windowReversalBool.data()),
+                                          windowReversalBool.size())),
+        convolutionDimensionNumbersAttr, featureGroupCount, batchGroupCount,
+        mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)));
     break;
   }
   case tensat::Ops::DotGeneralOp: {
@@ -651,7 +979,8 @@ Operation *createStableHloOp(OpBuilder &builder, tensat::Ops op,
 // so duplicated)
 uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
                           rust::Vec<tensat::Vector> other_vector_args,
-                          rust::Vec<int64_t> int_args) {
+                          rust::Vec<int64_t> int_args,
+                          rust::Vec<tensat::Matrix> matrix_args) {
   auto context = OperationTimer::getContext();
   OpBuilder builder(context);
 
@@ -671,9 +1000,23 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
   for (const auto &num : int_args)
     int_args_as_vec.push_back(num);
 
+  std::vector<std::vector<std::vector<int64_t>>> matrix_args_as_vec;
+
+  for (const auto &mat : matrix_args) {
+    std::vector<std::vector<int64_t>> current_matrix;
+
+    for (const auto &vec : mat.mat) {
+      std::vector<int64_t> converted_vec(vec.vec.begin(), vec.vec.end());
+      current_matrix.push_back(converted_vec);
+    }
+
+    matrix_args_as_vec.push_back(current_matrix);
+  }
+
   // Create the MLIR operation
-  Operation *mlirOp = createStableHloOp(builder, op, operands, other_vecs,
-                                        int_args_as_vec, context);
+  Operation *mlirOp =
+      createStableHloOp(builder, op, operands, other_vecs, int_args_as_vec,
+                        matrix_args_as_vec, context);
 
   int repeats = 0;
   switch (getPlatform()) {
@@ -743,8 +1086,9 @@ std::vector<int32_t> castArrayRefToInt32(llvm::ArrayRef<int64_t> shape) {
   return dims;
 }
 
-rust::Vec<int64_t> castArrayRefToRustVec(llvm::ArrayRef<int64_t> vec) {
-  rust::Vec<int64_t> res;
+template <typename T>
+rust::Vec<T> castArrayRefToRustVec(llvm::ArrayRef<T> vec) {
+  rust::Vec<T> res;
   res.reserve(vec.size());
   for (const auto &elem : vec) {
     res.push_back(elem);
@@ -752,11 +1096,55 @@ rust::Vec<int64_t> castArrayRefToRustVec(llvm::ArrayRef<int64_t> vec) {
   return res;
 }
 
+rust::Vec<tensat::Vector>
+castDenseIntElementsAttrToRustMatrix(mlir::DenseIntElementsAttr attr) {
+  rust::Vec<tensat::Vector> res;
+
+  // Get the shape of the tensor
+  auto shape = attr.getType().getShape();
+
+  if (shape.size() == 2) {
+    // 2D matrix case
+    auto numRows = shape[0];
+    auto numCols = shape[1];
+
+    // Iterator for the elements
+    auto it = attr.value_begin<llvm::APInt>();
+
+    for (int i = 0; i < numRows; ++i) {
+      tensat::Vector rowVector;
+      rowVector.vec.reserve(numCols);
+      for (int j = 0; j < numCols; ++j) {
+        // Extract the integer value from APInt and push it into the row vector
+        rowVector.vec.push_back((*it).getSExtValue());
+        ++it;
+      }
+      res.push_back(
+          std::move(rowVector)); // Push the row wrapped in Vector struct
+    }
+  } else if (shape.size() == 1) {
+    // 1D vector case
+    tensat::Vector rowVector;
+    for (auto it = attr.value_begin<llvm::APInt>();
+         it != attr.value_end<llvm::APInt>(); ++it) {
+      rowVector.vec.push_back(
+          (*it).getSExtValue()); // Push elements into the row vector
+    }
+    res.push_back(
+        std::move(rowVector)); // Push the 1D vector wrapped in Vector struct
+  } else {
+    llvm::errs() << "Unhandled tensor rank for DenseElementsAttr.";
+  }
+
+  return res;
+}
+
 // SHAPE INFERENCE
 rust::Vec<tensat::Tensor>
 tensat::get_shape(Ops op, rust::Vec<tensat::Tensor> enode_args,
                   rust::Vec<tensat::Vector> other_vector_args,
-                  rust::Vec<int64_t> int_args) {
+                  rust::Vec<int64_t> int_args,
+                  rust::Vec<tensat::Matrix> matrix_args) {
   auto context = OperationTimer::getContext();
   OpBuilder builder(context);
 
@@ -776,9 +1164,20 @@ tensat::get_shape(Ops op, rust::Vec<tensat::Tensor> enode_args,
   for (const auto &num : int_args)
     int_args_as_vec.push_back(num);
 
+  std::vector<std::vector<std::vector<int64_t>>> matrix_args_as_vec;
+  for (const auto &mat : matrix_args) {
+    std::vector<std::vector<int64_t>> current_matrix;
+    for (const auto &vec : mat.mat) {
+      std::vector<int64_t> converted_vec(vec.vec.begin(), vec.vec.end());
+      current_matrix.push_back(converted_vec);
+    }
+    matrix_args_as_vec.push_back(current_matrix);
+  }
+
   // Create the MLIR operation
-  Operation *mlirOp = createStableHloOp(builder, op, operands, other_vecs,
-                                        int_args_as_vec, context);
+  Operation *mlirOp =
+      createStableHloOp(builder, op, operands, other_vecs, int_args_as_vec,
+                        matrix_args_as_vec, context);
   if (mlirOp) {
     rust::Vec<tensat::Tensor> tensors;
     for (auto res : mlirOp->getResults()) {
@@ -1005,32 +1404,98 @@ public:
         }
       }
 
-      if (auto output_tensor =
-              dot_general.getResult().getType().cast<TensorType>()) {
-        auto shape = castArrayRefToInt32(output_tensor.getShape());
-        auto output_shape_slice =
-            rust::Slice<const int>{shape.data(), shape.size()};
-
-        tensorInfo = graph
-                         ->new_dot_general_op(
-                             *handleOperandPartial(dot_general.getLhs()),
-                             *handleOperandPartial(dot_general.getRhs()),
-                             castArrayRefToRustVec(
-                                 dot_dim_attrs.getLhsBatchingDimensions()),
-                             castArrayRefToRustVec(
-                                 dot_dim_attrs.getRhsBatchingDimensions()),
-                             castArrayRefToRustVec(
-                                 dot_dim_attrs.getLhsContractingDimensions()),
-                             castArrayRefToRustVec(
-                                 dot_dim_attrs.getRhsContractingDimensions()),
-                             precision_configs,
-                             mlirValueToTensatTensor(dot_general.getResult()))
-                         .into_raw();
+      tensorInfo = graph
+                       ->new_dot_general_op(
+                           *handleOperandPartial(dot_general.getLhs()),
+                           *handleOperandPartial(dot_general.getRhs()),
+                           castArrayRefToRustVec(
+                               dot_dim_attrs.getLhsBatchingDimensions()),
+                           castArrayRefToRustVec(
+                               dot_dim_attrs.getRhsBatchingDimensions()),
+                           castArrayRefToRustVec(
+                               dot_dim_attrs.getLhsContractingDimensions()),
+                           castArrayRefToRustVec(
+                               dot_dim_attrs.getRhsContractingDimensions()),
+                           precision_configs,
+                           mlirValueToTensatTensor(dot_general.getResult()))
+                       .into_raw();
+    } else if (isa<stablehlo::ConvolutionOp>(op)) {
+      auto convolution = cast<stablehlo::ConvolutionOp>(op);
+      auto result_type =
+          convolution.getResult().getType().cast<mlir::ShapedType>();
+      if (result_type.hasRank()) {
+        auto shape = result_type.getShape();
+        llvm::errs() << "Result shape: [";
+        for (auto dim : shape) {
+          llvm::errs() << dim << " ";
+        }
+        llvm::errs() << "]\n";
       } else {
-        std::cout << "EqualitySaturationPass: result of "
-                     "stablehlo::DotGeneralOp has non-tensor type"
-                  << std::endl;
+        llvm::errs() << "Result is unranked.\n";
       }
+      auto dimNumbers = convolution.getDimensionNumbers();
+      mlir::ArrayAttr precision =
+          convolution.getPrecisionConfig().value_or(mlir::ArrayAttr());
+      rust::Vec<int64_t> precision_configs;
+      for (int i = 0; i < precision.size(); i++) {
+        auto precisionAttr =
+            precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
+        if (!precisionAttr)
+          continue; // Skip if it's not a PrecisionAttr, although such
+                    // attributes should not exist here
+        mlir::stablehlo::Precision val = precisionAttr.getValue();
+        switch (val) {
+        case mlir::stablehlo::Precision::DEFAULT:
+          precision_configs.push_back(0);
+          break;
+        case mlir::stablehlo::Precision::HIGH:
+          precision_configs.push_back(1);
+          break;
+        case mlir::stablehlo::Precision::HIGHEST:
+          precision_configs.push_back(2);
+          break;
+        }
+      }
+      auto windowStridesOpt = convolution.getWindowStrides();
+      assert(windowStridesOpt.has_value() &&
+             "Expected window strides to be present.");
+      auto paddingOpt = convolution.getPadding();
+      assert(paddingOpt.has_value() && "Expected padding to be present.");
+      auto lhsDilationOpt = convolution.getLhsDilation();
+      assert(lhsDilationOpt.has_value() &&
+             "Expected LHS dilation to be present.");
+      auto rhsDilationOpt = convolution.getRhsDilation();
+      assert(rhsDilationOpt.has_value() &&
+             "Expected RHS dilation to be present.");
+      auto windowReversalOpt = convolution.getWindowReversal();
+      assert(windowReversalOpt.has_value() &&
+             "Expected Window reversal to be present.");
+
+      tensorInfo =
+          graph
+              ->new_convolution_op(
+                  *handleOperandPartial(convolution.getLhs()),
+                  *handleOperandPartial(convolution.getRhs()),
+                  castArrayRefToRustVec(windowStridesOpt.value()),
+                  castDenseIntElementsAttrToRustMatrix(paddingOpt.value()),
+                  castArrayRefToRustVec(lhsDilationOpt.value()),
+                  castArrayRefToRustVec(rhsDilationOpt.value()),
+                  castArrayRefToRustVec(windowReversalOpt.value()),
+                  dimNumbers.getInputBatchDimension(),
+                  dimNumbers.getInputFeatureDimension(),
+                  castArrayRefToRustVec(dimNumbers.getInputSpatialDimensions()),
+                  dimNumbers.getKernelInputFeatureDimension(),
+                  dimNumbers.getKernelOutputFeatureDimension(),
+                  castArrayRefToRustVec(
+                      dimNumbers.getKernelSpatialDimensions()),
+                  dimNumbers.getOutputBatchDimension(),
+                  dimNumbers.getOutputFeatureDimension(),
+                  castArrayRefToRustVec(
+                      dimNumbers.getOutputSpatialDimensions()),
+                  convolution.getFeatureGroupCount(),
+                  convolution.getBatchGroupCount(), precision_configs,
+                  mlirValueToTensatTensor(convolution.getResult()))
+              .into_raw();
     } else if (isa<stablehlo::ConcatenateOp>(op)) {
       auto concat = cast<stablehlo::ConcatenateOp>(op);
       auto output_tensor = concat->getResult(0).getType().cast<TensorType>();
@@ -1088,8 +1553,8 @@ public:
         outputs.push_back(mlirValueToTensatTensor(result));
 
       std::vector<tensat::TensorInfo *> processedOperands;
-      // We shouldn't clone operands, as those values will be invalidated after
-      // a block.clear(), and we access these during reconstruction.
+      // We shouldn't clone operands, as those values will be invalidated
+      // after a block.clear(), and we access these during reconstruction.
       auto copy = op->clone(Operation::CloneOptions(
           /* cloneRegions = */ true, /* cloneOperands = */ false));
       blackboxIDToTensorInfo->push_back(copy);
@@ -1180,16 +1645,34 @@ public:
    */
   std::vector<int64_t> parseNumVec(rust::vec<tensat::Node> &nodes,
                                    tensat::Node &seq) {
-    assert(seq.name == "Vec");
+    assert(seq.op == tensat::Ops::Vec);
     std::vector<int64_t> result;
 
     for (auto i : seq.operands) {
       assert(i < nodes.size());
-      assert(nodes[i].name == "Num");
+      assert(nodes[i].op == tensat::Ops::Num);
       result.push_back(parseNumNode(nodes, nodes[i]));
     }
 
     return result;
+  }
+
+  /**
+   * Parse the Vec nodes with Vecs (e.g Vec(Vec(128, 128), Vec(128, 128)))
+   * emitted by tensat node construction.
+   */
+  mlir::DenseIntElementsAttr
+  parseNumMatrixToDenseAttr(rust::vec<tensat::Node> &nodes, tensat::Node &seq,
+                            mlir::Builder &builder) {
+    assert(seq.op == tensat::Ops::Vec);
+
+    std::vector<std::vector<int64_t>> matrix;
+    for (auto i : seq.operands) {
+      assert(i < nodes.size());
+      assert(nodes[i].op == tensat::Ops::Vec);
+      matrix.push_back(parseNumVec(nodes, nodes[i]));
+    }
+    return matrixToDenseAttr(matrix, builder);
   }
 
   /**
@@ -1198,7 +1681,7 @@ public:
    * TODO: improve this!
    */
   int64_t parseNumNode(rust::vec<tensat::Node> &nodes, tensat::Node &seq) {
-    assert(seq.name == "Num");
+    assert(seq.op == tensat::Ops::Num);
     return seq.operands[0];
   }
 
@@ -1207,7 +1690,7 @@ public:
    * AddOp(...))) emitted by tensat node construction.
    */
   std::vector<Value> parseOpVec(std::vector<Value> &opVals, tensat::Node &seq) {
-    assert(seq.name == "Vec");
+    assert(seq.op == tensat::Ops::Vec);
     std::vector<Value> result;
 
     for (auto i : seq.operands) {
@@ -1238,10 +1721,10 @@ public:
     auto &region = funcOp.getRegion();
     auto &block = funcOp.getRegion().front();
 
-    // We don't clear the block here straight away, because this will invalidate
-    // the old captured values in blackbox, and so the substitution won't work.
-    // We instead put everything in a vector, and only clear the block and
-    // insert everything at the very end.
+    // We don't clear the block here straight away, because this will
+    // invalidate the old captured values in blackbox, and so the substitution
+    // won't work. We instead put everything in a vector, and only clear the
+    // block and insert everything at the very end.
     std::vector<Operation *> opsToAdd;
 
     auto location = builder.getUnknownLoc();
@@ -1319,6 +1802,120 @@ public:
           newOp =
               builder.create<stablehlo::ReshapeOp>(location, newType, input);
         }
+        break;
+      }
+      case Ops::InferReshape: {
+        auto input = opVals[node.operands[0]];
+        llvm::SmallVector<int64_t> shape;
+        for (int i = 1; i < node.operands.size(); i++)
+          shape.push_back(node.operands[i]);
+        if (shape == getShape(input)) {
+          opVals.push_back(input);
+          continue;
+        } else {
+          auto newType = deriveOutputType(input, shape);
+          newOp =
+              builder.create<stablehlo::ReshapeOp>(location, newType, input);
+          break;
+        }
+      }
+      case Ops::ConvolutionOp: {
+        auto lhs = opVals[node.operands[0]];
+        auto rhs = opVals[node.operands[1]];
+
+        auto windowStrides = parseNumVec(nodes, nodes[node.operands[2]]);
+        auto padding =
+            parseNumMatrixToDenseAttr(nodes, nodes[node.operands[3]], builder);
+        auto lhsDilation = parseNumVec(nodes, nodes[node.operands[4]]);
+        auto rhsDilation = parseNumVec(nodes, nodes[node.operands[5]]);
+        auto windowReversal = parseNumVec(nodes, nodes[node.operands[6]]);
+        std::vector<uint8_t> windowReversalBool;
+        windowReversalBool.reserve(windowReversal.size());
+        for (int64_t val : windowReversal) {
+          windowReversalBool.push_back(static_cast<uint8_t>(val != 0));
+        }
+        // dimension numbers
+        auto inputBatchDimension = parseNumNode(nodes, nodes[node.operands[7]]);
+        auto inputFeatureDimension =
+            parseNumNode(nodes, nodes[node.operands[8]]);
+        auto inputSpatialDimensions =
+            parseNumVec(nodes, nodes[node.operands[9]]);
+        auto kernelInputFeatureDimension =
+            parseNumNode(nodes, nodes[node.operands[10]]);
+        auto kernelOutputFeatureDimension =
+            parseNumNode(nodes, nodes[node.operands[11]]);
+        auto kernelSpatialDimensions =
+            parseNumVec(nodes, nodes[node.operands[12]]);
+        auto outputBatchDimension =
+            parseNumNode(nodes, nodes[node.operands[13]]);
+        auto outputFeatureDimension =
+            parseNumNode(nodes, nodes[node.operands[14]]);
+        auto outputSpatialDimensions =
+            parseNumVec(nodes, nodes[node.operands[15]]);
+        auto convolutionDimensionNumbersAttr =
+            stablehlo::ConvDimensionNumbersAttr::get(
+                context, inputBatchDimension, inputFeatureDimension,
+                inputSpatialDimensions, kernelInputFeatureDimension,
+                kernelOutputFeatureDimension, kernelSpatialDimensions,
+                outputBatchDimension, outputFeatureDimension,
+                outputSpatialDimensions);
+
+        ConvDimensionNumbers convDims;
+        convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
+        convDims.lhs_spec.insert(convDims.lhs_spec.end(),
+                                 inputSpatialDimensions.begin(),
+                                 inputSpatialDimensions.end());
+
+        convDims.rhs_spec = {kernelOutputFeatureDimension,
+                             kernelInputFeatureDimension};
+        convDims.rhs_spec.insert(convDims.rhs_spec.end(),
+                                 kernelSpatialDimensions.begin(),
+                                 kernelSpatialDimensions.end());
+
+        convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
+        convDims.out_spec.insert(convDims.out_spec.end(),
+                                 outputSpatialDimensions.begin(),
+                                 outputSpatialDimensions.end());
+        auto featureGroupCount = parseNumNode(nodes, nodes[node.operands[16]]);
+        auto batchGroupCount = parseNumNode(nodes, nodes[node.operands[17]]);
+        auto precisionConfig = parseNumVec(nodes, nodes[node.operands[18]]);
+
+        std::vector<Attribute> precisionVec;
+        for (auto &precision : precisionConfig) {
+          switch (precision) {
+          case 0:
+            precisionVec.push_back(stablehlo::PrecisionAttr::get(
+                context, stablehlo::Precision::DEFAULT));
+            break;
+          case 1:
+            precisionVec.push_back(stablehlo::PrecisionAttr::get(
+                context, stablehlo::Precision::HIGH));
+            break;
+          case 2:
+            precisionVec.push_back(stablehlo::PrecisionAttr::get(
+                context, stablehlo::Precision::HIGHEST));
+            break;
+          }
+        }
+
+        auto shape = convolutionShapeComputation(
+            getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
+            rhsDilation, convDims, featureGroupCount, batchGroupCount);
+
+        auto newType = deriveOutputType(lhs, shape);
+        newOp = builder.create<stablehlo::ConvolutionOp>(
+            location, newType, lhs, rhs,
+            mlir::DenseI64ArrayAttr::get(context,
+                                         llvm::ArrayRef(windowStrides)),
+            padding,
+            mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(lhsDilation)),
+            mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(rhsDilation)),
+            mlir::DenseBoolArrayAttr::get(
+                context, llvm::ArrayRef<bool>(reinterpret_cast<const bool *>(
+                                                  windowReversalBool.data()),
+                                              windowReversalBool.size())),
+            convolutionDimensionNumbersAttr, featureGroupCount, batchGroupCount,
+            mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)));
         break;
       }
       case Ops::DotGeneralOp: {
@@ -1437,8 +2034,6 @@ public:
           subst.map(oldCapturedValues[i], capturedValues[i]);
         }
         newOp = newOp->clone(subst);
-
-        assert(numOperands == newOp->getNumOperands());
         newOp->insertOperands(0, operands);
         break;
       }
@@ -1507,8 +2102,8 @@ public:
     SmallVector<Operation *> currentOps;
     SegmentationPoint segment;
 
-    // We need to keep track of anything that was an output value, so that if we
-    // see it in later segments then we know to add that as an input.
+    // We need to keep track of anything that was an output value, so that if
+    // we see it in later segments then we know to add that as an input.
     DenseSet<Value> outputsBeforeCurrentSegment;
 
     int nonBlackboxedInCurrentSegment = 0;
@@ -1531,8 +2126,8 @@ public:
 
       bool blackboxed = isBlackboxed(&op);
 
-      // TODO: This ensures the last node in segment is blackboxed, but ideally
-      // we actually want to reduce the number of segment outputs.
+      // TODO: This ensures the last node in segment is blackboxed, but
+      // ideally we actually want to reduce the number of segment outputs.
       if ((blackboxed && nonBlackboxedInCurrentSegment >= segmentThreshold) ||
           it == (--entryBlock.end())) {
         // Track outputs of this segment
