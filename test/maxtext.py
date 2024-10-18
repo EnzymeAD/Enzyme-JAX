@@ -1,9 +1,8 @@
 # Steps for getting results here
 # Run:
-#   1) pip install https://github.com/wsmoses/maxtext
-#   2) bazel build -c opt //:wheel
-#   3) pip install ./bazel-bin/*whl
-#   4) python test/maxtext.py
+#   1) bazel build -c opt //:wheel
+#   2) python3 -m pip install --user ./bazel-bin/*.whl  git+https://github.com/wsmoses/maxtext aqtp tensorboardX google-cloud-storage datasets neuralgcm gcsfs --break-system-packages
+#   3) python test/maxtext.py
 
 from absl.testing import absltest
 import jax.numpy as jnp
@@ -19,6 +18,7 @@ from enzyme_ad.jax import (
 )
 import numpy as np
 import timeit
+from test_utils import partialopt
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
