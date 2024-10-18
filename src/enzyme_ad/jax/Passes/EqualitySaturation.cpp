@@ -233,19 +233,34 @@ public:
       uint8_t isArgDonatable[numArgs];
 
       int numRuns = warmup + repetitions;
-      xla::PjRtBuffer *res[numRuns * numResults];
 
       for (int i = 0; i < numArgs; i++) {
         args[i] = getRandomInput(client, op->getOperand(i).getType());
         isArgDonatable[i] = false;
       }
 
-      std::vector<uint64_t> durations(numRuns);
+      std::vector<uint64_t> durations;
+
+      uint64_t sum_duration = 0;
 
       for (unsigned i = 0; i < warmup + repetitions; i++) {
-        durations[i] =
-            XLAExecute(executable, numArgs, args, isArgDonatable, numResults,
-                       res + i * numResults, &futures, nullptr);
+        xla::PjRtBuffer *res[numResults];
+
+        auto duration = XLAExecute(executable, numArgs, args, isArgDonatable,
+                                   numResults, res, &futures, nullptr);
+        durations.push_back(duration);
+
+        for (int i = 0; i < numResults; i++) {
+          PjRtBufferFree(res[i]);
+        }
+
+        sum_duration += durations[i];
+
+        // Abort early if took a while (10 secs)
+        const int ABORT_THRESHOLD_US = 10 * 1000 * 1000;
+        if (sum_duration > ABORT_THRESHOLD_US) {
+          break;
+        }
       }
 
       // TODO: This means there's no point in warmup anymore, since we're now
@@ -255,10 +270,6 @@ public:
       assert(!futures);
 
       // Cleanup
-      for (int i = 0; i < numRuns * numResults; i++) {
-        PjRtBufferFree(res[i]);
-      }
-
       FreeClient(executable->client());
       ExecutableFree(executable);
       break;
