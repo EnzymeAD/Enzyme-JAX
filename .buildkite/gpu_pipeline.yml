@@ -94,4 +94,4 @@ steps:
       - "finds2.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
-      - "bazel-bin/test/llama.runfiles/results_*.csv"
+      - "results_*.csv"
