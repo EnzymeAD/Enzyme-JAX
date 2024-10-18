@@ -16,7 +16,7 @@ class AddOne(EnzymeJaxTest):
             jnp.array([0.1, 0.2, 0.3]),
             jnp.array([50.0, 70.0, 110.0]),
         ]
-        self.douts = [jnp.array([500.0, 700.0, 110.0])]
+        self.douts = jnp.array([500.0, 700.0, 110.0])
 
         def add_one(x, y):
             return x + 1 + y
@@ -42,7 +42,7 @@ class AddTwo(EnzymeJaxTest):
             jnp.array([50.0, 70.0, 110.0]),
             jnp.array([1300.0, 1700.0, 1900.0]),
         ]
-        self.douts = [jnp.array([500.0, 700.0, 110.0])]
+        self.douts = jnp.array([500.0, 700.0, 110.0])
 
         def add_two(x, z, y):
             return x + y
@@ -55,7 +55,7 @@ class Sum(EnzymeJaxTest):
     def setUp(self):
         self.ins = [jnp.array(range(50), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(50)], dtype=jnp.float32)]
-        self.douts = [1.0]
+        self.douts = jnp.array(1.0)
 
         def sum(x):
             return jnp.sum(x)
@@ -69,7 +69,7 @@ class Cache(EnzymeJaxTest):
         dim = 288
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -89,7 +89,7 @@ class Slicing(EnzymeJaxTest):
         self.dins = [
             jnp.array([i * i for i in range(dim)], dtype=jnp.float32).reshape(1, dim, 1)
         ]
-        self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -107,11 +107,9 @@ class ActivityMismatch(EnzymeJaxTest):
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [
-            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
-                (2, dim)
-            )
-        ]
+        self.douts = jnp.array(
+            [i * i for i in range(2 * dim)], dtype=jnp.float32
+        ).reshape((2, dim))
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -134,11 +132,9 @@ class GenDot(EnzymeJaxTest):
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [
-            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
-                (2, dim)
-            )
-        ]
+        self.douts = jnp.array(
+            [i * i for i in range(2 * dim)], dtype=jnp.float32
+        ).reshape((2, dim))
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -174,7 +170,7 @@ class Concat(EnzymeJaxTest):
             jnp.array([i * i for i in range(dim)], dtype=jnp.float32),
             jnp.array([i * i * i / 3.0 for i in range(dim)], dtype=jnp.float32),
         ]
-        self.douts = [jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)
 
         self.revfilter = justjax
         # self.revfilter = nomlir
@@ -274,7 +270,7 @@ class ConstScatter(EnzymeJaxTest):
             jnp.array([2.7, 2.7, 2.7]),
         ]
         self.dins = [jnp.array([3.1, 3.1, 3.1])]
-        self.douts = self.dins
+        self.douts = (self.dins[0],)
         self.revfilter = lambda _: []
         # No support for stablehlo.while atm
         # self.revfilter = justjax
@@ -298,7 +294,7 @@ class ScatterSum(EnzymeJaxTest):
 
         self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
         self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
-        self.douts = []
+        self.douts = self.fn(*self.ins)
         self.revfilter = lambda _: []
         # No support for stablehlo.scatter atm
         self.mlirad_rev = False
