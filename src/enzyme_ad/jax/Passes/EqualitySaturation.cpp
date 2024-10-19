@@ -206,6 +206,8 @@ public:
         zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
       return 0;
 
+    return 1;
+
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
     }
@@ -2294,6 +2296,7 @@ public:
         if (!correspondingMainValue) {
           llvm::errs() << "Error: Unable to find corresponding value for "
                           "segmented argument.\n";
+          originalValue.getDefiningOp()->dump();
           return;
         }
         mapper.map(segmentedArg, correspondingMainValue);
@@ -2344,6 +2347,30 @@ public:
     }
   }
 
+  void cloneToNewBlock(OpBuilder &builder, IRMapping &mapper, Block *oldBlock,
+                       Block *newBlock, bool toWhile) {
+    for (auto &op : *oldBlock) {
+      // Move this op to newBlock
+      Operation *newOp;
+      if ((!toWhile && isa<stablehlo::ReturnOp>(op)) ||
+          (toWhile && isa<func::ReturnOp>(op))) {
+        // Convert stablehlo::ReturnOp <==> func::ReturnOp
+        SmallVector<Value> operands;
+        for (auto operand : op.getOperands()) {
+          operands.push_back(mapper.lookup(operand));
+        }
+        newOp = (toWhile ? builder.create<stablehlo::ReturnOp>(
+                               builder.getUnknownLoc(), operands)
+                         : builder.create<func::ReturnOp>(
+                               builder.getUnknownLoc(), operands));
+      } else {
+        newOp = op.clone(mapper);
+      }
+      updateMapper(&op, newOp, mapper);
+      newBlock->push_back(newOp);
+    }
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto context = module->getContext();
@@ -2354,13 +2381,76 @@ public:
     for (Operation &op : module.getBody()->getOperations()) {
       if (auto foundFuncOp = dyn_cast<func::FuncOp>(op)) {
         funcOp = foundFuncOp;
-        break;
       }
     }
 
     if (!funcOp) {
       llvm::errs() << "No FuncOp found in the module.\n";
       return;
+    }
+
+    auto &entryBlock = funcOp.getBody().front();
+
+    for (auto &op : entryBlock) {
+      if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
+        // Recursively optimise the body of the while loop.
+        // We'll create a new ModuleOp containing the body of the while loop,
+        // call this pass on it, then move the result back.
+
+        Block &body = whileOp.getBody().front();
+
+        SmallVector<Type> argTypes(whileOp.getOperandTypes());
+
+        // Capture values originating from outer scope, and add as arguments to
+        // FuncOp
+        SmallVector<Value> captured;
+        body.walk([&](Operation *op) {
+          for (auto value : op->getOperands()) {
+            auto definingOp = value.getDefiningOp();
+            if (definingOp != nullptr &&
+                definingOp->getBlock() == &entryBlock &&
+                std::find(captured.begin(), captured.end(), value) ==
+                    captured.end()) {
+              captured.push_back(value);
+              argTypes.push_back(value.getType());
+            }
+          }
+        });
+
+        FunctionType funcType =
+            FunctionType::get(context, argTypes, whileOp->getResultTypes());
+        func::FuncOp funcOp = builder.create<func::FuncOp>(
+            builder.getUnknownLoc(), "main", funcType);
+
+        Block *newBlock = funcOp.addEntryBlock();
+
+        IRMapping whileToMod, modToWhile;
+        int whileArgs = body.getNumArguments();
+
+        for (int i = 0; i < whileArgs; i++) {
+          whileToMod.map(body.getArgument(i), newBlock->getArgument(i));
+          modToWhile.map(newBlock->getArgument(i), body.getArgument(i));
+        }
+
+        for (int i = whileArgs; i < funcOp.getNumArguments(); i++) {
+          whileToMod.map(captured[i - whileArgs], newBlock->getArgument(i));
+          modToWhile.map(newBlock->getArgument(i), captured[i - whileArgs]);
+        }
+
+        cloneToNewBlock(builder, whileToMod, &body, newBlock, false);
+
+        ModuleOp moduleOp = builder.create<ModuleOp>(builder.getUnknownLoc());
+        moduleOp.push_back(funcOp);
+
+        PassManager pm(context);
+        pm.addPass(std::make_unique<EqualitySaturationPass>());
+        if (failed(pm.run(moduleOp))) {
+          llvm::errs() << "eqsat failed on while loop body\n";
+        }
+        // Move the optimised module back to the while loop
+        body.clear();
+        cloneToNewBlock(builder, modToWhile, newBlock, &body, true);
+      }
     }
 
     // llvm::errs() << "Running EqualitySaturationPass on the module.\n";
@@ -2375,9 +2465,11 @@ public:
       auto &segmentedModule = segmentedModules[i];
       // llvm::errs() << "Creating egraph for segment " << i + 1 << " of "
       //              << segmentedModules.size() << "\n";
+      // segmentedModule.module.dump();
       auto graph =
           createEgraph(&blackboxIDToTensorInfo, &blackboxIDToCapturedValues,
                        builder, segmentedModule.module);
+      // graph->print_rec_expr();
       // llvm::errs() << "Optimizing segment " << i + 1 << " of "
       //              << segmentedModules.size() << "\n";
       auto optimized = graph->optimize();
