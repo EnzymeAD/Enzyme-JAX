@@ -206,8 +206,6 @@ public:
         zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
       return 0;
 
-    return 1;
-
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
     }
@@ -419,23 +417,9 @@ private:
     // Fill the data with random values based on the type
     std::random_device rd;
     std::mt19937 gen(rd());
-
-    if (elementType.isF32()) {
-      std::uniform_real_distribution<float> dist(0.0, 1.0);
-      float *typedData = reinterpret_cast<float *>(data.data());
-      for (int i = 0; i < numElements; ++i) {
-        typedData[i] = dist(gen);
-      }
-    } else if (elementType.isInteger(32)) {
-      std::uniform_int_distribution<int32_t> dist(0, INT32_MAX);
-      int32_t *typedData = reinterpret_cast<int32_t *>(data.data());
-      for (int i = 0; i < numElements; ++i) {
-        typedData[i] = dist(gen);
-      }
-    } else {
-      // TODO: Handle other element types (e.g. integers of different widths,
-      // other floating point types)
-      assert(false && "Element type not supported yet");
+    std::uniform_int_distribution<int> dist(CHAR_MIN, CHAR_MAX);
+    for (int i = 0; i < width * numElements; i++) {
+      data[i] = dist(gen);
     }
 
     auto device = ClientGetAddressableDevice(client, 0);
@@ -1060,22 +1044,30 @@ mlir::Type tensat::newTensorType(OpBuilder &builder, tensat::Tensor tensor) {
 
 mlir::Type tensat::tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
   switch (type) {
+  case tensat::Type::i1:
+    return builder.getI1Type();
   case tensat::Type::i32:
     return builder.getI32Type();
+  case tensat::Type::bf16:
+    return builder.getBF16Type();
   case tensat::Type::f32:
     return builder.getF32Type();
   default:
-    assert(false);
+    throw std::invalid_argument("unsupported tensat type");
   }
 }
 
 tensat::Type mlirTypeToTensatType(mlir::Type type) {
-  if (type.isInteger(32)) {
+  if (type.isInteger(1)) {
+    return tensat::Type::i1;
+  } else if (type.isInteger(32)) {
     return tensat::Type::i32;
+  } else if (type.isBF16()) {
+    return tensat::Type::bf16;
   } else if (type.isF32()) {
     return tensat::Type::f32;
   } else {
-    llvm_unreachable("Unsupported MLIR type");
+    throw std::invalid_argument("unsupported MLIR type");
   }
 }
 
