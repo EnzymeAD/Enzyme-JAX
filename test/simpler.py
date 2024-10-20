@@ -5,8 +5,14 @@ import jax.lax
 import jax.numpy as jnp
 import enzyme_ad.jax as enzyme_jax
 
+
 def test(a, b, c, d, e, f, g, h, i):
-  return a @ b, a @ c
+  incr = 1
+  def cond(x):
+    return x[0] < 10
+  def body(x):
+    return (x[0] + incr, x[1] @ c, x[2] @ c)
+  return jax.lax.while_loop(cond, body, (0, a, b))
 
 class Simple(absltest.TestCase):
     def test_simple_random(self):
@@ -15,14 +21,14 @@ class Simple(absltest.TestCase):
         efunc = enzyme_jax.enzyme_jax_ir(pipeline_options=enzyme_jax.JaXPipeline("equality-saturation-pass"),)(test)
         
         ka, kb, kc, kd = jax.random.split(jax.random.PRNGKey(0), num=4)
-        a = jax.random.uniform(ka, shape=(3, 10, 10))
-        b = jax.random.uniform(kb, shape=(3, 10, 10))
-        c = jax.random.uniform(kc, shape=(3, 10, 10))
+        a = jax.random.uniform(ka, shape=(10, 10))
+        b = jax.random.uniform(kb, shape=(10, 10))
+        c = jax.random.uniform(kc, shape=(10, 10))
         d = jax.random.uniform(kd, shape=(20, 500))
         e = jax.random.uniform(ka, shape=(20, 500))
         f = jax.random.uniform(ka, shape=(5, 5))
-        g = jax.random.uniform(ka, shape=(4, 80))
-        h = jax.random.uniform(ka, shape=(80, 300))
+        g = 1
+        h = 3
         i = jax.random.uniform(ka, shape=(300, 90))
         j = jax.random.uniform(ka, shape=(90, 10))
         eres = efunc(a, b, c, d, e, f, g, h, i)
