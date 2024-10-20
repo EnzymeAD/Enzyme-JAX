@@ -17,7 +17,7 @@ impl CostFunction<Mdl> for TensorCost<'_> {
     /// Getting total cost for the subtree rooted at enode. See egg::CostFunction
     /// trait for more information on interface.
     fn cost<C: FnMut(Id) -> Self::Cost>(&mut self, enode: &Mdl, mut costs: C) -> Self::Cost {
-        let self_cost = self.cost_model.get_self_cost(self.egraph, enode);
+        let (self_cost, _) = self.cost_model.get_self_cost(self.egraph, enode);
         enode.fold(self_cost, |sum, id| sum + costs(id))
     }
 }
@@ -45,7 +45,7 @@ impl CostModel {
     /// # Returns
     ///
     /// Cost for this enode.
-    pub fn get_self_cost(&self, egraph: &EGraph<Mdl, TensorAnalysis>, enode: &Mdl) -> f32 {
+    pub fn get_self_cost(&self, egraph: &EGraph<Mdl, TensorAnalysis>, enode: &Mdl) -> (f32, f32) {
         match enode {
             // NO REWRITES APPLY TO THESE SO THEY CAN HAVE ARBITRARY COST
             Mdl::Num(_)
@@ -57,8 +57,11 @@ impl CostModel {
             | Mdl::ReturnOp(_)
             // InferReshape at most adds a ReshapeOp without changing the underlying data, which should be free
             // TODO: Gather all the "zero cost ops" assumptions together (the other bits currently being in EqualitySaturation.cpp)
-            | Mdl::InferReshape(_) => 0.0,
-            x => create_stablehlo_op(egraph, x, ffi::get_cost) as f32,
+            | Mdl::InferReshape(_) => (0.0, 0.0),
+            x => {
+              let cs = create_stablehlo_op(egraph, x, ffi::get_cost);
+              (cs[0] as f32, cs[1] as f32)
+            }
         }
     }
 }
@@ -85,6 +88,7 @@ pub fn prep_ilp_data(
     Vec<Vec<usize>>,
     Vec<Vec<usize>>,
     Vec<f32>,
+    Vec<f32>,
     Vec<bool>,
     Vec<usize>,
     usize,
@@ -105,6 +109,7 @@ pub fn prep_ilp_data(
     let mut e_m: Vec<Vec<usize>> = vec![Vec::new(); num_classes];
     let mut h_i: Vec<Vec<usize>> = Vec::with_capacity(num_nodes);
     let mut cost_i: Vec<f32> = Vec::with_capacity(num_nodes);
+    let mut fus_cost_i: Vec<f32> = Vec::with_capacity(num_nodes);
     let mut g_i: Vec<usize> = Vec::with_capacity(num_nodes);
     let mut fus_i: Vec<bool> = Vec::with_capacity(num_nodes);
     let mut blacklist_i: Vec<usize> = Vec::new();
@@ -124,7 +129,9 @@ pub fn prep_ilp_data(
                     .map(|id| *id_m_map.get(&egraph.find(*id)).unwrap())
                     .collect(),
             );
-            cost_i.push(cost_model.get_self_cost(egraph, node));
+            let (cost, fus_cost) = cost_model.get_self_cost(egraph, node);
+            cost_i.push(cost);
+            fus_cost_i.push(fus_cost);
             g_i.push(m);
             use crate::model::Mdl::*;
             fus_i.push(match node {
@@ -165,6 +172,7 @@ pub fn prep_ilp_data(
         e_m,
         h_i,
         cost_i,
+        fus_cost_i,
         fus_i,
         g_i,
         root_m,
