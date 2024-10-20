@@ -15,8 +15,10 @@ use std::{borrow::Borrow, collections::HashMap};
 pub mod ffi {
     #[derive(Debug)]
     enum Type {
+        i1,
         i32,
-        f32,
+        bf16,
+        f32
     }
 
     enum Ops {
@@ -361,7 +363,9 @@ pub fn new_converter() -> Box<CppGraphConverter> {
 impl ffi::Type {
     pub fn from_str(s: &str) -> Option<ffi::Type> {
         match s {
+            "i1" => Some(ffi::Type::i1),
             "i32" => Some(ffi::Type::i32),
+            "bf16" => Some(ffi::Type::bf16),
             "f32" => Some(ffi::Type::f32),
             _ => None,
         }
@@ -1326,6 +1330,7 @@ fn extract_by_ilp(
     arg_vec.push(time_lim);
     arg_vec.push("--num_thread");
     arg_vec.push(num_thread);
+
     let child = Command::new("python3")
         .args(&arg_vec)
         .spawn()

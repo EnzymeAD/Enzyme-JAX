@@ -61,10 +61,11 @@ TEST_DEPS = [
         "//:enzyme_ad",
         "@pypi_jax//:pkg",
         "@pypi_absl_py//:pkg",
+        "@pypi_ortools//:pkg",
     ] + select({
         ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg", "@pypi_nvidia_cuda_nvrtc_cu12//:pkg"],
-        "//conditions:default": []
+        "//conditions:default": [],
     })
 
 [
@@ -131,3 +132,13 @@ py_test(
     deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
     timeout='long'
 )
+
+# py_test(
+#     name = "maxtext",
+#     srcs = [
+#         "maxtext.py",
+#     ],
+#     imports = ["."],
+#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+#     timeout='long'
+# )
