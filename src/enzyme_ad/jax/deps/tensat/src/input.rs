@@ -17,8 +17,10 @@ pub mod ffi {
     enum Type {
         i1,
         i32,
+        i64,
         bf16,
-        f32
+        f32,
+        f64,
     }
 
     enum Ops {
@@ -365,8 +367,10 @@ impl ffi::Type {
         match s {
             "i1" => Some(ffi::Type::i1),
             "i32" => Some(ffi::Type::i32),
+            "i64" => Some(ffi::Type::i64),
             "bf16" => Some(ffi::Type::bf16),
             "f32" => Some(ffi::Type::f32),
+            "f64" => Some(ffi::Type::f64),
             _ => None,
         }
     }

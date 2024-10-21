@@ -190,7 +190,7 @@ public:
    * time in nanoseconds.
    */
   static std::pair<uint64_t, uint64_t> getCost(Operation *op, unsigned warmup,
-                                          unsigned repetitions) {
+                                               unsigned repetitions) {
     // TODO: refactor this/separate out into two functions? so that
     // warmup/repetitions don't need to be passed for GPU.
 
@@ -314,7 +314,6 @@ public:
 
     wrapperModule.erase();
     return {cost, fus_cost};
-
   }
 
   static Operation *getDummyOp(OpBuilder &builder, Type type) {
@@ -1054,10 +1053,14 @@ mlir::Type tensat::tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
     return builder.getI1Type();
   case tensat::Type::i32:
     return builder.getI32Type();
+  case tensat::Type::i64:
+    return builder.getI64Type();
   case tensat::Type::bf16:
     return builder.getBF16Type();
   case tensat::Type::f32:
     return builder.getF32Type();
+  case tensat::Type::f64:
+    return builder.getF64Type();
   default:
     throw std::invalid_argument("unsupported tensat type");
   }
@@ -1068,11 +1071,16 @@ tensat::Type mlirTypeToTensatType(mlir::Type type) {
     return tensat::Type::i1;
   } else if (type.isInteger(32)) {
     return tensat::Type::i32;
+  } else if (type.isInteger(64)) {
+    return tensat::Type::i64;
   } else if (type.isBF16()) {
     return tensat::Type::bf16;
   } else if (type.isF32()) {
     return tensat::Type::f32;
+  } else if (type.isF64()) {
+    return tensat::Type::f64;
   } else {
+    type.dump();
     throw std::invalid_argument("unsupported MLIR type");
   }
 }
@@ -1443,7 +1451,6 @@ public:
         llvm::errs() << "]\n";
       } else {
         llvm::errs() << "Result is unranked.\n";
-
       }
       auto dimNumbers = convolution.getDimensionNumbers();
       mlir::ArrayAttr precision =
@@ -2122,6 +2129,7 @@ public:
 
     for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
       Operation &op = *it;
+
       currentOps.push_back(&op);
 
       for (Value operand : op.getOperands()) {
@@ -2291,6 +2299,7 @@ public:
            ++argIdx) {
         Value segmentedArg = segmentedFunc.getArgument(argIdx);
         Value originalValue = segmentPoint.inputs[argIdx];
+        auto op = originalValue.getDefiningOp();
         Value correspondingMainValue = availableValues.lookup(originalValue);
         if (!correspondingMainValue) {
           llvm::errs() << "Error: Unable to find corresponding value for "
@@ -2375,15 +2384,20 @@ public:
     auto context = module->getContext();
     OpBuilder builder(context);
 
-    // We assume there's only one FuncOp
+    bool foundFuncOp = false;
     func::FuncOp funcOp;
+
     for (Operation &op : module.getBody()->getOperations()) {
-      if (auto foundFuncOp = dyn_cast<func::FuncOp>(op)) {
-        funcOp = foundFuncOp;
+      if (isa<func::FuncOp>(op)) {
+        if (foundFuncOp) {
+          throw std::invalid_argument("found more than one funcOp");
+        }
+        funcOp = dyn_cast<func::FuncOp>(op);
+        foundFuncOp = true;
       }
     }
 
-    if (!funcOp) {
+    if (!foundFuncOp) {
       llvm::errs() << "No FuncOp found in the module.\n";
       return;
     }
@@ -2405,9 +2419,7 @@ public:
         SmallVector<Value> captured;
         body.walk([&](Operation *op) {
           for (auto value : op->getOperands()) {
-            auto definingOp = value.getDefiningOp();
-            if (definingOp != nullptr &&
-                definingOp->getBlock() == &entryBlock &&
+            if (value.getParentBlock() == &entryBlock &&
                 std::find(captured.begin(), captured.end(), value) ==
                     captured.end()) {
               captured.push_back(value);
