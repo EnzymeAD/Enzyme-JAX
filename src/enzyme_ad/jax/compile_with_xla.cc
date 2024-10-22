@@ -419,7 +419,6 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   xla::Compiler::CompileOptions opts = {
       build_options.device_allocator(), build_options.compile_thread_pool(),
       build_options.layout_canonicalization_callback()};
-  opts.registry = &registry;
   auto executable =
       BuildExecutable(local_client->local_service(), xla_computation.proto(),
                       std::move(module_config_or_error.value()),
