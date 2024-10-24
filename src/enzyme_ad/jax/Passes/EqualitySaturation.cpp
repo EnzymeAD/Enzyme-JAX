@@ -959,13 +959,13 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
         builder.getUnknownLoc(), operands[0], operands[1], other_vecs[0],
         other_vecs[1], other_vecs[2]);
     break;
-  case tensat::Ops::IotaOp:
-    mlirOp = builder.create<stablehlo::IotaOp>(
-        builder.getUnknownLoc(),
-        RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
-                              builder.getF32Type()),
-        int_args[0]);
-    break;
+  // case tensat::Ops::IotaOp:
+  //   mlirOp = builder.create<stablehlo::IotaOp>(
+  //       builder.getUnknownLoc(),
+  //       RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
+  //                             builder.getF32Type()),
+  //       int_args[0]);
+  //   break;
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
     assert(false);
@@ -1595,8 +1595,7 @@ public:
         if (op == copy)
           return;
         for (Value operand : op->getOperands()) {
-          if (operand.getDefiningOp() != nullptr // block argument
-              && operand.getDefiningOp()->getBlock() == outerBlock) {
+          if (operand.getParentBlock() == outerBlock) {
             capturedValues.push_back(operand);
             capturedTensorInfos.push_back(handleOperandPartial(operand));
           }
@@ -2021,15 +2020,15 @@ public:
             interiorPadding);
         break;
       }
-      case Ops::IotaOp:
-        // TODO: element type handling.
-        newOp = builder.create<stablehlo::IotaOp>(
-            location,
-            RankedTensorType::get(
-                llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
-                builder.getF32Type()),
-            parseNumNode(nodes, nodes[node.operands[0]]));
-        break;
+      // case Ops::IotaOp:
+      //   // TODO: element type handling.
+      //   newOp = builder.create<stablehlo::IotaOp>(
+      //       location,
+      //       RankedTensorType::get(
+      //           llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
+      //           builder.getF32Type()),
+      //       parseNumNode(nodes, nodes[node.operands[0]]));
+      //   break;
       case Ops::ReturnOp: {
         auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
         newOp = builder.create<func::ReturnOp>(location, inputs);
@@ -2053,6 +2052,9 @@ public:
           subst.map(oldCapturedValues[i], capturedValues[i]);
         }
         newOp = newOp->clone(subst);
+        // We insert here rather than set, because we clone blackboxed ops
+        // without cloning operands. Setting will result in invalid access of
+        // OperandStorage.
         newOp->insertOperands(0, operands);
         break;
       }
@@ -2063,8 +2065,10 @@ public:
         opsToAdd.push_back(newOp);
         opVals.push_back(newOp->getResult(0));
       } else {
+        assert(node.op == tensat::Ops::Vec || node.op == tensat::Ops::Num ||
+               node.op == tensat::Ops::Var);
         // This is bad practice, as we're pushing nullptr
-        // to ops in case of Input, Num, or Var nodes. This
+        // to ops in case of Vec, Num, or Var nodes. This
         // is unsafe, but maintains indexing. We could use
         // some llvm no-op, but that would not be much better.
         opVals.push_back(nullptr);
@@ -2079,14 +2083,15 @@ public:
   bool isUsedOutsideSegment(Value result, Block &entryBlock,
                             SmallVector<Operation *> &currentOps) {
     for (auto *user : result.getUsers()) {
+      Operation *op = user;
+      // Go up until we find the user op in our block
+      while (op->getBlock() != &entryBlock) {
+        op = op->getBlock()->getParentOp();
+      }
       // Check if the user operation is not in the current segment
-      if (std::find(currentOps.begin(), currentOps.end(), user) ==
+      if (std::find(currentOps.begin(), currentOps.end(), op) ==
           currentOps.end()) {
-        // Check if the user operation is still within the same block
-        // (entryBlock)
-        if (user->getBlock() == &entryBlock) {
-          return true;
-        }
+        return true;
       }
     }
     return false;
@@ -2129,20 +2134,23 @@ public:
 
     for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
       Operation &op = *it;
-
       currentOps.push_back(&op);
 
-      for (Value operand : op.getOperands()) {
-        if (operand.getDefiningOp() == nullptr ||
-            operand.getDefiningOp()->getBlock() != &entryBlock ||
-            outputsBeforeCurrentSegment.find(operand) !=
-                outputsBeforeCurrentSegment.end()) {
-          if (std::find(segment.inputs.begin(), segment.inputs.end(),
-                        operand) == segment.inputs.end()) {
-            segment.inputs.push_back(operand);
+      op.walk([&](Operation *innerOp) {
+        for (auto value : innerOp->getOperands()) {
+          // Treat as input if the value is either an argument to the current
+          // block or in the outputs list.
+          if ((value.getDefiningOp() == nullptr &&
+               value.getParentBlock() == &entryBlock) ||
+              outputsBeforeCurrentSegment.find(value) !=
+                  outputsBeforeCurrentSegment.end()) {
+            if (std::find(segment.inputs.begin(), segment.inputs.end(),
+                          value) == segment.inputs.end()) {
+              segment.inputs.push_back(value);
+            }
           }
         }
-      }
+      });
 
       bool blackboxed = isBlackboxed(&op);
 
@@ -2196,14 +2204,14 @@ public:
       while (opIt != entryBlock.end() &&
              opIt != entryBlock.getOperations().end() &&
              &(*opIt) != segment.endOp) {
-        Operation *clonedOp = builder.clone(*opIt, originalToCloned);
+        Operation *clonedOp = opIt->clone(originalToCloned);
         newBlock->push_back(clonedOp);
         updateMapper(&(*opIt), clonedOp, originalToCloned);
         ++opIt;
       }
 
       // Clone the end operation
-      Operation *clonedEndOp = builder.clone(*opIt, originalToCloned);
+      Operation *clonedEndOp = opIt->clone(originalToCloned);
       newBlock->push_back(clonedEndOp);
       updateMapper(&(*opIt), clonedEndOp, originalToCloned);
       ++opIt;
@@ -2238,6 +2246,7 @@ public:
   }
 
   void updateMapper(Operation *opIt, Operation *clonedOp, IRMapping &mapper) {
+    assert(opIt->getNumResults() == clonedOp->getNumResults());
     for (unsigned i = 0; i < opIt->getNumResults(); ++i) {
       mapper.map(opIt->getResult(i), clonedOp->getResult(i));
     }
@@ -2262,7 +2271,6 @@ public:
 
     Block &entryBlock = mainFunc.getBody().front();
     entryBlock.clear();
-    builder.setInsertionPointToEnd(&entryBlock);
 
     // Vector to keep track of the outputs from the previous segment
     SmallVector<Value> previousSegmentOutputs;
@@ -2294,17 +2302,18 @@ public:
       }
 
       IRMapping mapper;
-      // Map inputs using availableValues
+      // map inputs using availablevalues
       for (unsigned argIdx = 0; argIdx < segmentedFunc.getNumArguments();
            ++argIdx) {
+        assert(argIdx < segmentPoint.inputs.size());
         Value segmentedArg = segmentedFunc.getArgument(argIdx);
         Value originalValue = segmentPoint.inputs[argIdx];
-        auto op = originalValue.getDefiningOp();
         Value correspondingMainValue = availableValues.lookup(originalValue);
         if (!correspondingMainValue) {
           llvm::errs() << "Error: Unable to find corresponding value for "
                           "segmented argument.\n";
-          originalValue.getDefiningOp()->dump();
+          segmentedArg.dump();
+          originalValue.dump();
           return;
         }
         mapper.map(segmentedArg, correspondingMainValue);
@@ -2326,7 +2335,8 @@ public:
           continue;
         } else {
           // Clone the operation with remapped operands
-          Operation *clonedOp = builder.clone(op, mapper);
+          Operation *clonedOp = op.clone(mapper);
+          entryBlock.push_back(clonedOp);
           // Map the results for subsequent operations
           for (auto result : op.getResults()) {
             mapper.map(result, clonedOp->getResult(result.getResultNumber()));
@@ -2338,6 +2348,7 @@ public:
       previousSegmentOutputs = currentSegmentOutputs;
 
       for (size_t idx = 0; idx < segmentPoint.outputs.size(); ++idx) {
+        assert(idx < currentSegmentOutputs.size());
         Value originalOutput = segmentPoint.outputs[idx];
         Value outputValue = currentSegmentOutputs[idx];
         availableValues[originalOutput] = outputValue;
@@ -2347,11 +2358,14 @@ public:
     // After all segments have been inlined, insert a single `func.return` at
     // the end
     if (!previousSegmentOutputs.empty()) {
-      builder.create<func::ReturnOp>(builder.getUnknownLoc(),
-                                     previousSegmentOutputs);
+      auto returnOp = builder.create<func::ReturnOp>(builder.getUnknownLoc(),
+                                                     previousSegmentOutputs);
+      entryBlock.push_back(returnOp);
     } else {
       // If there are no outputs, insert a void return
-      builder.create<func::ReturnOp>(builder.getUnknownLoc(), ValueRange{});
+      auto returnOp =
+          builder.create<func::ReturnOp>(builder.getUnknownLoc(), ValueRange{});
+      entryBlock.push_back(returnOp);
     }
   }
 
@@ -2373,6 +2387,10 @@ public:
                                builder.getUnknownLoc(), operands));
       } else {
         newOp = op.clone(mapper);
+      }
+      for (auto operand : newOp->getOperands()) {
+        // Nothing should remain from the original block
+        assert(operand.getParentBlock() != oldBlock);
       }
       updateMapper(&op, newOp, mapper);
       newBlock->push_back(newOp);

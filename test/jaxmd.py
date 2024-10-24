@@ -136,18 +136,18 @@ broadcast_reduce<1>;
 )
 
 pipelines = [
-    # ("JaX  ", None, CurBackends),
-    # ("JaXPipe", JaXPipeline(), CurBackends),
-    # (
-    #     "HLOOpt",
-    #     JaXPipeline(
-    #         "inline{default-pipeline=canonicalize max-iterations=4},"
-    #         + "canonicalize,cse,enzyme-hlo-opt,cse"
-    #     ),
-    #     CurBackends,
-    # ),
-    # ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    ("JaX  ", None, CurBackends),
+    ("JaXPipe", JaXPipeline(), CurBackends),
+    (
+        "HLOOpt",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "canonicalize,cse,enzyme-hlo-opt,cse"
+        ),
+        CurBackends,
+    ),
+    ("PartOpt", JaXPipeline(partialopt), CurBackends),
+    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
     (
         "EqSat",
         JaXPipeline(
