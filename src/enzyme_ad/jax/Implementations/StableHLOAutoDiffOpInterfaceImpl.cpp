@@ -801,6 +801,113 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class AutoDiffReduceWindowRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceWindowRev,
+                                                       ReduceWindowOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<ReduceWindowOp>(orig);
+
+    if (op.getNumOperands() != 2) {
+      orig->emitError() << "Unsupported reduce window rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    auto &region = op.getBody();
+    if (!region.hasOneBlock()) {
+      orig->emitError() << "Unsupported reduce window rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    if (!gutils->isConstantValue(op.getOperand(1))) {
+      orig->emitError() << "Unsupported reduce window rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    auto &block = op.getBody().front();
+    if (!hasSingleElement(block.without_terminator())) {
+      orig->emitError() << "Unsupported reduce window rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    Operation &innerOp = *block.begin();
+    if (!isa<MaxOp>(innerOp) || innerOp.getOperand(0) != block.getArgument(0) ||
+        innerOp.getOperand(1) != block.getArgument(1)) {
+      orig->emitError() << "Unsupported reduce window rev autodiff(1): "
+                        << *orig << "\n";
+      return failure();
+    }
+
+    auto unrankedTensorType = RankedTensorType::get(
+        {},
+        op.getResult(0).getType().cast<RankedTensorType>().getElementType());
+
+    auto select = new Block();
+    select->addArgument(unrankedTensorType, op.getLoc());
+    select->addArgument(unrankedTensorType, op.getLoc());
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToEnd(select);
+
+      auto cmpOp = builder.create<CompareOp>(
+          op.getLoc(), select->getArgument(0), select->getArgument(1),
+          ComparisonDirection::GE);
+      builder.create<ReturnOp>(op.getLoc(), cmpOp.getResult());
+    }
+
+    auto scatter = new Block();
+    scatter->addArgument(unrankedTensorType, op.getLoc());
+    scatter->addArgument(unrankedTensorType, op.getLoc());
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToEnd(scatter);
+
+      auto addOp = builder.create<AddOp>(op.getLoc(), scatter->getArgument(0),
+                                         scatter->getArgument(1));
+      builder.create<ReturnOp>(op.getLoc(), addOp.getResult());
+    }
+
+    auto inDiffe = gutils->diffe(op->getResult(0), builder);
+    auto revOp = builder.create<SelectAndScatterOp>(
+        op.getLoc(), op.getOperand(0).getType(),
+        gutils->popCache(caches[0], builder), inDiffe,
+        unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
+            builder, op.getLoc()),
+        op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
+        op.getPaddingAttr());
+
+    revOp.getSelect().push_back(select);
+    revOp.getScatter().push_back(scatter);
+
+    gutils->addToDiffe(op.getOperand(0), revOp.getResult(), builder);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    SmallVector<Value> cachedArguments;
+
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    Value cache = gutils->initAndPushCache(
+        gutils->getNewFromOriginal(orig->getOperand(0)), cacheBuilder);
+    cachedArguments.push_back(cache);
+
+    return cachedArguments;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 class AutoDiffReduceRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceRev,
                                                        ReduceOp> {
@@ -1749,6 +1856,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicSliceUpdateRev>(
         *context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
+    ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);    
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
