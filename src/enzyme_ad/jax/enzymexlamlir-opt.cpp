@@ -43,6 +43,7 @@
 
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/tests/CheckOps.h"
 
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
@@ -87,6 +88,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
+  registry.insert<mlir::stablehlo::check::CheckDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
 

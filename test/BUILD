@@ -34,6 +34,7 @@ exports_files(
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
+            "@stablehlo//:stablehlo-translate"
         ] + glob(["**/*.h"]),
     )
     for src in glob(
