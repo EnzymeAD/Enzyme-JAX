@@ -99,9 +99,9 @@ func.func @dot_general_nobatch_complex(%a : tensor<2x3xcomplex<f32>>, %b : tenso
 // FORWARD-COMPLEX-NEXT:  }
 
 // REVERSE-COMPLEX:  func.func @dot_general_nobatch_complex(%arg0: tensor<2x3xcomplex<f32>>, %arg1: tensor<4x2xcomplex<f32>>, %arg2: tensor<3x4xcomplex<f32>>) -> (tensor<2x3xcomplex<f32>>, tensor<4x2xcomplex<f32>>) {
-// REVERSE-COMPLEX-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3x4xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %cst_0 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %cst_1 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3x4xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst_1 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %0 = stablehlo.add %cst, %arg2 : tensor<3x4xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %1 = chlo.conj %0 : tensor<3x4xcomplex<f32>> -> tensor<3x4xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %2 = stablehlo.dot_general %1, %arg1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<3x4xcomplex<f32>>, tensor<4x2xcomplex<f32>>) -> tensor<3x2xcomplex<f32>>
@@ -140,9 +140,9 @@ func.func @dot_general_batch_complex(%a : tensor<2x3x8xcomplex<f32>>, %b : tenso
 // FORWARD-BATCH-COMPLEX-NEXT:  }
 
 // REVERSE-BATCH-COMPLEX:  func.func @dot_general_batch_complex(%arg0: tensor<2x3x8xcomplex<f32>>, %arg1: tensor<4x2x8xcomplex<f32>>, %arg2: tensor<8x3x4xcomplex<f32>>) -> (tensor<2x3x8xcomplex<f32>>, tensor<4x2x8xcomplex<f32>>) {
-// REVERSE-BATCH-COMPLEX-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<8x3x4xcomplex<f32>>
-// REVERSE-BATCH-COMPLEX-NEXT:    %cst_0 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3x8xcomplex<f32>>
-// REVERSE-BATCH-COMPLEX-NEXT:    %cst_1 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2x8xcomplex<f32>>
+// REVERSE-BATCH-COMPLEX-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<8x3x4xcomplex<f32>>
+// REVERSE-BATCH-COMPLEX-NEXT:    %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3x8xcomplex<f32>>
+// REVERSE-BATCH-COMPLEX-NEXT:    %cst_1 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2x8xcomplex<f32>>
 // REVERSE-BATCH-COMPLEX-NEXT:    %0 = stablehlo.add %cst, %arg2 : tensor<8x3x4xcomplex<f32>>
 // REVERSE-BATCH-COMPLEX-NEXT:    %1 = chlo.conj %0 : tensor<8x3x4xcomplex<f32>> -> tensor<8x3x4xcomplex<f32>>
 // REVERSE-BATCH-COMPLEX-NEXT:    %2 = stablehlo.dot_general %1, %arg1, batching_dims = [0] x [2], contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] : (tensor<8x3x4xcomplex<f32>>, tensor<4x2x8xcomplex<f32>>) -> tensor<8x3x2xcomplex<f32>>
