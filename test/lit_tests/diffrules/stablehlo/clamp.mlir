@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=clamp outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize --arith-raise | FileCheck %s --check-prefix=FORWARD
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=clamp outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | FileCheck %s --check-prefix=REVERSE
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | $(dirname $(which enzymexlamlir-opt))/external/stablehlo/stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | %stablehlo-translate - --interpret
 
 // : # enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise
 
