@@ -230,6 +230,75 @@ public:
   }
 };
 
+class AutoDiffIfRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev, IfOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto revOp = builder.create<IfOp>(orig->getLoc(), ArrayRef<mlir::Type>{},
+                                      gutils->popCache(caches[0], builder),
+                                      orig->getAttrs());
+
+    Location loc = orig->getLoc();
+
+    bool valid = true;
+    for (auto &&[origReg, newReg] :
+         llvm::zip_equal(orig->getRegions(), revOp->getRegions())) {
+      Block *oBB = &origReg.front();
+
+      newReg.push_back(new Block());
+      Block *reverseBB = &newReg.front();
+
+      OpBuilder revBuilder(reverseBB, reverseBB->end());
+      auto term = oBB->getTerminator();
+
+      for (auto &&[ret, op] :
+           llvm::zip_equal(orig->getResults(), term->getOperands())) {
+        if (gutils->isConstantValue(ret))
+          continue;
+        if (gutils->isConstantValue(op))
+          continue;
+
+        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+      }
+
+      auto first = oBB->rbegin();
+      first++; // skip terminator
+
+      auto last = oBB->rend();
+
+      for (auto it = first; it != last; ++it) {
+        Operation *op = &*it;
+        valid &= gutils->Logic.visitChild(op, revBuilder, gutils).succeeded();
+      }
+
+      revBuilder.create<stablehlo::ReturnOp>(orig->getLoc(), ArrayRef<Value>{});
+    }
+
+    return success(valid);
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    SmallVector<Value> caches;
+
+    auto op = cast<IfOp>(orig);
+
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    Value predCache = gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getPred()), cacheBuilder);
+    caches.push_back(predCache);
+
+    return caches;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 class AutoDiffWhileFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
 public:
@@ -1036,6 +1105,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
         ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        IfOp::attachInterface<AutoDiffIfRev>(*context);
         IfOp::attachInterface<AutoDiffIfFwd>(*context);
         IfOp::attachInterface<AutoDiffIfCF>(*context);
         WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
