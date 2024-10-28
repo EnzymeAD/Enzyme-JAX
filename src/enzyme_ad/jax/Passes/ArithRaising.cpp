@@ -81,6 +81,16 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
+    op->walk([=](arith::ConstantOp constOp) {
+      auto CT = constOp.getType();
+      if (isa<TensorType>(CT)) {
+        OpBuilder builder(constOp);
+        Value newConstOp = builder.create<stablehlo::ConstantOp>(
+            constOp.getLoc(), constOp.getValueAttr());
+        constOp.replaceAllUsesWith(newConstOp);
+        constOp.erase();
+      }
+    });
   }
 };
 

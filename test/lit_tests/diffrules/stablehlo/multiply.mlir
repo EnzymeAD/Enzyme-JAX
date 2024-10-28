@@ -40,7 +40,7 @@ func.func @mul_complex(%a : tensor<2xcomplex<f32>>, %b : tensor<2xcomplex<f32>>)
 //FORWARDCOMPLEX-NEXT:  }
 
 //REVERSECOMPLEX:  func.func @mul_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>, %arg2: tensor<2xcomplex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) {
-//REVERSECOMPLEX-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2xcomplex<f32>>
+//REVERSECOMPLEX-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2xcomplex<f32>>
 //REVERSECOMPLEX-NEXT:    %0 = stablehlo.add %cst, %arg2 : tensor<2xcomplex<f32>>
 //REVERSECOMPLEX-NEXT:    %1 = chlo.conj %0 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
 //REVERSECOMPLEX-NEXT:    %2 = stablehlo.multiply %1, %arg1 : tensor<2xcomplex<f32>>

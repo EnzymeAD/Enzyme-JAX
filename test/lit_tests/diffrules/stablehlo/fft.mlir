@@ -16,7 +16,7 @@ func.func @fft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // FORWARD-FFT-NEXT:   }
 
 // REVERSE-FFT:  func.func @fft(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
-// REVERSE-FFT-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
+// REVERSE-FFT-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
 // REVERSE-FFT-NEXT:    %0 = stablehlo.add %cst, %arg1 : tensor<4xcomplex<f32>>
 // REVERSE-FFT-NEXT:    %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
 // REVERSE-FFT-NEXT:    %2 = stablehlo.fft %1, type =  FFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
@@ -42,7 +42,7 @@ func.func @ifft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // FORWARD-IFFT-NEXT:   }
 
 // REVERSE-IFFT:  func.func @ifft(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
-// REVERSE-IFFT-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
+// REVERSE-IFFT-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
 // REVERSE-IFFT-NEXT:    %0 = stablehlo.add %cst, %arg1 : tensor<4xcomplex<f32>>
 // REVERSE-IFFT-NEXT:    %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
 // REVERSE-IFFT-NEXT:    %2 = stablehlo.fft %1, type =  IFFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>

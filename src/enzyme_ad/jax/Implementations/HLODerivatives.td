@@ -536,6 +536,37 @@ def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
 
 def : HLOInactiveOp<"CeilOp">;
 
+def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
+  (Select
+    (And
+      (Compare $min, $max, (LT)),
+      (Compare $min, $operand, (GT))
+    ),
+    (DiffeRet),
+    (HLOConstantFP<"0"> $min)
+  ),
+  (Select
+    (Or
+      (Compare $operand, $min, (LT)),
+      (Compare $operand, $max, (GT))
+    ),
+    (HLOConstantFP<"0"> $operand),
+    (DiffeRet)
+  ),
+  (Select
+    (Compare (Max $operand, $min), $max, (GT)),
+    (DiffeRet),
+    (HLOConstantFP<"0"> $max)
+  ),
+], (Select
+    (Compare (Max $operand, $min), $max, (GT)),
+    (SelectIfActive $max, (Shadow $max), (HLOConstantFP<"0"> $max)),
+    (Select
+        (Compare $operand, $min, (LT)),
+        (SelectIfActive $min, (Shadow $min), (HLOConstantFP<"0"> $min)),
+        (SelectIfActive $operand, (Shadow $operand), (HLOConstantFP<"0"> $operand)))
+)>;
+
 def : HLODerivative<"CbrtOp", (Op $x), [
   (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
 ]>;

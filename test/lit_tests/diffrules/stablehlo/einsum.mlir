@@ -43,9 +43,9 @@ func.func @einsum_complex(%a : tensor<2x3xcomplex<f32>>, %b : tensor<4x3x5xcompl
 // FORWARD-COMPLEX-NEXT:  }
 
 // REVERSE-COMPLEX:  func.func @einsum_complex(%arg0: tensor<2x3xcomplex<f32>>, %arg1: tensor<4x3x5xcomplex<f32>>, %arg2: tensor<4x2x5xcomplex<f32>>) -> (tensor<2x3xcomplex<f32>>, tensor<4x3x5xcomplex<f32>>) {
-// REVERSE-COMPLEX-NEXT:    %cst = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2x5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %cst_0 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %cst_1 = arith.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x3x5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2x5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x3xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %cst_1 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x3x5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %0 = stablehlo.add %cst, %arg2 : tensor<4x2x5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %1 = chlo.conj %0 : tensor<4x2x5xcomplex<f32>> -> tensor<4x2x5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %2 = stablehlo.einsum %1, %arg1, config = "cad,cbd->ab" : (tensor<4x2x5xcomplex<f32>>, tensor<4x3x5xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
