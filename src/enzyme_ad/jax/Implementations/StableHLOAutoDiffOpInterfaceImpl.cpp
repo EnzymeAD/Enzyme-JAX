@@ -199,6 +199,37 @@ public:
   }
 };
 
+class AutoDiffIfFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffIfFwd, IfOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+    for (auto res : orig->getOpResults()) {
+      if (!gutils->isConstantValue(res))
+        resultPositionsToShadow.insert(res.getResultNumber());
+    }
+
+    return mlir::enzyme::detail::controlFlowForwardHandler(
+        orig, builder, gutils, operandPositionsToShadow,
+        resultPositionsToShadow);
+  }
+};
+
+class AutoDiffIfCF
+    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffIfCF, IfOp> {
+public:
+  Operation *createWithShadows(Operation *op, OpBuilder &builder,
+                               MGradientUtils *gutils, Operation *original,
+                               ValueRange remappedOperands,
+                               TypeRange rettys) const {
+    return builder.create<IfOp>(original->getLoc(), rettys, remappedOperands,
+                                original->getAttrs());
+  }
+};
+
 class AutoDiffWhileFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
 public:
@@ -1005,6 +1036,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
         ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+        IfOp::attachInterface<AutoDiffIfFwd>(*context);
+        IfOp::attachInterface<AutoDiffIfCF>(*context);
         WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
         ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
         WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
