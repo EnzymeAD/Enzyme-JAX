@@ -6271,6 +6271,46 @@ struct TransposeIsReshape final
   }
 };
 
+struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto iszero = matchPattern(op.getPred(), m_Zero());
+    auto isone = matchPattern(op.getPred(), m_One());
+
+    if (!iszero && !isone)
+      return failure();
+
+    auto current = op->getBlock();
+
+    auto &reg = isone ? op.getTrueBranch() : op.getFalseBranch();
+
+    if (reg.empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    assert(reg.hasOneBlock());  // stablehlo.if only allows 1 or 0 block in the
+    auto *block = &reg.front(); // regions
+
+    auto term = block->getTerminator();
+    rewriter.replaceAllOpUsesWith(op, term->getOperands());
+    rewriter.eraseOp(term);
+
+    auto newBlock = rewriter.splitBlock(current, Block::iterator(op));
+
+    rewriter.inlineRegionBefore(reg, newBlock);
+
+    rewriter.mergeBlocks(block, current);
+    rewriter.mergeBlocks(newBlock, current);
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
@@ -6525,7 +6565,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
              RealOpCanon, ImagOpCanon, GetDimensionSizeOpCanon, GatherOpCanon,
              ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp>(context);
+             IfInline, ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp>(
+            context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,

@@ -546,6 +546,11 @@ def TransposeIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeIsReshape"];
 }
 
+def IfInline : EnzymeHLOPatternOp<
+    "if_inline"> {
+  let patterns = ["IfInline"];
+}
+
 def ZeroExtentTensorCanonPatterns : EnzymeHLOPatternOp<
     "zero_extent_tensor_canon"> {
   let patterns = ["ZeroExtentTensorCanon"];
