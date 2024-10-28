@@ -3,6 +3,7 @@ use crate::optimize::*;
 use crate::rewrites::*;
 use cxx::CxxVector;
 use egg::*;
+use ffi::get_graph_cost;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -21,7 +22,10 @@ pub mod ffi {
         i64,
         bf16,
         f32,
+<<<<<<< HEAD
         f64,
+=======
+>>>>>>> 7a954d5 (End-to-end cost measurement)
     }
 
     #[derive(Debug)]
@@ -334,7 +338,17 @@ pub mod ffi {
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
+<<<<<<< HEAD
         ) -> Vec<u64>;
+=======
+        ) -> u64;
+
+        fn get_graph_cost(graph: Vec<Node>) -> u64;
+    }
+
+    unsafe extern "C++" {
+        include!("EqualitySaturation.h");
+>>>>>>> 7a954d5 (End-to-end cost measurement)
 
         fn get_shape(
             op: Ops,
@@ -1125,6 +1139,16 @@ impl CppGraphConverter {
         }
 
         res
+    }
+
+    pub fn get_end_to_end_cost(
+        &self,
+        egraph: &EGraph<Mdl, TensorAnalysis>,
+        to_egraph: &HashMap<Id, Id>,
+        rec_expr: RecExpr<Mdl>,
+    ) -> u64 {
+        let nodes = self.convert_to_node(egraph, to_egraph, rec_expr);
+        get_graph_cost(nodes)
     }
 
     pub fn optimize<'a>(&'a self) -> Vec<ffi::Node> {
