@@ -551,6 +551,11 @@ def IfInline : EnzymeHLOPatternOp<
   let patterns = ["IfInline"];
 }
 
+def IfToSelect : EnzymeHLOPatternOp<
+    "if_to_select"> {
+  let patterns = ["IfToSelect"];
+}
+
 def ZeroExtentTensorCanonPatterns : EnzymeHLOPatternOp<
     "zero_extent_tensor_canon"> {
   let patterns = ["ZeroExtentTensorCanon"];
