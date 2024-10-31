@@ -6271,6 +6271,116 @@ struct TransposeIsReshape final
   }
 };
 
+struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto iszero = matchPattern(op.getPred(), m_Zero());
+    auto isone = matchPattern(op.getPred(), m_One());
+
+    if (!iszero && !isone)
+      return failure();
+
+    auto current = op->getBlock();
+
+    auto &reg = isone ? op.getTrueBranch() : op.getFalseBranch();
+
+    if (reg.empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    assert(reg.hasOneBlock());  // stablehlo.if only allows 1 or 0 block in the
+    auto *block = &reg.front(); // regions
+
+    auto term = block->getTerminator();
+    rewriter.replaceAllOpUsesWith(op, term->getOperands());
+    rewriter.eraseOp(term);
+
+    auto newBlock = rewriter.splitBlock(current, Block::iterator(op));
+
+    rewriter.inlineRegionBefore(reg, newBlock);
+
+    rewriter.mergeBlocks(block, current);
+    rewriter.mergeBlocks(newBlock, current);
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+// https://github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
+struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern<mlir::stablehlo::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
+        op.getFalseBranch().empty())
+      return failure();
+
+    auto pred = op.getPred();
+
+    auto trueOperands =
+        op.getTrueBranch().front().getTerminator()->getOperands();
+    auto falseOperands =
+        op.getFalseBranch().front().getTerminator()->getOperands();
+
+    SmallVector<Type> nonHoistable;
+    for (auto [trueVal, falseVal] : llvm::zip(trueOperands, falseOperands)) {
+      if (&op.getTrueBranch() == trueVal.getParentRegion() ||
+          &op.getFalseBranch() == falseVal.getParentRegion())
+        nonHoistable.push_back(trueVal.getType());
+    }
+
+    // Early exit if there aren't any yielded values we can
+    // hoist outside the if.
+    if (nonHoistable.size() == op->getNumResults())
+      return failure();
+
+    auto replacement =
+        rewriter.create<mlir::stablehlo::IfOp>(op.getLoc(), nonHoistable, pred);
+    replacement.getTrueBranch().takeBody(op.getTrueBranch());
+    replacement.getFalseBranch().takeBody(op.getFalseBranch());
+
+    SmallVector<Value> results(op->getNumResults());
+    assert(trueOperands.size() == results.size());
+    assert(falseOperands.size() == results.size());
+
+    SmallVector<Value> trueReturns;
+    SmallVector<Value> falseReturns;
+    rewriter.setInsertionPoint(replacement);
+    for (const auto &it :
+         llvm::enumerate(llvm::zip(trueOperands, falseOperands))) {
+      Value trueVal = std::get<0>(it.value());
+      Value falseVal = std::get<1>(it.value());
+      if (&replacement.getTrueBranch() == trueVal.getParentRegion() ||
+          &replacement.getFalseBranch() == falseVal.getParentRegion()) {
+        results[it.index()] = replacement.getResult(trueReturns.size());
+        trueReturns.push_back(trueVal);
+        falseReturns.push_back(falseVal);
+      } else if (trueVal == falseVal)
+        results[it.index()] = trueVal;
+      else
+        results[it.index()] = rewriter.create<mlir::stablehlo::SelectOp>(
+            op.getLoc(), pred, trueVal, falseVal);
+    }
+
+    rewriter.setInsertionPointToEnd(&replacement.getTrueBranch().front());
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+        replacement.getTrueBranch().front().getTerminator(), trueReturns);
+
+    rewriter.setInsertionPointToEnd(&replacement.getFalseBranch().front());
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+        replacement.getFalseBranch().front().getTerminator(), falseReturns);
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
@@ -6525,7 +6635,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
              RealOpCanon, ImagOpCanon, GetDimensionSizeOpCanon, GatherOpCanon,
              ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp>(context);
+             IfInline, IfToSelect, ZeroExtentTensorCanon,
+             ReorderElementwiseAndShapeOp>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
