@@ -229,10 +229,7 @@ pub fn get_vec_of_nums_option(
 pub fn get_vec_option(eclass: &EClass<Mdl, TensorData>) -> Option<&Vec<Id>> {
     let mut iter = eclass.iter();
     match iter.next() {
-        Some(Mdl::Vec(vec)) => match iter.next() {
-            Some(_) => panic!("Malformed vec node!"),
-            None => Some(vec),
-        },
+        Some(Mdl::Vec(vec)) => Some(vec),
         _ => None,
     }
 }
