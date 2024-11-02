@@ -99,6 +99,57 @@ define_language! {
   }
 }
 
+impl Mdl {
+    pub fn clone_with_mapping(
+        &self,
+        mapping: &HashMap<Id, Id>
+    ) -> Mdl {
+        let f = |x: Id| {
+            mapping.get(&x).unwrap().clone()
+        };
+
+        // TODO: Find a better way of doing this?
+        match self {
+            Mdl::Num(_) | Mdl::Var(_) => self.clone(),
+            Mdl::Vec(x) => Mdl::Vec(x.iter().map(|x| f(*x)).collect()),
+            Mdl::Input(x) => Mdl::Input(x.map(f)),
+            Mdl::CompareOp(x) => Mdl::CompareOp(x.map(f)),
+            Mdl::BroadcastInDimOp(x) => Mdl::BroadcastInDimOp(x.map(f)),
+            Mdl::ConvertOp(x) => Mdl::ConvertOp(x.map(f)),
+            Mdl::ReduceOp(x) => Mdl::ReduceOp(x.map(f)),
+            Mdl::ReshapeOp(x) => Mdl::ReshapeOp(x.map(f)),
+            Mdl::GatherOp(x) => Mdl::GatherOp(x.map(f)),
+            Mdl::SelectOp(x) => Mdl::SelectOp(x.map(f)),
+            Mdl::ConcatenateOp(x) => Mdl::ConcatenateOp(x.map(f)),
+            Mdl::ConvolutionOp(x) => Mdl::ConvolutionOp(x.map(f)),
+            Mdl::DotGeneralOp(x) => Mdl::DotGeneralOp(x.map(f)),
+            Mdl::PadOp(x) => Mdl::PadOp(x.map(f)),
+            Mdl::SliceOp(x) => Mdl::SliceOp(x.map(f)),
+            Mdl::TransposeOp(x) => Mdl::TransposeOp(x.map(f)),
+            Mdl::MulOp(x) => Mdl::MulOp(x.map(f)),
+            Mdl::AddOp(x) => Mdl::AddOp(x.map(f)),
+            Mdl::DivOp(x) => Mdl::DivOp(x.map(f)),
+            Mdl::SubtractOp(x) => Mdl::SubtractOp(x.map(f)),
+            Mdl::MinOp(x) => Mdl::MinOp(x.map(f)),
+            Mdl::MaxOp(x) => Mdl::MaxOp(x.map(f)),
+            Mdl::NegOp(x) => Mdl::NegOp(x.map(f)),
+            Mdl::TanhOp(x) => Mdl::TanhOp(x.map(f)),
+            Mdl::ExpOp(x) => Mdl::ExpOp(x.map(f)),
+            Mdl::IotaOp(x) => Mdl::IotaOp(x.map(f)),
+            Mdl::DynamicUpdateSliceOp(x) => Mdl::DynamicUpdateSliceOp(x.map(f)),
+            Mdl::DynamicSliceOp(x) => Mdl::DynamicSliceOp(x.map(f)),
+            Mdl::ScatterOp(x) => Mdl::ScatterOp(x.map(f)),
+            Mdl::ReturnOp(x) => Mdl::ReturnOp(x.map(f)),
+            Mdl::BlackBox(x) => Mdl::BlackBox(x.map(f)),
+            Mdl::Index(x) => Mdl::Index(x.map(f)),
+            Mdl::SSplit0(x) => Mdl::SSplit0(x.map(f)),
+            Mdl::SSplit1(x) => Mdl::SSplit1(x.map(f)),
+            Mdl::MatchRank(x) => Mdl::MatchRank(x.map(f)),
+            Mdl::InferReshape(x) => Mdl::InferReshape(x.map(f)),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum DataKind {
     Name,

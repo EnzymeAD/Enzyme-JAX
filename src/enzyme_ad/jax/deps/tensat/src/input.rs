@@ -23,6 +23,7 @@ pub mod ffi {
         f64,
     }
 
+    #[derive(Debug)]
     enum Ops {
         Var,
         Num,
@@ -64,6 +65,7 @@ pub mod ffi {
         InferReshape,
     }
 
+    #[derive(Debug, Clone)]
     struct Node {
         op: Ops,
         label: String,
@@ -323,6 +325,8 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
+        include!("EqualitySaturation.h");
+
         fn get_cost(
             op: Ops,
             operands: Vec<Tensor>,
@@ -330,10 +334,6 @@ pub mod ffi {
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
         ) -> Vec<u64>;
-    }
-
-    unsafe extern "C++" {
-        include!("EqualitySaturation.h");
 
         fn get_shape(
             op: Ops,
@@ -342,6 +342,11 @@ pub mod ffi {
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
         ) -> Vec<Tensor>;
+
+        fn apply_mlir_rewrite(
+            nodes: Vec<Node>,
+            roots: Vec<Tensor>,
+        ) -> Box<CppGraphConverter>;
     }
 }
 
@@ -1170,6 +1175,16 @@ impl CppGraphConverter {
         ];
 
         rules.append(&mut custom_rules);
+
+        let mut mlir_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = MlirRewrites::all()
+            .iter()
+            .map(|r|
+                 rewrite!(r.to_string();
+                          (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
+                          => { MlirRewriteApplier { rewrite: r.clone() }}))
+            .collect();
+
+        rules.append(&mut mlir_rules);
 
         let iter_multi = 2;
         let node_multi = 30000;

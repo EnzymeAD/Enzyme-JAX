@@ -1,4 +1,4 @@
-use crate::{input::ffi, model::*};
+use crate::{input::ffi, model::*, ffi_utils};
 use egg::{rewrite as rw, *};
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
@@ -469,6 +469,244 @@ impl Applier<Mdl, TensorAnalysis> for MergeSlices {
         finish_apply(egraph, matched_id, id)
     }
 }
+
+// https://stackoverflow.com/a/68025464
+macro_rules! make_enum {
+    (
+        $name:ident $array:ident {
+            $( $variant:ident, )*
+        }
+    ) => {
+        #[derive(Clone, Debug)]
+        pub enum $name {
+            $( $variant, )*
+        }
+        static $array: &[$name] = &[
+            $( $name::$variant, )*
+        ];
+    }
+}
+
+/// Supported Enzyme rewrites, and their AST representation
+make_enum!(MlirRewrites ALL_REWRITES {
+    NoopSlice,
+    SliceSlice,
+    SlicePad,
+    SliceConcat,
+    PadSimplify,
+    NegativePadToSlice,
+    AddPadToConcat,
+    MulPadToConcat,
+    ReshapePad,
+    ConcatAppendingReshape,
+    TanhPadPush,
+    ExpPadPush,
+    TransposePad,
+    ConcatPushAdd,
+    ConcatPushMul,
+    ConcatPad2,
+    ConcatPad3,
+    SliceSimplify,
+    TransposeTranspose,
+    TransposeDotReorder,
+    TransposeConvolution,
+    ConvolutionTranspose,
+    DotTransposeLeft,
+    DotTransposeRight,
+    DotTransposeBoth,
+    AddPadPad,
+    SubPadPad,
+    MulPadPad,
+    DivPadPad,
+    MaxPadPad,
+    MinPadPad,
+    AddPadPadToConcat,
+    PadPad,
+    SliceDotGeneral,
+    SliceReshape,
+    SliceReshapePad,
+    SliceReshapeConcat,
+    SliceReshapeTranspose,
+    SliceReshapeDotGeneral,
+    SliceReshapeSlice,
+});
+
+impl MlirRewrites {
+    // TODO: There must be a smarter way to do this that checks during compile time,
+    // but Stack Overflow is down right now...
+    pub fn all() -> Vec<MlirRewrites> {
+        ALL_REWRITES.to_vec()
+    }
+
+    pub fn to_ast(&self) -> PatternAst<Mdl> {
+        let ast_string = match self {
+            MlirRewrites::NoopSlice => "(SliceOp ?x ?si ?li ?s)",
+            MlirRewrites::SliceSlice => "(SliceOp (SliceOp ?x ?a ?b ?c) ?d ?e ?f)",
+            MlirRewrites::SlicePad => "(SliceOp (PadOp ?x ?a ?b ?c ?d) ?e ?f ?g)",
+            MlirRewrites::SliceConcat => "(SliceOp (ConcatenateOp ?x ?a) ?b ?c ?d)",
+            MlirRewrites::PadSimplify => "(PadOp ?x ?a ?b ?c ?d)",
+            MlirRewrites::NegativePadToSlice => "(PadOp ?x ?pv ?epl ?eph ?ip)",
+            MlirRewrites::AddPadToConcat => "(AddOp (PadOp ?x ?a ?b ?c ?d) ?y)",
+            MlirRewrites::MulPadToConcat => "(MulOp (PadOp ?x ?a ?b ?c ?d) ?y)",
+            MlirRewrites::ReshapePad => "(ReshapeOp (PadOp ?x ?a ?b ?c ?d) ?s)",
+            MlirRewrites::ConcatAppendingReshape => "(ConcatenateOp ?x ?a)",
+            MlirRewrites::TanhPadPush => "(TanhOp (PadOp ?x ?a ?b ?c ?d))",
+            MlirRewrites::ExpPadPush => "(ExpOp (PadOp ?x ?a ?b ?c ?d))",
+            MlirRewrites::TransposePad => "(TransposeOp (PadOp ?x ?pv ?epl ?eph ?ip) ?p)",
+            MlirRewrites::ConcatPushAdd => "(ConcatenateOp (Vec (AddOp ?a ?b) (AddOp ?c ?d)) ?e)",
+            MlirRewrites::ConcatPushMul => "(ConcatenateOp (Vec (MulOp ?a ?b) (MulOp ?c ?d)) ?e)",
+            MlirRewrites::ConcatPad2 => "(ConcatenateOp (Vec (PadOp ?x ?a ?b ?c ?d) (PadOp ?y ?e ?f ?g ?h)) ?i)",
+            MlirRewrites::ConcatPad3 => "(ConcatenateOp (Vec (PadOp ?x ?a ?b ?c ?d) (PadOp ?y ?e ?f ?g ?h) (PadOp ?z ?i ?j ?k ?l)) ?m)",
+            MlirRewrites::SliceSimplify => "(SliceOp ?x ?a ?b ?c)",
+            MlirRewrites::TransposeTranspose => "(TransposeOp (TransposeOp ?x ?a) ?b)",
+            MlirRewrites::TransposeDotReorder => "(TransposeOp (DotGeneralOp ?a ?b ?c ?d ?e ?f ?g) ?h)",
+            MlirRewrites::TransposeConvolution => "(TransposeOp (ConvolutionOp ?a ?b ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s) ?t)",
+            MlirRewrites::ConvolutionTranspose => "(ConvolutionOp (TransposeOp ?x ?a) (TransposeOp ?y ?b) ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s)",
+            MlirRewrites::DotTransposeLeft => "(DotGeneralOp (TransposeOp ?x ?a) ?b ?c ?d ?e ?f ?g)",
+            MlirRewrites::DotTransposeRight => "(DotGeneralOp ?a (TransposeOp ?y ?b) ?c ?d ?e ?f ?g)",
+            MlirRewrites::DotTransposeBoth => "(DotGeneralOp (TransposeOp ?x ?a) (TransposeOp ?y ?b) ?c ?d ?e ?f ?g)",
+            MlirRewrites::AddPadPad => "(AddOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::SubPadPad => "(SubtractOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::MulPadPad => "(MulOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::DivPadPad => "(DivOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::MinPadPad => "(MinOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::MaxPadPad => "(MaxOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::AddPadPadToConcat => "(AddOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            MlirRewrites::PadPad => "(PadOp (PadOp ?a ?b ?c ?d ?e) ?f ?g ?h ?i)",
+            MlirRewrites::SliceDotGeneral => "(SliceOp (DotGeneralOp ?a ?b ?c ?d ?e ?f ?g) ?h ?i ?j)",
+            MlirRewrites::SliceReshape => "(SliceOp (ReshapeOp ?a ?b) ?c ?d ?e)",
+            MlirRewrites::SliceReshapePad => "(SliceOp (ReshapeOp (PadOp ?a ?b ?c ?d ?e) ?f) ?g ?h ?i)",
+            MlirRewrites::SliceReshapeConcat => "(SliceOp (ReshapeOp (ConcatenateOp ?a ?b) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeTranspose => "(SliceOp (ReshapeOp (TransposeOp ?a ?b) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeDotGeneral => "(SliceOp (ReshapeOp (DotGeneralOp ?a ?b c ?d ?e ?f ?g) ?h) ?i ?j ?k)",
+            MlirRewrites::SliceReshapeSlice => "(SliceOp (ReshapeOp (SliceOp ?a ?b ?c ?d) ?e) ?f ?g ?h)",
+        };
+        ast_string.parse().unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+/// Apply Enzyme MLIR rewrites!
+#[derive(Clone)]
+pub struct MlirRewriteApplier {
+    pub rewrite: MlirRewrites,
+}
+
+impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
+    fn apply_one(
+        &self,
+        egraph: &mut EGraph<Mdl, TensorAnalysis>,
+        matched_id: Id,
+        subst: &Subst,
+    ) -> Vec<Id> {
+        let ast = self.rewrite.to_ast();
+
+        // Copy over the AST into a RecExpr<Mdl>. The ENodes are just copied over,
+        // and the Vars are handled in the following way:
+        // - if subst[v] is a Num, this is copied over;
+        // - if subst[v] is a Vec, then we insert the elements (potentially recursively, if
+        //   there is a nested vec) and insert the Vec accordingly;
+        // - if subst[v] is a tensor, we insert an Input (this will map to a function input).
+
+        let mut expr = RecExpr::default();
+        let mut mapping = HashMap::new();
+        let mut argnum_to_id = HashMap::new();
+        let mut cur_argnum = 0;
+        let mut last_added = Id::default();
+
+        for (i, x) in ast.as_ref().iter().enumerate() {
+            let id = match x {
+                ENodeOrVar::ENode(l) => {
+                   expr.add(l.clone_with_mapping(&mapping))
+                }
+                ENodeOrVar::Var(v) => {
+                    fn get_id(
+                        egraph: &EGraph<Mdl, TensorAnalysis>,
+                        expr: &mut RecExpr<Mdl>,
+                        argnum_to_id: &mut HashMap<i64, Id>,
+                        cur_argnum: &mut i64,
+                        id: &Id,
+                    ) -> Id {
+                        let eclass = &egraph[*id];
+
+                        if let Some(n) = get_num_option(&eclass) {
+                            expr.add(Mdl::Num(n))
+                        } else if let Some(v) = get_vec_option(&eclass) {
+                            let vec = v.iter()
+                                .map(|x| get_id(egraph, expr, argnum_to_id, cur_argnum, x)).collect();
+                            expr.add(Mdl::Vec(vec))
+                        } else {
+                            let tensor = &eclass.data.tensors[0];
+                            let name = format!("input_{}", cur_argnum)
+                                + "@"
+                                + &tensor.shape.iter().join("_")
+                                + "@"
+                                + (format!("{:?}", tensor.element_type).as_str());
+                            let var = expr.add(Mdl::Var(Symbol::from(name)));
+                            let argnum = expr.add(Mdl::Num(*cur_argnum));
+                            argnum_to_id.insert(*cur_argnum, *id);
+                            *cur_argnum += 1;
+
+                            expr.add(Mdl::Input([var, argnum]))
+                        }
+                    };
+
+                    get_id(egraph, &mut expr, &mut argnum_to_id, &mut cur_argnum, &subst[*v])
+                }
+            };
+
+            mapping.insert(Id::from(i), id);
+            last_added = id;
+        };
+
+        last_added = expr.add(Mdl::Vec(vec![last_added]));
+        expr.add(Mdl::ReturnOp([last_added]));
+
+        let nodes = ffi_utils::recexpr_to_node(&expr);
+
+        let graph_converter = ffi::apply_mlir_rewrite(nodes, egraph[matched_id].data.tensors.clone());
+        let optimised_expr = graph_converter.rec_expr();
+
+        if expr == optimised_expr {
+            vec![]
+        } else {
+            mapping.clear();
+            for (i, x) in optimised_expr.as_ref().iter().enumerate() {
+                match x {
+                    Mdl::Var(x) => { /* do nothing */ },
+                    Mdl::BlackBox(_) => unimplemented!(),  // TODO: need to handle collisions carefully
+                    Mdl::Input([_var, idx]) => {
+                        let argnum = match optimised_expr.as_ref()[usize::from(*idx)] {
+                            Mdl::Num(n) => n,
+                            _ => panic!("found non-num in num position"),
+                        };
+                        let id = argnum_to_id[&argnum];
+                        mapping.insert(Id::from(i), id);
+                    },
+                    Mdl::ReturnOp([x]) => {
+                        let vec = match &optimised_expr.as_ref()[usize::from(*x)] {
+                            Mdl::Vec(v) => v,
+                            _ => panic!("found non-vec in vec position"),
+                        };
+                        assert!(vec.len() == 1);
+                        last_added = mapping[&vec[0]];
+                    },
+                    node => {
+                        let new_node = node.clone_with_mapping(&mapping);
+                        let id = egraph.add(new_node);
+                        mapping.insert(Id::from(i), id);
+                    }
+                }
+            }
+            egraph.union(last_added, matched_id);
+            vec![last_added]
+        }
+    }
+}
+
 
 /// Custom struct implementing the Applier trait, checking the new nodes to
 /// construct are all valid before actually apply.
