@@ -175,7 +175,8 @@ bool isBlackboxed(Operation *op) {
       isa<stablehlo::ExpOp>(op) || isa<stablehlo::TransposeOp>(op) ||
       isa<stablehlo::ReshapeOp>(op) || isa<stablehlo::DotGeneralOp>(op) ||
       isa<stablehlo::ConcatenateOp>(op) || isa<stablehlo::SliceOp>(op) ||
-      isa<stablehlo::PadOp>(op) || isa<func::ReturnOp>(op)) {
+      isa<stablehlo::PadOp>(op) || isa<func::ReturnOp>(op) ||
+      isa<stablehlo::ConvolutionOp>(op)) {
     return false;
   } else {
     return true;

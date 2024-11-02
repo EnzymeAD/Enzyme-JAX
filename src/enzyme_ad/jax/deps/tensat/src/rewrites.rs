@@ -674,7 +674,7 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
             for (i, x) in optimised_expr.as_ref().iter().enumerate() {
                 match x {
                     Mdl::Var(x) => { /* do nothing */ },
-                    Mdl::BlackBox(_) => unimplemented!(),  // TODO: need to handle collisions carefully
+                    Mdl::BlackBox(_) => unimplemented!("blackbox!"),  // TODO: need to handle collisions carefully
                     Mdl::Input([_var, idx]) => {
                         let argnum = match optimised_expr.as_ref()[usize::from(*idx)] {
                             Mdl::Num(n) => n,
