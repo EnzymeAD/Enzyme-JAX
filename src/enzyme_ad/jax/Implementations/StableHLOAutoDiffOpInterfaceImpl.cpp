@@ -616,6 +616,129 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class AutoDiffGatherRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffGatherRev,
+                                                       GatherOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<GatherOp>(orig);
+    auto inDiffe = gutils->diffe(op, builder);
+    GatherDimensionNumbersAttr dims = op.getDimensionNumbers();
+
+    auto scatterDims = ScatterDimensionNumbersAttr::get(
+        op.getContext(),
+        /*updateWindowDims=*/dims.getOffsetDims(),
+        /*insertedWindowDims=*/dims.getCollapsedSliceDims(),
+        /*inputBatchingDims=*/dims.getOperandBatchingDims(),
+        /*scatterIndicesBatchingDims=*/dims.getStartIndicesBatchingDims(),
+        /*scatterDimsToOperandDims=*/dims.getStartIndexMap(),
+        /*indexVectorDim=*/dims.getIndexVectorDim());
+    Value indices = gutils->getNewFromOriginal(op.getStartIndices());
+    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+
+    auto scatter = builder.create<ScatterOp>(
+        op.getLoc(), operandType, gutils->diffe(op.getOperand(), builder),
+        indices, inDiffe, scatterDims, op.getIndicesAreSorted());
+
+    // Add the update computation. This includes the plus-equalling into the
+    // gradient.
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      RankedTensorType zeroDType = operandType.clone(/*shape=*/std::nullopt);
+      SmallVector<Type> blockArgTypes(2, zeroDType);
+      Region &bodyRegion = scatter.getUpdateComputation();
+      Block::BlockArgListType blockArgs =
+          builder
+              .createBlock(&bodyRegion, bodyRegion.begin(), blockArgTypes,
+                           SmallVector(2, op.getLoc()))
+              ->getArguments();
+      Value sum =
+          builder.create<AddOp>(op.getLoc(), blockArgs[0], blockArgs[1]);
+      builder.create<ReturnOp>(op.getLoc(), sum);
+    }
+
+    gutils->setDiffe(op.getOperand(), scatter.getResult(0), builder);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
+class AutoDiffScatterRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffScatterRev,
+                                                       ScatterOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<ScatterOp>(orig);
+    auto inDiffe = gutils->diffe(op->getResult(0), builder);
+    if (op.getUpdates().size() != 1) {
+      return op.emitError() << "Expected exactly 1 update operand";
+    }
+
+    Operation &innerOp = op.getUpdateComputation().front().front();
+    if (!isa<AddOp, ReturnOp>(innerOp)) {
+      return op.emitError()
+             << "Unsupported operation in scatter rev autodiff: " << *orig;
+    }
+
+    Value updates = op.getUpdates().front();
+    ScatterDimensionNumbersAttr scatterDims = op.getScatterDimensionNumbers();
+    ArrayRef<int64_t> updateWindowDims = scatterDims.getUpdateWindowDims();
+    ArrayRef<int64_t> insertedWindowDims = scatterDims.getInsertedWindowDims();
+    ArrayRef<int64_t> inputBatchingDims = scatterDims.getInputBatchingDims();
+
+    auto gatherDims = GatherDimensionNumbersAttr::get(
+        op.getContext(),
+        /*offsetDims=*/updateWindowDims,
+        /*collapsedSliceDims=*/insertedWindowDims,
+        /*operandBatchingDims=*/inputBatchingDims,
+        /*startIndicesBatchingDims=*/
+        scatterDims.getScatterIndicesBatchingDims(),
+        /*startIndexMap=*/scatterDims.getScatterDimsToOperandDims(),
+        /*indexVectorDim=*/scatterDims.getIndexVectorDim());
+
+    auto operandType = cast<RankedTensorType>(inDiffe.getType());
+    auto updatesType = cast<RankedTensorType>(updates.getType());
+
+    // Compute slice sizes
+    SmallVector<int64_t> sliceSizes(operandType.getRank(), 1);
+    DenseSet<int64_t> skippedDims;
+    skippedDims.insert(insertedWindowDims.begin(), insertedWindowDims.end());
+    skippedDims.insert(inputBatchingDims.begin(), inputBatchingDims.end());
+
+    unsigned windowIdx = 0;
+    for (int64_t i = 0; i < operandType.getRank(); ++i)
+      if (!skippedDims.contains(i))
+        sliceSizes[i] = updatesType.getShape()[updateWindowDims[windowIdx++]];
+
+    Value indices = gutils->getNewFromOriginal(op.getScatterIndices());
+    auto gather =
+        builder.create<GatherOp>(op.getLoc(), inDiffe, indices, gatherDims,
+                                 sliceSizes, op.getIndicesAreSorted());
+    gutils->addToDiffe(updates, gather, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 struct SHLOConstantOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
                                              ConstantOp> {
@@ -1115,6 +1238,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SliceOp::attachInterface<AutoDiffSliceRev>(*context);
         ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
         ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+        GatherOp::attachInterface<AutoDiffGatherRev>(*context);
+        ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
         ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
         TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
       });
