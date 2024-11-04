@@ -616,14 +616,127 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+// Collects all references in op that are defined either in ref or in a an
+// ancestor of ref.
+static void getAllReferences(SmallVector<Value> &refs, Operation *op,
+                             Region *ref) {
+  for (auto operand : op->getOperands()) {
+    if (operand.getParentRegion()->isAncestor(ref))
+      refs.push_back(operand);
+  }
+
+  for (auto &reg : op->getRegions()) {
+    for (auto &childOp : reg.getOps()) {
+      getAllReferences(refs, &childOp, ref);
+    }
+  }
+}
+
+template <typename OpTy>
+struct SHLOUnrollOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOUnrollOpBatchInterface<OpTy>,
+                                             OpTy> {
+public:
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Value> operands;
+    operands.reserve(src->getNumOperands());
+
+    getAllReferences(operands, src, src->getParentRegion());
+
+    for (auto res : src->getResults()) {
+      auto Ty = cast<TensorType>(res.getType());
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(Ty.getShape().begin(), Ty.getShape().end());
+      auto T2 = cast<AutoDiffTypeInterface>(Ty.clone(shape));
+      mapper.map(res, T2.createNullValue(builder, src->getLoc()));
+    }
+
+    auto ndims = batchSizes.size();
+
+    SmallVector<int64_t> start;
+    start.reserve(ndims);
+    SmallVector<int64_t> limit;
+    limit.reserve(ndims);
+    SmallVector<int64_t> strides;
+    strides.reserve(ndims);
+    SmallVector<int64_t> batchStrides;
+    batchStrides.reserve(ndims);
+    SmallVector<Value> startIndices;
+    startIndices.reserve(ndims);
+
+    int64_t N = 1;
+    for (auto batchSize : batchSizes) {
+      batchStrides.push_back(N);
+      N *= batchSize;
+      strides.push_back(1);
+    }
+
+    IRMapping origToUnbatch;
+    for (int i = 0; i < N; ++i) {
+      for (int d = 0; d < ndims; ++d) {
+        auto idx = (i / batchStrides[d]) % batchSizes[d];
+
+        start.push_back(idx);
+        limit.push_back(idx + 1);
+        startIndices.push_back(builder.create<ConstantOp>(
+            src->getLoc(), builder.getI64IntegerAttr(idx)));
+      }
+
+      for (auto operand : operands) {
+        auto batched = mapper.lookup(operand);
+
+        auto Ty = cast<TensorType>(operand.getType());
+        SmallVector<int64_t> shape(ndims, 1);
+        shape.append(Ty.getShape().begin(), Ty.getShape().end());
+        auto sliceTy = Ty.clone(shape);
+
+        auto sliceOp = builder.create<SliceOp>(src->getLoc(), sliceTy, batched,
+                                               start, limit, strides);
+
+        auto reshapeOp = builder.create<ReshapeOp>(
+            src->getLoc(), operand.getType(), sliceOp->getResult(0));
+
+        origToUnbatch.map(operand, reshapeOp->getResult(0));
+      }
+
+      auto newOp = builder.clone(*src, origToUnbatch);
+
+      for (auto &&[origRes, newRes] :
+           llvm::zip(src->getResults(), newOp->getResults())) {
+        auto batched = mapper.lookup(origRes);
+
+        auto Ty = cast<TensorType>(newRes.getType());
+        SmallVector<int64_t> shape(ndims, 1);
+        shape.append(Ty.getShape().begin(), Ty.getShape().end());
+        auto reshapeTy = Ty.clone(shape);
+
+        auto reshapeOp =
+            builder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
+
+        auto update = builder.create<DynamicUpdateSliceOp>(
+            src->getLoc(), batched, reshapeOp, startIndices);
+
+        mapper.map(origRes, update);
+      }
+
+      start.clear();
+      limit.clear();
+      startIndices.clear();
+    }
+
+    return success();
+  }
+};
+
 struct SHLOConstantOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
                                              ConstantOp> {
 
-  mlir::Operation *createBatch(Operation *src, IRMapping &mapper,
-                               Operation::CloneOptions options,
-                               std::map<Operation *, Operation *> &opMap,
-                               ArrayRef<int64_t> batchSizes) const {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
 
     SmallVector<Type> resultTypes(src->getResultTypes().begin(),
                                   src->getResultTypes().end());
@@ -642,7 +755,9 @@ struct SHLOConstantOpBatchInterface
     auto cop = mlir::Operation::create(
         src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
         OpaqueProperties(nullptr), mlir::BlockRange(), 0);
-    return cop;
+    builder.insert(cop);
+    mapper.map(src->getResult(0), cop->getResult(0));
+    return success();
   }
 };
 
@@ -650,10 +765,10 @@ struct SHLOTransposeOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOTransposeOpBatchInterface,
                                              TransposeOp> {
 
-  mlir::Operation *createBatch(Operation *src, IRMapping &mapper,
-                               Operation::CloneOptions options,
-                               std::map<Operation *, Operation *> &opMap,
-                               ArrayRef<int64_t> batchSizes) const {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+
     SmallVector<Type> resultTypes(src->getResultTypes().begin(),
                                   src->getResultTypes().end());
     for (auto &Ty : resultTypes) {
@@ -676,7 +791,9 @@ struct SHLOTransposeOpBatchInterface
     auto cop = mlir::Operation::create(
         src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
         OpaqueProperties(nullptr), mlir::BlockRange(), 0);
-    return cop;
+    builder.insert(cop);
+    mapper.map(src->getResult(0), cop->getResult(0));
+    return success();
   }
 };
 
@@ -1086,36 +1203,47 @@ public:
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
-  registry.addExtension(
-      +[](MLIRContext *context, stablehlo::StablehloDialect *) {
-        registerInterfaces(context);
+  registry.addExtension(+[](MLIRContext *context,
+                            stablehlo::StablehloDialect *) {
+    registerInterfaces(context);
 
-        // SortOp::attachInterface<AutoDiffSort>(*context);
+    // SortOp::attachInterface<AutoDiffSort>(*context);
 
-        WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
-        SortOp::attachInterface<ADDataFlowSortOp>(*context);
-        ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
-        ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
+    WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
+    SortOp::attachInterface<ADDataFlowSortOp>(*context);
+    ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
+    ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
 
-        CaseOp::attachInterface<RegionBranchCaseOp>(*context);
+    CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
-        ScatterOp::attachInterface<ScatterActivity>(*context);
-        ScatterOp::attachInterface<AutoDiffScatter>(*context);
+    ScatterOp::attachInterface<ScatterActivity>(*context);
+    ScatterOp::attachInterface<AutoDiffScatter>(*context);
 
-        ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
+    ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
-        ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
-        IfOp::attachInterface<AutoDiffIfRev>(*context);
-        IfOp::attachInterface<AutoDiffIfFwd>(*context);
-        IfOp::attachInterface<AutoDiffIfCF>(*context);
-        WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
-        ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
-        WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
-        BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
-        SliceOp::attachInterface<AutoDiffSliceRev>(*context);
-        ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
-        ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
-        ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
-        TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
-      });
+    ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+    IfOp::attachInterface<AutoDiffIfRev>(*context);
+    IfOp::attachInterface<AutoDiffIfFwd>(*context);
+    IfOp::attachInterface<AutoDiffIfCF>(*context);
+
+    WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
+    ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
+    WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
+    BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
+    SliceOp::attachInterface<AutoDiffSliceRev>(*context);
+    ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
+    ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+
+    ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
+    IfOp::attachInterface<SHLOUnrollOpBatchInterface<IfOp>>(*context);
+    WhileOp::attachInterface<SHLOUnrollOpBatchInterface<WhileOp>>(*context);
+
+    ReverseOp::attachInterface<SHLOUnrollOpBatchInterface<ReverseOp>>(
+        *context); // TODO: simpler version with newly named dims
+    ScatterOp::attachInterface<SHLOUnrollOpBatchInterface<ScatterOp>>(
+        *context); // TODO: simpler version with newly named dims
+    ConvolutionOp::attachInterface<SHLOUnrollOpBatchInterface<ConvolutionOp>>(
+        *context); // TODO: simpler version with newly named dims
+  });
 }
