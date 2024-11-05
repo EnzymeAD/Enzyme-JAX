@@ -16,8 +16,7 @@ define_language! {
       "input"              = Input([Id; 2]),  // takes Var: name@dim1_dim2, block_arg_number
       "CompareOp"          = CompareOp([Id; 4]), // input1, input2, comparison_direction,
                                                            // comparsion_type
-      "BroadcastInDimOp"   = BroadcastInDimOp([Id; 2]), // input, broadcast_dimensions
-      // TODO: we might need the input type as well.
+      "BroadcastInDimOp"   = BroadcastInDimOp([Id; 3]), // input, broadcast_dimensions, shape
       "ConvertOp"          = ConvertOp([Id; 2]), // input, output_tyoe.
       // TODO: we probably won't have any rewrites for reduces. Maybe function pointers for the
       // body

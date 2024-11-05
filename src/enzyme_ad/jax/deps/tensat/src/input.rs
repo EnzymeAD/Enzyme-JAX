@@ -519,7 +519,8 @@ impl CppGraphConverter {
         output: ffi::Tensor,
     ) -> Box<TensorInfo> {
         let dimensions_id = self.vec_node(dimensions);
-        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id]);
+        let shape_id = self.vec_node(output.shape.clone());
+        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id, shape_id]);
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
@@ -1097,6 +1098,7 @@ impl CppGraphConverter {
                 Mdl::DotGeneralOp(ops) => new_node(ops),
                 Mdl::SliceOp(ops) => new_node(ops),
                 Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::BroadcastInDimOp(ops) => new_node(ops),
                 Mdl::ConvolutionOp(ops) => new_node(ops),
                 Mdl::MulOp(ops) => new_node(ops),
                 Mdl::AddOp(ops) => new_node(ops),
@@ -1130,7 +1132,7 @@ impl CppGraphConverter {
         let n_sec = 10; // seconds for timeout
         let use_multi = true; // whether to use multi patterns
         let no_cycle = true; // disallow cycle in egraph?
-        let filter_after = true; // vanilla filtering or efficient filtering
+        let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 

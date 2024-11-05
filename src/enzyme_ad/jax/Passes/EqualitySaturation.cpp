@@ -161,6 +161,7 @@ std::set<string> zeroCostOps = {
     "stablehlo.slice",
     "stablehlo.reshape",
     "stablehlo.transpose",
+    // "stablehlo.broadcast_in_dim",
 
     // We assume the best case, where memory is allocated smartly so that the
     // concatenate never actually happens.
@@ -173,10 +174,10 @@ bool isBlackboxed(Operation *op) {
       isa<stablehlo::MinOp>(op) || isa<stablehlo::MaxOp>(op) ||
       isa<stablehlo::TanhOp>(op) || isa<stablehlo::NegOp>(op) ||
       isa<stablehlo::ExpOp>(op) || isa<stablehlo::TransposeOp>(op) ||
-      isa<stablehlo::ReshapeOp>(op) || isa<stablehlo::DotGeneralOp>(op) ||
-      isa<stablehlo::ConcatenateOp>(op) || isa<stablehlo::SliceOp>(op) ||
-      isa<stablehlo::PadOp>(op) || isa<func::ReturnOp>(op) ||
-      isa<stablehlo::ConvolutionOp>(op)) {
+      isa<stablehlo::BroadcastInDimOp>(op) || isa<stablehlo::ReshapeOp>(op) ||
+      isa<stablehlo::DotGeneralOp>(op) || isa<stablehlo::ConcatenateOp>(op) ||
+      isa<stablehlo::SliceOp>(op) || isa<stablehlo::PadOp>(op) ||
+      isa<func::ReturnOp>(op) || isa<stablehlo::ConvolutionOp>(op)) {
     return false;
   } else {
     return true;
@@ -796,6 +797,11 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
     mlirOp = builder.create<stablehlo::TransposeOp>(builder.getUnknownLoc(),
                                                     operands[0], other_vecs[0]);
     break;
+  case tensat::Ops::BroadcastInDimOp:
+    mlirOp = builder.create<stablehlo::BroadcastInDimOp>(
+        builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[1]),
+        operands[0], other_vecs[0]);
+    break;
   case tensat::Ops::ReshapeOp:
     mlirOp = builder.create<stablehlo::ReshapeOp>(
         builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[0]),
@@ -1380,6 +1386,20 @@ dfs(Operation *op,
                          castArrayRefToRustVec(transpose.getPermutation()),
                          mlirValueToTensatTensor(transpose->getResult(0)))
                      .into_raw();
+  } else if (isa<stablehlo::BroadcastInDimOp>(op)) {
+    auto bid = cast<stablehlo::BroadcastInDimOp>(op);
+    if (auto output_tensor = bid.getResult().getType().cast<TensorType>()) {
+      tensorInfo = graph
+                       ->new_broadcast_in_dim(
+                           *handleOperandPartial(bid.getOperand()),
+                           castArrayRefToRustVec(bid.getBroadcastDimensions()),
+                           mlirValueToTensatTensor(bid->getResult(0)))
+                       .into_raw();
+    } else {
+      std::cout << "BroadcastInDimOp: result of stablehlo::BroadcastInDimOp "
+                   "has non-tensor type"
+                << std::endl;
+    }
   } else if (isa<stablehlo::ReshapeOp>(op)) {
     auto reshape = cast<stablehlo::ReshapeOp>(op);
     if (auto output_tensor = reshape.getResult().getType().cast<TensorType>()) {
@@ -1813,6 +1833,15 @@ void reconstructStablehlo(
           builder.create<stablehlo::TransposeOp>(location, input, permutation);
       break;
     }
+    case Ops::BroadcastInDimOp: {
+      auto input = opVals[node.operands[0]];
+      auto broadcastDimensions = parseNumVec(nodes, nodes[node.operands[1]]);
+      auto shape = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto newType = deriveOutputType(input, shape);
+      newOp = builder.create<stablehlo::BroadcastInDimOp>(
+          location, newType, input, broadcastDimensions);
+      break;
+    }
     case Ops::ReshapeOp: {
       auto input = opVals[node.operands[0]];
       auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
@@ -2140,7 +2169,7 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
   // First pass to determine segmentation points and necessary types.
   // TODO: abstract out as separate function
 
-  const int segmentThreshold = 70;
+  const int segmentThreshold = 500;
   SmallVector<SegmentationPoint> segmentationPoints;
   SmallVector<Operation *> currentOps;
   SegmentationPoint segment;
