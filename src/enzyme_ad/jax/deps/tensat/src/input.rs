@@ -1129,7 +1129,7 @@ impl CppGraphConverter {
         let start = &self.rec_expr;
 
         // Configuration
-        let n_sec = 10; // seconds for timeout
+        let n_sec = 60; // seconds for timeout
         let use_multi = true; // whether to use multi patterns
         let no_cycle = true; // disallow cycle in egraph?
         let filter_after = false; // vanilla filtering or efficient filtering

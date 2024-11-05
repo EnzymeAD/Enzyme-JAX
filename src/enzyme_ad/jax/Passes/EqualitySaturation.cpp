@@ -2169,7 +2169,7 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
   // First pass to determine segmentation points and necessary types.
   // TODO: abstract out as separate function
 
-  const int segmentThreshold = 500;
+  const int segmentThreshold = 200;
   SmallVector<SegmentationPoint> segmentationPoints;
   SmallVector<Operation *> currentOps;
   SegmentationPoint segment;
