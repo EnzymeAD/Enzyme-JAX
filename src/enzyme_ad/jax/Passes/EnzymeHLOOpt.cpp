@@ -6136,6 +6136,12 @@ struct RealOpCanon final : OpRewritePattern<mlir::stablehlo::RealOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::RealOp op,
                                 PatternRewriter &rewriter) const override {
+    auto elTy = op.getOperand().getType().getElementType();
+    if (!isa<ComplexType>(elTy)) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
     auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
     if (!complex)
       return failure();
@@ -6150,6 +6156,13 @@ struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ImagOp op,
                                 PatternRewriter &rewriter) const override {
+    auto elTy = op.getOperand().getType().getElementType();
+    if (!isa<ComplexType>(elTy)) {
+      rewriter.replaceOp(op, rewriter.create<stablehlo::ConstantOp>(
+                                 op->getLoc(), makeAttr(op.getType(), 0)));
+      return success();
+    }
+
     auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
     if (!complex)
       return failure();
