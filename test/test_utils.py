@@ -197,6 +197,11 @@ class EnzymeJaxTest(absltest.TestCase):
 
         csv_filename = datetime.now().strftime("results_%Y-%m-%d_%H:%M:%S.csv")
 
+        EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
+        if EXPERIMENT_NAME:
+            csv_filename = f"results_{EXPERIMENT_NAME}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
+        else:
+            csv_filename = f"results_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
         for backend in self.AllBackends:
             ins_backend = [to_backend(x, backend) for x in ins]
             dins_backend = [to_backend(x, backend) for x in dins]
