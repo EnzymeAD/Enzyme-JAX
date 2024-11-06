@@ -340,6 +340,207 @@ public:
   }
 };
 
+class AutoDiffWhileRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
+                                                       WhileOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    // While op has the same number of results and operands.
+    // if the while is not executed (i.e. the condition is false on the first
+    // evaluation), then the arguments are returned. This means that we need to
+    // pass differentials for all non-constant results or non-constants
+    // operands.
+    SmallVector<bool> operandsActive(orig->getNumOperands(), false);
+    for (int i = 0; i < operandsActive.size(); ++i) {
+      operandsActive[i] = !gutils->isConstantValue(orig->getOperand(i)) ||
+                          !gutils->isConstantValue(orig->getResult(i));
+    }
+
+    // The reverse of the while loop is a for loop where the number
+    // of iterations is cached from the augmented primal.
+    auto numIters = gutils->popCache(caches[0], builder);
+
+    auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
+    auto iterVar =
+        builder
+            .create<ConstantOp>(
+                orig->getLoc(), unrankedTensorType,
+                SplatElementsAttr::get(unrankedTensorType,
+                                       ArrayRef<Attribute>(IntegerAttr::get(
+                                           builder.getI64Type(), 0))))
+            .getResult();
+
+    SmallVector<Value> operands;
+    operands.reserve(orig->getNumResults() + 1);
+    operands.push_back(iterVar);
+
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    auto revWhile = builder.create<WhileOp>(
+        orig->getLoc(), ValueRange(operands).getTypes(), operands);
+    auto &condReg = revWhile.getCond();
+    auto &bodyReg = revWhile.getBody();
+
+    auto cond = new Block();
+    auto body = new Block();
+
+    condReg.push_back(cond);
+    bodyReg.push_back(body);
+
+    {
+      for (auto operand : operands) {
+        cond->addArgument(operand.getType(), orig->getLoc());
+      }
+      auto condIterVar = cond->getArgument(0);
+
+      OpBuilder condBuilder(cond, cond->end());
+      condBuilder.create<ReturnOp>(
+          orig->getLoc(),
+          ValueRange(condBuilder
+                         .create<CompareOp>(orig->getLoc(), condIterVar,
+                                            numIters, ComparisonDirection::LT)
+                         .getResult()));
+    }
+
+    bool valid = true;
+    {
+      for (auto operand : operands) {
+        body->addArgument(operand.getType(), orig->getLoc());
+      }
+      OpBuilder bodyBuilder(body, body->end());
+      auto one = bodyBuilder.create<ConstantOp>(
+          orig->getLoc(), unrankedTensorType,
+          SplatElementsAttr::get(unrankedTensorType,
+                                 ArrayRef<Attribute>(IntegerAttr::get(
+                                     bodyBuilder.getI64Type(), 1))));
+      Value bodyIterVar =
+          bodyBuilder.create<AddOp>(orig->getLoc(), body->getArgument(0), one);
+
+      Block *oBB = &orig->getRegion(1).front();
+      auto term = oBB->getTerminator();
+
+      int revIdx = 1;
+      for (auto &&[active, operand] :
+           llvm::zip(operandsActive, term->getOperands())) {
+        if (active) {
+          // Set diffe here, not add because it should not accumulate across
+          // iterations. Instead the new gradient for this operand is passed in
+          // the return of the reverse while body.
+          gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          revIdx++;
+        }
+      }
+
+      auto first = oBB->rbegin();
+      first++; // skip terminator
+
+      auto last = oBB->rend();
+
+      for (auto it = first; it != last; ++it) {
+        Operation *op = &*it;
+        valid &= gutils->Logic.visitChild(op, bodyBuilder, gutils).succeeded();
+      }
+
+      SmallVector<Value> newResults;
+      newResults.reserve(operands.size());
+      newResults.push_back(bodyIterVar);
+
+      for (auto &&[active, arg] :
+           llvm::zip(operandsActive, oBB->getArguments())) {
+        if (active) {
+          newResults.push_back(gutils->diffe(arg, bodyBuilder));
+          if (!gutils->isConstantValue(arg))
+            gutils->zeroDiffe(arg, bodyBuilder);
+        }
+      }
+
+      bodyBuilder.create<ReturnOp>(orig->getLoc(), newResults);
+    }
+
+    int revIdx = 1;
+    for (auto &&[active, arg] :
+         llvm::zip(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg))
+          gutils->addToDiffe(arg, revWhile->getResult(revIdx), builder);
+        revIdx++;
+      }
+    }
+
+    return success(valid);
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    // The primal is augmented to store the number of iterations
+
+    auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
+    auto cond = &newWhile.getCond().front();
+    auto body = &newWhile.getBody().front();
+
+    OpBuilder revBuilder(newWhile);
+    auto unrankedTensorType =
+        RankedTensorType::get({}, revBuilder.getI64Type());
+    auto numIters =
+        revBuilder
+            .create<ConstantOp>(
+                orig->getLoc(), unrankedTensorType,
+                SplatElementsAttr::get(unrankedTensorType,
+                                       ArrayRef<Attribute>(IntegerAttr::get(
+                                           revBuilder.getI64Type(), 0))))
+            .getResult();
+
+    newWhile->insertOperands(newWhile->getNumOperands(), ValueRange(numIters));
+    cond->addArgument(numIters.getType(), orig->getLoc());
+    Value numItersInBlock =
+        body->addArgument(numIters.getType(), orig->getLoc());
+
+    OpBuilder inBodyBuilder(body, body->begin());
+    auto one = inBodyBuilder.create<ConstantOp>(
+        orig->getLoc(), unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(IntegerAttr::get(revBuilder.getI64Type(), 1))));
+    numItersInBlock = inBodyBuilder.create<AddOp>(
+        orig->getLoc(), numItersInBlock, one.getResult());
+    auto term = body->getTerminator();
+    term->insertOperands(term->getNumOperands(), ValueRange(numItersInBlock));
+
+    SmallVector<Type> resultTypes(newWhile->getResultTypes().begin(),
+                                  newWhile->getResultTypes().end());
+    resultTypes.push_back(numIters.getType());
+
+    auto newnewWhile = revBuilder.create<WhileOp>(orig->getLoc(), resultTypes,
+                                                  newWhile->getOperands());
+    newnewWhile.getCond().takeBody(newWhile.getCond());
+    newnewWhile.getBody().takeBody(newWhile.getBody());
+
+    SmallVector<Value> newResults(newnewWhile->getResults().begin(),
+                                  --newnewWhile->getResults().end());
+
+    gutils->replaceOrigOpWith(orig, newResults);
+    gutils->erase(newWhile);
+    gutils->originalToNewFnOps[orig] = newnewWhile;
+
+    revBuilder.setInsertionPointAfter(newnewWhile);
+    Value predCache = gutils->initAndPushCache(
+        newnewWhile->getResult(newnewWhile->getNumResults() - 1), revBuilder);
+
+    return {predCache};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 class AutoDiffBroadcastInDimRev
     : public ReverseAutoDiffOpInterface::ExternalModel<
           AutoDiffBroadcastInDimRev, BroadcastInDimOp> {
@@ -1412,6 +1613,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<AutoDiffIfCF>(*context);
 
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
+    WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);

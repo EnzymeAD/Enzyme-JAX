@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
-// TODO: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | FileCheck %s --check-prefix=REVERSE
 
 module {
   func.func public @main(%arg0: tensor<3xf64>) -> (tensor<3xf64>) {
@@ -33,3 +33,29 @@ module {
 // FORWARD-NEXT:    return %0#1, %0#2 : tensor<3xf64>, tensor<3xf64>
 // FORWARD-NEXT:  }
 
+// REVERSE:  func.func @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+// REVERSE-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
+// REVERSE-NEXT:    %c_0 = stablehlo.constant dense<10> : tensor<i64>
+// REVERSE-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<i64>
+// REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
+// REVERSE-NEXT:    %0:3 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0, %iterArg_3 = %c_1) : tensor<i64>, tensor<3xf64>, tensor<i64>
+// REVERSE-NEXT:     cond {
+// REVERSE-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %c_0,  SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %4 : tensor<i1>
+// REVERSE-NEXT:    } do {
+// REVERSE-NEXT:      %4 = stablehlo.add %iterArg_3, %c : tensor<i64>
+// REVERSE-NEXT:      %5 = stablehlo.add %iterArg, %c : tensor<i64>
+// REVERSE-NEXT:      stablehlo.return %5, %iterArg_2, %4 : tensor<i64>, tensor<3xf64>, tensor<i64>
+// REVERSE-NEXT:    }
+// REVERSE-NEXT:    %1 = stablehlo.add %arg1, %cst : tensor<3xf64>
+// REVERSE-NEXT:    %2:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %1) : tensor<i64>, tensor<3xf64>
+// REVERSE-NEXT:     cond {
+// REVERSE-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %0#2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %4 : tensor<i1>
+// REVERSE-NEXT:    } do {
+// REVERSE-NEXT:      %4 = stablehlo.add %iterArg, %c : tensor<i64>
+// REVERSE-NEXT:      stablehlo.return %4, %iterArg_2 : tensor<i64>, tensor<3xf64>
+// REVERSE-NEXT:    }
+// REVERSE-NEXT:    %3 = stablehlo.add %2#1, %cst : tensor<3xf64>
+// REVERSE-NEXT:    return %3 : tensor<3xf64>
+// REVERSE-NEXT:  }
