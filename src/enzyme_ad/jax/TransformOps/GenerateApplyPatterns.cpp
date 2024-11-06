@@ -197,7 +197,10 @@ public:
   }
 
   void runOnOperation() override {
-    getOperation()->walk<WalkOrder::PreOrder>([&](Operation *op) {
+    auto op = getOperation();
+    if (op->hasAttr(transform::TransformDialect::kWithNamedSequenceAttrName))
+      op->removeAttr(transform::TransformDialect::kWithNamedSequenceAttrName);
+    op->walk<WalkOrder::PreOrder>([&](Operation *op) {
       if (isa<transform::TransformOpInterface>(op)) {
         op->erase();
         return WalkResult::skip();
