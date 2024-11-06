@@ -6,6 +6,7 @@ use egg::*;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
 use std::fs::*;
 use std::process::{Command, Stdio};
 use std::time::*;
@@ -343,10 +344,7 @@ pub mod ffi {
             matrix_args: Vec<Matrix>,
         ) -> Vec<Tensor>;
 
-        fn apply_mlir_rewrite(
-            nodes: Vec<Node>,
-            roots: Vec<Tensor>,
-        ) -> Box<CppGraphConverter>;
+        fn apply_mlir_rewrite(nodes: Vec<Node>, roots: Vec<Tensor>) -> Box<CppGraphConverter>;
     }
 }
 
@@ -483,7 +481,9 @@ impl CppGraphConverter {
         let new_node = Mdl::Index([index_num_node, inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: CppGraphConverter::tensor_data(vec![inpt.tensor_data.tensors[index as usize].clone()]),
+            tensor_data: CppGraphConverter::tensor_data(vec![inpt.tensor_data.tensors
+                [index as usize]
+                .clone()]),
         };
         Box::new(res)
     }
@@ -1041,7 +1041,7 @@ impl CppGraphConverter {
         &self,
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
-        rec_expr: RecExpr<Mdl>
+        rec_expr: RecExpr<Mdl>,
     ) -> Vec<ffi::Node> {
         let mut res: Vec<ffi::Node> = Vec::new();
 
@@ -1078,9 +1078,11 @@ impl CppGraphConverter {
                 Mdl::InferReshape([input]) => {
                     let input_index = index(*input);
                     let id = to_egraph[&Id::from(i)];
-                    let mut operands: Vec<i32> =
-                        (&egraph[id]).data.tensors[0].shape
-                            .iter().map(|x| *x as i32).collect();
+                    let mut operands: Vec<i32> = (&egraph[id]).data.tensors[0]
+                        .shape
+                        .iter()
+                        .map(|x| *x as i32)
+                        .collect();
                     operands.insert(0, input_index);
                     ffi::Node {
                         op,
@@ -1128,7 +1130,6 @@ impl CppGraphConverter {
 
         // Configuration
         let n_sec = 10; // seconds for timeout
-        let use_multi = true; // whether to use multi patterns
         let no_cycle = true; // disallow cycle in egraph?
         let filter_after = true; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
@@ -1176,15 +1177,22 @@ impl CppGraphConverter {
 
         rules.append(&mut custom_rules);
 
+        if env::var("EQSAT_RULES").unwrap_or("true".to_string()) == "false" {
+            rules.clear();
+        }
+
         let mut mlir_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = MlirRewrites::all()
             .iter()
-            .map(|r|
-                 rewrite!(r.to_string();
+            .map(|r| {
+                rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone() }}))
+                          => { MlirRewriteApplier { rewrite: r.clone() }})
+            })
             .collect();
 
-        rules.append(&mut mlir_rules);
+        if env::var("ENZYME_RULES").unwrap_or("true".to_string()) != "false" {
+            rules.append(&mut mlir_rules);
+        }
 
         let iter_multi = 2;
         let node_multi = 30000;
@@ -1195,6 +1203,9 @@ impl CppGraphConverter {
             .filter(|x| !x.is_empty())
             .map(|x| (x, /*symmetric=*/ false))
             .collect();
+
+        let use_multi = env::var("MULTI_RULES").unwrap_or("true".to_string()) != "false";
+
         let mut multi_patterns = MultiPatterns::with_rules(
             multi_rules,
             no_cycle,
@@ -1381,7 +1392,14 @@ fn extract_by_ilp(
         let mut expr = RecExpr::default();
         let mut added_memo: HashMap<Id, Id> = Default::default();
         let mut to_egraph: HashMap<Id, Id> = Default::default();
-        let _ = construct_best_rec(&node_picked, root, &mut added_memo, &mut to_egraph, egraph, &mut expr);
+        let _ = construct_best_rec(
+            &node_picked,
+            root,
+            &mut added_memo,
+            &mut to_egraph,
+            egraph,
+            &mut expr,
+        );
         (expr, solved_data.time, to_egraph)
     } else {
         panic!("Python script failed");
