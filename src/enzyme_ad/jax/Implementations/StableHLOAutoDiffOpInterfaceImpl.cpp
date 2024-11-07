@@ -240,8 +240,6 @@ public:
                                       gutils->popCache(caches[0], builder),
                                       orig->getAttrs());
 
-    Location loc = orig->getLoc();
-
     bool valid = true;
     for (auto &&[origReg, newReg] :
          llvm::zip_equal(orig->getRegions(), revOp->getRegions())) {
