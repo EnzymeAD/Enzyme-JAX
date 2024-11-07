@@ -134,7 +134,7 @@ class NeuralGCM:
         self.eval_era5 = eval_era5
         self.all_forcings = all_forcings
         self.outer_steps = outer_steps
-        
+
         inputs = self.model.inputs_from_xarray(self.eval_era5.isel(time=0))
         input_forcings = self.model.forcings_from_xarray(self.eval_era5.isel(time=0))
         rng_key = jax.random.key(42)  # optional for deterministic models
