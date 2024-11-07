@@ -632,6 +632,17 @@ static void getAllReferences(SmallVector<Value> &refs, Operation *op,
   }
 }
 
+static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
+  auto Ty = builder.getI64Type();
+  auto unrankedTensorType = RankedTensorType::get({}, Ty);
+  return builder
+      .create<ConstantOp>(loc, unrankedTensorType,
+                          SplatElementsAttr::get(
+                              unrankedTensorType,
+                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
+      .getResult();
+}
+
 template <typename OpTy>
 struct SHLOUnrollOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOUnrollOpBatchInterface<OpTy>,
@@ -645,22 +656,22 @@ public:
 
     getAllReferences(operands, src, src->getParentRegion());
 
+    SmallVector<Value> whileOperands;
+    whileOperands.reserve(src->getNumResults() + 1);
+    whileOperands.push_back(makeI64Constant(src->getLoc(), builder, 0));
+
     for (auto res : src->getResults()) {
       auto Ty = cast<TensorType>(res.getType());
       SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
       shape.append(Ty.getShape().begin(), Ty.getShape().end());
       auto T2 = cast<AutoDiffTypeInterface>(Ty.clone(shape));
-      mapper.map(res, T2.createNullValue(builder, src->getLoc()));
+      auto defaultValue = T2.createNullValue(builder, src->getLoc());
+      mapper.map(res, defaultValue);
+      whileOperands.push_back(defaultValue);
     }
 
     auto ndims = batchSizes.size();
 
-    SmallVector<int64_t> start;
-    start.reserve(ndims);
-    SmallVector<int64_t> limit;
-    limit.reserve(ndims);
-    SmallVector<int64_t> strides;
-    strides.reserve(ndims);
     SmallVector<int64_t> batchStrides;
     batchStrides.reserve(ndims);
     SmallVector<Value> startIndices;
@@ -670,20 +681,57 @@ public:
     for (auto batchSize : batchSizes) {
       batchStrides.push_back(N);
       N *= batchSize;
-      strides.push_back(1);
     }
 
-    IRMapping origToUnbatch;
-    for (int i = 0; i < N; ++i) {
-      for (int d = 0; d < ndims; ++d) {
-        auto idx = (i / batchStrides[d]) % batchSizes[d];
+    auto whileOp = builder.create<WhileOp>(src->getLoc(), whileOperands);
 
-        start.push_back(idx);
-        limit.push_back(idx + 1);
-        startIndices.push_back(builder.create<ConstantOp>(
-            src->getLoc(), builder.getI64IntegerAttr(idx)));
+    auto whileCond = new Block();
+    auto whileBody = new Block();
+
+    whileOp.getCond().push_back(whileCond);
+    whileOp.getBody().push_back(whileBody);
+
+    {
+      OpBuilder condBuilder(whileCond, whileCond->end());
+
+      for (auto operand : whileOperands) {
+        whileCond->addArgument(operand.getType(), src->getLoc());
       }
 
+      condBuilder.create<ReturnOp>(
+          src->getLoc(), ValueRange(condBuilder.create<CompareOp>(
+                             src->getLoc(), whileCond->getArgument(0),
+                             makeI64Constant(src->getLoc(), condBuilder, N),
+                             ComparisonDirection::LT)));
+    }
+
+    {
+      OpBuilder bodyBuilder(whileBody, whileBody->end());
+
+      for (auto operand : whileOperands) {
+        whileBody->addArgument(operand.getType(), src->getLoc());
+      }
+
+      SmallVector<Value> whileBodyOutputs;
+      whileBodyOutputs.reserve(whileBody->getNumArguments());
+
+      whileBodyOutputs.push_back(bodyBuilder.create<AddOp>(
+          src->getLoc(), whileBody->getArgument(0),
+          makeI64Constant(src->getLoc(), bodyBuilder, 1)));
+
+      for (int d = 0; d < ndims; ++d) {
+        // auto idx = (i / batchStrides[d]) % batchSizes[d];
+        auto idx = bodyBuilder.create<RemOp>(
+            src->getLoc(),
+            bodyBuilder.create<DivOp>(
+                src->getLoc(), whileBody->getArgument(0),
+                makeI64Constant(src->getLoc(), bodyBuilder, batchStrides[d])),
+            makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]));
+
+        startIndices.push_back(idx);
+      }
+
+      IRMapping origToUnbatch;
       for (auto operand : operands) {
         auto batched = mapper.lookup(operand);
 
@@ -692,20 +740,20 @@ public:
         shape.append(Ty.getShape().begin(), Ty.getShape().end());
         auto sliceTy = Ty.clone(shape);
 
-        auto sliceOp = builder.create<SliceOp>(src->getLoc(), sliceTy, batched,
-                                               start, limit, strides);
+        auto sliceOp = bodyBuilder.create<DynamicSliceOp>(
+            src->getLoc(), sliceTy, batched, startIndices, shape);
 
-        auto reshapeOp = builder.create<ReshapeOp>(
+        auto reshapeOp = bodyBuilder.create<ReshapeOp>(
             src->getLoc(), operand.getType(), sliceOp->getResult(0));
 
         origToUnbatch.map(operand, reshapeOp->getResult(0));
       }
 
-      auto newOp = builder.clone(*src, origToUnbatch);
+      auto newOp = bodyBuilder.clone(*src, origToUnbatch);
 
-      for (auto &&[origRes, newRes] :
-           llvm::zip(src->getResults(), newOp->getResults())) {
-        auto batched = mapper.lookup(origRes);
+      for (auto &&[idx, origRes, newRes] :
+           llvm::enumerate(src->getResults(), newOp->getResults())) {
+        auto batched = whileBody->getArgument(idx + 1);
 
         auto Ty = cast<TensorType>(newRes.getType());
         SmallVector<int64_t> shape(ndims, 1);
@@ -713,17 +761,19 @@ public:
         auto reshapeTy = Ty.clone(shape);
 
         auto reshapeOp =
-            builder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
+            bodyBuilder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
 
-        auto update = builder.create<DynamicUpdateSliceOp>(
+        auto update = bodyBuilder.create<DynamicUpdateSliceOp>(
             src->getLoc(), batched, reshapeOp, startIndices);
 
-        mapper.map(origRes, update);
+        whileBodyOutputs.push_back(update);
       }
 
-      start.clear();
-      limit.clear();
-      startIndices.clear();
+      bodyBuilder.create<ReturnOp>(src->getLoc(), whileBodyOutputs);
+    }
+
+    for (auto oldRes : src->getOpResults()) {
+      mapper.map(oldRes, whileOp->getResult(oldRes.getResultNumber() + 1));
     }
 
     return success();
