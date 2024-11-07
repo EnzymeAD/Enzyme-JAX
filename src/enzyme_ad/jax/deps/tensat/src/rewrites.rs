@@ -327,145 +327,145 @@ pub fn concat_dot_compatible(
         lc.contains(d1) && rc.contains(d2)
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlattenConcat {
-    pub vec: Var,
-    pub dim: Var,
-}
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct FlattenConcat {
+//     pub vec: Var,
+//     pub dim: Var,
+// }
 
-impl Applier<Mdl, TensorAnalysis> for FlattenConcat {
-    fn apply_one(
-        &self,
-        egraph: &mut EGraph<Mdl, TensorAnalysis>,
-        matched_id: Id,
-        subst: &Subst,
-    ) -> Vec<Id> {
-        let vec = get_vec(&egraph[subst[self.vec]]);
-        let dim = *get_num(&egraph[subst[self.dim]]);
+// impl Applier<Mdl, TensorAnalysis> for FlattenConcat {
+//     fn apply_one(
+//         &self,
+//         egraph: &mut EGraph<Mdl, TensorAnalysis>,
+//         matched_id: Id,
+//         subst: &Subst,
+//     ) -> Vec<Id> {
+//         let vec = get_vec(&egraph[subst[self.vec]]);
+//         let dim = *get_num(&egraph[subst[self.dim]]);
 
-        // Go through elements in vec, and see if there is another concat with the same dimension.
-        // If so we can flatten it.
-        let mut new_vec: Vec<Id> = vec![];
+//         // Go through elements in vec, and see if there is another concat with the same dimension.
+//         // If so we can flatten it.
+//         let mut new_vec: Vec<Id> = vec![];
 
-        'outer: for i in vec.iter() {
-            for node in egraph[*i].iter() {
-                match node {
-                    Mdl::ConcatenateOp(c) => {
-                        let inp = c[0];
-                        let d = *get_num(&egraph[c[1]]);
+//         'outer: for i in vec.iter() {
+//             for node in egraph[*i].iter() {
+//                 match node {
+//                     Mdl::ConcatenateOp(c) => {
+//                         let inp = c[0];
+//                         let d = *get_num(&egraph[c[1]]);
 
-                        if dim != d {
-                            continue;
-                        }
-                        // We can merge this one in
-                        let children = get_vec(&egraph[inp]);
-                        for c in children.iter() {
-                            new_vec.push(*c);
-                        }
-                        continue 'outer;
-                    }
-                    _ => {}
-                }
-            }
+//                         if dim != d {
+//                             continue;
+//                         }
+//                         // We can merge this one in
+//                         let children = get_vec(&egraph[inp]);
+//                         for c in children.iter() {
+//                             new_vec.push(*c);
+//                         }
+//                         continue 'outer;
+//                     }
+//                     _ => {}
+//                 }
+//             }
 
-            // No concat found
-            new_vec.push(*i);
-        }
-        let dim_id = make_num(egraph, dim);
-        let vec_id = make_vec(egraph, &new_vec);
-        let id = egraph.add(Mdl::ConcatenateOp([vec_id, dim_id]));
+//             // No concat found
+//             new_vec.push(*i);
+//         }
+//         let dim_id = make_num(egraph, dim);
+//         let vec_id = make_vec(egraph, &new_vec);
+//         let id = egraph.add(Mdl::ConcatenateOp([vec_id, dim_id]));
 
-        finish_apply(egraph, matched_id, id)
-    }
-}
+//         finish_apply(egraph, matched_id, id)
+//     }
+// }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeSlices {
-    pub x: Var,
-    pub s1: Var,
-    pub s2: Var,
-    pub l1: Var,
-    pub l2: Var,
-    pub strides: Var,
-    pub dim: Var,
-}
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct MergeSlices {
+//     pub x: Var,
+//     pub s1: Var,
+//     pub s2: Var,
+//     pub l1: Var,
+//     pub l2: Var,
+//     pub strides: Var,
+//     pub dim: Var,
+// }
 
-impl Applier<Mdl, TensorAnalysis> for MergeSlices {
-    fn apply_one(
-        &self,
-        egraph: &mut EGraph<Mdl, TensorAnalysis>,
-        matched_id: Id,
-        subst: &Subst,
-    ) -> Vec<Id> {
-        let x = subst[self.x];
-        let starting_1 = get_vec(&egraph[subst[self.s1]]);
-        let starting_2 = get_vec(&egraph[subst[self.s2]]);
-        let limiting_1 = get_vec(&egraph[subst[self.l1]]);
-        let limiting_2 = get_vec(&egraph[subst[self.l2]]);
-        let strides_id = subst[self.strides];
-        let strides = get_vec(&egraph[strides_id]);
-        let dim = *get_num(&egraph[subst[self.dim]]);
+// impl Applier<Mdl, TensorAnalysis> for MergeSlices {
+//     fn apply_one(
+//         &self,
+//         egraph: &mut EGraph<Mdl, TensorAnalysis>,
+//         matched_id: Id,
+//         subst: &Subst,
+//     ) -> Vec<Id> {
+//         let x = subst[self.x];
+//         let starting_1 = get_vec(&egraph[subst[self.s1]]);
+//         let starting_2 = get_vec(&egraph[subst[self.s2]]);
+//         let limiting_1 = get_vec(&egraph[subst[self.l1]]);
+//         let limiting_2 = get_vec(&egraph[subst[self.l2]]);
+//         let strides_id = subst[self.strides];
+//         let strides = get_vec(&egraph[strides_id]);
+//         let dim = *get_num(&egraph[subst[self.dim]]);
 
-        assert!(starting_1.len() == starting_2.len());
-        assert!(limiting_1.len() == limiting_2.len());
-        assert!(starting_1.len() == limiting_1.len());
+//         assert!(starting_1.len() == starting_2.len());
+//         assert!(limiting_1.len() == limiting_2.len());
+//         assert!(starting_1.len() == limiting_1.len());
 
-        let n = starting_1.len();
-        // Concat(Split(A), Split(A)) => Split(A)
-        // For every dimension not equal to the concat dim, the starting and
-        // limiting indices should be the same. The concat dim, we need to do
-        // a bit of maths to ensure they are "contiguous" wrt the stride.
+//         let n = starting_1.len();
+//         // Concat(Split(A), Split(A)) => Split(A)
+//         // For every dimension not equal to the concat dim, the starting and
+//         // limiting indices should be the same. The concat dim, we need to do
+//         // a bit of maths to ensure they are "contiguous" wrt the stride.
 
-        let mut new_starting: Vec<i64> = vec![];
-        let mut new_limiting: Vec<i64> = vec![];
+//         let mut new_starting: Vec<i64> = vec![];
+//         let mut new_limiting: Vec<i64> = vec![];
 
-        for i in 0..n {
-            let s1 = *get_num(&egraph[starting_1[i]]);
-            let s2 = *get_num(&egraph[starting_2[i]]);
-            let l1 = *get_num(&egraph[limiting_1[i]]);
-            let l2 = *get_num(&egraph[limiting_2[i]]);
-            let stride = *get_num(&egraph[strides[i]]);
+//         for i in 0..n {
+//             let s1 = *get_num(&egraph[starting_1[i]]);
+//             let s2 = *get_num(&egraph[starting_2[i]]);
+//             let l1 = *get_num(&egraph[limiting_1[i]]);
+//             let l2 = *get_num(&egraph[limiting_2[i]]);
+//             let stride = *get_num(&egraph[strides[i]]);
 
-            if i != (dim as usize) {
-                if s1 != s2 || l1 != l2 {
-                    return vec![];
-                }
-                new_starting.push(s1);
-                new_limiting.push(l1);
-            } else {
-                if s2 > l1 {
-                    return vec![];
-                } // should be non-overlapping
+//             if i != (dim as usize) {
+//                 if s1 != s2 || l1 != l2 {
+//                     return vec![];
+//                 }
+//                 new_starting.push(s1);
+//                 new_limiting.push(l1);
+//             } else {
+//                 if s2 > l1 {
+//                     return vec![];
+//                 } // should be non-overlapping
 
-                // Check the next unchosen index for the first slice. This should be s2
-                // For example, if stride = 3, s1 = 1, l1 = 5:
-                // 1 2 3 4 5 6 7 8 9
-                // x     x    [x]
-                // So s2 = 7 for the two slices to be contiguous.
+//                 // Check the next unchosen index for the first slice. This should be s2
+//                 // For example, if stride = 3, s1 = 1, l1 = 5:
+//                 // 1 2 3 4 5 6 7 8 9
+//                 // x     x    [x]
+//                 // So s2 = 7 for the two slices to be contiguous.
 
-                let numbers_picked = (l1 - s1) / stride + i64::from((l1 - s1) % stride != 0); // ceil
-                let next_unchosen_index = s1 + numbers_picked * stride;
-                if next_unchosen_index != s2 {
-                    return vec![];
-                }
-                new_starting.push(s1);
-                new_limiting.push(l2);
-            }
-        }
+//                 let numbers_picked = (l1 - s1) / stride + i64::from((l1 - s1) % stride != 0); // ceil
+//                 let next_unchosen_index = s1 + numbers_picked * stride;
+//                 if next_unchosen_index != s2 {
+//                     return vec![];
+//                 }
+//                 new_starting.push(s1);
+//                 new_limiting.push(l2);
+//             }
+//         }
 
-        let new_starting_ids: Vec<Id> = new_starting.iter().map(|x| make_num(egraph, *x)).collect();
-        let new_limiting_ids: Vec<Id> = new_limiting.iter().map(|x| make_num(egraph, *x)).collect();
-        let node = Mdl::SliceOp([
-            x,
-            make_vec(egraph, &new_starting_ids),
-            make_vec(egraph, &new_limiting_ids),
-            strides_id,
-        ]);
-        let id = egraph.add(node);
+//         let new_starting_ids: Vec<Id> = new_starting.iter().map(|x| make_num(egraph, *x)).collect();
+//         let new_limiting_ids: Vec<Id> = new_limiting.iter().map(|x| make_num(egraph, *x)).collect();
+//         let node = Mdl::SliceOp([
+//             x,
+//             make_vec(egraph, &new_starting_ids),
+//             make_vec(egraph, &new_limiting_ids),
+//             strides_id,
+//         ]);
+//         let id = egraph.add(node);
 
-        finish_apply(egraph, matched_id, id)
-    }
-}
+//         finish_apply(egraph, matched_id, id)
+//     }
+// }
 
 // https://stackoverflow.com/a/68025464
 macro_rules! make_enum {
@@ -535,8 +535,6 @@ make_enum!(MlirRewrites ALL_REWRITES {
 });
 
 impl MlirRewrites {
-    // TODO: There must be a smarter way to do this that checks during compile time,
-    // but Stack Overflow is down right now...
     pub fn all() -> Vec<MlirRewrites> {
         ALL_REWRITES.to_vec()
     }
@@ -602,6 +600,7 @@ impl MlirRewrites {
 #[derive(Clone)]
 pub struct MlirRewriteApplier {
     pub rewrite: MlirRewrites,
+    pub filter_after: bool,
 }
 
 impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
@@ -612,6 +611,13 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
         subst: &Subst,
     ) -> Vec<Id> {
         let ast = self.rewrite.to_ast();
+
+        if self.filter_after {
+            let (contains, _) = contains_blacklist(ast.as_ref(), egraph, subst);
+            if contains {
+                return vec![];
+            }
+        }
 
         // Copy over the AST into a RecExpr<Mdl>. The ENodes are just copied over,
         // and the Vars are handled in the following way:
@@ -662,7 +668,6 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
                             expr.add(Mdl::Input([var, argnum]))
                         }
                     };
-
                     get_id(egraph, &mut expr, &mut argnum_to_id, &mut cur_argnum, &subst[*v])
                 }
             };
@@ -683,6 +688,8 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
             vec![]
         } else {
             mapping.clear();
+            let mut existing_nodes = HashSet::new();
+            // let mut new_pattern_ast = PatternAst::default();
             for (i, x) in optimised_expr.as_ref().iter().enumerate() {
                 match x {
                     Mdl::Var(x) => { /* do nothing */ },
@@ -705,7 +712,20 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
                     },
                     node => {
                         let new_node = node.clone_with_mapping(&mapping);
-                        let id = egraph.add(new_node);
+                        let mut cloned = new_node.clone();
+                        let id = match egraph.lookup(&mut cloned) {
+                            None => {
+                                if self.filter_after {
+                                    egraph.analysis.newly_added.push(new_node.clone());
+                                }
+                                egraph.add(new_node)
+                            }
+                            Some(id) => {
+                                existing_nodes.insert(cloned.clone());
+                                id
+                            }
+                        };
+
                         mapping.insert(Id::from(i), id);
                     }
                 }
@@ -1013,7 +1033,8 @@ impl MultiPatterns {
 
             let index_found = canonical_pats.iter().position(|x| *x == pat_canonical);
             let pat_index = index_found
-                .or_else(|| {
+         
+       .or_else(|| {
                     canonical_pats.push(pat_canonical);
                     Some(canonical_pats.len() - 1)
                 })
@@ -1679,6 +1700,7 @@ fn get_descendents(
     check_blacklist: bool,
     descendents: &mut HashMap<Id, HashSet<Id>>,
 ) {
+    println!("get descendents {:?}", eclass);
     match descendents.get(&eclass) {
         Some(desc) => (),
         None => {

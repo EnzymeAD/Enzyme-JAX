@@ -1131,7 +1131,7 @@ impl CppGraphConverter {
         // Configuration
         let n_sec = 60; // seconds for timeout
         let use_multi = true; // whether to use multi patterns
-        let no_cycle = true; // disallow cycle in egraph?
+        let no_cycle = false; // disallow cycle in egraph?
         let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
@@ -1183,7 +1183,7 @@ impl CppGraphConverter {
             .map(|r|
                  rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone() }}))
+                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }}))
             .collect();
 
         rules.append(&mut mlir_rules);
@@ -1299,7 +1299,7 @@ fn extract_by_ilp(
     // Call python script to run ILP
     let order_var_int = false;
     let class_constraint = true;
-    let no_order = true;
+    let no_order = false;
     let initialise_with_greedy = false;
     let fusion_costs: bool = std::env::var("FUSION_COSTS")
         .unwrap_or(String::from("false"))
