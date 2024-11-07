@@ -50,8 +50,13 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla 
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:llama 
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:jaxmd
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:neuralgcm
-      bazel-bin/test/llama.runfiles/python_*/bin/python3 -m pip install bazel-bin/*.whl https://github.com/wsmoses/maxtext
+      
+      if [ -f "test/test_neuralgcm.py" ]; then
+        HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:neuralgcm
+      else
+        echo > `dirname $(dirname $(echo bazel-out/*/testlogs/test/llama/test.log))`/neuralgcm/test.log
+      fi
+      bazel-bin/test/llama.runfiles/python_*/bin/python3 -m pip install bazel-bin/*.whl https://github.com/wsmoses/maxtext aqtp tensorboardX google-cloud-storage datasets gcsfs
       bazel-bin/test/llama.runfiles/python_*/bin/python3 test/maxtext.py > maxtext.log
       cat bazel-out/*/testlogs/test/llama/test.log
       cat bazel-out/*/testlogs/test/bench_vs_xla/test.log
@@ -59,7 +64,6 @@ steps:
       cat bazel-out/*/testlogs/test/neuralgcm/test.log
       cat maxtext.log
     artifact_paths:
-      - "finds.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
       - "bazel-out/*/testlogs/test/jaxmd/test.log"
