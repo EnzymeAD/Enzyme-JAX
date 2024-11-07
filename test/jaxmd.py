@@ -24,12 +24,6 @@ from jax import lax
 
 jax.config.update("jax_enable_x64", True)
 
-from jax_md import space
-from jax_md import energy
-from jax_md import simulate
-from jax_md import quantity
-from jax_md import partition
-
 partialopt = (
     "inline{default-pipeline=canonicalize max-iterations=4},"
     + """canonicalize,cse,
@@ -153,6 +147,12 @@ pipelines = [
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
+        from jax_md import space
+        from jax_md import energy
+        from jax_md import simulate
+        from jax_md import quantity
+        from jax_md import partition
+
         lattice_constant = 1.37820
         N_rep = 40
         box_size = N_rep * lattice_constant
@@ -256,6 +256,7 @@ class JAXMD(EnzymeJaxTest):
 
 if __name__ == "__main__":
     import platform
+
     # Deps not available on macos
-    if platform.system() == 'Darwin': return
-    absltest.main()
+    if platform.system() != "Darwin":
+        absltest.main()
