@@ -258,6 +258,5 @@ if __name__ == "__main__":
     import platform
 
     # Deps not available on macos
-    if platform.system() == "Darwin":
-        return
-    absltest.main()
+    if platform.system() != "Darwin":
+        absltest.main()
