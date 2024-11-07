@@ -643,14 +643,119 @@ static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
       .getResult();
 }
 
+static mlir::TensorType applyBatchSizes(mlir::Type Ty,
+                                        llvm::ArrayRef<int64_t> batchSizes) {
+  auto T = cast<TensorType>(Ty);
+  SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+  shape.append(T.getShape().begin(), T.getShape().end());
+  auto T2 = T.clone(shape);
+  return T2;
+}
+
+// TODO: make public in Enzyme MLIR?
+// this is essentially
+// https://github.com/EnzymeAD/Enzyme/blob/342057e3a3e657a33da8295c99acdcd20b0375f4/enzyme/Enzyme/MLIR/Passes/EnzymeBatchPass.cpp#L58-L100
+static void batchCloneBlock(Block *srcBlock, Block *destBlock,
+                            IRMapping &mapper, ArrayRef<int64_t> batchSizes) {
+  for (auto arg : srcBlock->getArguments()) {
+    auto batched = destBlock->addArgument(
+        applyBatchSizes(arg.getType(), batchSizes), arg.getLoc());
+    mapper.map(arg, batched);
+  }
+
+  bool valid = true;
+
+  OpBuilder builder(destBlock, destBlock->end());
+  for (auto &src : srcBlock->getOperations()) {
+    if (auto ifaceOp = dyn_cast<BatchOpInterface>(&src)) {
+      auto res = ifaceOp.createBatch(builder, mapper, batchSizes);
+      if (res.succeeded())
+        continue;
+    }
+
+    SmallVector<Value, 8> operands;
+    SmallVector<Block *, 2> successors;
+
+    // Remap the operands.
+    operands.reserve(src.getNumOperands());
+    for (auto opValue : src.getOperands())
+      operands.push_back(mapper.lookup(opValue));
+
+    // Remap the successors.
+    successors.reserve(src.getNumSuccessors());
+    for (Block *successor : src.getSuccessors())
+      successors.push_back(mapper.lookup(successor));
+
+    SmallVector<Type> resultTypes(src.getResultTypes().begin(),
+                                  src.getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      Ty = applyBatchSizes(Ty, batchSizes);
+    }
+
+    Operation *newOp = Operation::create(
+        src.getLoc(), src.getName(), resultTypes, operands, src.getAttrs(),
+        OpaqueProperties(nullptr), successors, src.getNumRegions());
+
+    // // Clone the regions.
+    // for (auto &&[oldReg, newReg] :
+    //      llvm::zip(src.getRegions(), newOp->getRegions())) {
+    //   batchCloneRegion(&oldReg, &newReg, mapper, batchSizes);
+    // }
+
+    // Remember the mapping of any results.
+    for (unsigned i = 0, e = src.getNumResults(); i != e; ++i)
+      mapper.map(src.getResult(i), newOp->getResult(i));
+
+    builder.insert(newOp);
+  }
+}
+
+// For some ops with nested regions, identify if we can batch the inner regions
+// instead
+static LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
+                                     IRMapping &mapper,
+                                     ArrayRef<int64_t> batchSizes) {
+  if (auto ifOp = dyn_cast<IfOp>(src)) {
+    auto iszero = matchPattern(ifOp.getPred(), m_Zero());
+    auto isone = matchPattern(ifOp.getPred(), m_One());
+
+    if (!iszero && !isone)
+      return failure();
+
+    auto current = ifOp->getBlock();
+
+    auto &reg = isone ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
+
+    assert(reg.hasOneBlock());  // stablehlo.if only allows 1 or 0 block in the
+    auto *block = &reg.front(); // regions
+
+    batchCloneBlock(block, builder.getInsertionBlock(), mapper, batchSizes);
+    auto term = builder.getInsertionBlock()->getTerminator();
+
+    for (auto &&[result, operand] :
+         llvm::zip(src->getResults(), term->getOperands())) {
+      mapper.map(result, operand);
+    }
+
+    term->erase();
+
+    return success();
+  }
+
+  return failure();
+}
+
 template <typename OpTy>
-struct SHLOUnrollOpBatchInterface
-    : public BatchOpInterface::ExternalModel<SHLOUnrollOpBatchInterface<OpTy>,
+struct SHLOGenericBatchOpInterface
+    : public BatchOpInterface::ExternalModel<SHLOGenericBatchOpInterface<OpTy>,
                                              OpTy> {
 public:
   mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
                                   IRMapping &mapper,
                                   ArrayRef<int64_t> batchSizes) const {
+    if (tryToBatchInner(src, builder, mapper, batchSizes).succeeded())
+      return success();
+
     SmallVector<Value> operands;
     operands.reserve(src->getNumOperands());
 
@@ -1286,14 +1391,14 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
-    IfOp::attachInterface<SHLOUnrollOpBatchInterface<IfOp>>(*context);
-    WhileOp::attachInterface<SHLOUnrollOpBatchInterface<WhileOp>>(*context);
+    IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
+    WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
 
-    ReverseOp::attachInterface<SHLOUnrollOpBatchInterface<ReverseOp>>(
+    ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
-    ScatterOp::attachInterface<SHLOUnrollOpBatchInterface<ScatterOp>>(
+    ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
         *context); // TODO: simpler version with newly named dims
-    ConvolutionOp::attachInterface<SHLOUnrollOpBatchInterface<ConvolutionOp>>(
+    ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
   });
 }
