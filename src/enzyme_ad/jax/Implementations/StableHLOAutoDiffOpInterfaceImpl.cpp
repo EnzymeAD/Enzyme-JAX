@@ -716,6 +716,35 @@ static LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
                                      IRMapping &mapper,
                                      ArrayRef<int64_t> batchSizes) {
   if (auto ifOp = dyn_cast<IfOp>(src)) {
+    auto predBroadcast =
+        mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
+    if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
+        predBroadcast.getBroadcastDimensions().size() == batchSizes.size()) {
+      // %pred = broadcast_in_dim %0
+      // if %0 {} {}
+      SmallVector<Type> results;
+      results.reserve(src->getNumResults());
+      for (auto resTy : src->getResultTypes()) {
+        results.push_back(applyBatchSizes(resTy, batchSizes));
+      }
+      auto newIf = builder.create<IfOp>(src->getLoc(), results,
+                                        predBroadcast.getOperand());
+      newIf.getTrueBranch().push_back(new Block());
+      newIf.getFalseBranch().push_back(new Block());
+
+      batchCloneBlock(&ifOp.getTrueBranch().front(),
+                      &newIf.getTrueBranch().front(), mapper, batchSizes);
+      batchCloneBlock(&ifOp.getFalseBranch().front(),
+                      &newIf.getFalseBranch().front(), mapper, batchSizes);
+
+      for (auto &&[oldRes, newRes] :
+           llvm::zip(ifOp->getResults(), newIf->getResults())) {
+        mapper.map(oldRes, newRes);
+      }
+
+      return success();
+    }
+
     auto iszero = matchPattern(ifOp.getPred(), m_Zero());
     auto isone = matchPattern(ifOp.getPred(), m_One());
 
