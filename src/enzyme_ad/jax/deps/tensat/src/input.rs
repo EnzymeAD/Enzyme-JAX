@@ -1131,7 +1131,7 @@ impl CppGraphConverter {
         // Configuration
         let n_sec = 10; // seconds for timeout
         let no_cycle = true; // disallow cycle in egraph?
-        let filter_after = true; // vanilla filtering or efficient filtering
+        let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 

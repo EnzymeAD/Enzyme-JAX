@@ -3,7 +3,7 @@
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
 
-echo "Basline" > baseline.txt
+echo "Baseline" > baseline.txt
 echo "--------------------------" >> baseline.txt
 
 for model in "${models[@]}"; do
@@ -21,7 +21,7 @@ for model in "${models[@]}"; do
     # time the command and redirect output to baseline.txt
     echo "Running $EXPERIMENT_NAME..." | tee -a baseline.txt
     START_TIME=$(date +%s)
-    eval "$COMMAND"
+    eval "$COMMAND" >> baseline.txt 2>&1
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
 

@@ -24,7 +24,7 @@ for model in "${models[@]}"; do
       # time the command and redirect output to segmentation.txt
       echo "Running $EXPERIMENT_NAME..." | tee -a segmentation.txt
       START_TIME=$(date +%s)
-      eval "$COMMAND"
+      eval "$COMMAND" >> segmentation.txt 2>&1
       END_TIME=$(date +%s)
       DURATION=$((END_TIME - START_TIME))
 

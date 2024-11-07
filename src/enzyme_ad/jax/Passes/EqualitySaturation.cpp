@@ -2498,6 +2498,7 @@ public:
   }
 
   void runOnOperation() override {
+    auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
     OpBuilder builder(context);
@@ -2612,7 +2613,8 @@ public:
     }
     // Recombine the optimized segments into the original function
     recombineGraph(module, segmentedModules, builder);
-    llvm::errs() << "EqualitySaturationPass completed.\n";
+    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - t0;
+    llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count() << "ms\n";
   }
 };
 } // end anonymous namespace

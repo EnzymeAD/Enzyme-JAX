@@ -7,6 +7,8 @@
 
 from absl.testing import absltest
 import jax.numpy as jnp
+from datetime import datetime
+import os
 import jax.random
 import jax.lax
 import enzyme_ad.jax as enzyme_jax
@@ -19,6 +21,7 @@ from enzyme_ad.jax import (
 )
 import numpy as np
 import timeit
+from test_utils import *
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
@@ -155,7 +158,7 @@ pipelines = [
 ]
 
 
-class MaxText(absltest.TestCase):
+class MaxText(EnzymeJaxTest):
     def setUp(self):
         import MaxText
         import MaxText.pyconfig
@@ -175,7 +178,6 @@ class MaxText(absltest.TestCase):
         import MaxText.train
 
         config = MaxText.pyconfig.config
-
         for name, pipeline in pipelines:
             print("name=", name)
 
@@ -187,6 +189,9 @@ class MaxText(absltest.TestCase):
 
             res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)
+            step_time_seconds = res1['scalar']['perf/step_time_seconds']
+
+            self.dump_to_csv(self.csv_filename, name.strip(), "Training", [step_time_seconds])
 
 
 if __name__ == "__main__":

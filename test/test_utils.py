@@ -14,24 +14,6 @@ from datetime import datetime
 import os
 import csv
 
-def dump_to_csv(filename, pipeline, stage, runtime_ms):
-    file_exists = os.path.isfile(filename)
-
-    with open(filename, mode='a', newline='') as file:
-        writer = csv.writer(file)
-        # write the header only if the file doesn't exist
-        if not file_exists:
-            writer.writerow(['pipeline', 'stage', 'runtime_ms'])
-        for runtime in runtime_ms:
-            writer.writerow([pipeline, stage, runtime])
-
-def timeit(filename, pipeline, stage, str, globals, count, warmup=100):
-    timer = Timer(str, globals=globals)
-    _warmup = timer.repeat(repeat=1, number=warmup)
-    runtime_ms = [x * 1000 for x in timer.repeat(repeat=count, number=1)]
-    dump_to_csv(filename, pipeline, stage, runtime_ms)
-    return f"{median(runtime_ms):.6f} (min {min(runtime_ms):.6f}, max {max(runtime_ms):.6f}, mean {mean(runtime_ms):.6f} ± {stdev(runtime_ms):.6f})"
-
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 devices = []
@@ -168,6 +150,29 @@ class EnzymeJaxTest(absltest.TestCase):
         self.tol = 1e-6
         self.mlirad_fwd = True
         self.mlirad_rev = True
+        EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
+        if EXPERIMENT_NAME:
+            self.csv_filename = f"results_{EXPERIMENT_NAME}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
+        else:
+            self.csv_filename = f"results_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
+
+    def dump_to_csv(self, filename, pipeline, stage, runtime_ms):
+        file_exists = os.path.isfile(filename)
+
+        with open(filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            # write the header only if the file doesn't exist
+            if not file_exists:
+                writer.writerow(['pipeline', 'stage', 'runtime_ms'])
+            for runtime in runtime_ms:
+                writer.writerow([pipeline, stage, runtime])
+
+    def timeit(self, filename, pipeline, stage, str, globals, count, warmup=100):
+        timer = Timer(str, globals=globals)
+        _warmup = timer.repeat(repeat=1, number=warmup)
+        runtime_ms = [x * 1000 for x in timer.repeat(repeat=count, number=1)]
+        self.dump_to_csv(filename, pipeline, stage, runtime_ms)
+        return f"{median(runtime_ms):.6f} (min {min(runtime_ms):.6f}, max {max(runtime_ms):.6f}, mean {mean(runtime_ms):.6f} ± {stdev(runtime_ms):.6f})"
 
     def setUp(self):
         self.name = None
@@ -195,13 +200,6 @@ class EnzymeJaxTest(absltest.TestCase):
             "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         )
 
-        csv_filename = datetime.now().strftime("results_%Y-%m-%d_%H:%M:%S.csv")
-
-        EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
-        if EXPERIMENT_NAME:
-            csv_filename = f"results_{EXPERIMENT_NAME}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
-        else:
-            csv_filename = f"results_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
         for backend in self.AllBackends:
             ins_backend = [to_backend(x, backend) for x in ins]
             dins_backend = [to_backend(x, backend) for x in dins]
@@ -244,7 +242,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         ",",
                         "Primal",
                         ",",
-                        timeit(csv_filename, pname, "Primal", primalstr, {'fn': rfn_enzyme} | primalins, self.count),
+                        self.timeit(self.csv_filename, pname, "Primal", primalstr, {'fn': rfn_enzyme} | primalins, self.count),
                         sep="\t",
                     )
 
@@ -284,7 +282,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "Forward",
                             ",",
-                            timeit(csv_filename, pname, "Forward", fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
+                            self.timeit(self.csv_filename, pname, "Forward", fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
                             sep="\t",
                         )
 
@@ -337,7 +335,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                 ",",
                                 "PreRev",
                                 ",",
-                                timeit(csv_filename, pname, "PreRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+                                self.timeit(self.csv_filename, pname, "PreRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                                 sep="\t",
                             )
 
@@ -376,7 +374,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "PostRev",
                             ",",
-                            timeit(csv_filename, pname, "PostRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+                            self.timeit(self.csv_filename, pname, "PostRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )
 
@@ -422,6 +420,6 @@ class EnzymeJaxTest(absltest.TestCase):
                             ",",
                             "BothRev",
                             ",",
-                            timeit(csv_filename, pname, "BothRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+                            self.timeit(self.csv_filename, pname, "BothRev", revstr, {'rev': rev_enzyme} | revins, self.count),
                             sep="\t",
                         )

@@ -29,7 +29,7 @@ for model in "${models[@]}"; do
       # Time the command and redirect output to eqsat_vs_enzyme.txt
       echo "Running $EXPERIMENT_NAME..." | tee -a eqsat_vs_enzyme.txt
       START_TIME=$(date +%s)
-      eval "$COMMAND"
+      eval "$COMMAND" >> eqsat_vs_enzyme.txt 2>&1
       END_TIME=$(date +%s)
       DURATION=$((END_TIME - START_TIME))
 
