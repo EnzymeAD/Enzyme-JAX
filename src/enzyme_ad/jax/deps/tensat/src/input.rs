@@ -1152,31 +1152,31 @@ impl CppGraphConverter {
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
         let mut rules = rules_from_str(split_rules, do_filter_after);
 
-        let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
-            rewrite!("transpose-of-transpose";
-                     "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
-            rewrite!("flatten-concat";
-                     "(ConcatenateOp ?v ?d)" => { FlattenConcat {
-                     vec: "?v".parse().unwrap(),
-                     dim: "?d".parse().unwrap(),
-            }}),
-            rewrite!("merge-slices";
-                     "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
-                     x: "?x".parse().unwrap(),
-                     s1: "?s1".parse().unwrap(),
-                     s2: "?s2".parse().unwrap(),
-                     l1: "?l1".parse().unwrap(),
-                     l2: "?l2".parse().unwrap(),
-                     strides: "?s".parse().unwrap(),
-                    dim: "?d".parse().unwrap()
-            }}),
-            rewrite!("concat-dot";
-                     "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
-                     => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
-                     if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
-        ];
+        // let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
+        //     rewrite!("transpose-of-transpose";
+        //              "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
+        //     rewrite!("flatten-concat";
+        //              "(ConcatenateOp ?v ?d)" => { FlattenConcat {
+        //              vec: "?v".parse().unwrap(),
+        //              dim: "?d".parse().unwrap(),
+        //     }}),
+        //     rewrite!("merge-slices";
+        //              "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
+        //              x: "?x".parse().unwrap(),
+        //              s1: "?s1".parse().unwrap(),
+        //              s2: "?s2".parse().unwrap(),
+        //              l1: "?l1".parse().unwrap(),
+        //              l2: "?l2".parse().unwrap(),
+        //              strides: "?s".parse().unwrap(),
+        //             dim: "?d".parse().unwrap()
+        //     }}),
+        //     rewrite!("concat-dot";
+        //              "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
+        //              => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
+        //              if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
+        // ];
 
-        rules.append(&mut custom_rules);
+        // rules.append(&mut custom_rules);
 
         let mut mlir_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = MlirRewrites::all()
             .iter()
