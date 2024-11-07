@@ -129,7 +129,10 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
+        "//conditions:default": []
+    })
     timeout='long'
 )
 
