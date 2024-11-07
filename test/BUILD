@@ -137,9 +137,9 @@ py_test(
 )
 
 py_test(
-    name = "neuralgcm",
+    name = "neuralgcm_test",
     srcs = [
-        "neuralgcm.py",
+        "neuralgcm_test.py",
         "test_utils.py",
     ],
     imports = ["."],
