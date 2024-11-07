@@ -2,8 +2,8 @@
 
 # Define the combinations of environment variables
 configs=(
-  "ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
-  "ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
+  "export ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
+  "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
 )
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
