@@ -24,12 +24,6 @@ from jax import lax
 
 jax.config.update("jax_enable_x64", True)
 
-from jax_md import space
-from jax_md import energy
-from jax_md import simulate
-from jax_md import quantity
-from jax_md import partition
-
 pipelines = [
     ("JaX  ", None, CurBackends),
     ("JaXPipe", JaXPipeline(), CurBackends),
