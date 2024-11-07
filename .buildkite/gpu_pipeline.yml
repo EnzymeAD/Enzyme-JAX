@@ -10,7 +10,7 @@ steps:
     plugins:
       - cache#v0.6.0:
           manifest: .buildkite/gpu_pipeline.yml
-          path: .local
+          path: .local/bin/bazel
           restore: file
           save: file
       - cache#v0.6.0:
@@ -23,7 +23,7 @@ steps:
       env
       echo "--- Setup :python: Dependencies"
       mkdir -p .local/bin
-      export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
+      export PATH="`pwd`/.local/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
