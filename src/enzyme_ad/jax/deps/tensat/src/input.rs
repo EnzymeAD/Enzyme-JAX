@@ -1134,7 +1134,7 @@ impl CppGraphConverter {
         let n_sec: u64 = env::var("SATURATION_TIME_LIMIT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(60);
+            .unwrap_or(3600);
         let no_cycle = false; // disallow cycle in egraph?
         let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
