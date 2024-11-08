@@ -2166,26 +2166,27 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
   auto context = builder.getContext();
   Block &entryBlock = funcOp.getBody().front();
 
-  const char* env_var = getenv("SEGMENTATION_THRESHOLD");
+  const char *env_var = getenv("SEGMENTATION_THRESHOLD");
   int segmentThreshold = 70; // Default value
   if (env_var == nullptr || *env_var == '\0') {
-      segmentThreshold = 70;
+    segmentThreshold = 70;
   } else {
-      // Attempt to convert the environment variable to an integer
-      char* endptr;
-      long parsedValue = std::strtol(env_var, &endptr, 10);
-      if (*endptr != '\0' || endptr == env_var || parsedValue < INT_MIN || parsedValue > INT_MAX) {
-          std::ostringstream error_string;
-          error_string << "Invalid value for SEGMENTATION_THRESHOLD: should be an integer, but was passed '"
-                       << env_var << "'";
-          throw std::invalid_argument(error_string.str());
-      }
-      segmentThreshold = static_cast<int>(parsedValue);
+    // Attempt to convert the environment variable to an integer
+    char *endptr;
+    long parsedValue = std::strtol(env_var, &endptr, 10);
+    if (*endptr != '\0' || endptr == env_var || parsedValue < INT_MIN ||
+        parsedValue > INT_MAX) {
+      std::ostringstream error_string;
+      error_string << "Invalid value for SEGMENTATION_THRESHOLD: should be an "
+                      "integer, but was passed '"
+                   << env_var << "'";
+      throw std::invalid_argument(error_string.str());
+    }
+    segmentThreshold = static_cast<int>(parsedValue);
   }
 
   // First pass to determine segmentation points and necessary types.
   // TODO: abstract out as separate function
-
   SmallVector<SegmentationPoint> segmentationPoints;
   SmallVector<Operation *> currentOps;
   SegmentationPoint segment;
@@ -2614,7 +2615,23 @@ public:
 
     // llvm::errs() << "Running EqualitySaturationPass on the module.\n";
     // Segment the graph
-    auto segmentedModules = segmentGraph(funcOp, builder);
+    const char *segmentationOffEnv = getenv("SEGMENTATION_OFF");
+    bool segmentationOff =
+        segmentationOffEnv && (strcmp(segmentationOffEnv, "1") == 0 ||
+                               strcmp(segmentationOffEnv, "true") == 0);
+
+    std::vector<SegmentedModule> segmentedModules;
+    if (!segmentationOff) {
+      segmentedModules = segmentGraph(funcOp, builder);
+    } else {
+      // Create a trivial segmentation containing the entire graph as one
+      // segment
+      ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
+      currentModule.push_back(funcOp.clone());
+      SegmentedModule sm;
+      sm.module = currentModule;
+      segmentedModules.push_back(sm);
+    }
 
     // Optimize each segmented subgraph
     for (int i = 0; i < segmentedModules.size(); ++i) {
@@ -2641,9 +2658,24 @@ public:
       // llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
     }
     // Recombine the optimized segments into the original function
-    recombineGraph(module, segmentedModules, builder);
-    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - t0;
-    llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count() << "ms\n";
+    if (!segmentationOff) {
+      recombineGraph(module, segmentedModules, builder);
+    } else {
+      auto t = getenv("SEGMENTATION_THRESHOLD");
+      auto threshold = t ? std::string(t) : "";
+      if (threshold != "") {
+
+        auto error_string = "SEGMENTATION_OFF cannot be true while "
+                            "SEGMENTATION_THRESHOLD is set to " +
+                            threshold;
+        throw std::invalid_argument(error_string);
+      }
+      module = segmentedModules[0].module;
+    }
+    std::chrono::duration<double, std::milli> elapsed =
+        std::chrono::high_resolution_clock::now() - t0;
+    llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count()
+                 << "ms\n";
   }
 };
 } // end anonymous namespace
