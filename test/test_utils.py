@@ -145,6 +145,24 @@ broadcast_reduce<1>;
 )
 
 
+pipelines = [
+    ("JaX  ", None, CurBackends),
+    ("JaXPipe", JaXPipeline(), CurBackends),
+    (
+        "HLOOpt",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
+            + "canonicalize,cse,enzyme-hlo-opt,cse"
+        ),
+        CurBackends,
+    ),
+    ("PartOpt", JaXPipeline(partialopt), CurBackends),
+    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    ("IPartOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + partialopt), CurBackends),
+    ("IDefOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + hlo_opts()), CurBackends),
+]
+
+
 def no_newxla(x):
     return [
         (name, a, b) for (name, a, b) in x if name != "NewXLAMLIR" and name != "NewXLA"
@@ -374,7 +392,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         (
                             in_fn
                             if pipeline is None
-                            else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                            else enzyme_jax_ir(pipeline_options=pipeline, argv=argv, inner_jit=False)(
                                 in_fn
                             )
                         ),
@@ -416,7 +434,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             in_fn
                             if pipeline is None
                             else jax.jit(
-                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv, inner_jit=False)(
                                     in_fn
                                 ),
                                 # backend=backend
@@ -470,7 +488,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                 in_fn
                                 if pipeline is None
                                 else enzyme_jax_ir(
-                                    pipeline_options=pipeline, argv=argv
+                                    pipeline_options=pipeline, argv=argv, inner_jit=False
                                 )(in_fn)
                             )
                             rev_enzyme = jax.jit(
@@ -518,7 +536,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                 revtransform(rfn_enzyme)
                                 if pipeline is None
                                 else enzyme_jax_ir(
-                                    pipeline_options=pipeline, argv=argv
+                                    pipeline_options=pipeline, argv=argv, inner_jit=False
                                 )(revtransform(rfn_enzyme))
                             ),
                             # backend=backend
@@ -562,7 +580,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         rfn_enzyme = (
                             in_fn
                             if pipeline is None
-                            else enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(
+                            else enzyme_jax_ir(pipeline_options=pipeline, argv=argv, inner_jit=False)(
                                 in_fn
                             )
                         )
@@ -571,7 +589,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                 revtransform(rfn_enzyme)
                                 if pipeline is None
                                 else enzyme_jax_ir(
-                                    pipeline_options=pipeline, argv=argv
+                                    pipeline_options=pipeline, argv=argv, inner_jit=False                                    
                                 )(revtransform(rfn_enzyme))
                             ),
                             # backend=backend
