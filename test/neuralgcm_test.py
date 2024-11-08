@@ -180,7 +180,7 @@ class NeuralGCM:
         ).timeit(steps)
 
 
-def main():
+def main(argv):
     c = NeuralGCM()
     c.setUp()
     c.test()
