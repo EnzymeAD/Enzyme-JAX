@@ -99,7 +99,7 @@ class NeuralGCM:
         if os.getenv("NEURALGCM_LARGE") is not None:
             inner_steps = 24  # save model outputs once every 24 hours
             outer_steps = 4 * 24 // inner_steps  # total of 4 days
-        elif s.getenv("NEURALGCM_MEDIUM") is not None:
+        elif os.getenv("NEURALGCM_MEDIUM") is not None:
             inner_steps = 4  # save model outputs once every 24 hours
             outer_steps = 4 * 4 // inner_steps  # total of 4 days
         else:
