@@ -2166,10 +2166,26 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
   auto context = builder.getContext();
   Block &entryBlock = funcOp.getBody().front();
 
+  const char* env_var = getenv("SEGMENTATION_THRESHOLD");
+  int segmentThreshold = 70; // Default value
+  if (env_var == nullptr || *env_var == '\0') {
+      segmentThreshold = 70;
+  } else {
+      // Attempt to convert the environment variable to an integer
+      char* endptr;
+      long parsedValue = std::strtol(env_var, &endptr, 10);
+      if (*endptr != '\0' || endptr == env_var || parsedValue < INT_MIN || parsedValue > INT_MAX) {
+          std::ostringstream error_string;
+          error_string << "Invalid value for SEGMENTATION_THRESHOLD: should be an integer, but was passed '"
+                       << env_var << "'";
+          throw std::invalid_argument(error_string.str());
+      }
+      segmentThreshold = static_cast<int>(parsedValue);
+  }
+
   // First pass to determine segmentation points and necessary types.
   // TODO: abstract out as separate function
 
-  const int segmentThreshold = 200;
   SmallVector<SegmentationPoint> segmentationPoints;
   SmallVector<Operation *> currentOps;
   SegmentationPoint segment;
@@ -2511,6 +2527,7 @@ public:
   }
 
   void runOnOperation() override {
+    auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
     OpBuilder builder(context);
@@ -2625,7 +2642,8 @@ public:
     }
     // Recombine the optimized segments into the original function
     recombineGraph(module, segmentedModules, builder);
-    llvm::errs() << "EqualitySaturationPass completed.\n";
+    std::chrono::duration<double, std::milli> elapsed = std::chrono::high_resolution_clock::now() - t0;
+    llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count() << "ms\n";
   }
 };
 } // end anonymous namespace
