@@ -24,6 +24,7 @@ from jax import lax
 
 def main(argv):
     import os
+    os.environ["TF_USE_LEGACY_KERAS"] = "1"
     os.environ["KERAS_BACKEND"] = "jax"
     import keras
     print(keras.config.backend())
