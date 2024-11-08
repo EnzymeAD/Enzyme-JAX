@@ -54,6 +54,10 @@ cc_binary(
         "@stablehlo//:chlo_ops",
         "@stablehlo//stablehlo/tests:check_ops"
     ],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
 )
 
 cc_binary(
