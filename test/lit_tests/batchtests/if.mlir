@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-batch --arith-raise --canonicalize | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme-batch --arith-raise | %stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme-batch --arith-raise | stablehlo-translate - --interpret
 
 module {
   func.func private @relu_broadcast_scalar(%arg0: tensor<f64>) -> tensor<f64> {
