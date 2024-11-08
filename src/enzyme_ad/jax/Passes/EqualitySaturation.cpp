@@ -22,6 +22,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
@@ -2665,8 +2666,9 @@ public:
 
     auto t1 = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = t1 - t0;
-    llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count()
-                 << "seconds with " << segmentedModules.size() << " segments\n";
+    llvm::errs() << "EqualitySaturationPass completed in "
+                 << llvm::format("%.3f", elapsed.count()) << " seconds with "
+                 << segmentedModules.size() << " segments\n";
   }
 };
 } // end anonymous namespace
