@@ -519,7 +519,8 @@ impl CppGraphConverter {
         output: ffi::Tensor,
     ) -> Box<TensorInfo> {
         let dimensions_id = self.vec_node(dimensions);
-        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id]);
+        let shape_id = self.vec_node(output.shape.clone());
+        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id, shape_id]);
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
@@ -1099,6 +1100,7 @@ impl CppGraphConverter {
                 Mdl::DotGeneralOp(ops) => new_node(ops),
                 Mdl::SliceOp(ops) => new_node(ops),
                 Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::BroadcastInDimOp(ops) => new_node(ops),
                 Mdl::ConvolutionOp(ops) => new_node(ops),
                 Mdl::MulOp(ops) => new_node(ops),
                 Mdl::AddOp(ops) => new_node(ops),
@@ -1129,8 +1131,8 @@ impl CppGraphConverter {
         let start = &self.rec_expr;
 
         // Configuration
-        let n_sec = 10; // seconds for timeout
-        let no_cycle = true; // disallow cycle in egraph?
+        let n_sec = 60; // seconds for timeout
+        let no_cycle = false; // disallow cycle in egraph?
         let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
@@ -1151,31 +1153,31 @@ impl CppGraphConverter {
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
         let mut rules = rules_from_str(split_rules, do_filter_after);
 
-        let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
-            rewrite!("transpose-of-transpose";
-                     "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
-            rewrite!("flatten-concat";
-                     "(ConcatenateOp ?v ?d)" => { FlattenConcat {
-                     vec: "?v".parse().unwrap(),
-                     dim: "?d".parse().unwrap(),
-            }}),
-            rewrite!("merge-slices";
-                     "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
-                     x: "?x".parse().unwrap(),
-                     s1: "?s1".parse().unwrap(),
-                     s2: "?s2".parse().unwrap(),
-                     l1: "?l1".parse().unwrap(),
-                     l2: "?l2".parse().unwrap(),
-                     strides: "?s".parse().unwrap(),
-                    dim: "?d".parse().unwrap()
-            }}),
-            rewrite!("concat-dot";
-                     "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
-                     => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
-                     if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
-        ];
+        // let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
+        //     rewrite!("transpose-of-transpose";
+        //              "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
+        //     rewrite!("flatten-concat";
+        //              "(ConcatenateOp ?v ?d)" => { FlattenConcat {
+        //              vec: "?v".parse().unwrap(),
+        //              dim: "?d".parse().unwrap(),
+        //     }}),
+        //     rewrite!("merge-slices";
+        //              "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
+        //              x: "?x".parse().unwrap(),
+        //              s1: "?s1".parse().unwrap(),
+        //              s2: "?s2".parse().unwrap(),
+        //              l1: "?l1".parse().unwrap(),
+        //              l2: "?l2".parse().unwrap(),
+        //              strides: "?s".parse().unwrap(),
+        //             dim: "?d".parse().unwrap()
+        //     }}),
+        //     rewrite!("concat-dot";
+        //              "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
+        //              => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
+        //              if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
+        // ];
 
-        rules.append(&mut custom_rules);
+        // rules.append(&mut custom_rules);
 
         if env::var("EQSAT_RULES").unwrap_or("true".to_string()) == "false" {
             rules.clear();
@@ -1186,8 +1188,7 @@ impl CppGraphConverter {
             .map(|r| {
                 rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone() }})
-            })
+                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }}))
             .collect();
 
         if env::var("ENZYME_RULES").unwrap_or("true".to_string()) != "false" {
@@ -1308,7 +1309,7 @@ fn extract_by_ilp(
     // Call python script to run ILP
     let order_var_int = false;
     let class_constraint = true;
-    let no_order = true;
+    let no_order = false;
     let initialise_with_greedy = false;
     let fusion_costs: bool = std::env::var("FUSION_COSTS")
         .unwrap_or(String::from("false"))

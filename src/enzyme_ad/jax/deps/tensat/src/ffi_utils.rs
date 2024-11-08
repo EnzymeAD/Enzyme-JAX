@@ -98,6 +98,7 @@ pub fn recexpr_to_node(
             Mdl::DotGeneralOp(ops) => new_node(ops),
             Mdl::SliceOp(ops) => new_node(ops),
             Mdl::TransposeOp(ops) => new_node(ops),
+            Mdl::BroadcastInDimOp(ops) => new_node(ops),
             Mdl::ConvolutionOp(ops) => new_node(ops),
             Mdl::MulOp(ops) => new_node(ops),
             Mdl::AddOp(ops) => new_node(ops),
