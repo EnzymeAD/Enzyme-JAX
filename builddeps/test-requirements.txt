@@ -10,6 +10,8 @@ https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829
 # https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
 
 jax-cuda12-plugin[with_cuda]; sys_platform == 'linux'
+neuralgcm
+gcsfs
 requests; sys_platform == 'linux'
 
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html

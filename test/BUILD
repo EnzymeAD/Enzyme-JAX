@@ -136,6 +136,18 @@ py_test(
     timeout='long'
 )
 
+py_test(
+    name = "neuralgcm_test",
+    srcs = [
+        "neuralgcm_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
+    timeout='eternal'
+)
+
+
 # py_test(
 #     name = "maxtext",
 #     srcs = [
