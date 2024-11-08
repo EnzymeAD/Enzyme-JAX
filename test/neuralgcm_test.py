@@ -1,3 +1,4 @@
+from absl import app
 import jax.numpy as jnp
 import jax.random
 import jax.lax
@@ -179,7 +180,11 @@ class NeuralGCM:
         ).timeit(steps)
 
 
-if __name__ == "__main__":
+def main():
     c = NeuralGCM()
     c.setUp()
     c.test()
+
+
+if __name__ == "__main__":
+    app.run(main)
