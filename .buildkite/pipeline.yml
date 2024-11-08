@@ -17,7 +17,7 @@ steps:
     plugins:
       - cache#v0.6.0:
           manifest: .buildkite/pipeline.yml
-          path: .local
+          path: .local/bin/bazel
           restore: file
           save: file
       - cache#v0.6.0:
@@ -32,9 +32,11 @@ steps:
       chmod +x .local/bin/md5
 
       if [ "{{matrix.os}}" == "macos" ]; then
-        curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
-        mv bazelisk-darwin .local/bin/bazel
-        chmod +x .local/bin/bazel
+        if [ ! -f ".local/bin/bazel" ]; then
+          curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
+          mv bazelisk-darwin .local/bin/bazel
+          chmod +x .local/bin/bazel
+        fi
       elif [ "{{matrix.os}}" == "linux" ]; then
         mv bazel* .local/bin/bazel
         chmod +x .local/bin/bazel
