@@ -661,8 +661,6 @@ static void batchCloneBlock(Block *srcBlock, Block *destBlock,
     mapper.map(arg, batched);
   }
 
-  bool valid = true;
-
   OpBuilder builder(destBlock, destBlock->end());
   for (auto &src : srcBlock->getOperations()) {
     if (auto ifaceOp = dyn_cast<BatchOpInterface>(&src)) {
@@ -748,8 +746,6 @@ static LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
 
     if (!iszero && !isone)
       return failure();
-
-    auto current = ifOp->getBlock();
 
     auto &reg = isone ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
 
