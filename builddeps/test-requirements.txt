@@ -16,8 +16,8 @@ https://github.com/wsmoses/neuralgcm/archive/a902c15bc0cc2c7f61786ac811e38c5c220
 gcsfs
 requests; sys_platform == 'linux'
 
-https://github.com/wsmoses/keras/archive/2c0312277d58554ce7daac0aecae089db4ca5db8.tar.gz; sys_platform == 'linux'
-https://github.com/wsmoses/keras-benchmarks/archive/b87231d1e0f2292ea5e3dd246b5a79d1200c0793.tar.gz; sys_platform == 'linux'
+https://github.com/wsmoses/keras/archive/c7f62e6fbfea4a5356939fc4812750a9d1642981.tar.gz; sys_platform == 'linux'
+https://github.com/wsmoses/keras-benchmarks/archive/7d8df90ce7d2c2be2541148070cc368281ac15a5.tar.gz; sys_platform == 'linux'
 tf_keras; sys_platform == 'linux'
 keras-nlp; sys_platform == 'linux'
 keras-cv; sys_platform == 'linux'

@@ -151,8 +151,8 @@ attrs==24.2.0 \
     # via
     #   aiohttp
     #   e3nn-jax
-benchmark @ https://github.com/wsmoses/keras-benchmarks/archive/b87231d1e0f2292ea5e3dd246b5a79d1200c0793.tar.gz \
-    --hash=sha256:df8a70e903ac0dd4d66754704fe09f5e59640e49df36df88874ec97a475077df
+benchmark @ https://github.com/wsmoses/keras-benchmarks/archive/7d8df90ce7d2c2be2541148070cc368281ac15a5.tar.gz \
+    --hash=sha256:9f8dce282a50e40e50c95d26e83c1af81f95e14b44cc2b089a85532a6b856ad7
     # via -r builddeps/test-requirements.txt
 cachetools==5.5.0 \
     --hash=sha256:02134e8439cdc2ffb62023ce1debca2944c3f289d66bb17ead3ab3dede74b292 \
@@ -788,8 +788,8 @@ kagglehub==0.3.3 \
     # via
     #   keras-cv
     #   keras-hub
-keras @ https://github.com/wsmoses/keras/archive/2c0312277d58554ce7daac0aecae089db4ca5db8.tar.gz \
-    --hash=sha256:dec374a72c595cafa54e9727f6c4436cced7b03a6d0d382ebea705d1b48910ed
+keras @ https://github.com/wsmoses/keras/archive/c7f62e6fbfea4a5356939fc4812750a9d1642981.tar.gz \
+    --hash=sha256:d3493dc2967f9dc68cb1da2a7c9dab1250c9dea1c0a88cd317264f803a24be5d
     # via
     #   -r builddeps/test-requirements.txt
     #   tensorflow

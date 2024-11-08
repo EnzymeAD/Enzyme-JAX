@@ -35,6 +35,13 @@ def main(argv):
     
     import benchmark.bert
     benchfns = [
+        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run),
+        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run),
+        ("mistral_predict", benchmark.mistral.mistral_predict_run),
+        ("mistral_fit", benchmark.mistral.mistral_fit_run),
+        ("gemma_predict", benchmark.gemma.gemma_predict_run),
+        ("gemma_fit", benchmark.gemma.gemma_fit_run),
+        ("bert_predict", benchmark.bert.bert_predict_run),
         ("bert_fit", benchmark.bert.bert_fit_run),
     ]
 
