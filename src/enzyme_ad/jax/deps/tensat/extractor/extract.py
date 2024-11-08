@@ -102,7 +102,7 @@ def main():
             # Children
             solver.Add(sum([x[j] for j in e[m]]) - x[i] >= 0)
             # Order
-            # We only need to add ordering costraints when there are potentially cycles in the
+            # We only need to add ordering constraints when there are potentially cycles in the
             # extracted graph. If the EGraph itself does not contain cycles, then we don't need
             # these constraints
             if not args.no_order:

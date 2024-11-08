@@ -1188,7 +1188,8 @@ impl CppGraphConverter {
             .map(|r| {
                 rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }}))
+                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }})
+            })
             .collect();
 
         if env::var("ENZYME_RULES").unwrap_or("true".to_string()) != "false" {
