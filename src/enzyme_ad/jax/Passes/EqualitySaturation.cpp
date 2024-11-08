@@ -2161,13 +2161,13 @@ struct SegmentedModule {
   SegmentationPoint segmentPoint;
 };
 
-std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
+std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
                                           OpBuilder &builder) {
   auto context = builder.getContext();
   Block &entryBlock = funcOp.getBody().front();
 
   const char *env_var = getenv("SEGMENTATION_THRESHOLD");
-  int segmentThreshold = 70; // Default value
+  int segmentThreshold = 200; // Default value
   if (env_var == nullptr || *env_var == '\0') {
     segmentThreshold = 70;
   } else {
@@ -2221,7 +2221,8 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
 
     // TODO: This ensures the last node in segment is blackboxed, but
     // ideally we actually want to reduce the number of segment outputs.
-    if ((blackboxed && nonBlackboxedInCurrentSegment >= segmentThreshold) ||
+    if ((!segmentOff && blackboxed &&
+         nonBlackboxedInCurrentSegment >= segmentThreshold) ||
         it == (--entryBlock.end())) {
       // Track outputs of this segment
       for (Operation *op : currentOps) {
@@ -2620,18 +2621,20 @@ public:
         segmentationOffEnv && (strcmp(segmentationOffEnv, "1") == 0 ||
                                strcmp(segmentationOffEnv, "true") == 0);
 
-    std::vector<SegmentedModule> segmentedModules;
-    if (!segmentationOff) {
-      segmentedModules = segmentGraph(funcOp, builder);
-    } else {
-      // Create a trivial segmentation containing the entire graph as one
-      // segment
-      ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
-      currentModule.push_back(funcOp.clone());
-      SegmentedModule sm;
-      sm.module = currentModule;
-      segmentedModules.push_back(sm);
+    if (segmentationOff) {
+      auto t = getenv("SEGMENTATION_THRESHOLD");
+      auto threshold = t ? std::string(t) : "";
+      if (threshold != "") {
+
+        auto error_string = "SEGMENTATION_OFF cannot be true while "
+                            "SEGMENTATION_THRESHOLD is set to " +
+                            threshold;
+        throw std::invalid_argument(error_string);
+      }
     }
+
+    std::vector<SegmentedModule> segmentedModules;
+    segmentedModules = segmentGraph(funcOp, segmentationOff, builder);
 
     // Optimize each segmented subgraph
     for (int i = 0; i < segmentedModules.size(); ++i) {
@@ -2657,25 +2660,13 @@ public:
 
       // llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
     }
-    // Recombine the optimized segments into the original function
-    if (!segmentationOff) {
-      recombineGraph(module, segmentedModules, builder);
-    } else {
-      auto t = getenv("SEGMENTATION_THRESHOLD");
-      auto threshold = t ? std::string(t) : "";
-      if (threshold != "") {
 
-        auto error_string = "SEGMENTATION_OFF cannot be true while "
-                            "SEGMENTATION_THRESHOLD is set to " +
-                            threshold;
-        throw std::invalid_argument(error_string);
-      }
-      module = segmentedModules[0].module;
-    }
-    std::chrono::duration<double, std::milli> elapsed =
-        std::chrono::high_resolution_clock::now() - t0;
+    recombineGraph(module, segmentedModules, builder);
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = t1 - t0;
     llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count()
-                 << "ms with " << segmentedModules.size() << " segments\n";
+                 << "seconds with " << segmentedModules.size() << " segments\n";
   }
 };
 } // end anonymous namespace
