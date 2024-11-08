@@ -955,6 +955,13 @@ struct SHLOTransposeOpBatchInterface
       shape.append(T.getShape().begin(), T.getShape().end());
       Ty = T.clone(shape);
     }
+
+    // Remap the operands
+    SmallVector<Value, 8> operands;
+    operands.reserve(src->getNumOperands());
+    for (auto opValue : src->getOperands())
+      operands.push_back(mapper.lookup(opValue));
+
     mlir::NamedAttrList attrs;
     for (auto attr : src->getAttrs()) {
       auto eattr = cast<DenseI64ArrayAttr>(attr.getValue());
@@ -967,7 +974,7 @@ struct SHLOTransposeOpBatchInterface
       attrs.append(attr);
     }
     auto cop = mlir::Operation::create(
-        src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
+        src->getLoc(), src->getName(), resultTypes, operands, std::move(attrs),
         OpaqueProperties(nullptr), mlir::BlockRange(), 0);
     builder.insert(cop);
     mapper.map(src->getResult(0), cop->getResult(0));
