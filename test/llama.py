@@ -247,23 +247,6 @@ def forward(x, config, weights, key_cache, value_cache):
 
     return x
 
-
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-]
-
-
 class Llama(EnzymeJaxTest):
     def setUp(self):
         config = {

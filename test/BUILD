@@ -147,6 +147,23 @@ py_test(
     timeout='eternal'
 )
 
+py_test(
+    name = "keras_test",
+    srcs = [
+        "keras_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + [
+        "@pypi_keras//:pkg",
+        "@pypi_benchmark//:pkg",
+        "@pypi_keras_cv//:pkg",
+        "@pypi_keras_nlp//:pkg",
+        "@pypi_tf_keras//:pkg",
+    ],
+    timeout='eternal'
+)
+
 
 # py_test(
 #     name = "maxtext",

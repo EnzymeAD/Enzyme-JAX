@@ -28,21 +28,6 @@ from jax import jit
 from jax import random
 from jax import lax
 
-pipelines = [
-    ("JaX  ", None),
-    ("JaXPipe", JaXPipeline()),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-    ),
-    ("PartOpt", JaXPipeline(partialopt)),
-    ("DefOpt", JaXPipeline(hlo_opts())),
-]
-
-
 class MaxText(absltest.TestCase):
     def setUp(self):
         import MaxText
@@ -64,14 +49,15 @@ class MaxText(absltest.TestCase):
 
         config = MaxText.pyconfig.config
 
-        for name, pipeline in pipelines:
+        for (name, pipeline, _) in pipelines:
             print("name=", name)
 
-            def rewrite(fn):
+            def rewrite(fn, **kwargs):
                 if pipeline is None:
                     return fn
                 else:
-                    return enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(fn)
+                    kw = kwargs.copy()
+                    return enzyme_jax_ir(pipeline_options=pipeline, argv=argv, inner_jit=False, jit_options=kw)(fn)
 
             res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)

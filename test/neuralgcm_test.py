@@ -22,22 +22,6 @@ from jax import jit
 from jax import random
 from jax import lax
 
-
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-]
-
 import gcsfs
 import jax
 import numpy as np
@@ -154,7 +138,7 @@ class NeuralGCM:
             if pipe is None:
                 nfn = jax.jit(self.sub)
             else:
-                nfn = jax.jit(enzyme_jax_ir(pipeline_options=pipe)(self.sub))
+                nfn = jax.jit(enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub))
 
             res = self.run_on_fn(nfn)
             print("name=", name, res)

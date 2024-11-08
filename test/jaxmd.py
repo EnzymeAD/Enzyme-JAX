@@ -24,21 +24,6 @@ from jax import lax
 
 jax.config.update("jax_enable_x64", True)
 
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-]
-
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
