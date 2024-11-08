@@ -37,26 +37,32 @@ def main(argv):
     import benchmark.mistral
     import benchmark.gemma
     import benchmark.bert
+    Both = [False, True]
     benchfns = [
-        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run),
-        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run),
-        ("mistral_predict", benchmark.mistral.mistral_predict_run),
-        ("mistral_fit", benchmark.mistral.mistral_fit_run),
-        ("gemma_predict", benchmark.gemma.gemma_predict_run),
-        ("gemma_fit", benchmark.gemma.gemma_fit_run),
-        ("bert_predict", benchmark.bert.bert_predict_run),
-        ("bert_fit", benchmark.bert.bert_fit_run),
+        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
+        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
+        ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
+        ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
+        ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
+        ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
+        ("bert_predict", benchmark.bert.bert_predict_run, Both),
+        ("bert_fit", benchmark.bert.bert_fit_run, Both),
     ]
 
-    for (bname, bench) in benchfns:
-        for (name, pipe, _) in pipelines:
-            print("Running ", name, " ", bname)
-            os.environ.pop("ENZYME_JAX", None)
-            os.environ.pop("ENZYME_JAX_PRE", None)
-            if pipe is not None:
-                os.environ["ENZYME_JAX"] = pipe.pass_pipeline()
-            benchmark.benchmark(bench)
-            print("Done Running ", name, " ", bname)
+    for (bname, bench, ADs) in benchfns:
+        for AD in ADs:
+            for (name, pipe, _) in pipelines:
+                if pipe is None and AD:
+                    continue
+                print("Running ", name, " ", bname, " AD=", AD)
+                os.environ.pop("ENZYME_JAX", None)
+                os.environ.pop("ENZYME_JAX_PRE", None)
+                if pipe is not None:
+                    os.environ["ENZYME_JAX"] = pipe.pass_pipeline()
+                if AD:
+                    os.environ["ENZYME_JAX_PRE"] = 1
+                benchmark.benchmark(bench)
+                print("Done Running ", name, " ", bname, " AD=", AD)
 
 
 if __name__ == "__main__":
