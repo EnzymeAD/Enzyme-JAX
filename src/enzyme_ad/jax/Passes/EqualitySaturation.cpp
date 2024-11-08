@@ -2675,7 +2675,7 @@ public:
     std::chrono::duration<double, std::milli> elapsed =
         std::chrono::high_resolution_clock::now() - t0;
     llvm::errs() << "EqualitySaturationPass completed in " << elapsed.count()
-                 << "ms\n";
+                 << "ms with " << segmentedModules.size() << " segments\n";
   }
 };
 } // end anonymous namespace
