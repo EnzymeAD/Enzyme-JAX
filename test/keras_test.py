@@ -33,6 +33,9 @@ def main(argv):
     keras.config.set_image_data_format('channels_last')
     print(keras.config.backend())
     
+    import benchmark.stable_diffusion
+    import benchmark.mistral
+    import benchmark.gemma
     import benchmark.bert
     benchfns = [
         ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run),
