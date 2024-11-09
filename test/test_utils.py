@@ -217,6 +217,9 @@ def setup_backends():
     import jax
 
     backend = jax.default_backend()
+    print("default backend", backend)
+    print("devices", jax.devices())
+    backend = "gpu"
     CurBackends.append(backend)
     if jax.default_backend() != "cpu":
         devices.append(backend)

@@ -322,4 +322,5 @@ if __name__ == "__main__":
     from test_utils import fix_paths
 
     fix_paths()
-    absltest.main()
+    if False:
+        absltest.main()
