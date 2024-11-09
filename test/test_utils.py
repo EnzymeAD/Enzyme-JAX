@@ -1,6 +1,5 @@
 def fix_paths():
     print("fixing paths", flush=True)
-    import traceback
 
     import os
 
@@ -205,37 +204,45 @@ argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 devices = []
 CurBackends = []
+AllBackends = []
 backends_initialized = False
-
 
 def setup_backends():
     global backends_initialized
     global devices
     global CurBackends
+    global AllBackends
     if backends_initialized:
         return
+    print("setting up backends")
     import jax
 
+    # AllBackends.append("cpu")
     backend = jax.default_backend()
     print("default backend", backend)
     print("devices", jax.devices())
     backend = "gpu"
     CurBackends.append(backend)
-    if jax.default_backend() != "cpu":
+    if backend != "cpu":
         devices.append(backend)
+        AllBackends.append(backend)
+
+    print("set up backends ", AllBackends)
+
     backends_initialized = True
 
 
-AllBackends = ["cpu"] + devices
 
 
 def AllPipelines():
+    setup_backends()
     from enzyme_ad.jax import (
         NewXLAPipeline,
         OldXLAPipeline,
         JaXPipeline,
         hlo_opts,
     )
+    print("allbackends", AllBackends)
 
     return [
         ("JaX  ", None, AllBackends),
@@ -353,6 +360,7 @@ broadcast_reduce<1>;
 
 
 def pipelines():
+    setup_backends()
     from enzyme_ad.jax import (
         NewXLAPipeline,
         OldXLAPipeline,
@@ -529,6 +537,7 @@ def recursive_check(tester, lhs, rhs, tol=1e-6):
 class EnzymeJaxTest(absltest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        setup_backends()
         self.primfilter = lambda x: x
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
