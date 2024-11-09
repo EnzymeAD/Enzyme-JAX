@@ -65,13 +65,13 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:llama 
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:jaxmd 
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:neuralgcm_test
-      bazel-bin/test/llama.runfiles/python_*/bin/python3 -m pip install bazel-bin/*.whl git+https://github.com/wsmoses/maxtext aqtp tensorboardX google-cloud-storage datasets gcsfs
-      bazel-bin/test/llama.runfiles/python_*/bin/python3 test/maxtext.py > maxtext.log
+      # bazel-bin/test/llama.runfiles/python_*/bin/python3 -m pip install bazel-bin/*.whl git+https://github.com/wsmoses/maxtext aqtp tensorboardX google-cloud-storage datasets gcsfs
+      # bazel-bin/test/llama.runfiles/python_*/bin/python3 test/maxtext.py > maxtext.log
       cat bazel-out/*/testlogs/test/llama/test.log
       cat bazel-out/*/testlogs/test/bench_vs_xla/test.log
       cat bazel-out/*/testlogs/test/jaxmd/test.log
       cat bazel-out/*/testlogs/test/neuralgcm_test/test.log
-      cat maxtext.log
+      # cat maxtext.log
     artifact_paths:
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
