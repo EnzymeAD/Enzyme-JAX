@@ -21,7 +21,7 @@ steps:
           restore: file
           save: file
       - cache#v1.3.0:
-          manifest: WORKSPACE
+          manifest: workspace.bzl
           path: .baztmp
           restore: file
           save: file
