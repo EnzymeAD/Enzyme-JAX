@@ -20,11 +20,11 @@ steps:
       #     path: .local/bin/bazel
       #     restore: file
       #     save: file
-      - cache#v0.6.0:
-          manifest: WORKSPACE
-          path: .baztmp
-          restore: file
-          save: file
+      # - cache#v0.6.0:
+      #     manifest: WORKSPACE
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
