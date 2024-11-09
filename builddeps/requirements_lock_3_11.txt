@@ -26,7 +26,7 @@ absl-py==2.1.0 \
     #   tensorflow
     #   tensorflow-datasets
     #   tensorflow-metadata
-    #   tfp-nightly
+    #   tensorflow-probability
 aiohappyeyeballs==2.4.3 \
     --hash=sha256:75cf88a15106a5002a8eb1dab212525c00d1f4c0fa96e551c9fbe6f09a621586 \
     --hash=sha256:8a7a83727b2756f394ab2895ea0765a0a8c475e3c71e98d43d76f22b4b435572
@@ -265,7 +265,7 @@ click==8.1.7 \
 cloudpickle==3.1.0 \
     --hash=sha256:81a929b6e3c7335c863c771d673d105f02efdb89dfaba0c90495d1c64796601b \
     --hash=sha256:fe11acda67f61aaaec473e3afe030feb131d78a43461b718185363384f1ba12e
-    # via tfp-nightly
+    # via tensorflow-probability
 contextlib2==21.6.0 \
     --hash=sha256:3fbdb64466afd23abaf6c977627b75b6139a5a3e8ce38405c5b413aed7a0471f \
     --hash=sha256:ab1e2bfe1d01d968e1b7e8d9023bc51ef3509bba217bb730cee3827e1ee82869
@@ -275,7 +275,7 @@ decorator==5.1.1 \
     --hash=sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186
     # via
     #   gcsfs
-    #   tfp-nightly
+    #   tensorflow-probability
 dinosaur-dycore==1.0.0 \
     --hash=sha256:0ea3807a83d0c5220ff7a1cd548c11d82091d455d17d8f7697b985b6283d2ef9 \
     --hash=sha256:3505d59eb9d90ad58572f93fa87db5536b9df0663f95701d50c8ccb027e767e1
@@ -336,7 +336,7 @@ dm-tree==0.1.8 \
     # via
     #   keras-core
     #   tensorflow-datasets
-    #   tfp-nightly
+    #   tensorflow-probability
 docstring-parser==0.16 \
     --hash=sha256:538beabd0af1e2db0146b6bd3caa526c35a34d61af9fd2887f3a8a27a739aa6e \
     --hash=sha256:bf0a1387354d3691d102edef7ec124f219ef639982d096e26e3b60aeffa90637
@@ -522,7 +522,7 @@ gast==0.6.0 \
     --hash=sha256:88fc5300d32c7ac6ca7b515310862f71e6fdf2c029bbec7c66c0f5dd47b6b1fb
     # via
     #   tensorflow
-    #   tfp-nightly
+    #   tensorflow-probability
 gcsfs==2024.9.0.post1 \
     --hash=sha256:7ca70ee9d7c7dbce1a3e36b4883e14102c2d7b4284f49e242843a437bc684684 \
     --hash=sha256:f3ab9d3bedc45da8cf40baed7c3a1e1694e8f599160d9138d78f0ef25e4a3ca1
@@ -1101,8 +1101,9 @@ nest-asyncio==1.6.0 \
     --hash=sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe \
     --hash=sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c
     # via orbax-checkpoint
-neuralgcm @ https://github.com/wsmoses/neuralgcm/archive/a902c15bc0cc2c7f61786ac811e38c5c220b6093.tar.gz \
-    --hash=sha256:aec219bd772721680bf42194465473a2a2a9862c8275673a939967ed3493e6e4
+neuralgcm==1.0.0 \
+    --hash=sha256:28f42b73188df92e35d5e187ef9ebd2b2a9922cfc46e05e0ae5202f451ef7c18 \
+    --hash=sha256:e75889894e8948211cec9bf18c89df5e223ef5a6d9a6444bb42f4b36143a5c27
     # via -r builddeps/test-requirements.txt
 numcodecs==0.13.1 \
     --hash=sha256:233bc7f26abce24d57e44ea8ebeb5cd17084690b4e7409dd470fdb75528d615f \
@@ -1189,8 +1190,8 @@ numpy==1.26.4 \
     #   tensorboard
     #   tensorflow
     #   tensorflow-datasets
+    #   tensorflow-probability
     #   tensorstore
-    #   tfp-nightly
     #   xarray
     #   xarray-tensorstore
     #   zarr
@@ -1907,7 +1908,7 @@ six==1.16.0 \
     #   python-dateutil
     #   tensorboard
     #   tensorflow
-    #   tfp-nightly
+    #   tensorflow-probability
 sympy==1.13.3 \
     --hash=sha256:54612cf55a62755ee71824ce692986f23c88ffa77207b30c1368eda4a7060f73 \
     --hash=sha256:b27fd2c6530e0ab39e275fc9b683895367e51d5da91baa8d3d64db2565fec4d9
@@ -1969,6 +1970,9 @@ tensorflow-io-gcs-filesystem==0.37.1 \
 tensorflow-metadata==1.16.1 \
     --hash=sha256:2ce72ea31d78a00c0c74c6d465482335aa5cb2a3b2a104dedba0b258bc7bb18a
     # via tensorflow-datasets
+tensorflow-probability==0.25.0 \
+    --hash=sha256:f3f4d6431656c0122906888afe1b67b4400e82bd7f254b45b92e6c5b84ea8e3e
+    # via neuralgcm
 tensorflow-text==2.18.0 \
     --hash=sha256:0dc6c53f36680107cbae4e8de8bc4cd03903cebfe5a0fd76d51957109d3affac \
     --hash=sha256:a5795a7d31d320f42f24212f72ee8cce966c13d00aeba328c270da70b3b4ec4f \
@@ -2013,10 +2017,6 @@ tf-keras==2.18.0 ; sys_platform == "linux" \
     --hash=sha256:c431d04027eef790fcd3261cf7fdf93eb74f3cb32e05078b57b7f5a54bd53262 \
     --hash=sha256:ebf744519b322afead33086a2aba872245473294affd40973694f3eb7c7ad77d
     # via -r builddeps/test-requirements.txt
-# WARNING: pip install will require the following package to be hashed.
-# Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
-tfp-nightly @ git+https://github.com/tensorflow/probability@50475294912eccc95fc4b79a3742e3786a90a835
-    # via neuralgcm
 threadpoolctl==3.5.0 \
     --hash=sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107 \
     --hash=sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467
