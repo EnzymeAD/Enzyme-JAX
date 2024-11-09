@@ -8,16 +8,16 @@ steps:
     timeout_in_minutes: 180
     if: build.tag == null
     plugins:
-      # - cache#v0.6.0:
-      #     manifest: .buildkite/gpu_pipeline.yml
-      #     path: .local/bin/bazel
-      #     restore: file
-      #     save: file
-      # - cache#v0.6.0:
-      #     manifest: WORKSPACE
-      #     path: .baztmp
-      #     restore: file
-      #     save: file
+      - cache#v1.3.0:
+          manifest: .buildkite/pipeline.yml
+          path: .local/bin/bazel
+          restore: file
+          save: file
+      - cache#v1.3.0:
+          manifest: workspace.bzl
+          path: .baztmp
+          restore: file
+          save: file
     commands: |
       pwd
       env
@@ -27,16 +27,6 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
-      # No one tells us what to do
-      unset NV_LIBCUBLAS_VERSION
-      unset NVIDIA_VISIBLE_DEVICES
-      unset NV_NVML_DEV_VERSION
-      unset NV_LIBNCCL_DEV_PACKAGE
-      unset NV_LIBNCCL_DEV_PACKAGE_VERSION
-      unset NVIDIA_REQUIRE_CUDA
-      unset NV_LIBCUBLAS_DEV_PACKAGE
-      unset NV_NVTX_VERSION
-      
       if [ ! -f ".local/bin/bazel" ]; then
         curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
         mv bazel* .local/bin/bazel

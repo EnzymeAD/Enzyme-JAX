@@ -12,6 +12,16 @@ def fix_paths():
         "NVIDIA_REQUIRE_CUDA",
         "NV_LIBCUBLAS_DEV_PACKAGE",
         "NV_NVTX_VERSION",
+        "NV_NVPROF_VERSION",
+        "NV_LIBNCCL_PACKAGE",
+        "NV_LIBCUBLAS_PACKAGE_NAME",
+        "NV_LIBNPP_DEV_VERSION",
+        "NV_LIBCUSPARSE_DEV_VERSION",
+        "NV_CUDA_LIB_VERSION",
+        "NVARCH",
+        "NV_CUDA_NSIGHT_COMPUTE_VERSION",
+        "NV_LIBNCCL_PACKAGE_NAME",
+        "NV_LIBNCCL_PACKAGE_VERSION",
     ]:
         os.environ.pop(nm, None)
 
