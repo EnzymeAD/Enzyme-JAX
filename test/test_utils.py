@@ -399,6 +399,7 @@ def nomlir(x):
 
 
 def justjax(x):
+    from enzyme_ad.jax import JaXPipeline
     return [
         (name, a, b) for (name, a, b) in x if a is None or isinstance(a, JaXPipeline)
     ]
