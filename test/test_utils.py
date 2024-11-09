@@ -159,17 +159,18 @@ def fix_paths():
 
     if os.path.exists(cublas_path):
         print("cublas does exist", flush=True)
-        print("find runfiles "+runfiles, flush=True)
-        os.system("find "+runfiles)
-        
-        print("find runfiles cublas "+runfiles, flush=True)
-        os.system("find "+os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
 
         import ctypes
 
         ctypes.cdll.LoadLibrary(cublas_path)
     else:
         print("cublas does not exist", flush=True)
+        
+        print("find runfiles "+runfiles, flush=True)
+        os.system("find "+runfiles)
+        
+        print("find runfiles cublas "+runfiles, flush=True)
+        os.system("find "+os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
 
     cudnngraph_path = os.path.join(
         runfiles,
