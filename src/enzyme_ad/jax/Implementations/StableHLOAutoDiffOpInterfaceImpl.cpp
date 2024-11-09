@@ -474,6 +474,11 @@ public:
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
     auto op = cast<DynamicUpdateSliceOp>(orig);
+
+    if (gutils->isConstantValue(op.getOperand()) &&
+        gutils->isConstantValue(op.getUpdate()))
+      return {};
+
     Operation *newOp = gutils->getNewFromOriginal(orig);
     OpBuilder cacheBuilder(newOp);
 
