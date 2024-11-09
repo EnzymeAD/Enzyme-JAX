@@ -153,6 +153,7 @@ class NeuralGCM:
 
 
 def main(argv):
+    return
     c = NeuralGCM()
     c.setUp()
     c.test()

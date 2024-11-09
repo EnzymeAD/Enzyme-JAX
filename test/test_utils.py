@@ -20,6 +20,8 @@ def fix_paths():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     print("runfiles=", runfiles, flush=True)
+    
+    os.system("find "+runfiles)
 
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
     # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -153,15 +155,21 @@ def fix_paths():
         "lib",
         "libcublas.so.12",
     )
-    print("cublas_path", cublas_path)
+    print("cublas_path", cublas_path, flush=True)
 
     if os.path.exists(cublas_path):
-        print("cublas does exist")
+        print("cublas does exist", flush=True)
+        print("find runfiles "+runfiles, flush=True)
+        os.system("find "+runfiles)
+        
+        print("find runfiles cublas "+runfiles, flush=True)
+        os.system("find "+os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
+
         import ctypes
 
         ctypes.cdll.LoadLibrary(cublas_path)
     else:
-        print("cublas does not exist")
+        print("cublas does not exist", flush=True)
 
     cudnngraph_path = os.path.join(
         runfiles,
@@ -172,15 +180,15 @@ def fix_paths():
         "lib",
         "libcudnn_graph.so.9",
     )
-    print("cudnngraph_path", cudnngraph_path)
+    print("cudnngraph_path", cudnngraph_path, flush=True)
 
     if os.path.exists(cudnngraph_path):
-        print("cudnngraph does exist")
+        print("cudnngraph does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(cudnngraph_path)
     else:
-        print("cudnngraph does not exist")
+        print("cudnngraph does not exist", flush=True)
 
     # /home/wmoses/Enzyme-JaX/bazel-bin/test/keras_test.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib/libcudnn_graph.so.9
 
