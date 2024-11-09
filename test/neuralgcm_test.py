@@ -117,7 +117,7 @@ class NeuralGCM:
         import jax
         from enzyme_ad.jax import enzyme_jax_ir
 
-        for name, pipe, _ in pipelines:
+        for name, pipe, _ in pipelines():
             print("name=", name)
             if pipe is None:
                 nfn = jax.jit(self.sub)
