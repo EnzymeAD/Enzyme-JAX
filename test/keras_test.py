@@ -81,7 +81,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    from test_utils import fix_paths
+    import platform
 
-    fix_paths()
-    app.run(main)
+    # Deps not available on macos
+    if platform.system() != "Darwin":
+        from test_utils import fix_paths
+        fix_paths()
+        app.run(main)
