@@ -8,16 +8,16 @@ steps:
     timeout_in_minutes: 180
     if: build.tag == null
     plugins:
-      - cache#v0.6.0:
-          manifest: .buildkite/gpu_pipeline.yml
-          path: .local/bin/bazel
-          restore: file
-          save: file
-      - cache#v0.6.0:
-          manifest: WORKSPACE
-          path: .baztmp
-          restore: file
-          save: file
+      # - cache#v0.6.0:
+      #     manifest: .buildkite/gpu_pipeline.yml
+      #     path: .local/bin/bazel
+      #     restore: file
+      #     save: file
+      # - cache#v0.6.0:
+      #     manifest: WORKSPACE
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       pwd
       env
