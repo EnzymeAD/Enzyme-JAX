@@ -69,7 +69,8 @@ class NeuralGCM:
             inner_steps = 2  # save model outputs once every 24 hours
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
-        timedelta = np.timedelta64(1, "h") * inner_steps
+        import numpy as onp
+        timedelta = onp.timedelta64(1, "h") * inner_steps
         # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
 
         # initialize model state
