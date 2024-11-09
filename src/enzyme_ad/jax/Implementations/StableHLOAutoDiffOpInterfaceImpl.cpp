@@ -23,6 +23,7 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 
 using namespace mlir;
@@ -35,6 +36,17 @@ static int64_t to_i64(llvm::APInt x) { return x.getSExtValue(); }
 static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
                                           llvm::ArrayRef<int64_t> vals) {
   return builder.getDenseI64ArrayAttr(vals);
+}
+
+static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
+  auto Ty = builder.getI64Type();
+  auto unrankedTensorType = RankedTensorType::get({}, Ty);
+  return builder
+      .create<ConstantOp>(loc, unrankedTensorType,
+                          SplatElementsAttr::get(
+                              unrankedTensorType,
+                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
+      .getResult();
 }
 
 namespace {
@@ -359,8 +371,12 @@ public:
     }
 
     // The reverse of the while loop is a for loop where the number
-    // of iterations is cached from the augmented primal.
-    auto numIters = gutils->popCache(caches[0], builder);
+    // of iterations is either known or cached from the augmented primal.
+    WhileLoopInfo info(cast<WhileOp>(orig));
+    Value numIters =
+        info.computeInfo().succeeded() && info.isConstant()
+            ? makeI64Constant(orig->getLoc(), builder, info.getNumIters())
+            : gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
     auto iterVar =
@@ -481,8 +497,12 @@ public:
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
     // The primal is augmented to store the number of iterations
-
     auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
+
+    WhileLoopInfo info(newWhile);
+    if (info.computeInfo().succeeded() && info.isConstant())
+      return {};
+
     auto cond = &newWhile.getCond().front();
     auto body = &newWhile.getBody().front();
 
@@ -829,17 +849,6 @@ static void getAllReferences(SmallVector<Value> &refs, Operation *op,
       getAllReferences(refs, &childOp, ref);
     }
   }
-}
-
-static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
-  auto Ty = builder.getI64Type();
-  auto unrankedTensorType = RankedTensorType::get({}, Ty);
-  return builder
-      .create<ConstantOp>(loc, unrankedTensorType,
-                          SplatElementsAttr::get(
-                              unrankedTensorType,
-                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
-      .getResult();
 }
 
 static mlir::TensorType applyBatchSizes(mlir::Type Ty,

@@ -49,54 +49,50 @@ module {
 // CHECK-NEXT:    %3 = "enzyme.init"() : () -> !enzyme.Cache<tensor<f64>>
 // CHECK-NEXT:    %4 = "enzyme.init"() : () -> !enzyme.Gradient<tensor<f64>>
 // CHECK-NEXT:    "enzyme.set"(%4, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:    %5 = "enzyme.init"() : () -> !enzyme.Cache<tensor<i64>>
-// CHECK-NEXT:    %6 = "enzyme.init"() : () -> !enzyme.Gradient<tensor<f64>>
-// CHECK-NEXT:    "enzyme.set"(%6, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:    %7:3 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0, %iterArg_3 = %c_1) : tensor<i64>, tensor<f64>, tensor<i64>
+// CHECK-NEXT:    %5 = "enzyme.init"() : () -> !enzyme.Gradient<tensor<f64>>
+// CHECK-NEXT:    "enzyme.set"(%5, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
+// CHECK-NEXT:    %6:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64>
 // CHECK-NEXT:     cond {
-// CHECK-NEXT:      %16 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      stablehlo.return %16 : tensor<i1>
+// CHECK-NEXT:      %14 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %14 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %16 = stablehlo.add %iterArg_3, %c_0 : tensor<i64>
 // CHECK-NEXT:      "enzyme.push"(%3, %iterArg_2) : (!enzyme.Cache<tensor<f64>>, tensor<f64>) -> ()
 // CHECK-NEXT:      "enzyme.push"(%2, %iterArg_2) : (!enzyme.Cache<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      %17 = stablehlo.multiply %iterArg_2, %iterArg_2 : tensor<f64>
-// CHECK-NEXT:      %18 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %18, %17, %16 : tensor<i64>, tensor<f64>, tensor<i64>
+// CHECK-NEXT:      %14 = stablehlo.multiply %iterArg_2, %iterArg_2 : tensor<f64>
+// CHECK-NEXT:      %15 = stablehlo.add %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %15, %14 : tensor<i64>, tensor<f64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    "enzyme.push"(%5, %7#2) : (!enzyme.Cache<tensor<i64>>, tensor<i64>) -> ()
-// CHECK-NEXT:    %8 = "enzyme.get"(%6) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:    %9 = arith.addf %8, %arg1 : tensor<f64>
-// CHECK-NEXT:    "enzyme.set"(%6, %9) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:    %10 = "enzyme.pop"(%5) : (!enzyme.Cache<tensor<i64>>) -> tensor<i64>
-// CHECK-NEXT:    %11 = "enzyme.get"(%6) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:    "enzyme.set"(%6, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:    %12:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %11) : tensor<i64>, tensor<f64>
+// CHECK-NEXT:    %7 = "enzyme.get"(%5) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:    %8 = arith.addf %7, %arg1 : tensor<f64>
+// CHECK-NEXT:    "enzyme.set"(%5, %8) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
+// CHECK-NEXT:    %9 = "enzyme.get"(%5) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:    "enzyme.set"(%5, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
+// CHECK-NEXT:    %10:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %9) : tensor<i64>, tensor<f64>
 // CHECK-NEXT:     cond {
-// CHECK-NEXT:      %16 = stablehlo.compare  LT, %iterArg, %10 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      stablehlo.return %16 : tensor<i1>
+// CHECK-NEXT:      %14 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %14 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %16 = stablehlo.add %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:      %14 = stablehlo.add %iterArg, %c_0 : tensor<i64>
 // CHECK-NEXT:      "enzyme.set"(%4, %iterArg_2) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      %17 = "enzyme.get"(%4) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:      %15 = "enzyme.get"(%4) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
 // CHECK-NEXT:      "enzyme.set"(%4, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      %18 = "enzyme.pop"(%3) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:      %19 = "enzyme.pop"(%2) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:      %20 = stablehlo.multiply %17, %19 : tensor<f64>
-// CHECK-NEXT:      %21 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:      %22 = arith.addf %21, %20 : tensor<f64>
-// CHECK-NEXT:      "enzyme.set"(%1, %22) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      %23 = stablehlo.multiply %17, %18 : tensor<f64>
+// CHECK-NEXT:      %16 = "enzyme.pop"(%3) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:      %17 = "enzyme.pop"(%2) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:      %18 = stablehlo.multiply %15, %17 : tensor<f64>
+// CHECK-NEXT:      %19 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:      %20 = arith.addf %19, %18 : tensor<f64>
+// CHECK-NEXT:      "enzyme.set"(%1, %20) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
+// CHECK-NEXT:      %21 = stablehlo.multiply %15, %16 : tensor<f64>
+// CHECK-NEXT:      %22 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:      %23 = arith.addf %22, %21 : tensor<f64>
+// CHECK-NEXT:      "enzyme.set"(%1, %23) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
 // CHECK-NEXT:      %24 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:      %25 = arith.addf %24, %23 : tensor<f64>
-// CHECK-NEXT:      "enzyme.set"(%1, %25) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      %26 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
 // CHECK-NEXT:      "enzyme.set"(%1, %cst) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:      stablehlo.return %16, %26 : tensor<i64>, tensor<f64>
+// CHECK-NEXT:      stablehlo.return %14, %24 : tensor<i64>, tensor<f64>
 // CHECK-NEXT:    }
+// CHECK-NEXT:    %11 = "enzyme.get"(%0) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
+// CHECK-NEXT:    %12 = arith.addf %11, %10#1 : tensor<f64>
+// CHECK-NEXT:    "enzyme.set"(%0, %12) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
 // CHECK-NEXT:    %13 = "enzyme.get"(%0) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:    %14 = arith.addf %13, %12#1 : tensor<f64>
-// CHECK-NEXT:    "enzyme.set"(%0, %14) : (!enzyme.Gradient<tensor<f64>>, tensor<f64>) -> ()
-// CHECK-NEXT:    %15 = "enzyme.get"(%0) : (!enzyme.Gradient<tensor<f64>>) -> tensor<f64>
-// CHECK-NEXT:    return %7#1, %15 : tensor<f64>, tensor<f64>
+// CHECK-NEXT:    return %6#1, %13 : tensor<f64>, tensor<f64>
 // CHECK-NEXT:  }
