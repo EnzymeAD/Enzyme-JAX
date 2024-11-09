@@ -86,5 +86,6 @@ if __name__ == "__main__":
     # Deps not available on macos
     if platform.system() != "Darwin":
         from test_utils import fix_paths
+
         fix_paths()
         app.run(main)

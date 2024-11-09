@@ -5,6 +5,7 @@ from test_utils import *
 class AddOne(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         self.ins = [
             jnp.array([1.0, 2.0, 3.0]),
             jnp.array([10.0, 20.0, 30.0]),
@@ -30,6 +31,7 @@ class AddOne(EnzymeJaxTest):
 class AddTwo(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         self.ins = [
             jnp.array([1.0, 2.0, 3.0]),
             jnp.array([10.0, 20.0, 30.0]),
@@ -52,6 +54,7 @@ class AddTwo(EnzymeJaxTest):
 class Sum(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         self.ins = [jnp.array(range(50), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(50)], dtype=jnp.float32)]
         self.douts = jnp.array(1.0)
@@ -66,6 +69,7 @@ class Sum(EnzymeJaxTest):
 class Cache(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         dim = 288
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
@@ -85,6 +89,7 @@ class Cache(EnzymeJaxTest):
 class Slicing(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         dim = 3
         self.ins = [jnp.array(range(dim), dtype=jnp.float32).reshape(1, dim, 1)]
         self.dins = [
@@ -106,6 +111,7 @@ class Slicing(EnzymeJaxTest):
 class ActivityMismatch(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
@@ -132,6 +138,7 @@ class ActivityMismatch(EnzymeJaxTest):
 class GenDot(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
@@ -165,6 +172,7 @@ class GenDot(EnzymeJaxTest):
 class Concat(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         dim = 12
         self.ins = [
             jnp.array(range(dim), dtype=jnp.float32),
@@ -193,6 +201,7 @@ class ValueAndGrad(absltest.TestCase):
     def test(self):
         from enzyme_ad.jax import enzyme_jax_ir
         import jax.numpy as jnp
+
         def f(x, y):
             return (jnp.sum(x * y[0] + y[1]), y)
 
@@ -263,6 +272,7 @@ class ValueAndGrad(absltest.TestCase):
 class ConstScatter(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
+
         def forward(c_tau):
             Q = c_tau
             Q = Q.at[0].multiply(3)
@@ -288,6 +298,7 @@ class ScatterSum(EnzymeJaxTest):
     def setUp(self):
         import jax
         import jax.numpy as jnp
+
         def energy_fn(R, neighbor):
             dR = R[neighbor[0]]
             return jnp.sum(jnp.sin(dR))
@@ -311,6 +322,7 @@ class ScatterSum(EnzymeJaxTest):
 
 if __name__ == "__main__":
     from test_utils import fix_paths
+
     fix_paths()
 
     absltest.main()

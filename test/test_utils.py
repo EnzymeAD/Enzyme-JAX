@@ -29,8 +29,8 @@ def fix_paths():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     print("runfiles=", runfiles, flush=True)
-    
-    os.system("find "+runfiles)
+
+    os.system("find " + runfiles)
 
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
     # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -134,7 +134,10 @@ def fix_paths():
         runfiles, "pypi_nvidia_cuda_runtime_cu12", "site-packages", "nvidia"
     )
     if os.path.exists(src_path):
-        for dst_path in [os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia"), os.path.join(runfiles, "pypi_jax_cuda12_pjrt", "nvidia")]:
+        for dst_path in [
+            os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia"),
+            os.path.join(runfiles, "pypi_jax_cuda12_pjrt", "nvidia"),
+        ]:
             if not os.path.exists(dst_path):
                 os.symlink(src_path, dst_path)
                 print("created symlink at", dst_path)
@@ -181,12 +184,12 @@ def fix_paths():
         ctypes.cdll.LoadLibrary(cublas_path)
     else:
         print("cublas does not exist", flush=True)
-        
-        print("find runfiles "+runfiles, flush=True)
-        os.system("find "+runfiles)
-        
-        print("find runfiles cublas "+runfiles, flush=True)
-        os.system("find "+os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
+
+        print("find runfiles " + runfiles, flush=True)
+        os.system("find " + runfiles)
+
+        print("find runfiles cublas " + runfiles, flush=True)
+        os.system("find " + os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
 
     cudnngraph_path = os.path.join(
         runfiles,
@@ -232,8 +235,10 @@ def fix_paths():
 from absl.testing import absltest
 
 import logging
+
 logging.getLogger("jax").setLevel(logging.INFO)
 import absl.logging
+
 absl.logging.set_verbosity(logging.INFO)
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
@@ -242,6 +247,7 @@ devices = []
 CurBackends = []
 AllBackends = []
 backends_initialized = False
+
 
 def setup_backends():
     global backends_initialized
@@ -268,8 +274,6 @@ def setup_backends():
     backends_initialized = True
 
 
-
-
 def AllPipelines():
     setup_backends()
     from enzyme_ad.jax import (
@@ -278,6 +282,7 @@ def AllPipelines():
         JaXPipeline,
         hlo_opts,
     )
+
     print("allbackends", AllBackends)
 
     return [
