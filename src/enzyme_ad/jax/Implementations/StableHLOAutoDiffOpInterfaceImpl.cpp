@@ -439,6 +439,15 @@ public:
       Block *oBB = &orig->getRegion(1).front();
       auto term = oBB->getTerminator();
 
+      for (auto operand : oBB->getArguments()) {
+        // All arguments should have no use outside this block therefore we can
+        // set their diffe to zero upon entering the reverse block to simplify
+        // the work of the remove-unnecessary-enzyme-ops pass.
+        if (!gutils->isConstantValue(operand)) {
+          gutils->zeroDiffe(operand, bodyBuilder);
+        }
+      }
+
       int revIdx = 1;
       for (auto &&[active, operand] :
            llvm::zip(operandsActive, term->getOperands())) {
