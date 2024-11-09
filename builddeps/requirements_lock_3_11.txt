@@ -788,8 +788,8 @@ kagglehub==0.3.3 \
     # via
     #   keras-cv
     #   keras-hub
-keras @ https://github.com/wsmoses/keras/archive/c7f62e6fbfea4a5356939fc4812750a9d1642981.tar.gz \
-    --hash=sha256:d3493dc2967f9dc68cb1da2a7c9dab1250c9dea1c0a88cd317264f803a24be5d
+keras @ https://github.com/wsmoses/keras/archive/f9d90db8797661ac9710e3acdcc1850ba94ab2fc.tar.gz \
+    --hash=sha256:ef27009bbc43079946e44688d19db625f2e3c3ef07ee27a5837240ef4320ce44
     # via
     #   -r builddeps/test-requirements.txt
     #   tensorflow

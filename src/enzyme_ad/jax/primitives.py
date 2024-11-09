@@ -577,9 +577,9 @@ def absmaketup(ty):
     return (tystr, ty.shape)
 
 
-def lower(fn, vals, parameters=None):
+def lower(fn, vals, parameters=None, kwargs={}):
     if hasattr(fn, "trace"):
-        return fn.trace(*vals).lower(_private_parameters=parameters)
+        return fn.trace(*vals, **kwargs).lower(_private_parameters=parameters)
     else:
         if parameters is not None:
             return fn.lower(*vals, _experimental_lowering_parameters=parameters)
@@ -608,8 +608,8 @@ def _enzyme_aug_abstract_eval(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        avals_in = jax.tree_util.tree_unflatten(in_tree, args_flat)
-        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, args_flat)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -754,11 +754,12 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        avals_in = jax.tree_util.tree_unflatten(in_tree, avals)
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
         lowered_func = lower(
             jax.jit(mfunc, **jit_options),
             avals_in,
             ctx.module_context.lowering_parameters,
+            kwargs=avals_inkw
         )
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -938,8 +939,8 @@ def _enzyme_fwd_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
-        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -1004,8 +1005,8 @@ def _enzyme_aug_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
-        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -1074,8 +1075,8 @@ def _enzyme_rev_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        avals_in = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
-        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in)
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
+        lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
@@ -1581,10 +1582,10 @@ def enzyme_jax_ir(
     jit_options2["inline"] = True
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        def wrapped(*args: Any):
-            args_flat, in_tree = jax.tree_util.tree_flatten(args)
+        def wrapped(*args: Any, **kwargs):
+            args_flat, in_tree = jax.tree_util.tree_flatten((args, kwargs))
             jitres = jax.jit(func, **jit_options2)
-            out_shape = jitres.eval_shape(*args)
+            out_shape = jitres.eval_shape(*args, **kwargs)
             in_idxs = {i: i for i in range(len(args_flat))}
             out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
             out_shape_flat = [
@@ -1604,11 +1605,11 @@ def enzyme_jax_ir(
                 else:
                     return jnp.zeros(arg.shape, dtype=arg.dtype)
 
-            avals_in = jax.tree_util.tree_unflatten(
+            (avals_in, avals_kwin) = jax.tree_util.tree_unflatten(
                 in_tree,
                 [zero_like(arg) for arg in args_flat],
             )
-            lowered_func = lower(jitres, avals_in)
+            lowered_func = lower(jitres, avals_in, kwargs=avals_kwin)
             kept = lowered_func.compile()._executable._kept_var_idx
             args_flat = [
                 arg if i in kept else zero_like(arg)

@@ -192,10 +192,10 @@ class ValueAndGrad(absltest.TestCase):
 
         filt = justjax
 
-        for pname, pipeline, backends in AllPipelines:
+        for pname, pipeline, backends in AllPipelines():
             prevres = None
             for backend in backends:
-                if (pname, pipeline) in filt(AllPipelines):
+                if (pname, pipeline) in filt(AllPipelines()):
                     args = (
                         to_backend(3 * jnp.ones((1,), dtype=jnp.float32), backend),
                         (

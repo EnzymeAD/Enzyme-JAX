@@ -1,14 +1,101 @@
-import jax
-import jax.numpy as jnp
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
+
+def fix_paths():
+    print("fixing paths", flush=True)
+    import traceback
+
+    import os
+    for nm in [
+      "NV_LIBCUBLAS_VERSION",
+      "NVIDIA_VISIBLE_DEVICES",
+      "NV_NVML_DEV_VERSION",
+      "NV_LIBNCCL_DEV_PACKAGE",
+      "NV_LIBNCCL_DEV_PACKAGE_VERSION",
+      "NVIDIA_REQUIRE_CUDA",
+      "NV_LIBCUBLAS_DEV_PACKAGE",
+      "NV_NVTX_VERSION"
+      ]:
+        os.environ.pop(nm, None)
+
+    runfiles = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    print("runfiles=", runfiles, flush=True)
+
+    # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
+    # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+
+    CUDA_DIR = os.path.join(runfiles, "pypi_nvidia_cuda_nvcc_cu12", "site-packages", "nvidia", "cuda_nvcc")
+    os.environ["CUDA_DIR"] = CUDA_DIR
+    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir="+CUDA_DIR
+
+    LD_LIB = os.environ.get('LD_LIBRARY_PATH', '')
+    LD_LIB = os.path.join(runfiles, "pypi_nvidia_cusolver_cu12", "site-packages", "nvidia", "cusolver", "lib") + ":" + LD_LIB
+    LD_LIB = os.path.join(runfiles, "pypi_nvidia_cudnn_cu12", "site-packages", "nvidia", "cudnn", "lib") + ":" + LD_LIB
+    LD_LIB = os.path.join(runfiles, "pypi_nvidia_cublas_cu12", "site-packages", "nvidia", "cublas", "lib") + ":" + LD_LIB
+    LD_LIB = os.path.join(runfiles, "pypi_nvidia_cuda_cupti_cu12", "site-packages", "nvidia", "cuda_cupti", "lib") + ":" + LD_LIB
+    LD_LIB = os.path.join(runfiles, "pypi_nvidia_cuda_runtime_cu12", "site-packages", "nvidia", "cuda_runtime", "lib") + ":" + LD_LIB
+
+    print("lib = ", LD_LIB, flush=True)
+    os.environ["LD_LIBRARY_PATH"] = LD_LIB
+
+    PATH = os.environ.get("PATH", "")
+    PATH = os.path.join(runfiles, "pypi_nvidia_cuda_nvcc_cu12", "site-packages", "nvidia", "cuda_nvcc", "bin") + ":" + PATH
+    print("path = ", PATH, flush=True)
+
+    os.environ["PATH"] = PATH
+    
+    CUDNN_PATH = os.path.join(runfiles, "pypi_nvidia_cudnn_cu12", "site-packages", "nvidia", "cudnn")
+    os.environ["CUDNN_PATH"] = CUDNN_PATH
+    print("CUDNN_PATH = ", CUDNN_PATH, flush=True)
+
+    # Somewhere, someone hardcodes the path to the nvidia libs
+    src_path = os.path.join(runfiles, "pypi_nvidia_cuda_runtime_cu12", "site-packages", "nvidia")
+    dst_path = os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia")
+    if os.path.exists(src_path):
+        if not os.path.exists(dst_path):
+            os.symlink(src_path, dst_path)
+            print("created symlink at", dst_path)
+        else:
+            print("existing symlink at", dst_path)
+    
+    # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
+    for src_path in [os.path.join(runfiles, "pypi_tensorflow", "site-packages", "nvidia"), os.path.join(runfiles, "pypi_tensorflow_cpu", "site-packages", "nvidia")]:
+        dst_path = os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia")
+        if os.path.exists(src_path):
+            if not os.path.exists(dst_path):
+                os.symlink(src_path, dst_path)
+                print("created symlink at", dst_path)
+            else:
+                print("existing symlink at", dst_path)
+
+    # And finally because a path to cublas can't be found otherwise
+    cublas_path = os.path.join(runfiles, "pypi_nvidia_cublas_cu12", "site-packages", "nvidia", "cublas", "lib", "libcublas.so.12")
+    print("cublas_path", cublas_path)
+    
+    if os.path.exists(cublas_path):
+        print("cublas does exist")
+        import ctypes
+        ctypes.cdll.LoadLibrary(cublas_path)
+    else:
+        print("cublas does not exist")
+    
+    cudnngraph_path = os.path.join(runfiles, "pypi_nvidia_cudnn_cu12", "site-packages", "nvidia", "cudnn", "lib", "libcudnn_graph.so.9")
+    print("cudnngraph_path", cudnngraph_path)
+    
+    if os.path.exists(cudnngraph_path):
+        print("cudnngraph does exist")
+        import ctypes
+        ctypes.cdll.LoadLibrary(cudnngraph_path)
+    else:
+        print("cudnngraph does not exist")
+
+    #/home/wmoses/Enzyme-JaX/bazel-bin/test/keras_test.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib/libcudnn_graph.so.9
+
+
 from absl.testing import absltest
-import timeit
+
+# import logging
+# logging.getLogger("jax").setLevel(logging.INFO)
+# import absl.logging
+# absl.logging.set_verbosity(logging.INFO)
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
@@ -16,13 +103,13 @@ devices = []
 CurBackends = []
 backends_initialized = False
 
-
 def setup_backends():
     global backends_initialized
     global devices
     global CurBackends
     if backends_initialized:
         return
+    import jax
     backend = jax.default_backend()
     CurBackends.append(backend)
     if jax.default_backend() != "cpu":
@@ -31,13 +118,21 @@ def setup_backends():
 
 
 AllBackends = ["cpu"] + devices
-AllPipelines = [
-    ("JaX  ", None, AllBackends),
-    ("JaXPipe", JaXPipeline(), AllBackends),
-    # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
-    # ("NewXLA", NewXLAPipeline()),
-    ("OldXLA", OldXLAPipeline(), ["cpu"]),
-]
+
+def AllPipelines():
+    from enzyme_ad.jax import (
+        NewXLAPipeline,
+        OldXLAPipeline,
+        JaXPipeline,
+        hlo_opts,
+    )
+    return [
+        ("JaX  ", None, AllBackends),
+        ("JaXPipe", JaXPipeline(), AllBackends),
+        # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
+        # ("NewXLA", NewXLAPipeline()),
+        ("OldXLA", OldXLAPipeline(), ["cpu"]),
+    ]
 
 partialopt = (
     "inline{default-pipeline=canonicalize max-iterations=4},"
@@ -145,22 +240,29 @@ broadcast_reduce<1>;
 )
 
 
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
+def pipelines():
+    from enzyme_ad.jax import (
+        NewXLAPipeline,
+        OldXLAPipeline,
+        JaXPipeline,
+        hlo_opts,
+    )
+    return [
+        ("JaX  ", None, CurBackends),
+        ("JaXPipe", JaXPipeline(), CurBackends),
+        (
+            "HLOOpt",
+            JaXPipeline(
+                "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
+                + "canonicalize,cse,enzyme-hlo-opt,cse"
+            ),
+            CurBackends,
         ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    ("IPartOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + partialopt), CurBackends),
-    ("IDefOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + hlo_opts()), CurBackends),
-]
+        ("PartOpt", JaXPipeline(partialopt), CurBackends),
+        ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        ("IPartOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + partialopt), CurBackends),
+        ("IDefOpt", JaXPipeline("inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4}," + hlo_opts()), CurBackends),
+    ]
 
 
 def no_newxla(x):
@@ -186,11 +288,8 @@ def justjax(x):
         (name, a, b) for (name, a, b) in x if a is None or isinstance(a, JaXPipeline)
     ]
 
-
-# @jax.jit
-# def fwd_jax(in0, in1, din0, din1):
-# .  return jax.jvp(add_one_jax, (in0, in1), (din0, din1))
 def splatjvp(in_fn):
+    import jax
     def fwd(*args):
         assert len(args) % 2 == 0
         return jax.jvp(
@@ -219,13 +318,8 @@ def fwdsync2(x):
 def fwdsync3(x):
     return (syncall(x[0]), syncall(x[1]))
 
-
-# @jax.jit
-# def rev_jax(dout, in0, in1):
-# primals, f_vjp = jax.vjp(add_one_jax, in0, in1)
-# grads = f_vjp(dout)
-# return primals, grads
 def splatvjp(in_fn):
+    import jax
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -233,8 +327,8 @@ def splatvjp(in_fn):
 
     return rev
 
-
 def splatvjp_noprim(in_fn):
+    import jax
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -260,11 +354,14 @@ def revsync1_1(x):
 
 
 def to_backend(x, backend):
+    import jax
     dev = jax.local_devices(backend=backend)[0]
     return jax.device_put(x, dev)
 
 
 def recursive_check(tester, lhs, rhs, tol=1e-6):
+    import jax.numpy as jnp
+    import jax
     tester.assertEqual(type(lhs), type(rhs))
     if isinstance(lhs, jax.Array):
         legal = (jnp.abs(lhs - rhs) < tol).all()
@@ -300,7 +397,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.revfilter = lambda x: x
         self.count = 10000
         self.AllBackends = AllBackends
-        self.AllPipelines = AllPipelines
+        self.AllPipelines = AllPipelines()
         self.revprimal = True
         self.tol = 1e-6
         self.mlirad_fwd = True
@@ -316,6 +413,9 @@ class EnzymeJaxTest(absltest.TestCase):
         self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
 
     def harness(self, name, in_fn, ins, dins, douts):
+        import timeit
+        import jax
+        from enzyme_ad.jax import enzyme_jax_ir
         assert len(ins) == len(dins)
 
         primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"

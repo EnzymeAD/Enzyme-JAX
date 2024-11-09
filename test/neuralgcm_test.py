@@ -1,42 +1,20 @@
 from absl import app
-import jax.numpy as jnp
-import jax.random
-import jax.lax
-import enzyme_ad.jax as enzyme_jax
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
-import numpy as np
-import timeit
 from test_utils import *
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
-import jax.numpy as np
-import numpy as onp
-from jax import jit
-from jax import random
-from jax import lax
-
-import gcsfs
-import jax
-import numpy as np
-import pickle
-import xarray
-import timeit
-
-from dinosaur import horizontal_interpolation
-from dinosaur import spherical_harmonic
-from dinosaur import xarray_utils
-import neuralgcm
-
-
 class NeuralGCM:
     def setUp(self):
+        import jax.random
+        import jax.numpy as np
+        import neuralgcm
+        import gcsfs
+        import pickle
+        import xarray
+        from dinosaur import horizontal_interpolation
+        from dinosaur import spherical_harmonic
+        from dinosaur import xarray_utils
+
         gcs = gcsfs.GCSFileSystem(token="anon")
 
         model_name = "neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl"  # @param ['neural_gcm_dynamic_forcing_deterministic_0_7_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_2_8_deg.pkl', 'neural_gcm_dynamic_forcing_stochastic_1_4_deg.pkl'] {type: "string"}
@@ -133,6 +111,9 @@ class NeuralGCM:
         self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
 
     def test(self):
+        import jax
+        from enzyme_ad.jax import enzyme_jax_ir
+
         for name, pipe, _ in pipelines:
             print("name=", name)
             if pipe is None:
@@ -144,6 +125,7 @@ class NeuralGCM:
             print("name=", name, res)
 
     def run_on_fn(self, fn, steps=1):
+        import timeit
         map(
             lambda x: x.block_until_ready(),
             fn(
@@ -171,4 +153,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+    fix_paths()
     app.run(main)

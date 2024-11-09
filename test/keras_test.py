@@ -1,30 +1,20 @@
 from absl import app
-import jax.numpy as jnp
-import jax.random
-import jax.lax
-import enzyme_ad.jax as enzyme_jax
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
-import numpy as np
-import timeit
-from test_utils import *
-
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
-
-import jax.numpy as np
-import numpy as onp
-from jax import jit
-from jax import random
-from jax import lax
 
 def main(argv):
+    from test_utils import pipelines
+
+    import jax
+    print(jax.devices())
+    
     import os
+    os.environ["TF_USE_LEGACY_KERAS"] = "1"
     os.environ["KERAS_BACKEND"] = "jax"
+
+    cwd = os.getcwd()
+    print(cwd)
+    os.environ["KAGGLEHUB_CACHE"] = os.path.join(cwd, "kagglecache")
+    os.environ["KAGGLEHUB_VERBOSITY"] = "error"
+    
     import keras
     print(keras.config.backend())
     keras.config.set_floatx('float32')
@@ -32,38 +22,56 @@ def main(argv):
     keras.config.set_backend('jax')
     keras.config.set_image_data_format('channels_last')
     print(keras.config.backend())
-    
+    assert keras.config.backend() == 'jax'
+   
     import benchmark.stable_diffusion
     import benchmark.mistral
     import benchmark.gemma
     import benchmark.bert
+    import benchmark.sam
     Both = [False, True]
     benchfns = [
-        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
-        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
-        ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
-        ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
-        ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
-        ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
-        ("bert_predict", benchmark.bert.bert_predict_run, Both),
-        ("bert_fit", benchmark.bert.bert_fit_run, Both),
+        # Runs on CPU?
+        # ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
+        # ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
+        
+        # Seems fine on gpu
+        # ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
+        # ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
+
+        # requires model download, skipping
+        # ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
+        # ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
+
+        # fine on gpu
+        # ("bert_predict", benchmark.bert.bert_predict_run, Both),
+        # ("bert_fit", benchmark.bert.bert_fit_run, Both),
+        
+        ("sam_predict", benchmark.sam.sam_predict_run, Both),
+        ("sam_fit", benchmark.sam.sam_fit_run, Both),
     ]
+
+    num_tests = 5
+    num_tests = 1
 
     for (bname, bench, ADs) in benchfns:
         for AD in ADs:
-            for (name, pipe, _) in pipelines:
+            for (name, pipe, _) in pipelines():
                 if pipe is None and AD:
                     continue
-                print("Running ", name, " ", bname, " AD=", AD)
                 os.environ.pop("ENZYME_JAX", None)
                 os.environ.pop("ENZYME_JAX_PRE", None)
                 if pipe is not None:
                     os.environ["ENZYME_JAX"] = pipe.pass_pipeline()
                 if AD:
-                    os.environ["ENZYME_JAX_PRE"] = 1
-                benchmark.benchmark(bench)
-                print("Done Running ", name, " ", bname, " AD=", AD)
+                    os.environ["ENZYME_JAX_PRE"] = "1"
+                for i in range(num_tests):
+                    print("Running ", name, " ", bname, " AD=", AD)
+                    benchmark.benchmark(bench)
+                    print("Done Running ", name, " ", bname, " AD=", AD)
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+    fix_paths()
     app.run(main)
