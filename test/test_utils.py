@@ -133,13 +133,13 @@ def fix_paths():
     src_path = os.path.join(
         runfiles, "pypi_nvidia_cuda_runtime_cu12", "site-packages", "nvidia"
     )
-    dst_path = os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia")
     if os.path.exists(src_path):
-        if not os.path.exists(dst_path):
-            os.symlink(src_path, dst_path)
-            print("created symlink at", dst_path)
-        else:
-            print("existing symlink at", dst_path)
+        for dst_path in [os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia"), os.path.join(runfiles, "pypi_jax_cuda12_pjrt", "nvidia")]:
+            if not os.path.exists(dst_path):
+                os.symlink(src_path, dst_path)
+                print("created symlink at", dst_path)
+            else:
+                print("existing symlink at", dst_path)
 
     # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
     for src_path in [
@@ -155,6 +155,13 @@ def fix_paths():
                 print("existing symlink at", dst_path)
 
     # And finally because a path to cublas can't be found otherwise
+    # or worse it will use an incorrect version thereof. The reason is because
+    # when dlopen opens a file it uses the LD_LIBRARY_PATH from the start
+    # of program execution. However, jax looks at pypath variables and will
+    # think that its version will exist. However, it just calls dlopen without
+    # a full path, and will end up in cublas/cudnn internal errors with mismatched
+    # versions. If we force loading the right version, dlopen will not reopen
+    # an incorrect library.
     cublas_path = os.path.join(
         runfiles,
         "pypi_nvidia_cublas_cu12",
@@ -198,7 +205,26 @@ def fix_paths():
 
         ctypes.cdll.LoadLibrary(cudnngraph_path)
     else:
-        print("cudnngraph does not exist", flush=True)
+        print("cudnngraph does not exist ", cudnngraph_path, flush=True)
+
+    cudnn_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_cudnn_cu12",
+        "site-packages",
+        "nvidia",
+        "cudnn",
+        "lib",
+        "libcudnn.so.9",
+    )
+    print("cudnn_path", cudnn_path, flush=True)
+
+    if os.path.exists(cudnn_path):
+        print("cudnn does exist", flush=True)
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(cudnn_path)
+    else:
+        print("cudnn does not exist ", cudnn_path, flush=True)
 
     # /home/wmoses/Enzyme-JaX/bazel-bin/test/keras_test.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib/libcudnn_graph.so.9
 
