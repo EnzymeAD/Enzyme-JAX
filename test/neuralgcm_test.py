@@ -70,6 +70,7 @@ class NeuralGCM:
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
         import numpy as onp
+
         timedelta = onp.timedelta64(1, "h") * inner_steps
         # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
 
