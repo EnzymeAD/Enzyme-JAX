@@ -32,20 +32,20 @@ def main(argv):
     Both = [False, True]
     benchfns = [
         # Runs on CPU?
-        # ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
-        # ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
+        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
+        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
         
         # Seems fine on gpu
-        # ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
-        # ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
+        ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
+        ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
 
         # requires model download, skipping
         # ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
         # ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
 
         # fine on gpu
-        # ("bert_predict", benchmark.bert.bert_predict_run, Both),
-        # ("bert_fit", benchmark.bert.bert_fit_run, Both),
+        ("bert_predict", benchmark.bert.bert_predict_run, Both),
+        ("bert_fit", benchmark.bert.bert_fit_run, Both),
         
         ("sam_predict", benchmark.sam.sam_predict_run, Both),
         ("sam_fit", benchmark.sam.sam_fit_run, Both),
