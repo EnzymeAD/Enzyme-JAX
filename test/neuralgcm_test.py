@@ -3,6 +3,7 @@ from test_utils import *
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
+
 class NeuralGCM:
     def setUp(self):
         import jax.random
@@ -119,13 +120,16 @@ class NeuralGCM:
             if pipe is None:
                 nfn = jax.jit(self.sub)
             else:
-                nfn = jax.jit(enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub))
+                nfn = jax.jit(
+                    enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub)
+                )
 
             res = self.run_on_fn(nfn)
             print("name=", name, res)
 
     def run_on_fn(self, fn, steps=1):
         import timeit
+
         map(
             lambda x: x.block_until_ready(),
             fn(
@@ -154,5 +158,6 @@ def main(argv):
 
 if __name__ == "__main__":
     from test_utils import fix_paths
+
     fix_paths()
     app.run(main)

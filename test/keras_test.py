@@ -1,12 +1,15 @@
 from absl import app
 
+
 def main(argv):
     from test_utils import pipelines
 
     import jax
+
     print(jax.devices())
-    
+
     import os
+
     os.environ["TF_USE_LEGACY_KERAS"] = "1"
     os.environ["KERAS_BACKEND"] = "jax"
 
@@ -14,39 +17,45 @@ def main(argv):
     print(cwd)
     os.environ["KAGGLEHUB_CACHE"] = os.path.join(cwd, "kagglecache")
     os.environ["KAGGLEHUB_VERBOSITY"] = "error"
-    
+
     import keras
+
     print(keras.config.backend())
-    keras.config.set_floatx('float32')
+    keras.config.set_floatx("float32")
     keras.config.set_epsilon(1e-07)
-    keras.config.set_backend('jax')
-    keras.config.set_image_data_format('channels_last')
+    keras.config.set_backend("jax")
+    keras.config.set_image_data_format("channels_last")
     print(keras.config.backend())
-    assert keras.config.backend() == 'jax'
-   
+    assert keras.config.backend() == "jax"
+
     import benchmark.stable_diffusion
     import benchmark.mistral
     import benchmark.gemma
     import benchmark.bert
     import benchmark.sam
+
     Both = [False, True]
     benchfns = [
         # Runs on CPU?
-        ("stable_diffusion_predict", benchmark.stable_diffusion.stable_diffusion_predict_run, Both),
-        ("stable_diffusion_fit", benchmark.stable_diffusion.stable_diffusion_fit_run, Both),
-        
+        (
+            "stable_diffusion_predict",
+            benchmark.stable_diffusion.stable_diffusion_predict_run,
+            Both,
+        ),
+        (
+            "stable_diffusion_fit",
+            benchmark.stable_diffusion.stable_diffusion_fit_run,
+            Both,
+        ),
         # Seems fine on gpu
         ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
         ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
-
         # requires model download, skipping
         # ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
         # ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
-
         # fine on gpu
         ("bert_predict", benchmark.bert.bert_predict_run, Both),
         ("bert_fit", benchmark.bert.bert_fit_run, Both),
-        
         ("sam_predict", benchmark.sam.sam_predict_run, Both),
         ("sam_fit", benchmark.sam.sam_fit_run, Both),
     ]
@@ -54,9 +63,9 @@ def main(argv):
     num_tests = 5
     num_tests = 1
 
-    for (bname, bench, ADs) in benchfns:
+    for bname, bench, ADs in benchfns:
         for AD in ADs:
-            for (name, pipe, _) in pipelines():
+            for name, pipe, _ in pipelines():
                 if pipe is None and AD:
                     continue
                 os.environ.pop("ENZYME_JAX", None)
@@ -73,5 +82,6 @@ def main(argv):
 
 if __name__ == "__main__":
     from test_utils import fix_paths
+
     fix_paths()
     app.run(main)

@@ -8,6 +8,7 @@ from absl.testing import absltest
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
+
 class MaxText(absltest.TestCase):
     def setUp(self):
         import MaxText
@@ -31,7 +32,7 @@ class MaxText(absltest.TestCase):
 
         config = MaxText.pyconfig.config
 
-        for (name, pipeline, _) in pipelines():
+        for name, pipeline, _ in pipelines():
             print("name=", name)
 
             def rewrite(fn, **kwargs):
@@ -39,7 +40,12 @@ class MaxText(absltest.TestCase):
                     return fn
                 else:
                     kw = kwargs.copy()
-                    return enzyme_jax_ir(pipeline_options=pipeline, argv=argv, inner_jit=False, jit_options=kw)(fn)
+                    return enzyme_jax_ir(
+                        pipeline_options=pipeline,
+                        argv=argv,
+                        inner_jit=False,
+                        jit_options=kw,
+                    )(fn)
 
             res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)
@@ -47,5 +53,6 @@ class MaxText(absltest.TestCase):
 
 if __name__ == "__main__":
     from test_utils import fix_paths
+
     fix_paths()
     absltest.main()

@@ -2,9 +2,10 @@ from absl.testing import absltest
 
 from test_utils import *
 
+
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
-        
+
         from jax import jit
         from jax import random
         from jax import lax
@@ -124,7 +125,9 @@ if __name__ == "__main__":
     # Deps not available on macos
     if platform.system() != "Darwin":
         from test_utils import fix_paths
+
         fix_paths()
         import jax
+
         jax.config.update("jax_enable_x64", True)
         absltest.main()

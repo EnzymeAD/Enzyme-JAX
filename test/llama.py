@@ -2,14 +2,17 @@ from absl.testing import absltest
 
 from test_utils import *
 
+
 def rmsnorm(x, weight):
     import jax.numpy as jnp
+
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
 
 
 def softmax(x):
     import jax.numpy as jnp
+
     max_val = jnp.max(x)
     x = jnp.exp(x - max_val)
     return x / sum(x)
@@ -17,6 +20,7 @@ def softmax(x):
 
 def sigmoid(x):
     import jax.numpy as jnp
+
     return 1 / (1 + jnp.exp(-x))
 
 
@@ -27,8 +31,10 @@ def silu(x):
 # Token is token value
 asserts = True
 
+
 def forward(x, config, weights, key_cache, value_cache):
     import jax.numpy as jnp
+
     pos = key_cache.shape[1]
     assert pos == key_cache.shape[1]
     assert pos == value_cache.shape[1]
@@ -231,10 +237,12 @@ def forward(x, config, weights, key_cache, value_cache):
 
     return x
 
+
 class Llama(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
         import jax.random
+
         config = {
             "dim": 288,
             "hidden_dim": 768,
@@ -312,5 +320,6 @@ class Llama(EnzymeJaxTest):
 
 if __name__ == "__main__":
     from test_utils import fix_paths
+
     fix_paths()
     absltest.main()

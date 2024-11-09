@@ -759,7 +759,7 @@ def _enzyme_primal_lowering(
             jax.jit(mfunc, **jit_options),
             avals_in,
             ctx.module_context.lowering_parameters,
-            kwargs=avals_inkw
+            kwargs=avals_inkw,
         )
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -939,7 +939,9 @@ def _enzyme_fwd_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
+        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
+            in_tree, ctx.avals_in[::2]
+        )
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
