@@ -154,16 +154,18 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    deps = TEST_DEPS + [
-        "@pypi_keras//:pkg",
-        "@pypi_benchmark//:pkg",
-        "@pypi_keras_cv//:pkg",
-        "@pypi_keras_nlp//:pkg",
-        "@pypi_tf_keras//:pkg",
-    ],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
     timeout='eternal'
 )
-
 
 # py_test(
 #     name = "maxtext",
