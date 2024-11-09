@@ -38,8 +38,7 @@ struct WhileLoopInfo {
   std::optional<int64_t> getConstantStart();
   std::optional<int64_t> getConstantLimit();
 
-  /// Needs to be constant
-  int64_t getNumIters();
+  Value getNumIters(OpBuilder &builder);
 };
 
 } // end namespace enzyme

@@ -72,9 +72,18 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
   return (*limitAttr.begin()).getSExtValue();
 }
 
-int64_t WhileLoopInfo::getNumIters() {
-  int64_t start_i = getConstantStart().value(),
-          step_i = getConstantStep().value(),
-          limit_i = getConstantLimit().value();
-  return (limit_i - start_i) / step_i;
+Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
+  auto opReg = op->getParentRegion();
+  if (!opReg->isAncestor(limit.getParentRegion()) ||
+      !opReg->isAncestor(step.getParentRegion())) {
+    // Limit or Step are defined in the Condition/Block regions (respectively).
+    return {};
+  }
+
+  // numIters = (limit - start) / step;
+  Value numIters = builder.create<stablehlo::DivOp>(
+      op->getLoc(),
+      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+
+  return numIters;
 }

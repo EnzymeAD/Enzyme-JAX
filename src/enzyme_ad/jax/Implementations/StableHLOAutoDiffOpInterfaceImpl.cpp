@@ -372,11 +372,7 @@ public:
 
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
-    WhileLoopInfo info(cast<WhileOp>(orig));
-    Value numIters =
-        info.computeInfo().succeeded() && info.isConstant()
-            ? makeI64Constant(orig->getLoc(), builder, info.getNumIters())
-            : gutils->popCache(caches[0], builder);
+    Value numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
     auto iterVar =
@@ -498,63 +494,73 @@ public:
                                  MGradientUtilsReverse *gutils) const {
     // The primal is augmented to store the number of iterations
     auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder revBuilder(newWhile);
+
+    Value numIters;
 
     WhileLoopInfo info(newWhile);
-    if (info.computeInfo().succeeded() && info.isConstant())
-      return {};
+    if (info.computeInfo().succeeded()) {
+      numIters = info.getNumIters(revBuilder);
+    }
 
-    auto cond = &newWhile.getCond().front();
-    auto body = &newWhile.getBody().front();
+    if (!numIters) {
+      auto cond = &newWhile.getCond().front();
+      auto body = &newWhile.getBody().front();
 
-    OpBuilder revBuilder(newWhile);
-    auto unrankedTensorType =
-        RankedTensorType::get({}, revBuilder.getI64Type());
-    auto numIters =
-        revBuilder
-            .create<ConstantOp>(
-                orig->getLoc(), unrankedTensorType,
-                SplatElementsAttr::get(unrankedTensorType,
-                                       ArrayRef<Attribute>(IntegerAttr::get(
-                                           revBuilder.getI64Type(), 0))))
-            .getResult();
+      auto unrankedTensorType =
+          RankedTensorType::get({}, revBuilder.getI64Type());
+      auto numItersInit =
+          revBuilder
+              .create<ConstantOp>(
+                  orig->getLoc(), unrankedTensorType,
+                  SplatElementsAttr::get(unrankedTensorType,
+                                         ArrayRef<Attribute>(IntegerAttr::get(
+                                             revBuilder.getI64Type(), 0))))
+              .getResult();
 
-    newWhile->insertOperands(newWhile->getNumOperands(), ValueRange(numIters));
-    cond->addArgument(numIters.getType(), orig->getLoc());
-    Value numItersInBlock =
-        body->addArgument(numIters.getType(), orig->getLoc());
+      newWhile->insertOperands(newWhile->getNumOperands(),
+                               ValueRange(numItersInit));
+      cond->addArgument(numItersInit.getType(), orig->getLoc());
+      Value numItersInBlock =
+          body->addArgument(numItersInit.getType(), orig->getLoc());
 
-    OpBuilder inBodyBuilder(body, body->begin());
-    auto one = inBodyBuilder.create<ConstantOp>(
-        orig->getLoc(), unrankedTensorType,
-        SplatElementsAttr::get(
-            unrankedTensorType,
-            ArrayRef<Attribute>(IntegerAttr::get(revBuilder.getI64Type(), 1))));
-    numItersInBlock = inBodyBuilder.create<AddOp>(
-        orig->getLoc(), numItersInBlock, one.getResult());
-    auto term = body->getTerminator();
-    term->insertOperands(term->getNumOperands(), ValueRange(numItersInBlock));
+      OpBuilder inBodyBuilder(body, body->begin());
+      auto one = inBodyBuilder.create<ConstantOp>(
+          orig->getLoc(), unrankedTensorType,
+          SplatElementsAttr::get(unrankedTensorType,
+                                 ArrayRef<Attribute>(IntegerAttr::get(
+                                     revBuilder.getI64Type(), 1))));
+      numItersInBlock = inBodyBuilder.create<AddOp>(
+          orig->getLoc(), numItersInBlock, one.getResult());
+      auto term = body->getTerminator();
+      term->insertOperands(term->getNumOperands(), ValueRange(numItersInBlock));
 
-    SmallVector<Type> resultTypes(newWhile->getResultTypes().begin(),
-                                  newWhile->getResultTypes().end());
-    resultTypes.push_back(numIters.getType());
+      SmallVector<Type> resultTypes(newWhile->getResultTypes().begin(),
+                                    newWhile->getResultTypes().end());
+      resultTypes.push_back(numItersInit.getType());
 
-    auto newnewWhile = revBuilder.create<WhileOp>(orig->getLoc(), resultTypes,
-                                                  newWhile->getOperands());
-    newnewWhile.getCond().takeBody(newWhile.getCond());
-    newnewWhile.getBody().takeBody(newWhile.getBody());
+      auto newnewWhile = revBuilder.create<WhileOp>(orig->getLoc(), resultTypes,
+                                                    newWhile->getOperands());
+      newnewWhile.getCond().takeBody(newWhile.getCond());
+      newnewWhile.getBody().takeBody(newWhile.getBody());
 
-    SmallVector<Value> newResults(newnewWhile->getResults().begin(),
-                                  --newnewWhile->getResults().end());
+      SmallVector<Value> newResults(newnewWhile->getResults().begin(),
+                                    --newnewWhile->getResults().end());
 
-    gutils->replaceOrigOpWith(orig, newResults);
-    gutils->erase(newWhile);
-    gutils->originalToNewFnOps[orig] = newnewWhile;
+      gutils->replaceOrigOpWith(orig, newResults);
+      gutils->erase(newWhile);
+      gutils->originalToNewFnOps[orig] = newnewWhile;
 
-    revBuilder.setInsertionPointAfter(newnewWhile);
-    Value predCache = gutils->initAndPushCache(
-        newnewWhile->getResult(newnewWhile->getNumResults() - 1), revBuilder);
+      Value inductionOut =
+          newnewWhile->getResult(newnewWhile->getNumResults() - 1);
+      numIters = inductionOut;
+      newWhile = newnewWhile;
+    }
 
-    return {predCache};
+    revBuilder.setInsertionPointAfter(newWhile);
+    Value numItersCache = gutils->initAndPushCache(numIters, revBuilder);
+
+    return {numItersCache};
   }
 
   void createShadowValues(Operation *op, OpBuilder &builder,
