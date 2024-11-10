@@ -2,8 +2,9 @@ from __future__ import print_function
 from ortools.linear_solver import pywraplp
 import json
 import argparse
+import os
 
-FUSION_BONUS_FRACTION_IN_OUTPUT = 0.3
+FUSION_BONUS_FRACTION_IN_OUTPUT = float(os.getenv("FUSION_BONUS_FRACTION_IN_OUTPUT", 0.3))
 
 def get_args():
     parser = argparse.ArgumentParser(description='Construct and solve ILP')
