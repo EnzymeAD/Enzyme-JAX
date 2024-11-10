@@ -54,31 +54,51 @@ LogicalResult WhileLoopInfo::computeInfo() {
   return success();
 }
 
-std::optional<int64_t> WhileLoopInfo::getConstantStep() {
-  DenseIntElementsAttr stepAttr;
+std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantStep() {
+  DenseIntOrFPElementsAttr stepAttr;
   if (!matchPattern(step, m_Constant(&stepAttr)))
     return std::nullopt;
-  return (*stepAttr.begin()).getSExtValue();
+  return stepAttr;
 }
 
-std::optional<int64_t> WhileLoopInfo::getConstantStart() {
-  DenseIntElementsAttr startAttr;
+std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantStart() {
+  DenseIntOrFPElementsAttr startAttr;
   if (!matchPattern(start, m_Constant(&startAttr)))
     return std::nullopt;
-  return (*startAttr.begin()).getSExtValue();
+  return startAttr;
 }
 
-std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
-  DenseIntElementsAttr limitAttr;
+std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantLimit() {
+  DenseIntOrFPElementsAttr limitAttr;
   if (!matchPattern(limit, m_Constant(&limitAttr)))
     return std::nullopt;
-  return (*limitAttr.begin()).getSExtValue();
+  return limitAttr;
 }
 
 int64_t WhileLoopInfo::getConstantNumIters() {
-  return (getConstantLimit().value() - getConstantStart().value()) /
-             getConstantStep().value() +
-         inclusive;
+  DenseIntOrFPElementsAttr start = getConstantStart().value(),
+                           limit = getConstantLimit().value(),
+                           step = getConstantStep().value();
+
+  if (isa<mlir::FloatType>(start.getElementType())) {
+    auto start_f = *start.getValues<APFloat>().begin(),
+         limit_f = *limit.getValues<APFloat>().begin(),
+         step_f = *step.getValues<APFloat>().begin();
+
+    auto numIters_f = (limit_f - start_f) / step_f;
+
+    APSInt numIters_i(64, true);
+    bool isExact;
+    assert(numIters_f.convertToInteger(numIters_i, llvm::APFloat::rmTowardZero,
+                                       &isExact) == llvm::APFloat::opOK);
+    assert(isExact && "inexact step size");
+    return numIters_i.getSExtValue() + inclusive;
+  }
+
+  auto start_i = *start.getValues<APInt>().begin(),
+       limit_i = *limit.getValues<APInt>().begin(),
+       step_i = *step.getValues<APInt>().begin();
+  return ((limit_i - start_i).sdiv(step_i)).getSExtValue() + inclusive;
 }
 
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
@@ -86,17 +106,22 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   if (!opReg->isAncestor(limit.getParentRegion()) ||
       !opReg->isAncestor(step.getParentRegion())) {
     // Limit or Step are defined in the Condition/Block regions (respectively).
+    // TODO: move operations outside if constant
     return {};
   }
 
-  // numIters = (limit - start) / step + inclusive;
-  Value numIters = builder.create<stablehlo::DivOp>(
-      op->getLoc(),
-      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+  auto Ty = builder.getI64Type();
+  auto unrankedTensorType = RankedTensorType::get({}, Ty);
+
+  // numIters = (int64_t)((limit - start) / step) + inclusive;
+  Value numIters = builder.create<stablehlo::ConvertOp>(
+      op->getLoc(), unrankedTensorType,
+      builder.create<stablehlo::DivOp>(
+          op->getLoc(),
+          builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start),
+          step));
 
   if (inclusive) {
-    auto Ty = builder.getI64Type();
-    auto unrankedTensorType = RankedTensorType::get({}, Ty);
     numIters = builder.create<stablehlo::AddOp>(
         op->getLoc(), numIters,
         builder.create<ConstantOp>(
