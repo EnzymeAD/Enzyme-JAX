@@ -51,28 +51,28 @@ def main(argv):
                 Both,
             ),
         ]
-    
+
     if True:
         benchfns += [
             # Seems fine on gpu
             ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
             ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
         ]
-        
+
     # requires model download, skipping
     if False:
         benchfns += [
             ("gemma_predict", benchmark.gemma.gemma_predict_run, Both),
             ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
         ]
-    
-    if True: 
+
+    if True:
         benchfns += [
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
             ("bert_fit", benchmark.bert.bert_fit_run, Both),
         ]
 
-    if True: 
+    if True:
         benchfns += [
             ("sam_predict", benchmark.sam.sam_predict_run, Both),
             ("sam_fit", benchmark.sam.sam_fit_run, Both),
