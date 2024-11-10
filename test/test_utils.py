@@ -1,6 +1,4 @@
 def fix_paths():
-    print("fixing paths", flush=True)
-
     import os
 
     for nm in [
@@ -28,10 +26,6 @@ def fix_paths():
     runfiles = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
-    print("runfiles=", runfiles, flush=True)
-
-    os.system("find " + runfiles)
-
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
     # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
@@ -103,7 +97,6 @@ def fix_paths():
         + LD_LIB
     )
 
-    print("lib = ", LD_LIB, flush=True)
     os.environ["LD_LIBRARY_PATH"] = LD_LIB
 
     PATH = os.environ.get("PATH", "")
@@ -119,15 +112,12 @@ def fix_paths():
         + ":"
         + PATH
     )
-    print("path = ", PATH, flush=True)
-
     os.environ["PATH"] = PATH
 
     CUDNN_PATH = os.path.join(
         runfiles, "pypi_nvidia_cudnn_cu12", "site-packages", "nvidia", "cudnn"
     )
     os.environ["CUDNN_PATH"] = CUDNN_PATH
-    print("CUDNN_PATH = ", CUDNN_PATH, flush=True)
 
     # Somewhere, someone hardcodes the path to the nvidia libs
     src_path = os.path.join(
@@ -140,9 +130,6 @@ def fix_paths():
         ]:
             if not os.path.exists(dst_path):
                 os.symlink(src_path, dst_path)
-                print("created symlink at", dst_path)
-            else:
-                print("existing symlink at", dst_path)
 
     # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
     for src_path in [
@@ -153,9 +140,6 @@ def fix_paths():
         if os.path.exists(src_path):
             if not os.path.exists(dst_path):
                 os.symlink(src_path, dst_path)
-                print("created symlink at", dst_path)
-            else:
-                print("existing symlink at", dst_path)
 
     # And finally because a path to cublas can't be found otherwise
     # or worse it will use an incorrect version thereof. The reason is because
@@ -174,22 +158,12 @@ def fix_paths():
         "lib",
         "libcublas.so.12",
     )
-    print("cublas_path", cublas_path, flush=True)
 
     if os.path.exists(cublas_path):
-        print("cublas does exist", flush=True)
 
         import ctypes
 
         ctypes.cdll.LoadLibrary(cublas_path)
-    else:
-        print("cublas does not exist", flush=True)
-
-        print("find runfiles " + runfiles, flush=True)
-        os.system("find " + runfiles)
-
-        print("find runfiles cublas " + runfiles, flush=True)
-        os.system("find " + os.path.join(runfiles, "pypi_nvidia_cublas_cu12"))
 
     cudnngraph_path = os.path.join(
         runfiles,
@@ -200,15 +174,11 @@ def fix_paths():
         "lib",
         "libcudnn_graph.so.9",
     )
-    print("cudnngraph_path", cudnngraph_path, flush=True)
 
     if os.path.exists(cudnngraph_path):
-        print("cudnngraph does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(cudnngraph_path)
-    else:
-        print("cudnngraph does not exist ", cudnngraph_path, flush=True)
 
     cudnn_path = os.path.join(
         runfiles,
@@ -219,15 +189,11 @@ def fix_paths():
         "lib",
         "libcudnn.so.9",
     )
-    print("cudnn_path", cudnn_path, flush=True)
 
     if os.path.exists(cudnn_path):
-        print("cudnn does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(cudnn_path)
-    else:
-        print("cudnn does not exist ", cudnn_path, flush=True)
 
     # jitlink must come before cusolver
     jitlink_path = os.path.join(
@@ -239,15 +205,11 @@ def fix_paths():
         "lib",
         "libnvJitLink.so.12",
     )
-    print("jitlink_path", jitlink_path, flush=True)
 
     if os.path.exists(jitlink_path):
-        print("jitlink does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(jitlink_path)
-    else:
-        print("jitlink does not exist ", jitlink_path, flush=True)
 
     # cusparse comes before cusolver but after jitlink
     cusparse_path = os.path.join(
@@ -259,15 +221,11 @@ def fix_paths():
         "lib",
         "libcusparse.so.12",
     )
-    print("cusparse_path", cusparse_path, flush=True)
 
     if os.path.exists(cusparse_path):
-        print("cusparse does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(cusparse_path)
-    else:
-        print("cusparse does not exist ", cusparse_path, flush=True)
 
     cusolver_path = os.path.join(
         runfiles,
@@ -278,17 +236,11 @@ def fix_paths():
         "lib",
         "libcusolver.so.11",
     )
-    print("cusolver_path", cusolver_path, flush=True)
 
     if os.path.exists(cusolver_path):
-        print("cusolver does exist", flush=True)
         import ctypes
 
         ctypes.cdll.LoadLibrary(cusolver_path)
-    else:
-        print("cusolver does not exist ", cudnn_path, flush=True)
-
-    # /home/wmoses/Enzyme-JaX/bazel-bin/test/keras_test.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib/libcudnn_graph.so.9
 
 
 from absl.testing import absltest
@@ -315,20 +267,14 @@ def setup_backends():
     global AllBackends
     if backends_initialized:
         return
-    print("setting up backends")
     import jax
 
-    # AllBackends.append("cpu")
+    AllBackends.append("cpu")
     backend = jax.default_backend()
-    print("default backend", backend)
-    print("devices", jax.devices())
-    backend = "gpu"
     CurBackends.append(backend)
     if backend != "cpu":
         devices.append(backend)
         AllBackends.append(backend)
-
-    print("set up backends ", AllBackends)
 
     backends_initialized = True
 
@@ -341,8 +287,6 @@ def AllPipelines():
         JaXPipeline,
         hlo_opts,
     )
-
-    print("allbackends", AllBackends)
 
     return [
         ("JaX  ", None, AllBackends),

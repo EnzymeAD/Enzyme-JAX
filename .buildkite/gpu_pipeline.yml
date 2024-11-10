@@ -43,12 +43,7 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --test_output=errors //:wheel
       HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
 
-      find `pwd`/bazel-bin/test/llama.runfiles &> runfiles
-      LD_DEBUG=libs HERMETIC_PYTHON_VERSION="3.12" ./bazel-bin/test/bench_vs_xla &> libs
-
     artifact_paths:
-      - "runfiles"
-      - "libs"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
       - "bazel-out/*/testlogs/test/jaxmd/test.log"
