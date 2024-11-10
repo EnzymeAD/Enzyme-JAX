@@ -44,9 +44,9 @@ def do_something(ones, twos):
     )
     return a, b
 
-
-ones = jnp.ones((2, 3), jnp.float32)
-twos = jnp.ones((5, 7), jnp.float32)
+dev = jax.devices("cpu")[0]
+ones = jnp.ones((2, 3), jnp.float32, device=dev)
+twos = jnp.ones((5, 7), jnp.float32, device=dev)
 
 
 def fwdmode(a, b, c, d):
@@ -78,8 +78,8 @@ print(lower(jax.jit(f, backend='cpu'), (ones, twos)).compiler_ir(dialect="stable
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 
-x = jnp.ones((6, 9), jnp.float32)
-y = jnp.ones((4, 6), jnp.float32)
+x = jnp.ones((6, 9), jnp.float32, device=dev)
+y = jnp.ones((4, 6), jnp.float32, device=dev)
 
 
 def g(a, b, x, y):

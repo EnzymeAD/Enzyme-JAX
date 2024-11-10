@@ -65,7 +65,7 @@ def main(argv):
 
     for bname, bench, ADs in benchfns:
         for AD in ADs:
-            for name, pipe, _ in pipelines():
+            for name, pipe, dev in pipelines():
                 if pipe is None and AD:
                     continue
                 os.environ.pop("ENZYME_JAX", None)
@@ -75,9 +75,9 @@ def main(argv):
                 if AD:
                     os.environ["ENZYME_JAX_PRE"] = "1"
                 for i in range(num_tests):
-                    print("Running ", name, " ", bname, " AD=", AD)
+                    print("Running ", name, " ", bname, " AD=", AD, " dev=", dev)
                     benchmark.benchmark(bench)
-                    print("Done Running ", name, " ", bname, " AD=", AD)
+                    print("Done Running ", name, " ", bname, " AD=", AD, " dev=", dev)
 
 
 if __name__ == "__main__":
