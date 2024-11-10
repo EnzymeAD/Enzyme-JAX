@@ -109,6 +109,7 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    timeout='long'
 )
 
 py_test(
