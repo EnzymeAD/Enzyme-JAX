@@ -22,7 +22,9 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (induct.getOwner() != &condBlk)
     return failure();
 
-  if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
+  auto direction = cond.getComparisonDirection();
+  if (direction != stablehlo::ComparisonDirection::LT &&
+      direction != stablehlo::ComparisonDirection::LE)
     return failure();
 
   auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
@@ -47,6 +49,7 @@ LogicalResult WhileLoopInfo::computeInfo() {
   step = inc.getOperand(1);
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
+  inclusive = direction == stablehlo::ComparisonDirection::LE;
 
   return success();
 }
@@ -72,6 +75,12 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
   return (*limitAttr.begin()).getSExtValue();
 }
 
+int64_t WhileLoopInfo::getConstantNumIters() {
+  return (getConstantLimit().value() - getConstantStart().value()) /
+             getConstantStep().value() +
+         inclusive;
+}
+
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   auto opReg = op->getParentRegion();
   if (!opReg->isAncestor(limit.getParentRegion()) ||
@@ -80,10 +89,22 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
     return {};
   }
 
-  // numIters = (limit - start) / step;
+  // numIters = (limit - start) / step + inclusive;
   Value numIters = builder.create<stablehlo::DivOp>(
       op->getLoc(),
       builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+
+  if (inclusive) {
+    auto Ty = builder.getI64Type();
+    auto unrankedTensorType = RankedTensorType::get({}, Ty);
+    numIters = builder.create<stablehlo::AddOp>(
+        op->getLoc(), numIters,
+        builder.create<ConstantOp>(
+            op->getLoc(), unrankedTensorType,
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(IntegerAttr::get(Ty, 1)))));
+  }
 
   return numIters;
 }
