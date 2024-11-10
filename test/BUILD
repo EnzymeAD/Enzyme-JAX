@@ -109,6 +109,7 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -119,7 +120,8 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -133,7 +135,8 @@ py_test(
         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
         "//conditions:default": []
     }),
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -144,7 +147,8 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
-    timeout='eternal'
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -164,7 +168,8 @@ py_test(
         ],
         "//conditions:default": []
     }),
-    timeout='eternal'
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 # py_test(
@@ -175,4 +180,5 @@ py_test(
 #     imports = ["."],
 #     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
 #     timeout='long'
+#     tags = ["exclusive"]
 # )
