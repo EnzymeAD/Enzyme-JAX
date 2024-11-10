@@ -229,6 +229,26 @@ def fix_paths():
     else:
         print("cudnn does not exist ", cudnn_path, flush=True)
 
+    # jitlink must come before cusolver
+    jitlink_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_nvjitlink_cu12",
+        "site-packages",
+        "nvidia",
+        "nvjitlink",
+        "lib",
+        "libnvJitLink.so.12",
+    )
+    print("jitlink_path", jilink_path, flush=True)
+
+    if os.path.exists(jitlink_path):
+        print("jitlink does exist", flush=True)
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(jitlink_path)
+    else:
+        print("jitlink does not exist ", jitlink_path, flush=True)
+
     cusolver_path = os.path.join(
         runfiles,
         "pypi_nvidia_cusolver_cu12",
