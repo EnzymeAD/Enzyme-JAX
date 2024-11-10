@@ -52,7 +52,8 @@ struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
     auto loopBodyBlock = &op.getBody().front();
 
     auto constantIters = info.getConstantNumIters();
-    if (!constantIters.has_value()) return failure();
+    if (!constantIters.has_value())
+      return failure();
 
     auto iters = constantIters.value();
 
