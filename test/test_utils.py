@@ -245,12 +245,10 @@ def fix_paths():
 
 from absl.testing import absltest
 
-import logging
-
-logging.getLogger("jax").setLevel(logging.INFO)
-import absl.logging
-
-absl.logging.set_verbosity(logging.INFO)
+# import logging
+# logging.getLogger("jax").setLevel(logging.INFO)
+# import absl.logging
+# absl.logging.set_verbosity(logging.INFO)
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
