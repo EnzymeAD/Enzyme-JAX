@@ -15,16 +15,16 @@ steps:
       arch: "{{matrix.arch}}"
     if: build.tag == null
     plugins:
-      - cache#v1.3.0:
-          manifest: .buildkite/pipeline.yml
-          path: .local/bin/bazel
-          restore: file
-          save: file
-      - cache#v1.3.0:
-          manifest: workspace.bzl
-          path: .baztmp
-          restore: file
-          save: file
+      # - cache#v1.3.0:
+      #     manifest: .buildkite/pipeline.yml
+      #     path: .local/bin/bazel
+      #     restore: file
+      #     save: file
+      # - cache#v1.3.0:
+      #     manifest: workspace.bzl
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
