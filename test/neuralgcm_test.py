@@ -65,7 +65,10 @@ class NeuralGCM:
         elif os.getenv("NEURALGCM_MEDIUM") is not None:
             inner_steps = 4  # save model outputs once every 24 hours
             outer_steps = 4 * 4 // inner_steps  # total of 4 days
-        else:
+        elif jax.default_backend() == "gpu":
+            inner_steps = 24  # save model outputs once every 24 hours
+            outer_steps = 4 * 24 // inner_steps  # total of 4 days
+        else
             inner_steps = 2  # save model outputs once every 24 hours
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
