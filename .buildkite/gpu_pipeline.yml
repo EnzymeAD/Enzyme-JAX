@@ -19,6 +19,8 @@ steps:
           restore: file
           save: file
     commands: |
+      unset LIBRARY_PATH
+      unset LD_LIBRARY_PATH
       pwd
       env
       echo "--- Setup :python: Dependencies"
