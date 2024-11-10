@@ -23,6 +23,7 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 
 using namespace mlir;
@@ -35,6 +36,17 @@ static int64_t to_i64(llvm::APInt x) { return x.getSExtValue(); }
 static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
                                           llvm::ArrayRef<int64_t> vals) {
   return builder.getDenseI64ArrayAttr(vals);
+}
+
+static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
+  auto Ty = builder.getI64Type();
+  auto unrankedTensorType = RankedTensorType::get({}, Ty);
+  return builder
+      .create<ConstantOp>(loc, unrankedTensorType,
+                          SplatElementsAttr::get(
+                              unrankedTensorType,
+                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
+      .getResult();
 }
 
 namespace {
@@ -338,6 +350,230 @@ public:
 
     return res;
   }
+};
+
+class AutoDiffWhileRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
+                                                       WhileOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    // While op has the same number of results and operands.
+    // if the while is not executed (i.e. the condition is false on the first
+    // evaluation), then the arguments are returned. This means that we need to
+    // pass differentials for all non-constant results or non-constants
+    // operands.
+    SmallVector<bool> operandsActive(orig->getNumOperands(), false);
+    for (int i = 0; i < operandsActive.size(); ++i) {
+      operandsActive[i] = !gutils->isConstantValue(orig->getOperand(i)) ||
+                          !gutils->isConstantValue(orig->getResult(i));
+    }
+
+    // The reverse of the while loop is a for loop where the number
+    // of iterations is either known or cached from the augmented primal.
+    Value numIters = gutils->popCache(caches[0], builder);
+
+    auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
+    auto iterVar =
+        builder
+            .create<ConstantOp>(
+                orig->getLoc(), unrankedTensorType,
+                SplatElementsAttr::get(unrankedTensorType,
+                                       ArrayRef<Attribute>(IntegerAttr::get(
+                                           builder.getI64Type(), 0))))
+            .getResult();
+
+    SmallVector<Value> operands;
+    operands.reserve(orig->getNumResults() + 1);
+    operands.push_back(iterVar);
+
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    auto revWhile = builder.create<WhileOp>(
+        orig->getLoc(), ValueRange(operands).getTypes(), operands);
+    auto &condReg = revWhile.getCond();
+    auto &bodyReg = revWhile.getBody();
+
+    auto cond = new Block();
+    auto body = new Block();
+
+    condReg.push_back(cond);
+    bodyReg.push_back(body);
+
+    {
+      for (auto operand : operands) {
+        cond->addArgument(operand.getType(), orig->getLoc());
+      }
+      auto condIterVar = cond->getArgument(0);
+
+      OpBuilder condBuilder(cond, cond->end());
+      condBuilder.create<ReturnOp>(
+          orig->getLoc(),
+          ValueRange(condBuilder
+                         .create<CompareOp>(orig->getLoc(), condIterVar,
+                                            numIters, ComparisonDirection::LT)
+                         .getResult()));
+    }
+
+    bool valid = true;
+    {
+      for (auto operand : operands) {
+        body->addArgument(operand.getType(), orig->getLoc());
+      }
+      OpBuilder bodyBuilder(body, body->end());
+      auto one = bodyBuilder.create<ConstantOp>(
+          orig->getLoc(), unrankedTensorType,
+          SplatElementsAttr::get(unrankedTensorType,
+                                 ArrayRef<Attribute>(IntegerAttr::get(
+                                     bodyBuilder.getI64Type(), 1))));
+      Value bodyIterVar =
+          bodyBuilder.create<AddOp>(orig->getLoc(), body->getArgument(0), one);
+
+      Block *oBB = &orig->getRegion(1).front();
+      auto term = oBB->getTerminator();
+
+      for (auto operand : oBB->getArguments()) {
+        // All arguments should have no use outside this block therefore we can
+        // set their diffe to zero upon entering the reverse block to simplify
+        // the work of the remove-unnecessary-enzyme-ops pass.
+        if (!gutils->isConstantValue(operand)) {
+          gutils->zeroDiffe(operand, bodyBuilder);
+        }
+      }
+
+      int revIdx = 1;
+      for (auto &&[active, operand] :
+           llvm::zip(operandsActive, term->getOperands())) {
+        if (active) {
+          // Set diffe here, not add because it should not accumulate across
+          // iterations. Instead the new gradient for this operand is passed in
+          // the return of the reverse while body.
+          gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          revIdx++;
+        }
+      }
+
+      auto first = oBB->rbegin();
+      first++; // skip terminator
+
+      auto last = oBB->rend();
+
+      for (auto it = first; it != last; ++it) {
+        Operation *op = &*it;
+        valid &= gutils->Logic.visitChild(op, bodyBuilder, gutils).succeeded();
+      }
+
+      SmallVector<Value> newResults;
+      newResults.reserve(operands.size());
+      newResults.push_back(bodyIterVar);
+
+      for (auto &&[active, arg] :
+           llvm::zip(operandsActive, oBB->getArguments())) {
+        if (active) {
+          newResults.push_back(gutils->diffe(arg, bodyBuilder));
+          if (!gutils->isConstantValue(arg))
+            gutils->zeroDiffe(arg, bodyBuilder);
+        }
+      }
+
+      bodyBuilder.create<ReturnOp>(orig->getLoc(), newResults);
+    }
+
+    int revIdx = 1;
+    for (auto &&[active, arg] :
+         llvm::zip(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg))
+          gutils->addToDiffe(arg, revWhile->getResult(revIdx), builder);
+        revIdx++;
+      }
+    }
+
+    return success(valid);
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    // The primal is augmented to store the number of iterations
+    auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder revBuilder(newWhile);
+
+    Value numIters;
+
+    WhileLoopInfo info(newWhile);
+    if (info.computeInfo().succeeded()) {
+      numIters = info.getNumIters(revBuilder);
+    }
+
+    if (!numIters) {
+      auto cond = &newWhile.getCond().front();
+      auto body = &newWhile.getBody().front();
+
+      auto unrankedTensorType =
+          RankedTensorType::get({}, revBuilder.getI64Type());
+      auto numItersInit =
+          revBuilder
+              .create<ConstantOp>(
+                  orig->getLoc(), unrankedTensorType,
+                  SplatElementsAttr::get(unrankedTensorType,
+                                         ArrayRef<Attribute>(IntegerAttr::get(
+                                             revBuilder.getI64Type(), 0))))
+              .getResult();
+
+      newWhile->insertOperands(newWhile->getNumOperands(),
+                               ValueRange(numItersInit));
+      cond->addArgument(numItersInit.getType(), orig->getLoc());
+      Value numItersInBlock =
+          body->addArgument(numItersInit.getType(), orig->getLoc());
+
+      OpBuilder inBodyBuilder(body, body->begin());
+      auto one = inBodyBuilder.create<ConstantOp>(
+          orig->getLoc(), unrankedTensorType,
+          SplatElementsAttr::get(unrankedTensorType,
+                                 ArrayRef<Attribute>(IntegerAttr::get(
+                                     revBuilder.getI64Type(), 1))));
+      numItersInBlock = inBodyBuilder.create<AddOp>(
+          orig->getLoc(), numItersInBlock, one.getResult());
+      auto term = body->getTerminator();
+      term->insertOperands(term->getNumOperands(), ValueRange(numItersInBlock));
+
+      SmallVector<Type> resultTypes(newWhile->getResultTypes().begin(),
+                                    newWhile->getResultTypes().end());
+      resultTypes.push_back(numItersInit.getType());
+
+      auto newnewWhile = revBuilder.create<WhileOp>(orig->getLoc(), resultTypes,
+                                                    newWhile->getOperands());
+      newnewWhile.getCond().takeBody(newWhile.getCond());
+      newnewWhile.getBody().takeBody(newWhile.getBody());
+
+      SmallVector<Value> newResults(newnewWhile->getResults().begin(),
+                                    --newnewWhile->getResults().end());
+
+      gutils->replaceOrigOpWith(orig, newResults);
+      gutils->erase(newWhile);
+      gutils->originalToNewFnOps[orig] = newnewWhile;
+
+      Value inductionOut =
+          newnewWhile->getResult(newnewWhile->getNumResults() - 1);
+      numIters = inductionOut;
+      newWhile = newnewWhile;
+    }
+
+    revBuilder.setInsertionPointAfter(newWhile);
+    Value numItersCache = gutils->initAndPushCache(numIters, revBuilder);
+
+    return {numItersCache};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
 };
 
 class AutoDiffBroadcastInDimRev
@@ -711,17 +947,6 @@ static void getAllReferences(SmallVector<Value> &refs, Operation *op,
       getAllReferences(refs, &childOp, ref);
     }
   }
-}
-
-static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
-  auto Ty = builder.getI64Type();
-  auto unrankedTensorType = RankedTensorType::get({}, Ty);
-  return builder
-      .create<ConstantOp>(loc, unrankedTensorType,
-                          SplatElementsAttr::get(
-                              unrankedTensorType,
-                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
-      .getResult();
 }
 
 static mlir::TensorType applyBatchSizes(mlir::Type Ty,
@@ -1495,6 +1720,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<AutoDiffIfCF>(*context);
 
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
+    WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
