@@ -75,7 +75,7 @@ std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantLimit() {
   return limitAttr;
 }
 
-int64_t WhileLoopInfo::getConstantNumIters() {
+std::optional<int64_t> WhileLoopInfo::getConstantNumIters() {
   DenseIntOrFPElementsAttr start = getConstantStart().value(),
                            limit = getConstantLimit().value(),
                            step = getConstantStep().value();
@@ -88,10 +88,12 @@ int64_t WhileLoopInfo::getConstantNumIters() {
     auto numIters_f = (limit_f - start_f) / step_f;
 
     APSInt numIters_i(64, true);
-    bool isExact;
-    assert(numIters_f.convertToInteger(numIters_i, llvm::APFloat::rmTowardZero,
-                                       &isExact) == llvm::APFloat::opOK);
-    assert(isExact && "inexact step size");
+    bool isExact = false;
+    if (numIters_f.convertToInteger(numIters_i, llvm::APFloat::rmTowardZero,
+                                    &isExact) != llvm::APFloat::opOK ||
+        !isExact)
+      return std::nullopt;
+
     return numIters_i.getSExtValue() + inclusive;
   }
 

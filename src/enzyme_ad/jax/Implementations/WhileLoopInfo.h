@@ -38,7 +38,7 @@ struct WhileLoopInfo {
   std::optional<DenseIntOrFPElementsAttr> getConstantStart();
   std::optional<DenseIntOrFPElementsAttr> getConstantLimit();
 
-  int64_t getConstantNumIters();
+  std::optional<int64_t> getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
 };
 

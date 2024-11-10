@@ -51,7 +51,10 @@ struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
     auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
     auto loopBodyBlock = &op.getBody().front();
 
-    auto iters = info.getConstantNumIters();
+    auto constantIters = info.getConstantNumIters();
+    if (!constantIters.has_value()) return failure();
+
+    auto iters = constantIters.value();
 
     SmallVector<Value> results(op.getOperands().begin(),
                                op.getOperands().end());
