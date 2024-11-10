@@ -19,7 +19,8 @@ class JAXMD(EnzymeJaxTest):
         from jax_md import partition
 
         lattice_constant = 1.37820
-        N_rep = 40
+        # We hit a GPU memory limit for N_rep = 40
+        N_rep = 10 if jax.default_backend() == "gpu" else 40
         box_size = N_rep * lattice_constant
         # Using float32 for positions / velocities, but float64 for reductions.
         dtype = np.float32

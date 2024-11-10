@@ -249,7 +249,7 @@ def fix_paths():
     else:
         print("jitlink does not exist ", jitlink_path, flush=True)
 
-    #cusparse comes before cusolver but after jitlink
+    # cusparse comes before cusolver but after jitlink
     cusparse_path = os.path.join(
         runfiles,
         "pypi_nvidia_cusparse_cu12",
