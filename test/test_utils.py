@@ -249,6 +249,26 @@ def fix_paths():
     else:
         print("jitlink does not exist ", jitlink_path, flush=True)
 
+    #cusparse comes before cusolver but after jitlink
+    cusparse_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_cusparse_cu12",
+        "site-packages",
+        "nvidia",
+        "cusparse",
+        "lib",
+        "libcusparse.so.12",
+    )
+    print("cusparse_path", cusparse_path, flush=True)
+
+    if os.path.exists(cusparse_path):
+        print("cusparse does exist", flush=True)
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(cusparse_path)
+    else:
+        print("cusparse does not exist ", cusparse_path, flush=True)
+
     cusolver_path = os.path.join(
         runfiles,
         "pypi_nvidia_cusolver_cu12",
