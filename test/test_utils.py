@@ -229,6 +229,25 @@ def fix_paths():
     else:
         print("cudnn does not exist ", cudnn_path, flush=True)
 
+    cusolver_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_cusolver_cu12",
+        "site-packages",
+        "nvidia",
+        "cusolver",
+        "lib",
+        "libcusolver.so.11",
+    )
+    print("cusolver_path", cusolver_path, flush=True)
+
+    if os.path.exists(cusolver_path):
+        print("cusolver does exist", flush=True)
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(cusolver_path)
+    else:
+        print("cusolver does not exist ", cudnn_path, flush=True)
+
     # /home/wmoses/Enzyme-JaX/bazel-bin/test/keras_test.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib/libcudnn_graph.so.9
 
 
