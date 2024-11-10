@@ -239,7 +239,7 @@ def fix_paths():
         "lib",
         "libnvJitLink.so.12",
     )
-    print("jitlink_path", jilink_path, flush=True)
+    print("jitlink_path", jitlink_path, flush=True)
 
     if os.path.exists(jitlink_path):
         print("jitlink does exist", flush=True)
