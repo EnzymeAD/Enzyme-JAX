@@ -70,6 +70,11 @@ def main(argv):
     if True:
         benchfns += [
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
+        ]
+
+    # OOM's the 4070 :'(
+    if False:
+        benchfns += [
             ("bert_fit", benchmark.bert.bert_fit_run, Both),
         ]
 
@@ -92,6 +97,7 @@ def main(argv):
                 # Oom's the gpu ci
                 if bname == "bert_predict" and name == "IPartOpt":
                     continue
+
                 os.environ.pop("ENZYME_JAX", None)
                 os.environ.pop("ENZYME_JAX_PRE", None)
                 if pipe is not None:
