@@ -118,7 +118,7 @@ class JAXMD(EnzymeJaxTest):
         self.mlirad_rev = False
 
         self.tol = 5e-4
-        
+
         # GPU CI reverse mode needs loose, merits future investigation
         self.tol = 1e-2
 
