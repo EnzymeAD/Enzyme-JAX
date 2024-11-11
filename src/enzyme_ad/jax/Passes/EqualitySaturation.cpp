@@ -2170,7 +2170,7 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
   const char *env_var = getenv("SEGMENTATION_THRESHOLD");
   int segmentThreshold = 200; // Default value
   if (env_var == nullptr || *env_var == '\0') {
-    segmentThreshold = 70;
+    segmentThreshold = 200;
   } else {
     // Attempt to convert the environment variable to an integer
     char *endptr;
