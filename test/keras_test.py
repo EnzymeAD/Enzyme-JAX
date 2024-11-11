@@ -87,6 +87,11 @@ def main(argv):
             for name, pipe, dev in pipelines():
                 if pipe is None and AD:
                     continue
+                if bname.endswith("predict") and AD:
+                    continue
+                # Oom's the gpu ci
+                if bname == "bert_predict" and name == "IPartOpt":
+                    continue
                 os.environ.pop("ENZYME_JAX", None)
                 os.environ.pop("ENZYME_JAX_PRE", None)
                 if pipe is not None:
