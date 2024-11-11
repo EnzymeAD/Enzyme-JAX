@@ -38,7 +38,7 @@ def main(argv):
     benchfns = []
 
     # breaks on gpu =/
-    if False:
+    if True:
         benchfns += [
             (
                 "stable_diffusion_predict",
@@ -52,7 +52,8 @@ def main(argv):
             ),
         ]
 
-    if True:
+    # Uses too much ram on the 4070 in CI
+    if False:
         benchfns += [
             # Seems fine on gpu
             ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
