@@ -15,16 +15,16 @@ steps:
       arch: "{{matrix.arch}}"
     if: build.tag == null
     plugins:
-      - cache#v1.3.0:
-          manifest: .buildkite/pipeline.yml
-          path: .local/bin/bazel
-          restore: file
-          save: file
-      - cache#v1.3.0:
-          manifest: workspace.bzl
-          path: .baztmp
-          restore: file
-          save: file
+      # - cache#v1.3.0:
+      #     manifest: .buildkite/pipeline.yml
+      #     path: .local/bin/bazel
+      #     restore: file
+      #     save: file
+      # - cache#v1.3.0:
+      #     manifest: workspace.bzl
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
@@ -51,15 +51,15 @@ steps:
       mkdir -p .baztmp
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:bench_vs_xla
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --cache_test_results=no //test:llama
-      cat bazel-out/*/testlogs/test/llama/test.log
       rm -f bazel-bin/*.whl
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
       - "bazel-out/*/testlogs/test/llama/test.log"
-      - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
+      - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
+      - "bazel-out/*/testlogs/test/jaxmd/test.log"
+      - "bazel-out/*/testlogs/test/neuralgcm_test/test.log"
+      - "bazel-out/*/testlogs/test/keras_test/test.log"
 
     timeout_in_minutes: 180

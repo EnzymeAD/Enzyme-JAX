@@ -1,58 +1,21 @@
 from absl import app
-import jax.numpy as jnp
-import jax.random
-import jax.lax
-import enzyme_ad.jax as enzyme_jax
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
-import numpy as np
-import timeit
 from test_utils import *
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
-import jax.numpy as np
-import numpy as onp
-from jax import jit
-from jax import random
-from jax import lax
-
-
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-]
-
-import gcsfs
-import jax
-import numpy as np
-import pickle
-import xarray
-import timeit
-
-from dinosaur import horizontal_interpolation
-from dinosaur import spherical_harmonic
-from dinosaur import xarray_utils
-import neuralgcm
-
 
 class NeuralGCM:
     def setUp(self):
+        import jax.random
+        import jax.numpy as np
+        import neuralgcm
+        import gcsfs
+        import pickle
+        import xarray
+        from dinosaur import horizontal_interpolation
+        from dinosaur import spherical_harmonic
+        from dinosaur import xarray_utils
+
         gcs = gcsfs.GCSFileSystem(token="anon")
 
         model_name = "neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl"  # @param ['neural_gcm_dynamic_forcing_deterministic_0_7_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_2_8_deg.pkl', 'neural_gcm_dynamic_forcing_stochastic_1_4_deg.pkl'] {type: "string"}
@@ -102,11 +65,16 @@ class NeuralGCM:
         elif os.getenv("NEURALGCM_MEDIUM") is not None:
             inner_steps = 4  # save model outputs once every 24 hours
             outer_steps = 4 * 4 // inner_steps  # total of 4 days
+        elif jax.default_backend() == "gpu":
+            inner_steps = 24  # save model outputs once every 24 hours
+            outer_steps = 4 * 24 // inner_steps  # total of 4 days
         else:
             inner_steps = 2  # save model outputs once every 24 hours
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
-        timedelta = np.timedelta64(1, "h") * inner_steps
+        import numpy as onp
+
+        timedelta = onp.timedelta64(1, "h") * inner_steps
         # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
 
         # initialize model state
@@ -149,17 +117,24 @@ class NeuralGCM:
         self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
 
     def test(self):
-        for name, pipe, _ in pipelines:
+        import jax
+        from enzyme_ad.jax import enzyme_jax_ir
+
+        for name, pipe, _ in pipelines():
             print("name=", name)
             if pipe is None:
                 nfn = jax.jit(self.sub)
             else:
-                nfn = jax.jit(enzyme_jax_ir(pipeline_options=pipe)(self.sub))
+                nfn = jax.jit(
+                    enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub)
+                )
 
             res = self.run_on_fn(nfn)
             print("name=", name, res)
 
     def run_on_fn(self, fn, steps=1):
+        import timeit
+
         map(
             lambda x: x.block_until_ready(),
             fn(
@@ -187,4 +162,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+
+    fix_paths()
     app.run(main)
