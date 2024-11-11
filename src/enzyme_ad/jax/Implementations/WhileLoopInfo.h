@@ -19,10 +19,9 @@ namespace enzyme {
 struct WhileLoopInfo {
   WhileOp op;
 
-  mlir::Value start; // garanteed to dominate the while op
-  mlir::Value limit; // not garanteed to dominate the while op
-  mlir::Value step;  // not garanteed to dominate the while op
-  bool inclusive = false;
+  mlir::Value start;   // garanteed to dominate the while op
+  mlir::Value limit;   // not garanteed to dominate the while op
+  mlir::Value step; // not garanteed to dominate the while op
 
   WhileLoopInfo(WhileOp op_) : op(op_) {}
 
@@ -30,15 +29,15 @@ struct WhileLoopInfo {
 
   bool isValid() { return start && limit && step; }
   bool isConstant() {
-    return getConstantStep().has_value() && getConstantStart().has_value() &&
+    return getConstantStep().has_value() &&
+           getConstantStart().has_value() &&
            getConstantLimit().has_value();
   }
 
-  std::optional<DenseIntOrFPElementsAttr> getConstantStep();
-  std::optional<DenseIntOrFPElementsAttr> getConstantStart();
-  std::optional<DenseIntOrFPElementsAttr> getConstantLimit();
+  std::optional<int64_t> getConstantStep();
+  std::optional<int64_t> getConstantStart();
+  std::optional<int64_t> getConstantLimit();
 
-  std::optional<int64_t> getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
 };
 

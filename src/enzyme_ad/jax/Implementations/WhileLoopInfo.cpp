@@ -22,9 +22,7 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (induct.getOwner() != &condBlk)
     return failure();
 
-  auto direction = cond.getComparisonDirection();
-  if (direction != stablehlo::ComparisonDirection::LT &&
-      direction != stablehlo::ComparisonDirection::LE)
+  if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
     return failure();
 
   auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
@@ -49,58 +47,29 @@ LogicalResult WhileLoopInfo::computeInfo() {
   step = inc.getOperand(1);
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
-  inclusive = direction == stablehlo::ComparisonDirection::LE;
 
   return success();
 }
 
-std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantStep() {
-  DenseIntOrFPElementsAttr stepAttr;
+std::optional<int64_t> WhileLoopInfo::getConstantStep() {
+  DenseIntElementsAttr stepAttr;
   if (!matchPattern(step, m_Constant(&stepAttr)))
     return std::nullopt;
-  return stepAttr;
+  return (*stepAttr.begin()).getSExtValue();
 }
 
-std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantStart() {
-  DenseIntOrFPElementsAttr startAttr;
+std::optional<int64_t> WhileLoopInfo::getConstantStart() {
+  DenseIntElementsAttr startAttr;
   if (!matchPattern(start, m_Constant(&startAttr)))
     return std::nullopt;
-  return startAttr;
+  return (*startAttr.begin()).getSExtValue();
 }
 
-std::optional<DenseIntOrFPElementsAttr> WhileLoopInfo::getConstantLimit() {
-  DenseIntOrFPElementsAttr limitAttr;
+std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
+  DenseIntElementsAttr limitAttr;
   if (!matchPattern(limit, m_Constant(&limitAttr)))
     return std::nullopt;
-  return limitAttr;
-}
-
-std::optional<int64_t> WhileLoopInfo::getConstantNumIters() {
-  DenseIntOrFPElementsAttr start = getConstantStart().value(),
-                           limit = getConstantLimit().value(),
-                           step = getConstantStep().value();
-
-  if (isa<mlir::FloatType>(start.getElementType())) {
-    auto start_f = *start.getValues<APFloat>().begin(),
-         limit_f = *limit.getValues<APFloat>().begin(),
-         step_f = *step.getValues<APFloat>().begin();
-
-    auto numIters_f = (limit_f - start_f) / step_f;
-
-    APSInt numIters_i(64, true);
-    bool isExact = false;
-    if (numIters_f.convertToInteger(numIters_i, llvm::APFloat::rmTowardZero,
-                                    &isExact) != llvm::APFloat::opOK ||
-        !isExact)
-      return std::nullopt;
-
-    return numIters_i.getSExtValue() + inclusive;
-  }
-
-  auto start_i = *start.getValues<APInt>().begin(),
-       limit_i = *limit.getValues<APInt>().begin(),
-       step_i = *step.getValues<APInt>().begin();
-  return ((limit_i - start_i).sdiv(step_i)).getSExtValue() + inclusive;
+  return (*limitAttr.begin()).getSExtValue();
 }
 
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
@@ -108,30 +77,13 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   if (!opReg->isAncestor(limit.getParentRegion()) ||
       !opReg->isAncestor(step.getParentRegion())) {
     // Limit or Step are defined in the Condition/Block regions (respectively).
-    // TODO: move operations outside if constant
     return {};
   }
 
-  auto Ty = builder.getI64Type();
-  auto unrankedTensorType = RankedTensorType::get({}, Ty);
-
-  // numIters = (int64_t)((limit - start) / step) + inclusive;
-  Value numIters = builder.create<stablehlo::ConvertOp>(
-      op->getLoc(), unrankedTensorType,
-      builder.create<stablehlo::DivOp>(
-          op->getLoc(),
-          builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start),
-          step));
-
-  if (inclusive) {
-    numIters = builder.create<stablehlo::AddOp>(
-        op->getLoc(), numIters,
-        builder.create<ConstantOp>(
-            op->getLoc(), unrankedTensorType,
-            SplatElementsAttr::get(
-                unrankedTensorType,
-                ArrayRef<Attribute>(IntegerAttr::get(Ty, 1)))));
-  }
+  // numIters = (limit - start) / step;
+  Value numIters = builder.create<stablehlo::DivOp>(
+      op->getLoc(),
+      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
 
   return numIters;
 }
