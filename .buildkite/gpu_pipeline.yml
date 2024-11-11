@@ -39,9 +39,9 @@ steps:
 
       echo "--- :python: Test"
 
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --test_output=errors //:wheel
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --test_output=errors //:wheel
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
 
     artifact_paths:
       - "bazel-out/*/testlogs/test/llama/test.log"
