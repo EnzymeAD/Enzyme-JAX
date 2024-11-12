@@ -296,7 +296,7 @@ slice_reshape_pad<1>;
 pipelines = [
     ("JaXPipe", JaXPipeline(), CurBackends),
     ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts())),
+    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
     (
         "EqSat",
         JaXPipeline(
