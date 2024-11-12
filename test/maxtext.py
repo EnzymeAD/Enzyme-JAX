@@ -5,42 +5,8 @@
 #   3) python test/maxtext.py
 
 from absl.testing import absltest
-import jax.numpy as jnp
-import jax.random
-import jax.lax
-import enzyme_ad.jax as enzyme_jax
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
-import numpy as np
-import timeit
-from test_utils import partialopt
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
-
-import jax.numpy as np
-import numpy as onp
-from jax import jit
-from jax import random
-from jax import lax
-
-pipelines = [
-    ("JaX  ", None),
-    ("JaXPipe", JaXPipeline()),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-    ),
-    ("PartOpt", JaXPipeline(partialopt)),
-    ("DefOpt", JaXPipeline(hlo_opts())),
-]
 
 
 class MaxText(absltest.TestCase):
@@ -58,24 +24,35 @@ class MaxText(absltest.TestCase):
         )
 
     def test(self):
+        from enzyme_ad.jax import enzyme_jax_ir
+
         import MaxText
         import MaxText.pyconfig
         import MaxText.train
 
         config = MaxText.pyconfig.config
 
-        for name, pipeline in pipelines:
+        for name, pipeline, _ in pipelines():
             print("name=", name)
 
-            def rewrite(fn):
+            def rewrite(fn, **kwargs):
                 if pipeline is None:
                     return fn
                 else:
-                    return enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(fn)
+                    kw = kwargs.copy()
+                    return enzyme_jax_ir(
+                        pipeline_options=pipeline,
+                        argv=argv,
+                        inner_jit=False,
+                        jit_options=kw,
+                    )(fn)
 
             res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+
+    fix_paths()
     absltest.main()

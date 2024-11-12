@@ -109,6 +109,7 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -119,7 +120,8 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -133,7 +135,8 @@ py_test(
         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
         "//conditions:default": []
     }),
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -144,9 +147,30 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
-    timeout='eternal'
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
+py_test(
+    name = "keras_test",
+    srcs = [
+        "keras_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
+)
 
 # py_test(
 #     name = "maxtext",
@@ -156,4 +180,5 @@ py_test(
 #     imports = ["."],
 #     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
 #     timeout='long'
+#     tags = ["exclusive"]
 # )

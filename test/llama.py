@@ -1,34 +1,26 @@
 from absl.testing import absltest
-import jax.numpy as jnp
-import jax.random
-import jax.lax
-import enzyme_ad.jax as enzyme_jax
-from enzyme_ad.jax import (
-    enzyme_jax_ir,
-    NewXLAPipeline,
-    OldXLAPipeline,
-    JaXPipeline,
-    hlo_opts,
-)
-import numpy as np
-import timeit
-from test_utils import *
 
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+from test_utils import *
 
 
 def rmsnorm(x, weight):
+    import jax.numpy as jnp
+
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
 
 
 def softmax(x):
+    import jax.numpy as jnp
+
     max_val = jnp.max(x)
     x = jnp.exp(x - max_val)
     return x / sum(x)
 
 
 def sigmoid(x):
+    import jax.numpy as jnp
+
     return 1 / (1 + jnp.exp(-x))
 
 
@@ -39,12 +31,10 @@ def silu(x):
 # Token is token value
 asserts = True
 
-pipeline = enzyme_jax.NewXLAPipeline(mlirad=True)
-pipeline = enzyme_jax.JaXPipeline()
-# pipeline = enzyme_jax.NewXLAPipeline(mlirad=False)
-
 
 def forward(x, config, weights, key_cache, value_cache):
+    import jax.numpy as jnp
+
     pos = key_cache.shape[1]
     assert pos == key_cache.shape[1]
     assert pos == value_cache.shape[1]
@@ -248,24 +238,11 @@ def forward(x, config, weights, key_cache, value_cache):
     return x
 
 
-pipelines = [
-    ("JaX  ", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-]
-
-
 class Llama(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+        import jax.random
+
         config = {
             "dim": 288,
             "hidden_dim": 768,
@@ -332,7 +309,7 @@ class Llama(EnzymeJaxTest):
         self.name = "llama"
         self.count = 100 if jax.default_backend() == "cpu" else 1000
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         self.ins = [x, weights, key_cache, value_cache]
@@ -342,4 +319,7 @@ class Llama(EnzymeJaxTest):
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+
+    fix_paths()
     absltest.main()

@@ -8,13 +8,13 @@ steps:
     timeout_in_minutes: 180
     if: build.tag == null
     plugins:
-      # - cache#v0.6.0:
-      #     manifest: .buildkite/gpu_pipeline.yml
+      # - cache#v1.3.0:
+      #     manifest: .buildkite/pipeline.yml
       #     path: .local/bin/bazel
       #     restore: file
       #     save: file
-      # - cache#v0.6.0:
-      #     manifest: WORKSPACE
+      # - cache#v1.3.0:
+      #     manifest: workspace.bzl
       #     path: .baztmp
       #     restore: file
       #     save: file
@@ -27,16 +27,6 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
-      # No one tells us what to do
-      unset NV_LIBCUBLAS_VERSION
-      unset NVIDIA_VISIBLE_DEVICES
-      unset NV_NVML_DEV_VERSION
-      unset NV_LIBNCCL_DEV_PACKAGE
-      unset NV_LIBNCCL_DEV_PACKAGE_VERSION
-      unset NVIDIA_REQUIRE_CUDA
-      unset NV_LIBCUBLAS_DEV_PACKAGE
-      unset NV_NVTX_VERSION
-      
       if [ ! -f ".local/bin/bazel" ]; then
         curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
         mv bazel* .local/bin/bazel
@@ -49,32 +39,14 @@ steps:
 
       echo "--- :python: Test"
 
-      export CUDA_DIR=`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc
-      export XLA_FLAGS=--xla_gpu_cuda_data_dir=\$CUDA_DIR
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
-      export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:\$PATH"
-      export TF_CPP_MIN_LOG_LEVEL=0
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update || echo "no req update"
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //:wheel
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla 
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:llama 
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:jaxmd 
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:neuralgcm_test
-      # bazel-bin/test/llama.runfiles/python_*/bin/python3 -m pip install bazel-bin/*.whl git+https://github.com/wsmoses/maxtext aqtp tensorboardX google-cloud-storage datasets gcsfs
-      # bazel-bin/test/llama.runfiles/python_*/bin/python3 test/maxtext.py > maxtext.log
-      cat bazel-out/*/testlogs/test/llama/test.log
-      cat bazel-out/*/testlogs/test/bench_vs_xla/test.log
-      cat bazel-out/*/testlogs/test/jaxmd/test.log
-      cat bazel-out/*/testlogs/test/neuralgcm_test/test.log
-      # cat maxtext.log
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --test_output=errors //:wheel
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
+
     artifact_paths:
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
       - "bazel-out/*/testlogs/test/jaxmd/test.log"
       - "bazel-out/*/testlogs/test/neuralgcm_test/test.log"
+      - "bazel-out/*/testlogs/test/keras_test/test.log"
       - "maxtext.log"
