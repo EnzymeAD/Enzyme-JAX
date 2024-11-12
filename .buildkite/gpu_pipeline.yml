@@ -79,7 +79,7 @@ steps:
       BAZEL_BUILD_FLAGS+=(--action_env=TMP=\$TMPDIR --action_env=TEMP=\$TMPDIR --action_env=TMPDIR=\$TMPDIR --sandbox_tmpfs_path=\$TMPDIR)
       BAZEL_BUILD_FLAGS+=(--action_env=EQSAT_PLATFORM=gpu)
       BAZEL_BUILD_FLAGS+=(--config=cudaci)
-
+      
       export EQSAT_PLATFORM=gpu
 
       CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update || echo "no req update"
@@ -93,7 +93,6 @@ steps:
       HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
     artifact_paths:
       - "finds.txt"
-      - "finds2.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
       - "bazel-out/*/testlogs/test/jaxmd/test.log"
       - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"

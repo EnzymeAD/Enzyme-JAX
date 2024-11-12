@@ -51,3 +51,76 @@ where
     let res = process_output(op, args, other_vecs, int_args, matrix_args);
     res
 }
+
+
+// TODO: dedup with convert_to_node in input.rs
+pub fn recexpr_to_node(
+    rec_expr: &RecExpr<Mdl>
+) -> Vec<ffi::Node> {
+    let mut res: Vec<ffi::Node> = Vec::new();
+
+    let index = |id: Id| (usize::from(id) as i32); // TODO: this is probably wrong
+    let convert = |operands: &[Id]| {
+        operands
+            .iter()
+            .map(|id: &Id| index(*id))
+            .collect::<Vec<i32>>()
+    };
+
+    let rec_expr_ref = rec_expr.as_ref();
+
+    for (i, mdl) in rec_expr_ref.iter().enumerate() {
+        let op = ffi::Ops::from_mdl(mdl);
+
+        let new_node = |operands: &[Id]| ffi::Node {
+            op,
+            label: "".to_string(),
+            operands: convert(operands),
+        };
+
+        let node = match mdl {
+            Mdl::Var(label) => ffi::Node {
+                op,
+                label: label.to_string(),
+                operands: vec![],
+            },
+            Mdl::Num(num) => ffi::Node {
+                op,
+                label: "".to_string(),
+                operands: vec![*num as i32],
+            },
+            // TODO: More clever pattern matching
+            Mdl::Vec(ops) => new_node(ops),
+            Mdl::Input(ops) => new_node(ops),
+            Mdl::Index(ops) => new_node(ops),
+            Mdl::ReshapeOp(ops) => new_node(ops),
+            Mdl::ConcatenateOp(ops) => new_node(ops),
+            Mdl::DotGeneralOp(ops) => new_node(ops),
+            Mdl::SliceOp(ops) => new_node(ops),
+            Mdl::TransposeOp(ops) => new_node(ops),
+            Mdl::BroadcastInDimOp(ops) => new_node(ops),
+            Mdl::ConvolutionOp(ops) => new_node(ops),
+            Mdl::MulOp(ops) => new_node(ops),
+            Mdl::AddOp(ops) => new_node(ops),
+            Mdl::DivOp(ops) => new_node(ops),
+            Mdl::SubtractOp(ops) => new_node(ops),
+            Mdl::MinOp(ops) => new_node(ops),
+            Mdl::MaxOp(ops) => new_node(ops),
+            Mdl::NegOp(ops) => new_node(ops),
+            Mdl::TanhOp(ops) => new_node(ops),
+            Mdl::ExpOp(ops) => new_node(ops),
+            Mdl::IotaOp(ops) => new_node(ops),
+            Mdl::PadOp(ops) => new_node(ops),
+            Mdl::ReturnOp(ops) => new_node(ops),
+            Mdl::BlackBox(ops) => new_node(ops),
+            Mdl::SSplit0(ops) => new_node(ops),
+            Mdl::SSplit1(ops) => new_node(ops),
+            Mdl::MatchRank(ops) => new_node(ops),
+            _ => unimplemented!(),
+        };
+
+        res.push(node);
+    }
+
+    res
+}

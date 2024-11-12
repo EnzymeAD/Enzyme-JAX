@@ -2,9 +2,9 @@ from __future__ import print_function
 from ortools.linear_solver import pywraplp
 import json
 import argparse
+import os
 
-MAX_FUSABLE_BONUS = 0.6
-
+FUSION_BONUS_FRACTION_IN_OUTPUT = float(os.getenv("FUSION_BONUS_FRACTION_IN_OUTPUT", 0.3))
 
 def get_args():
     parser = argparse.ArgumentParser(description='Construct and solve ILP')
@@ -41,6 +41,7 @@ def main():
         data = json.load(f)
 
     costs = data['cost_i']
+    fus_costs = data['fus_cost_i']
     fus = data['fus_i']
     e = data['e_m']
     h = data['h_i']
@@ -89,7 +90,7 @@ def main():
     # Root
     solver.Add(sum([x[j] for j in e[root_m]]) == 1)
 
-    if args.eclass_constraint:
+    if args.eclass_constraint or args.fusion_costs:
         # eclass_constraints are optional because in most cases, the solution that minimizes
         # the total cost will only contain 1 picked node for each picked eclass, so we don't 
         # have to explicity include this.
@@ -102,7 +103,7 @@ def main():
             # Children
             solver.Add(sum([x[j] for j in e[m]]) - x[i] >= 0)
             # Order
-            # We only need to add ordering costraints when there are potentially cycles in the
+            # We only need to add ordering constraints when there are potentially cycles in the
             # extracted graph. If the EGraph itself does not contain cycles, then we don't need
             # these constraints
             if not args.no_order:
@@ -115,52 +116,29 @@ def main():
     for j in blacklist_i:
         solver.Add(x[j] == 0)
 
-    # fusion shenanigans
-    class_has_fusable_node = {}
-    for j in range(num_classes):
-        class_has_fusable_node[j] = solver.IntVar(0, 1, 'class_has_fusable_node[%i]' % j)
-
+    # Fusion shenanigans
+    fusing_edge = {}
+    fusion_bonus = {}
     for i in range(num_nodes):
-        if not fus[i]:
-            # a class is fusable only if no un-fusable nodes are chosen
-            solver.Add(class_has_fusable_node[g[i]] <= 1 - x[i])
-    
-    # note that both [node_count_fusable_children] and [/_if_picked] 
-    #  are actually upper bounds for the relevant counts, 
-    #  but they end up maximised through the [fus_expr] objective
-    node_count_fusable_children = {}
-    for i in range(num_nodes):
-        node_count_fusable_children[i] = solver.IntVar(0, len(h[i]), 'node_count_fusable_children[%i]' % j)
-        if not fus[i]:
-            # if the node itself cannot fuse, it can never fuse
-            solver.Add(node_count_fusable_children[i] <= 0)
-        # count children that can fuse
-        solver.Add(node_count_fusable_children[i] <= sum(class_has_fusable_node[m] for m in h[i]))
-
-    # [node_count_fusable_children] if [x = 1], else 0
-    node_count_fusable_children_if_picked = {}
-    for i in range(num_nodes):
-        node_count_fusable_children_if_picked[i] = solver.IntVar(0, len(h[i]), 'node_count_fusable_children_if_picked[%i]' % j)
-        solver.Add(node_count_fusable_children_if_picked[i] <= x[i] * len(h[i]))
-        solver.Add(node_count_fusable_children_if_picked[i] <= node_count_fusable_children[i])
+        producer_count = len(h[i])
+        for c in h[i]:
+            for j in e[c]:
+                fusion_bonus[i, j] = (
+                    (costs[i] - fus_costs[i]) * (1 - FUSION_BONUS_FRACTION_IN_OUTPUT) / producer_count +  
+                    (costs[j] - fus_costs[j]) * FUSION_BONUS_FRACTION_IN_OUTPUT
+                )
+                if fus[i] and fus[j] and args.fusion_costs:
+                    fusing_edge[i, j] = solver.IntVar(0, 1, f'fusing_edge[{i}, {j}]')
+                    solver.Add(2 * fusing_edge[i, j] <= x[i] + x[j])
 
     # Define objective
-    obj_expr = [costs[j] * x[j] for j in range(num_nodes)]
-    fus_expr = [
-        # subtract fraction of consumer runtime
-        # equal to the ratio of fusable producers for that consumer
-        # scaling from 0 to MAX_FUSABLE_BONUS 
-        # (MAX_FUSABLE_BONUS = 1 means: 
-        #   if all producers are fusable contribute 0 in total to objective)
-        -1 * MAX_FUSABLE_BONUS * (1 / max(1, len(h[i]))) 
-           * costs[j] * node_count_fusable_children_if_picked[j] 
-        for j in range(num_nodes)
-    ]
+    objective = sum(costs[j] * x[j] for j in range(num_nodes))
 
     if args.fusion_costs:
-        objective = sum(obj_expr) + sum(fus_expr)        
-    else:
-        objective = sum(obj_expr)
+        objective = objective - sum(
+            fusing_edge[i, j] * fusion_bonus[i, j]
+            for i, j in fusing_edge
+        )
 
     solver.Minimize(objective)
 
@@ -217,10 +195,10 @@ def main():
 
     # Store results
     solved_x = [int(x[j].solution_value()) for j in range(num_nodes)]
-    solved_x_f = [int(node_count_fusable_children_if_picked[j].solution_value()) for j in range(num_nodes)]
+    solved_fusing_edge = [int(fusing_edge[i, j].solution_value()) for (i, j) in fusing_edge]
     result_dict = {}
     result_dict["solved_x"] = solved_x
-    result_dict["solved_x_f"] = solved_x_f
+    result_dict["solved_fusing_edge"] = solved_fusing_edge
     result_dict["cost"] = solver.Objective().Value()
     result_dict["time"] = solve_time / 1000
     with open('./tmp/solved.json', 'w') as f:

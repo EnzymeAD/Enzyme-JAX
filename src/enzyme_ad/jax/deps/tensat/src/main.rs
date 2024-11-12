@@ -467,13 +467,14 @@ fn extract_by_ilp(
     cost_model: &CostModel,
 ) -> (RecExpr<Mdl>, f32) {
     // Prepare data for ILP formulation, save to json
-    let (m_id_map, e_m, h_i, cost_i, fus_i, g_i, root_m, i_to_nodes, blacklist_i) =
+    let (m_id_map, e_m, h_i, cost_i, fus_cost_i, fus_i, g_i, root_m, i_to_nodes, blacklist_i) =
         prep_ilp_data(egraph, root, cost_model);
 
     let data = json!({
         "e_m": e_m,
         "h_i": h_i,
         "cost_i": cost_i,
+        "fus_cost_i": fus_cost_i,
         "fus_i": fus_i,
         "g_i": g_i,
         "root_m": root_m,

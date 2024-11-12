@@ -11,8 +11,13 @@ def test(a, b, c, d, e, f, g, h, i):
   def cond(x):
     return x[0] < 10
   def body(x):
-    return (x[0] + incr, x[1] @ c, x[2] @ c)
-  return jax.lax.while_loop(cond, body, (0, a, b))
+    def cond2(i):
+      return i < x[0] * 2
+    def body2(i):
+      return i + 1
+    new_x0 = jax.lax.while_loop(cond2, body2, x[0])
+    return (new_x0, x[1] @ c, x[2] @ c)
+  return jax.lax.while_loop(cond, body, (1, a, b))
 
 class Simple(absltest.TestCase):
     def test_simple_random(self):
@@ -21,9 +26,9 @@ class Simple(absltest.TestCase):
         efunc = enzyme_jax.enzyme_jax_ir(pipeline_options=enzyme_jax.JaXPipeline("equality-saturation-pass"),)(test)
         
         ka, kb, kc, kd = jax.random.split(jax.random.PRNGKey(0), num=4)
-        a = jax.random.uniform(ka, shape=(10, 10))
-        b = jax.random.uniform(kb, shape=(10, 10))
-        c = jax.random.uniform(kc, shape=(10, 10))
+        a = jax.random.uniform(ka, shape=(3, 10, 10))
+        b = jax.random.uniform(kb, shape=(3, 10, 10))
+        c = jax.random.uniform(kc, shape=(3, 10, 10))
         d = jax.random.uniform(kd, shape=(20, 500))
         e = jax.random.uniform(ka, shape=(20, 500))
         f = jax.random.uniform(ka, shape=(5, 5))

@@ -148,6 +148,14 @@ pipelines = [
     ),
     ("PartOpt", JaXPipeline(partialopt), CurBackends),
     ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+    (
+        "EqSat",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "equality-saturation-pass"
+        ),
+        CurBackends,
+    ),
 ]
 
 
@@ -228,8 +236,8 @@ class JAXMD(EnzymeJaxTest):
         self.name = "jaxmd40"
         self.count = 10
         # self.revprimal = False
-        # self.AllPipelines = pipelines
-        # self.AllBackends = CurBackends
+        self.AllPipelines = pipelines
+        self.AllBackends = CurBackends
 
         self.ins = [
             state.position,

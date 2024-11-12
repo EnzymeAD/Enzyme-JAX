@@ -6,6 +6,7 @@ use egg::*;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
 use std::fs::*;
 use std::process::{Command, Stdio};
 use std::time::*;
@@ -17,10 +18,13 @@ pub mod ffi {
     enum Type {
         i1,
         i32,
+        i64,
         bf16,
-        f32
+        f32,
+        f64,
     }
 
+    #[derive(Debug)]
     enum Ops {
         Var,
         Num,
@@ -62,6 +66,7 @@ pub mod ffi {
         InferReshape,
     }
 
+    #[derive(Debug, Clone)]
     struct Node {
         op: Ops,
         label: String,
@@ -321,17 +326,15 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
+        include!("EqualitySaturation.h");
+
         fn get_cost(
             op: Ops,
             operands: Vec<Tensor>,
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
-        ) -> u64;
-    }
-
-    unsafe extern "C++" {
-        include!("EqualitySaturation.h");
+        ) -> Vec<u64>;
 
         fn get_shape(
             op: Ops,
@@ -340,6 +343,8 @@ pub mod ffi {
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
         ) -> Vec<Tensor>;
+
+        fn apply_mlir_rewrite(nodes: Vec<Node>, roots: Vec<Tensor>) -> Box<CppGraphConverter>;
     }
 }
 
@@ -365,8 +370,10 @@ impl ffi::Type {
         match s {
             "i1" => Some(ffi::Type::i1),
             "i32" => Some(ffi::Type::i32),
+            "i64" => Some(ffi::Type::i64),
             "bf16" => Some(ffi::Type::bf16),
             "f32" => Some(ffi::Type::f32),
+            "f64" => Some(ffi::Type::f64),
             _ => None,
         }
     }
@@ -474,7 +481,9 @@ impl CppGraphConverter {
         let new_node = Mdl::Index([index_num_node, inpt.id]);
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
-            tensor_data: CppGraphConverter::tensor_data(vec![inpt.tensor_data.tensors[index as usize].clone()]),
+            tensor_data: CppGraphConverter::tensor_data(vec![inpt.tensor_data.tensors
+                [index as usize]
+                .clone()]),
         };
         Box::new(res)
     }
@@ -510,7 +519,8 @@ impl CppGraphConverter {
         output: ffi::Tensor,
     ) -> Box<TensorInfo> {
         let dimensions_id = self.vec_node(dimensions);
-        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id]);
+        let shape_id = self.vec_node(output.shape.clone());
+        let new_node = Mdl::BroadcastInDimOp([inpt.id, dimensions_id, shape_id]);
 
         let res = TensorInfo {
             id: self.rec_expr.add(new_node),
@@ -1032,7 +1042,7 @@ impl CppGraphConverter {
         &self,
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
-        rec_expr: RecExpr<Mdl>
+        rec_expr: RecExpr<Mdl>,
     ) -> Vec<ffi::Node> {
         let mut res: Vec<ffi::Node> = Vec::new();
 
@@ -1069,9 +1079,11 @@ impl CppGraphConverter {
                 Mdl::InferReshape([input]) => {
                     let input_index = index(*input);
                     let id = to_egraph[&Id::from(i)];
-                    let mut operands: Vec<i32> =
-                        (&egraph[id]).data.tensors[0].shape
-                            .iter().map(|x| *x as i32).collect();
+                    let mut operands: Vec<i32> = (&egraph[id]).data.tensors[0]
+                        .shape
+                        .iter()
+                        .map(|x| *x as i32)
+                        .collect();
                     operands.insert(0, input_index);
                     ffi::Node {
                         op,
@@ -1088,6 +1100,7 @@ impl CppGraphConverter {
                 Mdl::DotGeneralOp(ops) => new_node(ops),
                 Mdl::SliceOp(ops) => new_node(ops),
                 Mdl::TransposeOp(ops) => new_node(ops),
+                Mdl::BroadcastInDimOp(ops) => new_node(ops),
                 Mdl::ConvolutionOp(ops) => new_node(ops),
                 Mdl::MulOp(ops) => new_node(ops),
                 Mdl::AddOp(ops) => new_node(ops),
@@ -1118,10 +1131,12 @@ impl CppGraphConverter {
         let start = &self.rec_expr;
 
         // Configuration
-        let n_sec = 10; // seconds for timeout
-        let use_multi = true; // whether to use multi patterns
-        let no_cycle = true; // allow cycle in egraph?
-        let filter_after = true; // vanilla filtering or efficient filtering
+        let n_sec: u64 = env::var("SATURATION_TIME_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3600);
+        let no_cycle = false; // disallow cycle in egraph?
+        let filter_after = false; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 
@@ -1141,31 +1156,48 @@ impl CppGraphConverter {
         let analysis = TensorAnalysis::new(&self.blackbox_cpp_num_to_tensorinfo);
         let mut rules = rules_from_str(split_rules, do_filter_after);
 
-        let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
-            rewrite!("transpose-of-transpose";
-                     "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
-            rewrite!("flatten-concat";
-                     "(ConcatenateOp ?v ?d)" => { FlattenConcat {
-                     vec: "?v".parse().unwrap(),
-                     dim: "?d".parse().unwrap(),
-            }}),
-            rewrite!("merge-slices";
-                     "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
-                     x: "?x".parse().unwrap(),
-                     s1: "?s1".parse().unwrap(),
-                     s2: "?s2".parse().unwrap(),
-                     l1: "?l1".parse().unwrap(),
-                     l2: "?l2".parse().unwrap(),
-                     strides: "?s".parse().unwrap(),
-                    dim: "?d".parse().unwrap()
-            }}),
-            rewrite!("concat-dot";
-                     "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
-                     => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
-                     if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
-        ];
+        // let mut custom_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = vec![
+        //     rewrite!("transpose-of-transpose";
+        //              "(TransposeOp (TransposeOp ?x ?p) ?p)" => "?x" if decreasing_perm("?p")),
+        //     rewrite!("flatten-concat";
+        //              "(ConcatenateOp ?v ?d)" => { FlattenConcat {
+        //              vec: "?v".parse().unwrap(),
+        //              dim: "?d".parse().unwrap(),
+        //     }}),
+        //     rewrite!("merge-slices";
+        //              "(ConcatenateOp (Vec (SliceOp ?x ?s1 ?l1 ?s) (SliceOp ?x ?s2 ?l2 ?s)) ?d)" => { MergeSlices {
+        //              x: "?x".parse().unwrap(),
+        //              s1: "?s1".parse().unwrap(),
+        //              s2: "?s2".parse().unwrap(),
+        //              l1: "?l1".parse().unwrap(),
+        //              l2: "?l2".parse().unwrap(),
+        //              strides: "?s".parse().unwrap(),
+        //             dim: "?d".parse().unwrap()
+        //     }}),
+        //     rewrite!("concat-dot";
+        //              "(DotGeneralOp (ConcatenateOp (Vec ?a ?b) ?d1) (ConcatenateOp (Vec ?c ?d) ?d2) ?lb ?rb ?lc ?rc ?p)"
+        //              => "(AddOp (DotGeneralOp ?a ?c ?lb ?rb ?lc ?rc ?p) (DotGeneralOp ?b ?d ?lb ?rb ?lc ?rc ?p))"
+        //              if concat_dot_compatible("?lc", "?d1", "?rc", "?d2")),
+        // ];
 
-        rules.append(&mut custom_rules);
+        // rules.append(&mut custom_rules);
+
+        if env::var("EQSAT_RULES").unwrap_or("true".to_string()) == "false" {
+            rules.clear();
+        }
+
+        let mut mlir_rules: Vec<Rewrite<Mdl, TensorAnalysis>> = MlirRewrites::all()
+            .iter()
+            .map(|r| {
+                rewrite!(r.to_string();
+                          (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
+                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }})
+            })
+            .collect();
+
+        if env::var("ENZYME_RULES").unwrap_or("true".to_string()) != "false" {
+            rules.append(&mut mlir_rules);
+        }
 
         let iter_multi = 2;
         let node_multi = 30000;
@@ -1176,6 +1208,9 @@ impl CppGraphConverter {
             .filter(|x| !x.is_empty())
             .map(|x| (x, /*symmetric=*/ false))
             .collect();
+
+        let use_multi = env::var("MULTI_RULES").unwrap_or("true".to_string()) != "false";
+
         let mut multi_patterns = MultiPatterns::with_rules(
             multi_rules,
             no_cycle,
@@ -1257,7 +1292,7 @@ fn extract_by_ilp(
     cost_model: &CostModel,
 ) -> (RecExpr<Mdl>, f32, HashMap<Id, Id>) {
     // Prepare data for ILP formulation, save to json
-    let (m_id_map, e_m, h_i, cost_i, fus_i, g_i, root_m, i_to_nodes, blacklist_i) =
+    let (m_id_map, e_m, h_i, cost_i, fus_cost_i, fus_i, g_i, root_m, i_to_nodes, blacklist_i) =
         prep_ilp_data(egraph, root, cost_model);
 
     println!("prepped ilp data");
@@ -1265,6 +1300,7 @@ fn extract_by_ilp(
         "e_m": e_m,
         "h_i": h_i,
         "cost_i": cost_i,
+        "fus_cost_i": fus_cost_i,
         "fus_i": fus_i,
         "g_i": g_i,
         "root_m": root_m,
@@ -1277,7 +1313,7 @@ fn extract_by_ilp(
     // Call python script to run ILP
     let order_var_int = false;
     let class_constraint = true;
-    let no_order = true;
+    let no_order = false;
     let initialise_with_greedy = false;
     let fusion_costs: bool = std::env::var("FUSION_COSTS")
         .unwrap_or(String::from("false"))
@@ -1361,7 +1397,14 @@ fn extract_by_ilp(
         let mut expr = RecExpr::default();
         let mut added_memo: HashMap<Id, Id> = Default::default();
         let mut to_egraph: HashMap<Id, Id> = Default::default();
-        let _ = construct_best_rec(&node_picked, root, &mut added_memo, &mut to_egraph, egraph, &mut expr);
+        let _ = construct_best_rec(
+            &node_picked,
+            root,
+            &mut added_memo,
+            &mut to_egraph,
+            egraph,
+            &mut expr,
+        );
         (expr, solved_data.time, to_egraph)
     } else {
         panic!("Python script failed");

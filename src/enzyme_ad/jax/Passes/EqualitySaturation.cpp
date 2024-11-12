@@ -22,6 +22,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
@@ -41,6 +42,8 @@
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
 #include "rust/cxx.h"
+
+#include "Passes.h"
 
 #include <chrono>
 #include <fstream>
@@ -159,6 +162,7 @@ std::set<string> zeroCostOps = {
     "stablehlo.slice",
     "stablehlo.reshape",
     "stablehlo.transpose",
+    // "stablehlo.broadcast_in_dim",
 
     // We assume the best case, where memory is allocated smartly so that the
     // concatenate never actually happens.
@@ -171,9 +175,10 @@ bool isBlackboxed(Operation *op) {
       isa<stablehlo::MinOp>(op) || isa<stablehlo::MaxOp>(op) ||
       isa<stablehlo::TanhOp>(op) || isa<stablehlo::NegOp>(op) ||
       isa<stablehlo::ExpOp>(op) || isa<stablehlo::TransposeOp>(op) ||
-      isa<stablehlo::ReshapeOp>(op) || isa<stablehlo::DotGeneralOp>(op) ||
-      isa<stablehlo::ConcatenateOp>(op) || isa<stablehlo::SliceOp>(op) ||
-      isa<stablehlo::PadOp>(op) || isa<func::ReturnOp>(op)) {
+      isa<stablehlo::BroadcastInDimOp>(op) || isa<stablehlo::ReshapeOp>(op) ||
+      isa<stablehlo::DotGeneralOp>(op) || isa<stablehlo::ConcatenateOp>(op) ||
+      isa<stablehlo::SliceOp>(op) || isa<stablehlo::PadOp>(op) ||
+      isa<func::ReturnOp>(op) || isa<stablehlo::ConvolutionOp>(op)) {
     return false;
   } else {
     return true;
@@ -189,8 +194,8 @@ public:
    * - if GPU, we use XLA's analytical cost model to get the expected execution
    * time in nanoseconds.
    */
-  static uint64_t getCost(Operation *op, unsigned warmup,
-                          unsigned repetitions) {
+  static std::pair<uint64_t, uint64_t> getCost(Operation *op, unsigned warmup,
+                                               unsigned repetitions) {
     // TODO: refactor this/separate out into two functions? so that
     // warmup/repetitions don't need to be passed for GPU.
 
@@ -204,14 +209,14 @@ public:
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
         zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
-      return 0;
+      return {0, 0};
 
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
     }
 
     auto context = OperationTimer::getContext();
-    int cost = -1;
+    int64_t cost = -1, fus_cost = -1;
 
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
@@ -262,11 +267,11 @@ public:
           break;
         }
       }
-
       // TODO: This means there's no point in warmup anymore, since we're now
       // taking individual measurements. Maybe we get rid of the parameter or do
       // something more sophisticated
       cost = *std::min_element(durations.begin(), durations.end());
+      fus_cost = cost;
       assert(!futures);
 
       // Cleanup
@@ -302,17 +307,18 @@ public:
                 xla::gpu::GpuPerformanceModelOptions::ForModule(
                     op->GetModule()));
         cost = absl::ToInt64Nanoseconds(runtime.exec_time);
+        fus_cost = absl::ToInt64Nanoseconds(runtime.compute_time);
       }
       break;
     }
     }
 
-    assert(cost >= 0);
+    assert(cost >= 0 && fus_cost >= 0);
     auto indexOp = op->clone();
-    runtimeCache.try_emplace(indexOp, cost);
+    runtimeCache.try_emplace(indexOp, std::pair(cost, fus_cost));
 
     wrapperModule.erase();
-    return cost;
+    return {cost, fus_cost};
   }
 
   static Operation *getDummyOp(OpBuilder &builder, Type type) {
@@ -336,7 +342,9 @@ public:
   }
 
 private:
-  static llvm::DenseMap<Operation *, uint64_t, OperationMapInfo> runtimeCache;
+  static llvm::DenseMap<Operation *, std::pair<uint64_t, uint64_t>,
+                        OperationMapInfo>
+      runtimeCache;
   static MLIRContext *context;
   inline static bool logsInitialized;
 
@@ -466,7 +474,7 @@ private:
   }
 };
 
-llvm::DenseMap<Operation *, uint64_t, OperationMapInfo>
+llvm::DenseMap<Operation *, std::pair<uint64_t, uint64_t>, OperationMapInfo>
     OperationTimer::runtimeCache;
 MLIRContext *OperationTimer::context = nullptr;
 
@@ -790,6 +798,11 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
     mlirOp = builder.create<stablehlo::TransposeOp>(builder.getUnknownLoc(),
                                                     operands[0], other_vecs[0]);
     break;
+  case tensat::Ops::BroadcastInDimOp:
+    mlirOp = builder.create<stablehlo::BroadcastInDimOp>(
+        builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[1]),
+        operands[0], other_vecs[0]);
+    break;
   case tensat::Ops::ReshapeOp:
     mlirOp = builder.create<stablehlo::ReshapeOp>(
         builder.getUnknownLoc(), deriveOutputType(operands[0], other_vecs[0]),
@@ -956,13 +969,13 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
         builder.getUnknownLoc(), operands[0], operands[1], other_vecs[0],
         other_vecs[1], other_vecs[2]);
     break;
-  case tensat::Ops::IotaOp:
-    mlirOp = builder.create<stablehlo::IotaOp>(
-        builder.getUnknownLoc(),
-        RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
-                              builder.getF32Type()),
-        int_args[0]);
-    break;
+  // case tensat::Ops::IotaOp:
+  //   mlirOp = builder.create<stablehlo::IotaOp>(
+  //       builder.getUnknownLoc(),
+  //       RankedTensorType::get(llvm::ArrayRef(other_vecs[0]),
+  //                             builder.getF32Type()),
+  //       int_args[0]);
+  //   break;
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
     assert(false);
@@ -972,19 +985,93 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
   return mlirOp;
 }
 
+mlir::Type stringToMlirType(OpBuilder &builder, std::string &type) {
+  if (type == "i1")
+    return builder.getI1Type();
+  else if (type == "i32")
+    return builder.getI32Type();
+  else if (type == "i64")
+    return builder.getI64Type();
+  else if (type == "bf16")
+    return builder.getBF16Type();
+  else if (type == "f32")
+    return builder.getF32Type();
+  else if (type == "f64")
+    return builder.getF64Type();
+  else
+    throw std::invalid_argument("unsupported type string");
+}
+
+mlir::Type tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
+  switch (type) {
+  case tensat::Type::i1:
+    return builder.getI1Type();
+  case tensat::Type::i32:
+    return builder.getI32Type();
+  case tensat::Type::i64:
+    return builder.getI64Type();
+  case tensat::Type::bf16:
+    return builder.getBF16Type();
+  case tensat::Type::f32:
+    return builder.getF32Type();
+  case tensat::Type::f64:
+    return builder.getF64Type();
+  default:
+    throw std::invalid_argument("unsupported tensat type");
+  }
+}
+
+tensat::Type mlirTypeToTensatType(mlir::Type type) {
+  if (type.isInteger(1)) {
+    return tensat::Type::i1;
+  } else if (type.isInteger(32)) {
+    return tensat::Type::i32;
+  } else if (type.isInteger(64)) {
+    return tensat::Type::i64;
+  } else if (type.isBF16()) {
+    return tensat::Type::bf16;
+  } else if (type.isF32()) {
+    return tensat::Type::f32;
+  } else if (type.isF64()) {
+    return tensat::Type::f64;
+  } else {
+    type.dump();
+    throw std::invalid_argument("unsupported MLIR type");
+  }
+}
+
+tensat::Tensor mlirValueToTensatTensor(mlir::Value value) {
+  auto output_tensor = value.getType().cast<TensorType>();
+  auto shape_data = output_tensor.getShape();
+  rust::Vec<int64_t> shape;
+  for (const auto dim : shape_data) {
+    shape.push_back(dim);
+  }
+  auto element_type = mlirTypeToTensatType(output_tensor.getElementType());
+  return {shape, element_type};
+}
+
+mlir::Type newTensorType(OpBuilder &builder, tensat::Tensor tensor) {
+  auto dimsRef = llvm::ArrayRef(tensor.shape.data(), tensor.shape.size());
+  auto mlirType = tensatTypeToMlirType(builder, tensor.element_type);
+  return RankedTensorType::get(dimsRef, mlirType);
+}
+
 // TODO: Avoid creating dummy inputs (we need them again for cost measurement,
 // so duplicated)
-uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
-                          rust::Vec<tensat::Vector> other_vector_args,
-                          rust::Vec<int64_t> int_args,
-                          rust::Vec<tensat::Matrix> matrix_args) {
+rust::Vec<uint64_t>
+tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
+                 rust::Vec<tensat::Vector> other_vector_args,
+                 rust::Vec<int64_t> int_args,
+                 rust::Vec<tensat::Matrix> matrix_args) {
+
   auto context = OperationTimer::getContext();
   OpBuilder builder(context);
 
   // Create operands and other args
   SmallVector<Value> operands;
   for (const auto &tensor : enode_args) {
-    auto tensor_type = tensat::newTensorType(builder, tensor);
+    auto tensor_type = newTensorType(builder, tensor);
     operands.push_back(
         OperationTimer::getDummyOp(builder, tensor_type)->getResult(0));
   }
@@ -1029,57 +1116,11 @@ uint64_t tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
   }
 
   if (mlirOp) {
-    auto cost = OperationTimer::getCost(mlirOp, repeats, repeats);
+    auto [cost, fus_cost] = OperationTimer::getCost(mlirOp, repeats, repeats);
     mlirOp->erase();
-    return cost;
+    return {cost, fus_cost};
   }
-  return 100000;
-}
-
-mlir::Type tensat::newTensorType(OpBuilder &builder, tensat::Tensor tensor) {
-  auto dimsRef = llvm::ArrayRef(tensor.shape.data(), tensor.shape.size());
-  auto mlirType = tensat::tensatTypeToMlirType(builder, tensor.element_type);
-  return RankedTensorType::get(dimsRef, mlirType);
-}
-
-mlir::Type tensat::tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
-  switch (type) {
-  case tensat::Type::i1:
-    return builder.getI1Type();
-  case tensat::Type::i32:
-    return builder.getI32Type();
-  case tensat::Type::bf16:
-    return builder.getBF16Type();
-  case tensat::Type::f32:
-    return builder.getF32Type();
-  default:
-    throw std::invalid_argument("unsupported tensat type");
-  }
-}
-
-tensat::Type mlirTypeToTensatType(mlir::Type type) {
-  if (type.isInteger(1)) {
-    return tensat::Type::i1;
-  } else if (type.isInteger(32)) {
-    return tensat::Type::i32;
-  } else if (type.isBF16()) {
-    return tensat::Type::bf16;
-  } else if (type.isF32()) {
-    return tensat::Type::f32;
-  } else {
-    throw std::invalid_argument("unsupported MLIR type");
-  }
-}
-
-tensat::Tensor mlirValueToTensatTensor(mlir::Value value) {
-  auto output_tensor = value.getType().cast<TensorType>();
-  auto shape_data = output_tensor.getShape();
-  rust::Vec<int64_t> shape;
-  for (const auto dim : shape_data) {
-    shape.push_back(dim);
-  }
-  auto element_type = mlirTypeToTensatType(output_tensor.getElementType());
-  return {shape, element_type};
+  assert(false);
 }
 
 std::vector<int32_t> castArrayRefToInt32(llvm::ArrayRef<int64_t> shape) {
@@ -1194,6 +1235,1291 @@ tensat::get_shape(Ops op, rust::Vec<tensat::Tensor> enode_args,
   return {};
 }
 
+int getValueIndex(Operation *definingOp, Value &value) {
+  auto results = definingOp->getResults();
+  for (int i = 0; i < results.size(); i++) {
+    if (results[i] == value)
+      return i;
+  }
+  return -1;
+}
+
+tensat::TensorInfo *
+dfs(Operation *op,
+    std::unordered_map<Operation *, tensat::TensorInfo *> *opToTensorInfo,
+    std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
+    std::vector<Operation *> *blackboxIDToTensorInfo,
+    std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph);
+
+tensat::TensorInfo *handleOperand(
+    Value &operand,
+    std::unordered_map<Operation *, tensat::TensorInfo *> *opToTensorInfo,
+    std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
+    std::vector<Operation *> *blackboxIDToTensorInfo,
+    std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
+  if (auto defOp = operand.getDefiningOp()) {
+    // Use existing TensorInfo if already processed
+    auto convertedOperand =
+        dfs(defOp, opToTensorInfo, blockArgToTensorInfo, blackboxIDToTensorInfo,
+            blackboxIDToCapturedValues, builder, graph);
+    int index = getValueIndex(defOp, operand);
+    assert(index >= 0);
+    if (index == 0) {
+      return convertedOperand;
+    } else {
+      auto indexOperand = graph->new_index(index, *convertedOperand).into_raw();
+      return indexOperand;
+    }
+  } else if (auto arg = operand.dyn_cast<BlockArgument>()) {
+    // Handle BlockArguments which represent function parameters
+    if (isa<TensorType>(operand.getType())) {
+      int32_t block_arg_number = arg.getArgNumber();
+      auto &tensorInfo = (*blockArgToTensorInfo)[block_arg_number];
+      if (!tensorInfo) {
+        tensorInfo =
+            graph->new_input(block_arg_number, mlirValueToTensatTensor(operand))
+                .into_raw();
+        (*blockArgToTensorInfo)[block_arg_number] = tensorInfo;
+      }
+      return tensorInfo;
+    } else {
+      std::cout << "EqualitySaturationPass does not support this argument type!"
+                << "\n";
+      operand.getType().dump();
+      assert(false);
+    }
+  }
+  std::cout << "EqualitySaturationPass: encountered operand that is neither "
+               "the result of an Op nor a BlockArgument."
+            << "\n";
+  assert(false);
+}
+
+tensat::TensorInfo *
+dfs(Operation *op,
+    std::unordered_map<Operation *, tensat::TensorInfo *> *opToTensorInfo,
+    std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
+    std::vector<Operation *> *blackboxIDToTensorInfo,
+    std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
+  // std::cout << "DFS AT " << op->getName().getStringRef().str() << "\n";
+  if (opToTensorInfo->find(op) != opToTensorInfo->end()) {
+    return opToTensorInfo->at(op);
+  }
+  tensat::TensorInfo *tensorInfo = nullptr;
+  auto handleOperandPartial = [&](auto operand) {
+    return handleOperand(operand, opToTensorInfo, blockArgToTensorInfo,
+                         blackboxIDToTensorInfo, blackboxIDToCapturedValues,
+                         builder, graph);
+  };
+
+  bool blackboxed = false;
+
+  if (isa<stablehlo::MulOp>(op)) {
+    auto mul = cast<stablehlo::MulOp>(op);
+    tensorInfo = graph
+                     ->new_mul_op(*handleOperandPartial(mul.getLhs()),
+                                  *handleOperandPartial(mul.getRhs()),
+                                  mlirValueToTensatTensor(mul->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::SubtractOp>(op)) {
+    auto subtract = cast<stablehlo::SubtractOp>(op);
+    tensorInfo =
+        graph
+            ->new_subtract_op(*handleOperandPartial(subtract.getLhs()),
+                              *handleOperandPartial(subtract.getRhs()),
+                              mlirValueToTensatTensor(subtract->getResult(0)))
+            .into_raw();
+  } else if (isa<stablehlo::DivOp>(op)) {
+    auto div = cast<stablehlo::DivOp>(op);
+    auto shape = tensorInfo =
+        graph
+            ->new_div_op(*handleOperandPartial(div.getLhs()),
+                         *handleOperandPartial(div.getRhs()),
+                         mlirValueToTensatTensor(div->getResult(0)))
+            .into_raw();
+  } else if (isa<stablehlo::AddOp>(op)) {
+    auto add = cast<stablehlo::AddOp>(op);
+    tensorInfo = graph
+                     ->new_add_op(*handleOperandPartial(add.getLhs()),
+                                  *handleOperandPartial(add.getRhs()),
+                                  mlirValueToTensatTensor(add->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::MinOp>(op)) {
+    auto min = cast<stablehlo::MinOp>(op);
+    tensorInfo = graph
+                     ->new_min_op(*handleOperandPartial(min.getLhs()),
+                                  *handleOperandPartial(min.getRhs()),
+                                  mlirValueToTensatTensor(min->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::MaxOp>(op)) {
+    auto max = cast<stablehlo::MaxOp>(op);
+    tensorInfo = graph
+                     ->new_max_op(*handleOperandPartial(max.getLhs()),
+                                  *handleOperandPartial(max.getRhs()),
+                                  mlirValueToTensatTensor(max->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::TanhOp>(op)) {
+    auto tanh = cast<stablehlo::TanhOp>(op);
+    tensorInfo = graph
+                     ->new_tanh_op(*handleOperandPartial(tanh.getOperand()),
+                                   mlirValueToTensatTensor(tanh->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::NegOp>(op)) {
+    auto neg = cast<stablehlo::NegOp>(op);
+    tensorInfo = graph
+                     ->new_neg_op(*handleOperandPartial(neg.getOperand()),
+                                  mlirValueToTensatTensor(neg->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::ExpOp>(op)) {
+    auto exp = cast<stablehlo::ExpOp>(op);
+    tensorInfo = graph
+                     ->new_exp_op(*handleOperandPartial(exp.getOperand()),
+                                  mlirValueToTensatTensor(exp->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::TransposeOp>(op)) {
+    auto transpose = cast<stablehlo::TransposeOp>(op);
+    tensorInfo = graph
+                     ->new_transpose_op(
+                         *handleOperandPartial(transpose.getOperand()),
+                         castArrayRefToRustVec(transpose.getPermutation()),
+                         mlirValueToTensatTensor(transpose->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::BroadcastInDimOp>(op)) {
+    auto bid = cast<stablehlo::BroadcastInDimOp>(op);
+    if (auto output_tensor = bid.getResult().getType().cast<TensorType>()) {
+      tensorInfo = graph
+                       ->new_broadcast_in_dim(
+                           *handleOperandPartial(bid.getOperand()),
+                           castArrayRefToRustVec(bid.getBroadcastDimensions()),
+                           mlirValueToTensatTensor(bid->getResult(0)))
+                       .into_raw();
+    } else {
+      std::cout << "BroadcastInDimOp: result of stablehlo::BroadcastInDimOp "
+                   "has non-tensor type"
+                << std::endl;
+    }
+  } else if (isa<stablehlo::ReshapeOp>(op)) {
+    auto reshape = cast<stablehlo::ReshapeOp>(op);
+    if (auto output_tensor = reshape.getResult().getType().cast<TensorType>()) {
+      tensorInfo =
+          graph
+              ->new_reshape_op(*handleOperandPartial(reshape.getOperand()),
+                               mlirValueToTensatTensor(reshape->getResult(0)))
+              .into_raw();
+    } else {
+      std::cout << "EqualitySaturationPass: result of stablehlo::ReshapeOp "
+                   "has non-tensor type"
+                << std::endl;
+    }
+    // } else if (isa<stablehlo::IotaOp>(op)) {
+    //   auto iota = cast<stablehlo::IotaOp>(op);
+    //   int32_t iota_dimension = iota.getIotaDimension();
+    //   if (auto output_tensor =
+    //   iota.getResult().getType().cast<TensorType>()) {
+    //     tensorInfo =
+    //         graph
+    //             ->new_iota_op(iota_dimension,
+    //                           mlirValueToTensatTensor(iota.getResult()))
+    //             .into_raw();
+    //   } else {
+    //     std::cout << "EqualitySaturationPass: result of stablehlo::IotaOp
+    //     has "
+    //                  "non-tensor type"
+    //               << std::endl;
+    //   }
+  } else if (isa<stablehlo::DotGeneralOp>(op)) {
+    // we might need more guards here
+    auto dot_general = cast<stablehlo::DotGeneralOp>(op);
+    auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
+
+    mlir::ArrayAttr precision =
+        dot_general.getPrecisionConfig().value_or(mlir::ArrayAttr());
+    rust::Vec<int64_t> precision_configs;
+    for (int i = 0; i < precision.size(); i++) {
+      auto precisionAttr =
+          precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
+      if (!precisionAttr)
+        continue; // Skip if it's not a PrecisionAttr, although such
+                  // attributes should not exist here
+      mlir::stablehlo::Precision val = precisionAttr.getValue();
+      switch (val) {
+      case mlir::stablehlo::Precision::DEFAULT:
+        precision_configs.push_back(0);
+        break;
+      case mlir::stablehlo::Precision::HIGH:
+        precision_configs.push_back(1);
+        break;
+      case mlir::stablehlo::Precision::HIGHEST:
+        precision_configs.push_back(2);
+        break;
+      }
+    }
+
+    tensorInfo =
+        graph
+            ->new_dot_general_op(
+                *handleOperandPartial(dot_general.getLhs()),
+                *handleOperandPartial(dot_general.getRhs()),
+                castArrayRefToRustVec(dot_dim_attrs.getLhsBatchingDimensions()),
+                castArrayRefToRustVec(dot_dim_attrs.getRhsBatchingDimensions()),
+                castArrayRefToRustVec(
+                    dot_dim_attrs.getLhsContractingDimensions()),
+                castArrayRefToRustVec(
+                    dot_dim_attrs.getRhsContractingDimensions()),
+                precision_configs,
+                mlirValueToTensatTensor(dot_general.getResult()))
+            .into_raw();
+  } else if (isa<stablehlo::ConvolutionOp>(op)) {
+    auto convolution = cast<stablehlo::ConvolutionOp>(op);
+    auto result_type =
+        convolution.getResult().getType().cast<mlir::ShapedType>();
+    if (result_type.hasRank()) {
+      auto shape = result_type.getShape();
+      llvm::errs() << "Result shape: [";
+      for (auto dim : shape) {
+        llvm::errs() << dim << " ";
+      }
+      llvm::errs() << "]\n";
+    } else {
+      llvm::errs() << "Result is unranked.\n";
+    }
+    auto dimNumbers = convolution.getDimensionNumbers();
+    mlir::ArrayAttr precision =
+        convolution.getPrecisionConfig().value_or(mlir::ArrayAttr());
+    rust::Vec<int64_t> precision_configs;
+    for (int i = 0; i < precision.size(); i++) {
+      auto precisionAttr =
+          precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
+      if (!precisionAttr)
+        continue; // Skip if it's not a PrecisionAttr, although such
+                  // attributes should not exist here
+      mlir::stablehlo::Precision val = precisionAttr.getValue();
+      switch (val) {
+      case mlir::stablehlo::Precision::DEFAULT:
+        precision_configs.push_back(0);
+        break;
+      case mlir::stablehlo::Precision::HIGH:
+        precision_configs.push_back(1);
+        break;
+      case mlir::stablehlo::Precision::HIGHEST:
+        precision_configs.push_back(2);
+        break;
+      }
+    }
+    auto windowStridesOpt = convolution.getWindowStrides();
+    assert(windowStridesOpt.has_value() &&
+           "Expected window strides to be present.");
+    auto paddingOpt = convolution.getPadding();
+    assert(paddingOpt.has_value() && "Expected padding to be present.");
+    auto lhsDilationOpt = convolution.getLhsDilation();
+    assert(lhsDilationOpt.has_value() &&
+           "Expected LHS dilation to be present.");
+    auto rhsDilationOpt = convolution.getRhsDilation();
+    assert(rhsDilationOpt.has_value() &&
+           "Expected RHS dilation to be present.");
+    auto windowReversalOpt = convolution.getWindowReversal();
+    assert(windowReversalOpt.has_value() &&
+           "Expected Window reversal to be present.");
+
+    tensorInfo =
+        graph
+            ->new_convolution_op(
+                *handleOperandPartial(convolution.getLhs()),
+                *handleOperandPartial(convolution.getRhs()),
+                castArrayRefToRustVec(windowStridesOpt.value()),
+                castDenseIntElementsAttrToRustMatrix(paddingOpt.value()),
+                castArrayRefToRustVec(lhsDilationOpt.value()),
+                castArrayRefToRustVec(rhsDilationOpt.value()),
+                castArrayRefToRustVec(windowReversalOpt.value()),
+                dimNumbers.getInputBatchDimension(),
+                dimNumbers.getInputFeatureDimension(),
+                castArrayRefToRustVec(dimNumbers.getInputSpatialDimensions()),
+                dimNumbers.getKernelInputFeatureDimension(),
+                dimNumbers.getKernelOutputFeatureDimension(),
+                castArrayRefToRustVec(dimNumbers.getKernelSpatialDimensions()),
+                dimNumbers.getOutputBatchDimension(),
+                dimNumbers.getOutputFeatureDimension(),
+                castArrayRefToRustVec(dimNumbers.getOutputSpatialDimensions()),
+                convolution.getFeatureGroupCount(),
+                convolution.getBatchGroupCount(), precision_configs,
+                mlirValueToTensatTensor(convolution.getResult()))
+            .into_raw();
+  } else if (isa<stablehlo::ConcatenateOp>(op)) {
+    auto concat = cast<stablehlo::ConcatenateOp>(op);
+    auto output_tensor = concat->getResult(0).getType().cast<TensorType>();
+    auto output_shape_array = castArrayRefToInt32(output_tensor.getShape());
+    std::vector<tensat::TensorInfo *> inputs;
+    for (auto input : concat.getInputs()) {
+      inputs.push_back(handleOperandPartial(input));
+    }
+    int32_t dimension = concat.getDimension();
+    tensorInfo =
+        graph
+            ->new_concatenate_op({inputs.data(), inputs.size()}, dimension,
+                                 mlirValueToTensatTensor(concat->getResult(0)))
+            .into_raw();
+  } else if (isa<stablehlo::SliceOp>(op)) {
+    auto slice = cast<stablehlo::SliceOp>(op);
+    auto operand = handleOperandPartial(slice.getOperand());
+    tensorInfo =
+        graph
+            ->new_slice_op(*operand,
+                           castArrayRefToRustVec(slice.getStartIndices()),
+                           castArrayRefToRustVec(slice.getLimitIndices()),
+                           castArrayRefToRustVec(slice.getStrides()),
+                           mlirValueToTensatTensor(slice->getResult(0)))
+            .into_raw();
+  } else if (isa<stablehlo::PadOp>(op)) {
+    auto pad = cast<stablehlo::PadOp>(op);
+    auto operand = handleOperandPartial(pad.getOperand());
+    auto padding_value = handleOperandPartial(pad.getPaddingValue());
+    tensorInfo =
+        graph
+            ->new_pad_op(*operand, *padding_value,
+                         castArrayRefToRustVec(pad.getEdgePaddingLow()),
+                         castArrayRefToRustVec(pad.getEdgePaddingHigh()),
+                         castArrayRefToRustVec(pad.getInteriorPadding()),
+                         mlirValueToTensatTensor(pad->getResult(0)))
+            .into_raw();
+  } else if (isa<func::ReturnOp>(op)) {
+    int numOperands = op->getNumOperands();
+    std::vector<tensat::TensorInfo *> processedOperands;
+    for (size_t i = 0; i < numOperands; i++) {
+      auto operand = handleOperandPartial(op->getOperand(i));
+      processedOperands.push_back(operand);
+    }
+    auto operandPtrsSlice = rust::Slice<tensat::TensorInfo *const>{
+        processedOperands.data(),
+        static_cast<size_t>(processedOperands.size())};
+    tensorInfo = graph->new_return_op(operandPtrsSlice).into_raw();
+  } else {
+    blackboxed = true;
+
+    int numOperands = op->getNumOperands();
+    rust::Vec<tensat::Tensor> outputs;
+    for (auto result : op->getResults())
+      outputs.push_back(mlirValueToTensatTensor(result));
+
+    std::vector<tensat::TensorInfo *> processedOperands;
+    // We shouldn't clone operands, as those values will be invalidated
+    // after a block.clear(), and we access these during reconstruction.
+    auto copy = op->clone(Operation::CloneOptions(
+        /* cloneRegions = */ true, /* cloneOperands = */ false));
+    blackboxIDToTensorInfo->push_back(copy);
+    int blackboxOpID = blackboxIDToTensorInfo->size() - 1;
+    for (size_t i = 0; i < numOperands; i++) {
+      auto operand = handleOperandPartial(op->getOperand(i));
+      processedOperands.push_back(operand);
+    }
+    auto operandPtrsSlice = rust::Slice<tensat::TensorInfo *const>{
+        processedOperands.data(), processedOperands.size()};
+
+    std::vector<Value> capturedValues;
+    std::vector<tensat::TensorInfo *> capturedTensorInfos;
+
+    // Walk the operation, if any operands were originated from the current
+    // block (rather than within the operation) then we should capture them
+    auto outerBlock = op->getBlock();
+    copy->walk([&](Operation *op) {
+      if (op == copy)
+        return;
+      for (Value operand : op->getOperands()) {
+        if (operand.getParentBlock() == outerBlock) {
+          capturedValues.push_back(operand);
+          capturedTensorInfos.push_back(handleOperandPartial(operand));
+        }
+      }
+    });
+
+    assert(blackboxIDToCapturedValues->find(blackboxOpID) ==
+           blackboxIDToCapturedValues->end());
+    (*blackboxIDToCapturedValues)[blackboxOpID] = capturedValues;
+
+    auto capturedTensorInfosSlice = rust::Slice<tensat::TensorInfo *const>{
+        capturedTensorInfos.data(), capturedTensorInfos.size()};
+
+    tensorInfo =
+        graph
+            ->new_blackbox_op(operandPtrsSlice, capturedTensorInfosSlice,
+                              blackboxOpID, outputs)
+            .into_raw();
+  }
+  assert(tensorInfo != nullptr);
+  // Check that isBlackboxed is up-to-date
+  assert(blackboxed == isBlackboxed(op));
+
+  opToTensorInfo->insert({op, tensorInfo});
+  return tensorInfo;
+}
+
+Box<tensat::CppGraphConverter> createEgraph(
+    std::vector<Operation *> *blackboxIDToTensorInfo,
+    std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
+    OpBuilder &builder, ModuleOp module) {
+
+  auto graph = tensat::new_converter();
+  // members of the class
+  std::unordered_map<Operation *, tensat::TensorInfo *> opToTensorInfo;
+  std::unordered_map<int, tensat::TensorInfo *> blockArgToTensorInfo;
+
+  module.walk([&](func::ReturnOp op) {
+    dfs(op, &opToTensorInfo, &blockArgToTensorInfo, blackboxIDToTensorInfo,
+        blackboxIDToCapturedValues, builder, graph);
+  });
+
+  // graph->print_rec_expr();
+  return graph;
+}
+
+template <typename T>
+Operation *createUnaryOp(OpBuilder &builder, std::vector<Value> &opVals,
+                         tensat::Node &node) {
+  auto location = builder.getUnknownLoc();
+  return builder.create<T>(location, opVals[node.operands[0]]);
+}
+
+template <typename T>
+Operation *createBinaryOp(OpBuilder &builder, std::vector<Value> &opVals,
+                          tensat::Node &node) {
+  auto location = builder.getUnknownLoc();
+  return builder.create<T>(location, opVals[node.operands[0]],
+                           opVals[node.operands[1]]);
+}
+
+/**
+ * Parse the Num nodes emitted by tensat node construction.
+ * Our protocol is to encode integer values as operand indices.
+ * TODO: improve this!
+ */
+int64_t parseNumNode(rust::vec<tensat::Node> &nodes, tensat::Node &seq) {
+  assert(seq.op == tensat::Ops::Num);
+  return seq.operands[0];
+}
+
+/**
+ * Parse the Vec nodes with Nums (e.g Vec(Num(128), Num(128))) emitted by
+ * tensat node construction.
+ */
+std::vector<int64_t> parseNumVec(rust::vec<tensat::Node> &nodes,
+                                 tensat::Node &seq) {
+  assert(seq.op == tensat::Ops::Vec);
+  std::vector<int64_t> result;
+
+  for (auto i : seq.operands) {
+    assert(i < nodes.size());
+    assert(nodes[i].op == tensat::Ops::Num);
+    result.push_back(parseNumNode(nodes, nodes[i]));
+  }
+
+  return result;
+}
+
+/**
+ * Parse the Vec nodes with Vecs (e.g Vec(Vec(128, 128), Vec(128, 128)))
+ * emitted by tensat node construction.
+ */
+mlir::DenseIntElementsAttr
+parseNumMatrixToDenseAttr(rust::vec<tensat::Node> &nodes, tensat::Node &seq,
+                          mlir::Builder &builder) {
+  assert(seq.op == tensat::Ops::Vec);
+
+  std::vector<std::vector<int64_t>> matrix;
+  for (auto i : seq.operands) {
+    assert(i < nodes.size());
+    assert(nodes[i].op == tensat::Ops::Vec);
+    matrix.push_back(parseNumVec(nodes, nodes[i]));
+  }
+  return matrixToDenseAttr(matrix, builder);
+}
+
+/**
+ * Parse the Vec nodes with arbitrary operations (e.g Vec(Input(...),
+ * AddOp(...))) emitted by tensat node construction.
+ */
+std::vector<Value> parseOpVec(std::vector<Value> &opVals, tensat::Node &seq) {
+  assert(seq.op == tensat::Ops::Vec);
+  std::vector<Value> result;
+
+  for (auto i : seq.operands) {
+    assert(opVals[i] != nullptr);
+    result.push_back(opVals[i]);
+  }
+
+  return result;
+}
+
+void reconstructStablehlo(
+    ModuleOp *root, std::vector<Operation *> *blackboxIDToTensorInfo,
+    std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
+    rust::vec<tensat::Node> &nodes, OpBuilder &builder) {
+  auto context = root->getContext();
+  std::vector<Value> opVals;
+
+  // Find funcOp to get the block.
+  func::FuncOp funcOp;
+
+  for (auto &op : root->getBody()->getOperations()) {
+    if (isa<func::FuncOp>(op)) {
+      funcOp = cast<func::FuncOp>(op);
+      break;
+    }
+  }
+
+  auto &region = funcOp.getRegion();
+  auto &block = funcOp.getRegion().front();
+
+  // We don't clear the block here straight away, because this will
+  // invalidate the old captured values in blackbox, and so the substitution
+  // won't work. We instead put everything in a vector, and only clear the
+  // block and insert everything at the very end.
+  std::vector<Operation *> opsToAdd;
+
+  auto location = builder.getUnknownLoc();
+
+  for (auto &node : nodes) {
+    Operation *newOp = nullptr;
+    // Create the new operation based on the operands
+    using namespace tensat;
+    switch (node.op) {
+    case Ops::Var:
+    case Ops::Num:
+    case Ops::Vec:
+      /* do nothing */
+      break;
+    case Ops::Input: {
+      int blockArgNumber = parseNumNode(nodes, nodes[node.operands[1]]);
+      opVals.push_back(block.getArgument(blockArgNumber));
+      continue;
+    }
+    case Ops::Index: {
+      int index = parseNumNode(nodes, nodes[node.operands[0]]);
+      int input = node.operands[1];
+      opVals.push_back(opVals[input].getDefiningOp()->getResult(index));
+      continue;
+    }
+    case Ops::NegOp:
+      newOp = createUnaryOp<stablehlo::NegOp>(builder, opVals, node);
+      break;
+    case Ops::TanhOp:
+      newOp = createUnaryOp<stablehlo::TanhOp>(builder, opVals, node);
+      break;
+    case Ops::ExpOp:
+      newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
+      break;
+    case Ops::AddOp:
+      newOp = createBinaryOp<stablehlo::AddOp>(builder, opVals, node);
+      break;
+    case Ops::SubtractOp:
+      newOp = createBinaryOp<stablehlo::SubtractOp>(builder, opVals, node);
+      break;
+    case Ops::MulOp:
+      newOp = createBinaryOp<stablehlo::MulOp>(builder, opVals, node);
+      break;
+    case Ops::DivOp:
+      newOp = createBinaryOp<stablehlo::DivOp>(builder, opVals, node);
+      break;
+    case Ops::MinOp:
+      newOp = createBinaryOp<stablehlo::MinOp>(builder, opVals, node);
+      break;
+    case Ops::MaxOp:
+      newOp = createBinaryOp<stablehlo::MaxOp>(builder, opVals, node);
+      break;
+    case Ops::TransposeOp: {
+      auto input = opVals[node.operands[0]];
+      auto permutation = parseNumVec(nodes, nodes[node.operands[1]]);
+      newOp =
+          builder.create<stablehlo::TransposeOp>(location, input, permutation);
+      break;
+    }
+    case Ops::BroadcastInDimOp: {
+      auto input = opVals[node.operands[0]];
+      auto broadcastDimensions = parseNumVec(nodes, nodes[node.operands[1]]);
+      auto shape = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto newType = deriveOutputType(input, shape);
+      newOp = builder.create<stablehlo::BroadcastInDimOp>(
+          location, newType, input, broadcastDimensions);
+      break;
+    }
+    case Ops::ReshapeOp: {
+      auto input = opVals[node.operands[0]];
+      auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
+      auto newType = deriveOutputType(input, shape);
+      newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
+      break;
+    }
+    case Ops::MatchRank: {
+      auto input = opVals[node.operands[0]];
+      auto ref = opVals[node.operands[1]];
+      if (getShape(input).size() == getShape(ref).size()) {
+        opVals.push_back(input);
+        continue;
+      } else {
+        auto newType = getReshapeTypeForMatchRank(input, ref);
+        newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
+      }
+      break;
+    }
+    case Ops::InferReshape: {
+      auto input = opVals[node.operands[0]];
+      llvm::SmallVector<int64_t> shape;
+      for (int i = 1; i < node.operands.size(); i++)
+        shape.push_back(node.operands[i]);
+      if (shape == getShape(input)) {
+        opVals.push_back(input);
+        continue;
+      } else {
+        auto newType = deriveOutputType(input, shape);
+        newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
+        break;
+      }
+    }
+    case Ops::ConvolutionOp: {
+      auto lhs = opVals[node.operands[0]];
+      auto rhs = opVals[node.operands[1]];
+
+      auto windowStrides = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto padding =
+          parseNumMatrixToDenseAttr(nodes, nodes[node.operands[3]], builder);
+      auto lhsDilation = parseNumVec(nodes, nodes[node.operands[4]]);
+      auto rhsDilation = parseNumVec(nodes, nodes[node.operands[5]]);
+      auto windowReversal = parseNumVec(nodes, nodes[node.operands[6]]);
+      std::vector<uint8_t> windowReversalBool;
+      windowReversalBool.reserve(windowReversal.size());
+      for (int64_t val : windowReversal) {
+        windowReversalBool.push_back(static_cast<uint8_t>(val != 0));
+      }
+      // dimension numbers
+      auto inputBatchDimension = parseNumNode(nodes, nodes[node.operands[7]]);
+      auto inputFeatureDimension = parseNumNode(nodes, nodes[node.operands[8]]);
+      auto inputSpatialDimensions = parseNumVec(nodes, nodes[node.operands[9]]);
+      auto kernelInputFeatureDimension =
+          parseNumNode(nodes, nodes[node.operands[10]]);
+      auto kernelOutputFeatureDimension =
+          parseNumNode(nodes, nodes[node.operands[11]]);
+      auto kernelSpatialDimensions =
+          parseNumVec(nodes, nodes[node.operands[12]]);
+      auto outputBatchDimension = parseNumNode(nodes, nodes[node.operands[13]]);
+      auto outputFeatureDimension =
+          parseNumNode(nodes, nodes[node.operands[14]]);
+      auto outputSpatialDimensions =
+          parseNumVec(nodes, nodes[node.operands[15]]);
+      auto convolutionDimensionNumbersAttr =
+          stablehlo::ConvDimensionNumbersAttr::get(
+              context, inputBatchDimension, inputFeatureDimension,
+              inputSpatialDimensions, kernelInputFeatureDimension,
+              kernelOutputFeatureDimension, kernelSpatialDimensions,
+              outputBatchDimension, outputFeatureDimension,
+              outputSpatialDimensions);
+
+      ConvDimensionNumbers convDims;
+      convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
+      convDims.lhs_spec.insert(convDims.lhs_spec.end(),
+                               inputSpatialDimensions.begin(),
+                               inputSpatialDimensions.end());
+
+      convDims.rhs_spec = {kernelOutputFeatureDimension,
+                           kernelInputFeatureDimension};
+      convDims.rhs_spec.insert(convDims.rhs_spec.end(),
+                               kernelSpatialDimensions.begin(),
+                               kernelSpatialDimensions.end());
+
+      convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
+      convDims.out_spec.insert(convDims.out_spec.end(),
+                               outputSpatialDimensions.begin(),
+                               outputSpatialDimensions.end());
+      auto featureGroupCount = parseNumNode(nodes, nodes[node.operands[16]]);
+      auto batchGroupCount = parseNumNode(nodes, nodes[node.operands[17]]);
+      auto precisionConfig = parseNumVec(nodes, nodes[node.operands[18]]);
+
+      std::vector<Attribute> precisionVec;
+      for (auto &precision : precisionConfig) {
+        switch (precision) {
+        case 0:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::DEFAULT));
+          break;
+        case 1:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::HIGH));
+          break;
+        case 2:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::HIGHEST));
+          break;
+        }
+      }
+
+      auto shape = convolutionShapeComputation(
+          getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
+          rhsDilation, convDims, featureGroupCount, batchGroupCount);
+
+      auto newType = deriveOutputType(lhs, shape);
+      newOp = builder.create<stablehlo::ConvolutionOp>(
+          location, newType, lhs, rhs,
+          mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(windowStrides)),
+          padding,
+          mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(lhsDilation)),
+          mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(rhsDilation)),
+          mlir::DenseBoolArrayAttr::get(
+              context, llvm::ArrayRef<bool>(reinterpret_cast<const bool *>(
+                                                windowReversalBool.data()),
+                                            windowReversalBool.size())),
+          convolutionDimensionNumbersAttr, featureGroupCount, batchGroupCount,
+          mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)));
+      break;
+    }
+    case Ops::DotGeneralOp: {
+      auto lhs = opVals[node.operands[0]];
+      auto rhs = opVals[node.operands[1]];
+
+      auto lhsBatchDim = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto rhsBatchDim = parseNumVec(nodes, nodes[node.operands[3]]);
+      auto lhsContractDim = parseNumVec(nodes, nodes[node.operands[4]]);
+      auto rhsContractDim = parseNumVec(nodes, nodes[node.operands[5]]);
+      auto precisionConfig = parseNumVec(nodes, nodes[node.operands[6]]);
+      auto lhsShape = getShape(lhs);
+      auto rhsShape = getShape(rhs);
+      auto shape = dotGeneralShapeComputation(lhsShape, rhsShape, lhsBatchDim,
+                                              rhsBatchDim, lhsContractDim,
+                                              rhsContractDim);
+
+      auto dotDimensionNumbersAttr = stablehlo::DotDimensionNumbersAttr::get(
+          context, lhsBatchDim, rhsBatchDim, lhsContractDim, rhsContractDim);
+
+      std::vector<Attribute> precisionVec;
+
+      for (auto &precision : precisionConfig) {
+        switch (precision) {
+        case 0:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::DEFAULT));
+          break;
+        case 1:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::HIGH));
+          break;
+        case 2:
+          precisionVec.push_back(stablehlo::PrecisionAttr::get(
+              context, stablehlo::Precision::HIGHEST));
+          break;
+        }
+      }
+
+      // TODO: Is lhs correct here?
+      auto newType = deriveOutputType(lhs, shape);
+      newOp = builder.create<stablehlo::DotGeneralOp>(
+          location, newType, lhs, rhs, dotDimensionNumbersAttr,
+          mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)), nullptr);
+      break;
+    }
+    case Ops::ConcatenateOp: {
+      auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
+      auto dimension = parseNumNode(nodes, nodes[node.operands[1]]);
+      newOp =
+          builder.create<stablehlo::ConcatenateOp>(location, inputs, dimension);
+      break;
+    }
+    case Ops::SliceOp: {
+      auto operand = opVals[node.operands[0]];
+      auto startIndices = parseNumVec(nodes, nodes[node.operands[1]]);
+      auto limitIndices = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto strides = parseNumVec(nodes, nodes[node.operands[3]]);
+      newOp = builder.create<stablehlo::SliceOp>(
+          location, operand, startIndices, limitIndices, strides);
+      break;
+    }
+    case Ops::SSplit0:
+    case Ops::SSplit1: {
+      auto operand = opVals[node.operands[0]];
+      auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
+      auto orig = opVals[node.operands[2]];
+      auto [startIndices, limitIndices] =
+          getSliceIndicesFromSplit(node.op, operand, axis, orig);
+      std::vector<int64_t> strides(getShape(operand).size(), 1);
+      newOp = builder.create<stablehlo::SliceOp>(
+          location, operand, startIndices, limitIndices, strides);
+      break;
+    }
+    case Ops::PadOp: {
+      auto operand = opVals[node.operands[0]];
+      auto paddingValue = opVals[node.operands[1]];
+      auto edgePaddingLow = parseNumVec(nodes, nodes[node.operands[2]]);
+      auto edgePaddingHigh = parseNumVec(nodes, nodes[node.operands[3]]);
+      auto interiorPadding = parseNumVec(nodes, nodes[node.operands[4]]);
+      newOp = builder.create<stablehlo::PadOp>(location, operand, paddingValue,
+                                               edgePaddingLow, edgePaddingHigh,
+                                               interiorPadding);
+      break;
+    }
+    // case Ops::IotaOp:
+    //   // TODO: element type handling.
+    //   newOp = builder.create<stablehlo::IotaOp>(
+    //       location,
+    //       RankedTensorType::get(
+    //           llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
+    //           builder.getF32Type()),
+    //       parseNumNode(nodes, nodes[node.operands[0]]));
+    //   break;
+    case Ops::ReturnOp: {
+      auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
+      newOp = builder.create<func::ReturnOp>(location, inputs);
+      break;
+    }
+    case Ops::BlackBox: {
+      assert(node.operands.size() == 3);
+      auto blackboxID = parseNumNode(nodes, nodes[node.operands[0]]);
+      auto operands = parseOpVec(opVals, nodes[node.operands[1]]);
+      std::vector<Value> capturedValues =
+          parseOpVec(opVals, nodes[node.operands[2]]);
+      size_t numOperands = operands.size();
+      newOp = blackboxIDToTensorInfo->at(blackboxID);
+
+      // Substitute the old captured values with the new ones
+      std::vector<Value> &oldCapturedValues =
+          blackboxIDToCapturedValues->at(blackboxID);
+      assert(oldCapturedValues.size() == capturedValues.size());
+      IRMapping subst;
+      for (int i = 0; i < capturedValues.size(); i++) {
+        subst.map(oldCapturedValues[i], capturedValues[i]);
+      }
+      newOp = newOp->clone(subst);
+      // We insert here rather than set, because we clone blackboxed ops
+      // without cloning operands. Setting will result in invalid access of
+      // OperandStorage.
+      newOp->insertOperands(0, operands);
+      break;
+    }
+    default:
+      throw std::invalid_argument("unimplemented op");
+    }
+    if (newOp) {
+      opsToAdd.push_back(newOp);
+      opVals.push_back(newOp->getResult(0));
+    } else {
+      assert(node.op == tensat::Ops::Vec || node.op == tensat::Ops::Num ||
+             node.op == tensat::Ops::Var);
+      // This is bad practice, as we're pushing nullptr
+      // to ops in case of Vec, Num, or Var nodes. This
+      // is unsafe, but maintains indexing. We could use
+      // some llvm no-op, but that would not be much better.
+      opVals.push_back(nullptr);
+    }
+  }
+  block.clear();
+  for (auto op : opsToAdd) {
+    block.push_back(op);
+  }
+}
+
+bool isUsedOutsideSegment(Value result, Block &entryBlock,
+                          SmallVector<Operation *> &currentOps) {
+  for (auto *user : result.getUsers()) {
+    Operation *op = user;
+    // Go up until we find the user op in our block
+    while (op->getBlock() != &entryBlock) {
+      op = op->getBlock()->getParentOp();
+    }
+    // Check if the user operation is not in the current segment
+    if (std::find(currentOps.begin(), currentOps.end(), op) ==
+        currentOps.end()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+SmallVector<Type> getValueTypes(SmallVector<Value> &values) {
+  SmallVector<Type> types;
+  for (auto val : values) {
+    types.push_back(val.getType());
+  }
+  return types;
+}
+
+void updateMapper(Operation *opIt, Operation *clonedOp, IRMapping &mapper) {
+  assert(opIt->getNumResults() == clonedOp->getNumResults());
+  for (unsigned i = 0; i < opIt->getNumResults(); ++i) {
+    mapper.map(opIt->getResult(i), clonedOp->getResult(i));
+  }
+}
+
+struct SegmentationPoint {
+  /// Operation at the end of a segment
+  Operation *endOp;
+
+  /// Values crossing into the segment
+  SmallVector<Value> inputs;
+
+  /// Values crossing out of the segment
+  SmallVector<Value> outputs;
+};
+
+struct SegmentedModule {
+  ModuleOp module;
+  SegmentationPoint segmentPoint;
+};
+
+std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
+                                          OpBuilder &builder) {
+  auto context = builder.getContext();
+  Block &entryBlock = funcOp.getBody().front();
+
+  const char *env_var = getenv("SEGMENTATION_THRESHOLD");
+  int segmentThreshold = 200; // Default value
+  if (env_var == nullptr || *env_var == '\0') {
+    segmentThreshold = 200;
+  } else {
+    // Attempt to convert the environment variable to an integer
+    char *endptr;
+    long parsedValue = std::strtol(env_var, &endptr, 10);
+    if (*endptr != '\0' || endptr == env_var || parsedValue < INT_MIN ||
+        parsedValue > INT_MAX) {
+      std::ostringstream error_string;
+      error_string << "Invalid value for SEGMENTATION_THRESHOLD: should be an "
+                      "integer, but was passed '"
+                   << env_var << "'";
+      throw std::invalid_argument(error_string.str());
+    }
+    segmentThreshold = static_cast<int>(parsedValue);
+  }
+
+  // First pass to determine segmentation points and necessary types.
+  // TODO: abstract out as separate function
+  SmallVector<SegmentationPoint> segmentationPoints;
+  SmallVector<Operation *> currentOps;
+  SegmentationPoint segment;
+
+  // We need to keep track of anything that was an output value, so that if
+  // we see it in later segments then we know to add that as an input.
+  DenseSet<Value> outputsBeforeCurrentSegment;
+
+  int nonBlackboxedInCurrentSegment = 0;
+
+  for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
+    Operation &op = *it;
+    currentOps.push_back(&op);
+
+    op.walk([&](Operation *innerOp) {
+      for (auto value : innerOp->getOperands()) {
+        // Treat as input if the value is either an argument to the current
+        // block or in the outputs list.
+        if ((value.getDefiningOp() == nullptr &&
+             value.getParentBlock() == &entryBlock) ||
+            outputsBeforeCurrentSegment.find(value) !=
+                outputsBeforeCurrentSegment.end()) {
+          if (std::find(segment.inputs.begin(), segment.inputs.end(), value) ==
+              segment.inputs.end()) {
+            segment.inputs.push_back(value);
+          }
+        }
+      }
+    });
+
+    bool blackboxed = isBlackboxed(&op);
+
+    // TODO: This ensures the last node in segment is blackboxed, but
+    // ideally we actually want to reduce the number of segment outputs.
+    if ((!segmentOff && blackboxed &&
+         nonBlackboxedInCurrentSegment >= segmentThreshold) ||
+        it == (--entryBlock.end())) {
+      // Track outputs of this segment
+      for (Operation *op : currentOps) {
+        for (Value result : op->getResults()) {
+          if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
+            segment.outputs.push_back(result);
+          }
+        }
+      }
+      segment.endOp = &op;
+      segmentationPoints.push_back(segment);
+      currentOps.clear();
+      nonBlackboxedInCurrentSegment = 0;
+
+      outputsBeforeCurrentSegment.insert(segment.outputs.begin(),
+                                         segment.outputs.end());
+      segment = SegmentationPoint();
+    }
+
+    if (!blackboxed)
+      nonBlackboxedInCurrentSegment++;
+  }
+
+  std::vector<SegmentedModule> segmentedModules;
+
+  auto opIt = entryBlock.begin();
+  for (int i = 0; i < segmentationPoints.size(); i++) {
+    auto segment = segmentationPoints[i];
+    ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
+
+    auto funcType = FunctionType::get(context, getValueTypes(segment.inputs),
+                                      getValueTypes(segment.outputs));
+    auto newFuncOp = builder.create<func::FuncOp>(
+        builder.getUnknownLoc(), "segmented_func_" + std::to_string(i),
+        funcType);
+    auto newBlock = newFuncOp.addEntryBlock();
+
+    IRMapping originalToCloned;
+    // Map original block arguments to new block arguments
+    for (unsigned i = 0; i < segment.inputs.size(); ++i) {
+      originalToCloned.map(segment.inputs[i], newBlock->getArgument(i));
+    }
+
+    // Clone operations
+    while (opIt != entryBlock.end() &&
+           opIt != entryBlock.getOperations().end() &&
+           &(*opIt) != segment.endOp) {
+      Operation *clonedOp = opIt->clone(originalToCloned);
+      newBlock->push_back(clonedOp);
+      updateMapper(&(*opIt), clonedOp, originalToCloned);
+      ++opIt;
+    }
+
+    // Clone the end operation
+    Operation *clonedEndOp = opIt->clone(originalToCloned);
+    newBlock->push_back(clonedEndOp);
+    updateMapper(&(*opIt), clonedEndOp, originalToCloned);
+    ++opIt;
+
+    // We need to return all the output values as well as endOp.
+    SmallVector<Value> returns;
+    for (auto output : segment.outputs) {
+      returns.push_back(originalToCloned.lookup(output));
+    }
+
+    if (!returns.empty()) {
+      auto returnOp =
+          builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
+      newBlock->push_back(returnOp);
+    }
+    currentModule.push_back(newFuncOp);
+    SegmentedModule sm;
+    sm.module = currentModule;
+    sm.segmentPoint = segment;
+    segmentedModules.push_back(sm);
+  }
+
+  return segmentedModules;
+}
+
+/// Inline the operations from each segmented module into the main function
+void recombineGraph(ModuleOp mainModule,
+                    std::vector<SegmentedModule> &optimizedModules,
+                    OpBuilder &builder) {
+  func::FuncOp mainFunc;
+  for (auto &op : mainModule.getBody()->getOperations()) {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      mainFunc = funcOp;
+      break;
+    }
+  }
+
+  if (!mainFunc) {
+    llvm::errs() << "Error: No main FuncOp found in the main module.\n";
+    return;
+  }
+
+  Block &entryBlock = mainFunc.getBody().front();
+  entryBlock.clear();
+
+  // Vector to keep track of the outputs from the previous segment
+  SmallVector<Value> previousSegmentOutputs;
+
+  DenseMap<Value, Value> availableValues;
+  // Initialize with main function arguments
+  for (auto arg : mainFunc.getArguments()) {
+    availableValues[arg] = arg;
+  }
+
+  for (size_t i = 0; i < optimizedModules.size(); ++i) {
+    SegmentedModule segmentedModule = optimizedModules[i];
+
+    SegmentationPoint segmentPoint = segmentedModule.segmentPoint;
+    func::FuncOp segmentedFunc;
+
+    segmentedModule.module.walk([&](func::FuncOp funcOp) {
+      if (segmentedFunc) {
+        llvm::errs() << "Error: Segmented module contains two FuncOps.\n";
+        return;
+      }
+      segmentedFunc = funcOp;
+    });
+
+    if (!segmentedFunc) {
+      llvm::errs() << "Error: Segmented module " << i
+                   << " does not contain a FuncOp.\n";
+      continue;
+    }
+
+    IRMapping mapper;
+    // map inputs using availablevalues
+    for (unsigned argIdx = 0; argIdx < segmentedFunc.getNumArguments();
+         ++argIdx) {
+      assert(argIdx < segmentPoint.inputs.size());
+      Value segmentedArg = segmentedFunc.getArgument(argIdx);
+      Value originalValue = segmentPoint.inputs[argIdx];
+      Value correspondingMainValue = availableValues.lookup(originalValue);
+      if (!correspondingMainValue) {
+        llvm::errs() << "Error: Unable to find corresponding value for "
+                        "segmented argument.\n";
+        segmentedArg.dump();
+        originalValue.dump();
+        return;
+      }
+      mapper.map(segmentedArg, correspondingMainValue);
+    }
+
+    // Vector to collect the outputs of the current segment
+    SmallVector<Value> currentSegmentOutputs;
+
+    // Clone and insert the operations from the segmented function into the
+    // main function
+    for (auto &op : segmentedFunc.getBody().front().getOperations()) {
+      if (auto retOp = dyn_cast<func::ReturnOp>(op)) {
+        // Collect the return values mapped to the main function's values
+        for (auto operand : retOp.getOperands()) {
+          Value mappedVal = mapper.lookupOrDefault(operand);
+          currentSegmentOutputs.push_back(mappedVal);
+        }
+        // Do not clone the `func.return` operation
+        continue;
+      } else {
+        // Clone the operation with remapped operands
+        Operation *clonedOp = op.clone(mapper);
+        entryBlock.push_back(clonedOp);
+        // Map the results for subsequent operations
+        for (auto result : op.getResults()) {
+          mapper.map(result, clonedOp->getResult(result.getResultNumber()));
+        }
+      }
+    }
+
+    // Update the previousSegmentOutputs for the next segment
+    previousSegmentOutputs = currentSegmentOutputs;
+
+    for (size_t idx = 0; idx < segmentPoint.outputs.size(); ++idx) {
+      assert(idx < currentSegmentOutputs.size());
+      Value originalOutput = segmentPoint.outputs[idx];
+      Value outputValue = currentSegmentOutputs[idx];
+      availableValues[originalOutput] = outputValue;
+    }
+  }
+
+  // After all segments have been inlined, insert a single `func.return` at
+  // the end
+  if (!previousSegmentOutputs.empty()) {
+    auto returnOp = builder.create<func::ReturnOp>(builder.getUnknownLoc(),
+                                                   previousSegmentOutputs);
+    entryBlock.push_back(returnOp);
+  } else {
+    // If there are no outputs, insert a void return
+    auto returnOp =
+        builder.create<func::ReturnOp>(builder.getUnknownLoc(), ValueRange{});
+    entryBlock.push_back(returnOp);
+  }
+}
+
+void cloneToNewBlock(OpBuilder &builder, IRMapping &mapper, Block *oldBlock,
+                     Block *newBlock, bool toWhile) {
+  for (auto &op : *oldBlock) {
+    // Move this op to newBlock
+    Operation *newOp;
+    if ((!toWhile && isa<stablehlo::ReturnOp>(op)) ||
+        (toWhile && isa<func::ReturnOp>(op))) {
+      // Convert stablehlo::ReturnOp <==> func::ReturnOp
+      SmallVector<Value> operands;
+      for (auto operand : op.getOperands()) {
+        operands.push_back(mapper.lookup(operand));
+      }
+      newOp = (toWhile ? builder.create<stablehlo::ReturnOp>(
+                             builder.getUnknownLoc(), operands)
+                       : builder.create<func::ReturnOp>(builder.getUnknownLoc(),
+                                                        operands));
+    } else {
+      newOp = op.clone(mapper);
+    }
+    for (auto operand : newOp->getOperands()) {
+      // Nothing should remain from the original block
+      assert(operand.getParentBlock() != oldBlock);
+    }
+    updateMapper(&op, newOp, mapper);
+    newBlock->push_back(newOp);
+  }
+}
+
+RankedTensorType parseVarLabel(OpBuilder &builder, std::string &label) {
+  auto firstAt = label.find('@');
+  auto secondAt = label.find('@', firstAt + 1);
+
+  std::string shapeStr = label.substr(firstAt + 1, secondAt - firstAt - 1);
+  std::string typeStr = label.substr(secondAt + 1);
+
+  SmallVector<int64_t> shape;
+  std::stringstream ss(shapeStr);
+  std::string dimension;
+  while (std::getline(ss, dimension, '_')) {
+    shape.push_back(std::stoi(dimension));
+  }
+  auto type = stringToMlirType(builder, typeStr);
+
+  return RankedTensorType::get(shape, type);
+}
+
+Box<tensat::CppGraphConverter>
+tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
+                           rust::Vec<tensat::Tensor> roots) {
+  DialectRegistry registry;
+  InitializeRegistryAndPasses(wrap(&registry));
+  MLIRContext context(registry);
+  RegisterDialects(wrap(&context));
+  OpBuilder builder(&context);
+
+  SmallVector<mlir::Type> argTypes, resultTypes;
+
+  for (auto &node : nodes) {
+    if (node.op == Ops::Input) {
+      auto var = nodes[node.operands[0]];
+      assert(var.op == Ops::Var);
+      std::string label = var.label.c_str();
+      auto type = parseVarLabel(builder, label);
+      argTypes.push_back(type);
+    }
+  }
+
+  for (auto &root : roots) {
+    auto type = newTensorType(builder, root);
+    resultTypes.push_back(type);
+  }
+
+  auto funcType = FunctionType::get(&context, argTypes, resultTypes);
+  auto funcOp =
+      builder.create<func::FuncOp>(builder.getUnknownLoc(), "main", funcType);
+  funcOp.addEntryBlock();
+
+  auto moduleOp = builder.create<ModuleOp>(builder.getUnknownLoc());
+  moduleOp.push_back(funcOp);
+  reconstructStablehlo(&moduleOp, {}, {}, nodes, builder);
+
+  // TODO: Ideally this should be just the rewrite we're considering instead of
+  // the whole pass, but that makes the infra more complicated. In practice I
+  // don't think there should be multiple possible application rules, so this
+  // should be good enough.
+  PassManager pm(&context);
+  pm.addPass(mlir::enzyme::createEnzymeHLOOptPass());
+  if (failed(pm.run(moduleOp))) {
+    llvm::errs() << "EnzymeHLOOpt failed\n";
+    moduleOp.dump();
+  }
+
+  std::vector<Operation *> blackboxIDToTensorInfo;
+  std::unordered_map<int, std::vector<Value>> blackboxIDToCapturedValues;
+
+  return createEgraph(&blackboxIDToTensorInfo, &blackboxIDToCapturedValues,
+                      builder, moduleOp);
+}
+
 namespace {
 class EqualitySaturationPass
     : public PassWrapper<EqualitySaturationPass, OperationPass<ModuleOp>> {
@@ -1203,1180 +2529,26 @@ public:
     return "Optimizes HLO graph using a Rust-based optimizer";
   }
 
-  int getValueIndex(Operation *definingOp, Value &value) {
-    auto results = definingOp->getResults();
-    for (int i = 0; i < results.size(); i++) {
-      if (results[i] == value)
-        return i;
-    }
-    return -1;
-  }
-
-  tensat::TensorInfo *handleOperand(
-      Value &operand,
-      std::unordered_map<Operation *, tensat::TensorInfo *> *opToTensorInfo,
-      std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
-      std::vector<Operation *> *blackboxIDToTensorInfo,
-      std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-      OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
-    if (auto defOp = operand.getDefiningOp()) {
-      // Use existing TensorInfo if already processed
-      auto convertedOperand = dfs(defOp, opToTensorInfo, blockArgToTensorInfo,
-                                  blackboxIDToTensorInfo,
-                                  blackboxIDToCapturedValues, builder, graph);
-      int index = getValueIndex(defOp, operand);
-      assert(index >= 0);
-      if (index == 0) {
-        return convertedOperand;
-      } else {
-        auto indexOperand =
-            graph->new_index(index, *convertedOperand).into_raw();
-        return indexOperand;
-      }
-    } else if (auto arg = operand.dyn_cast<BlockArgument>()) {
-      // Handle BlockArguments which represent function parameters
-      if (isa<TensorType>(operand.getType())) {
-        int32_t block_arg_number = arg.getArgNumber();
-        auto &tensorInfo = (*blockArgToTensorInfo)[block_arg_number];
-        if (!tensorInfo) {
-          tensorInfo = graph
-                           ->new_input(block_arg_number,
-                                       mlirValueToTensatTensor(operand))
-                           .into_raw();
-          (*blockArgToTensorInfo)[block_arg_number] = tensorInfo;
-        }
-        return tensorInfo;
-      } else {
-        std::cout
-            << "EqualitySaturationPass does not support this argument type!"
-            << "\n";
-        operand.getType().dump();
-        assert(false);
-      }
-    }
-    std::cout << "EqualitySaturationPass: encountered operand that is neither "
-                 "the result of an Op nor a BlockArgument."
-              << "\n";
-    assert(false);
-  }
-
-  tensat::TensorInfo *
-  dfs(Operation *op,
-      std::unordered_map<Operation *, tensat::TensorInfo *> *opToTensorInfo,
-      std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
-      std::vector<Operation *> *blackboxIDToTensorInfo,
-      std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-      OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
-    // std::cout << "DFS AT " << op->getName().getStringRef().str() << "\n";
-    if (opToTensorInfo->find(op) != opToTensorInfo->end()) {
-      return opToTensorInfo->at(op);
-    }
-    tensat::TensorInfo *tensorInfo = nullptr;
-    auto handleOperandPartial = [&](auto operand) {
-      return handleOperand(operand, opToTensorInfo, blockArgToTensorInfo,
-                           blackboxIDToTensorInfo, blackboxIDToCapturedValues,
-                           builder, graph);
-    };
-
-    bool blackboxed = false;
-
-    if (isa<stablehlo::MulOp>(op)) {
-      auto mul = cast<stablehlo::MulOp>(op);
-      tensorInfo = graph
-                       ->new_mul_op(*handleOperandPartial(mul.getLhs()),
-                                    *handleOperandPartial(mul.getRhs()),
-                                    mlirValueToTensatTensor(mul->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::SubtractOp>(op)) {
-      auto subtract = cast<stablehlo::SubtractOp>(op);
-      tensorInfo =
-          graph
-              ->new_subtract_op(*handleOperandPartial(subtract.getLhs()),
-                                *handleOperandPartial(subtract.getRhs()),
-                                mlirValueToTensatTensor(subtract->getResult(0)))
-              .into_raw();
-    } else if (isa<stablehlo::DivOp>(op)) {
-      auto div = cast<stablehlo::DivOp>(op);
-      auto shape = tensorInfo =
-          graph
-              ->new_div_op(*handleOperandPartial(div.getLhs()),
-                           *handleOperandPartial(div.getRhs()),
-                           mlirValueToTensatTensor(div->getResult(0)))
-              .into_raw();
-    } else if (isa<stablehlo::AddOp>(op)) {
-      auto add = cast<stablehlo::AddOp>(op);
-      tensorInfo = graph
-                       ->new_add_op(*handleOperandPartial(add.getLhs()),
-                                    *handleOperandPartial(add.getRhs()),
-                                    mlirValueToTensatTensor(add->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::MinOp>(op)) {
-      auto min = cast<stablehlo::MinOp>(op);
-      tensorInfo = graph
-                       ->new_min_op(*handleOperandPartial(min.getLhs()),
-                                    *handleOperandPartial(min.getRhs()),
-                                    mlirValueToTensatTensor(min->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::MaxOp>(op)) {
-      auto max = cast<stablehlo::MaxOp>(op);
-      tensorInfo = graph
-                       ->new_max_op(*handleOperandPartial(max.getLhs()),
-                                    *handleOperandPartial(max.getRhs()),
-                                    mlirValueToTensatTensor(max->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::TanhOp>(op)) {
-      auto tanh = cast<stablehlo::TanhOp>(op);
-      tensorInfo =
-          graph
-              ->new_tanh_op(*handleOperandPartial(tanh.getOperand()),
-                            mlirValueToTensatTensor(tanh->getResult(0)))
-              .into_raw();
-    } else if (isa<stablehlo::NegOp>(op)) {
-      auto neg = cast<stablehlo::NegOp>(op);
-      tensorInfo = graph
-                       ->new_neg_op(*handleOperandPartial(neg.getOperand()),
-                                    mlirValueToTensatTensor(neg->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::ExpOp>(op)) {
-      auto exp = cast<stablehlo::ExpOp>(op);
-      tensorInfo = graph
-                       ->new_exp_op(*handleOperandPartial(exp.getOperand()),
-                                    mlirValueToTensatTensor(exp->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::TransposeOp>(op)) {
-      auto transpose = cast<stablehlo::TransposeOp>(op);
-      tensorInfo = graph
-                       ->new_transpose_op(
-                           *handleOperandPartial(transpose.getOperand()),
-                           castArrayRefToRustVec(transpose.getPermutation()),
-                           mlirValueToTensatTensor(transpose->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::ReshapeOp>(op)) {
-      auto reshape = cast<stablehlo::ReshapeOp>(op);
-      if (auto output_tensor =
-              reshape.getResult().getType().cast<TensorType>()) {
-        tensorInfo =
-            graph
-                ->new_reshape_op(*handleOperandPartial(reshape.getOperand()),
-                                 mlirValueToTensatTensor(reshape->getResult(0)))
-                .into_raw();
-      } else {
-        std::cout << "EqualitySaturationPass: result of stablehlo::ReshapeOp "
-                     "has non-tensor type"
-                  << std::endl;
-      }
-      // } else if (isa<stablehlo::IotaOp>(op)) {
-      //   auto iota = cast<stablehlo::IotaOp>(op);
-      //   int32_t iota_dimension = iota.getIotaDimension();
-      //   if (auto output_tensor =
-      //   iota.getResult().getType().cast<TensorType>()) {
-      //     tensorInfo =
-      //         graph
-      //             ->new_iota_op(iota_dimension,
-      //                           mlirValueToTensatTensor(iota.getResult()))
-      //             .into_raw();
-      //   } else {
-      //     std::cout << "EqualitySaturationPass: result of stablehlo::IotaOp
-      //     has "
-      //                  "non-tensor type"
-      //               << std::endl;
-      //   }
-    } else if (isa<stablehlo::DotGeneralOp>(op)) {
-      // we might need more guards here
-      auto dot_general = cast<stablehlo::DotGeneralOp>(op);
-      auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
-
-      mlir::ArrayAttr precision =
-          dot_general.getPrecisionConfig().value_or(mlir::ArrayAttr());
-      rust::Vec<int64_t> precision_configs;
-      for (int i = 0; i < precision.size(); i++) {
-        auto precisionAttr =
-            precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
-        if (!precisionAttr)
-          continue; // Skip if it's not a PrecisionAttr, although such
-                    // attributes should not exist here
-        mlir::stablehlo::Precision val = precisionAttr.getValue();
-        switch (val) {
-        case mlir::stablehlo::Precision::DEFAULT:
-          precision_configs.push_back(0);
-          break;
-        case mlir::stablehlo::Precision::HIGH:
-          precision_configs.push_back(1);
-          break;
-        case mlir::stablehlo::Precision::HIGHEST:
-          precision_configs.push_back(2);
-          break;
-        }
-      }
-
-      tensorInfo = graph
-                       ->new_dot_general_op(
-                           *handleOperandPartial(dot_general.getLhs()),
-                           *handleOperandPartial(dot_general.getRhs()),
-                           castArrayRefToRustVec(
-                               dot_dim_attrs.getLhsBatchingDimensions()),
-                           castArrayRefToRustVec(
-                               dot_dim_attrs.getRhsBatchingDimensions()),
-                           castArrayRefToRustVec(
-                               dot_dim_attrs.getLhsContractingDimensions()),
-                           castArrayRefToRustVec(
-                               dot_dim_attrs.getRhsContractingDimensions()),
-                           precision_configs,
-                           mlirValueToTensatTensor(dot_general.getResult()))
-                       .into_raw();
-    } else if (isa<stablehlo::ConvolutionOp>(op)) {
-      auto convolution = cast<stablehlo::ConvolutionOp>(op);
-      auto result_type =
-          convolution.getResult().getType().cast<mlir::ShapedType>();
-      if (result_type.hasRank()) {
-        auto shape = result_type.getShape();
-        llvm::errs() << "Result shape: [";
-        for (auto dim : shape) {
-          llvm::errs() << dim << " ";
-        }
-        llvm::errs() << "]\n";
-      } else {
-        llvm::errs() << "Result is unranked.\n";
-      }
-      auto dimNumbers = convolution.getDimensionNumbers();
-      mlir::ArrayAttr precision =
-          convolution.getPrecisionConfig().value_or(mlir::ArrayAttr());
-      rust::Vec<int64_t> precision_configs;
-      for (int i = 0; i < precision.size(); i++) {
-        auto precisionAttr =
-            precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
-        if (!precisionAttr)
-          continue; // Skip if it's not a PrecisionAttr, although such
-                    // attributes should not exist here
-        mlir::stablehlo::Precision val = precisionAttr.getValue();
-        switch (val) {
-        case mlir::stablehlo::Precision::DEFAULT:
-          precision_configs.push_back(0);
-          break;
-        case mlir::stablehlo::Precision::HIGH:
-          precision_configs.push_back(1);
-          break;
-        case mlir::stablehlo::Precision::HIGHEST:
-          precision_configs.push_back(2);
-          break;
-        }
-      }
-      auto windowStridesOpt = convolution.getWindowStrides();
-      assert(windowStridesOpt.has_value() &&
-             "Expected window strides to be present.");
-      auto paddingOpt = convolution.getPadding();
-      assert(paddingOpt.has_value() && "Expected padding to be present.");
-      auto lhsDilationOpt = convolution.getLhsDilation();
-      assert(lhsDilationOpt.has_value() &&
-             "Expected LHS dilation to be present.");
-      auto rhsDilationOpt = convolution.getRhsDilation();
-      assert(rhsDilationOpt.has_value() &&
-             "Expected RHS dilation to be present.");
-      auto windowReversalOpt = convolution.getWindowReversal();
-      assert(windowReversalOpt.has_value() &&
-             "Expected Window reversal to be present.");
-
-      tensorInfo =
-          graph
-              ->new_convolution_op(
-                  *handleOperandPartial(convolution.getLhs()),
-                  *handleOperandPartial(convolution.getRhs()),
-                  castArrayRefToRustVec(windowStridesOpt.value()),
-                  castDenseIntElementsAttrToRustMatrix(paddingOpt.value()),
-                  castArrayRefToRustVec(lhsDilationOpt.value()),
-                  castArrayRefToRustVec(rhsDilationOpt.value()),
-                  castArrayRefToRustVec(windowReversalOpt.value()),
-                  dimNumbers.getInputBatchDimension(),
-                  dimNumbers.getInputFeatureDimension(),
-                  castArrayRefToRustVec(dimNumbers.getInputSpatialDimensions()),
-                  dimNumbers.getKernelInputFeatureDimension(),
-                  dimNumbers.getKernelOutputFeatureDimension(),
-                  castArrayRefToRustVec(
-                      dimNumbers.getKernelSpatialDimensions()),
-                  dimNumbers.getOutputBatchDimension(),
-                  dimNumbers.getOutputFeatureDimension(),
-                  castArrayRefToRustVec(
-                      dimNumbers.getOutputSpatialDimensions()),
-                  convolution.getFeatureGroupCount(),
-                  convolution.getBatchGroupCount(), precision_configs,
-                  mlirValueToTensatTensor(convolution.getResult()))
-              .into_raw();
-    } else if (isa<stablehlo::ConcatenateOp>(op)) {
-      auto concat = cast<stablehlo::ConcatenateOp>(op);
-      auto output_tensor = concat->getResult(0).getType().cast<TensorType>();
-      auto output_shape_array = castArrayRefToInt32(output_tensor.getShape());
-      std::vector<tensat::TensorInfo *> inputs;
-      for (auto input : concat.getInputs()) {
-        inputs.push_back(handleOperandPartial(input));
-      }
-      int32_t dimension = concat.getDimension();
-      tensorInfo = graph
-                       ->new_concatenate_op(
-                           {inputs.data(), inputs.size()}, dimension,
-                           mlirValueToTensatTensor(concat->getResult(0)))
-                       .into_raw();
-    } else if (isa<stablehlo::SliceOp>(op)) {
-      auto slice = cast<stablehlo::SliceOp>(op);
-      auto operand = handleOperandPartial(slice.getOperand());
-      tensorInfo =
-          graph
-              ->new_slice_op(*operand,
-                             castArrayRefToRustVec(slice.getStartIndices()),
-                             castArrayRefToRustVec(slice.getLimitIndices()),
-                             castArrayRefToRustVec(slice.getStrides()),
-                             mlirValueToTensatTensor(slice->getResult(0)))
-              .into_raw();
-    } else if (isa<stablehlo::PadOp>(op)) {
-      auto pad = cast<stablehlo::PadOp>(op);
-      auto operand = handleOperandPartial(pad.getOperand());
-      auto padding_value = handleOperandPartial(pad.getPaddingValue());
-      tensorInfo =
-          graph
-              ->new_pad_op(*operand, *padding_value,
-                           castArrayRefToRustVec(pad.getEdgePaddingLow()),
-                           castArrayRefToRustVec(pad.getEdgePaddingHigh()),
-                           castArrayRefToRustVec(pad.getInteriorPadding()),
-                           mlirValueToTensatTensor(pad->getResult(0)))
-              .into_raw();
-    } else if (isa<func::ReturnOp>(op)) {
-      int numOperands = op->getNumOperands();
-      std::vector<tensat::TensorInfo *> processedOperands;
-      for (size_t i = 0; i < numOperands; i++) {
-        auto operand = handleOperandPartial(op->getOperand(i));
-        processedOperands.push_back(operand);
-      }
-      auto operandPtrsSlice = rust::Slice<tensat::TensorInfo *const>{
-          processedOperands.data(),
-          static_cast<size_t>(processedOperands.size())};
-      tensorInfo = graph->new_return_op(operandPtrsSlice).into_raw();
-    } else {
-      blackboxed = true;
-
-      int numOperands = op->getNumOperands();
-      rust::Vec<tensat::Tensor> outputs;
-      for (auto result : op->getResults())
-        outputs.push_back(mlirValueToTensatTensor(result));
-
-      std::vector<tensat::TensorInfo *> processedOperands;
-      // We shouldn't clone operands, as those values will be invalidated
-      // after a block.clear(), and we access these during reconstruction.
-      auto copy = op->clone(Operation::CloneOptions(
-          /* cloneRegions = */ true, /* cloneOperands = */ false));
-      blackboxIDToTensorInfo->push_back(copy);
-      int blackboxOpID = blackboxIDToTensorInfo->size() - 1;
-      for (size_t i = 0; i < numOperands; i++) {
-        auto operand = handleOperandPartial(op->getOperand(i));
-        processedOperands.push_back(operand);
-      }
-      auto operandPtrsSlice = rust::Slice<tensat::TensorInfo *const>{
-          processedOperands.data(), processedOperands.size()};
-
-      std::vector<Value> capturedValues;
-      std::vector<tensat::TensorInfo *> capturedTensorInfos;
-
-      // Walk the operation, if any operands were originated from the current
-      // block (rather than within the operation) then we should capture them
-      auto outerBlock = op->getBlock();
-      copy->walk([&](Operation *op) {
-        if (op == copy)
-          return;
-        for (Value operand : op->getOperands()) {
-          if (operand.getDefiningOp() != nullptr // block argument
-              && operand.getDefiningOp()->getBlock() == outerBlock) {
-            capturedValues.push_back(operand);
-            capturedTensorInfos.push_back(handleOperandPartial(operand));
-          }
-        }
-      });
-
-      assert(blackboxIDToCapturedValues->find(blackboxOpID) ==
-             blackboxIDToCapturedValues->end());
-      (*blackboxIDToCapturedValues)[blackboxOpID] = capturedValues;
-
-      auto capturedTensorInfosSlice = rust::Slice<tensat::TensorInfo *const>{
-          capturedTensorInfos.data(), capturedTensorInfos.size()};
-
-      tensorInfo =
-          graph
-              ->new_blackbox_op(operandPtrsSlice, capturedTensorInfosSlice,
-                                blackboxOpID, outputs)
-              .into_raw();
-    }
-    assert(tensorInfo != nullptr);
-    // Check that isBlackboxed is up-to-date
-    assert(blackboxed == isBlackboxed(op));
-
-    opToTensorInfo->insert({op, tensorInfo});
-    return tensorInfo;
-  }
-
-  Box<tensat::CppGraphConverter> createEgraph(
-      std::vector<Operation *> *blackboxIDToTensorInfo,
-      std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-      OpBuilder &builder, ModuleOp module) {
-
-    auto graph = tensat::new_converter();
-    // members of the class
-    std::unordered_map<Operation *, tensat::TensorInfo *> opToTensorInfo;
-    std::unordered_map<int, tensat::TensorInfo *> blockArgToTensorInfo;
-
-    module.walk([&](func::ReturnOp op) {
-      dfs(op, &opToTensorInfo, &blockArgToTensorInfo, blackboxIDToTensorInfo,
-          blackboxIDToCapturedValues, builder, graph);
-    });
-
-    // graph->print_rec_expr();
-    return graph;
-  }
-
-  template <typename T>
-  Operation *createUnaryOp(OpBuilder &builder, std::vector<Value> &opVals,
-                           tensat::Node &node) {
-    auto location = builder.getUnknownLoc();
-    return builder.create<T>(location, opVals[node.operands[0]]);
-  }
-
-  template <typename T>
-  Operation *createBinaryOp(OpBuilder &builder, std::vector<Value> &opVals,
-                            tensat::Node &node) {
-    auto location = builder.getUnknownLoc();
-    return builder.create<T>(location, opVals[node.operands[0]],
-                             opVals[node.operands[1]]);
-  }
-
-  /**
-   * Parse the Vec nodes with Nums (e.g Vec(Num(128), Num(128))) emitted by
-   * tensat node construction.
-   */
-  std::vector<int64_t> parseNumVec(rust::vec<tensat::Node> &nodes,
-                                   tensat::Node &seq) {
-    assert(seq.op == tensat::Ops::Vec);
-    std::vector<int64_t> result;
-
-    for (auto i : seq.operands) {
-      assert(i < nodes.size());
-      assert(nodes[i].op == tensat::Ops::Num);
-      result.push_back(parseNumNode(nodes, nodes[i]));
-    }
-
-    return result;
-  }
-
-  /**
-   * Parse the Vec nodes with Vecs (e.g Vec(Vec(128, 128), Vec(128, 128)))
-   * emitted by tensat node construction.
-   */
-  mlir::DenseIntElementsAttr
-  parseNumMatrixToDenseAttr(rust::vec<tensat::Node> &nodes, tensat::Node &seq,
-                            mlir::Builder &builder) {
-    assert(seq.op == tensat::Ops::Vec);
-
-    std::vector<std::vector<int64_t>> matrix;
-    for (auto i : seq.operands) {
-      assert(i < nodes.size());
-      assert(nodes[i].op == tensat::Ops::Vec);
-      matrix.push_back(parseNumVec(nodes, nodes[i]));
-    }
-    return matrixToDenseAttr(matrix, builder);
-  }
-
-  /**
-   * Parse the Num nodes emitted by tensat node construction.
-   * Our protocol is to encode integer values as operand indices.
-   * TODO: improve this!
-   */
-  int64_t parseNumNode(rust::vec<tensat::Node> &nodes, tensat::Node &seq) {
-    assert(seq.op == tensat::Ops::Num);
-    return seq.operands[0];
-  }
-
-  /**
-   * Parse the Vec nodes with arbitrary operations (e.g Vec(Input(...),
-   * AddOp(...))) emitted by tensat node construction.
-   */
-  std::vector<Value> parseOpVec(std::vector<Value> &opVals, tensat::Node &seq) {
-    assert(seq.op == tensat::Ops::Vec);
-    std::vector<Value> result;
-
-    for (auto i : seq.operands) {
-      assert(opVals[i] != nullptr);
-      result.push_back(opVals[i]);
-    }
-
-    return result;
-  }
-
-  void reconstructStablehlo(
-      ModuleOp *root, std::vector<Operation *> *blackboxIDToTensorInfo,
-      std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-      rust::vec<tensat::Node> &nodes, OpBuilder &builder) {
-    auto context = root->getContext();
-    std::vector<Value> opVals;
-
-    // Find funcOp to get the block.
-    func::FuncOp funcOp;
-
-    for (auto &op : root->getBody()->getOperations()) {
-      if (isa<func::FuncOp>(op)) {
-        funcOp = cast<func::FuncOp>(op);
-        break;
-      }
-    }
-
-    auto &region = funcOp.getRegion();
-    auto &block = funcOp.getRegion().front();
-
-    // We don't clear the block here straight away, because this will
-    // invalidate the old captured values in blackbox, and so the substitution
-    // won't work. We instead put everything in a vector, and only clear the
-    // block and insert everything at the very end.
-    std::vector<Operation *> opsToAdd;
-
-    auto location = builder.getUnknownLoc();
-
-    for (auto &node : nodes) {
-      Operation *newOp = nullptr;
-      // Create the new operation based on the operands
-      using namespace tensat;
-      switch (node.op) {
-      case Ops::Var:
-      case Ops::Num:
-      case Ops::Vec:
-        /* do nothing */
-        break;
-      case Ops::Input: {
-        int blockArgNumber = parseNumNode(nodes, nodes[node.operands[1]]);
-        opVals.push_back(block.getArgument(blockArgNumber));
-        continue;
-      }
-      case Ops::Index: {
-        int index = parseNumNode(nodes, nodes[node.operands[0]]);
-        int input = node.operands[1];
-        opVals.push_back(opVals[input].getDefiningOp()->getResult(index));
-        continue;
-      }
-      case Ops::NegOp:
-        newOp = createUnaryOp<stablehlo::NegOp>(builder, opVals, node);
-        break;
-      case Ops::TanhOp:
-        newOp = createUnaryOp<stablehlo::TanhOp>(builder, opVals, node);
-        break;
-      case Ops::ExpOp:
-        newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
-        break;
-      case Ops::AddOp:
-        newOp = createBinaryOp<stablehlo::AddOp>(builder, opVals, node);
-        break;
-      case Ops::SubtractOp:
-        newOp = createBinaryOp<stablehlo::SubtractOp>(builder, opVals, node);
-        break;
-      case Ops::MulOp:
-        newOp = createBinaryOp<stablehlo::MulOp>(builder, opVals, node);
-        break;
-      case Ops::DivOp:
-        newOp = createBinaryOp<stablehlo::DivOp>(builder, opVals, node);
-        break;
-      case Ops::MinOp:
-        newOp = createBinaryOp<stablehlo::MinOp>(builder, opVals, node);
-        break;
-      case Ops::MaxOp:
-        newOp = createBinaryOp<stablehlo::MaxOp>(builder, opVals, node);
-        break;
-      case Ops::TransposeOp: {
-        auto input = opVals[node.operands[0]];
-        auto permutation = parseNumVec(nodes, nodes[node.operands[1]]);
-        newOp = builder.create<stablehlo::TransposeOp>(location, input,
-                                                       permutation);
-        break;
-      }
-      case Ops::ReshapeOp: {
-        auto input = opVals[node.operands[0]];
-        auto shape = parseNumVec(nodes, nodes[node.operands[1]]);
-        auto newType = deriveOutputType(input, shape);
-        newOp = builder.create<stablehlo::ReshapeOp>(location, newType, input);
-        break;
-      }
-      case Ops::MatchRank: {
-        auto input = opVals[node.operands[0]];
-        auto ref = opVals[node.operands[1]];
-        if (getShape(input).size() == getShape(ref).size()) {
-          opVals.push_back(input);
-          continue;
-        } else {
-          auto newType = getReshapeTypeForMatchRank(input, ref);
-          newOp =
-              builder.create<stablehlo::ReshapeOp>(location, newType, input);
-        }
-        break;
-      }
-      case Ops::InferReshape: {
-        auto input = opVals[node.operands[0]];
-        llvm::SmallVector<int64_t> shape;
-        for (int i = 1; i < node.operands.size(); i++)
-          shape.push_back(node.operands[i]);
-        if (shape == getShape(input)) {
-          opVals.push_back(input);
-          continue;
-        } else {
-          auto newType = deriveOutputType(input, shape);
-          newOp =
-              builder.create<stablehlo::ReshapeOp>(location, newType, input);
-          break;
-        }
-      }
-      case Ops::ConvolutionOp: {
-        auto lhs = opVals[node.operands[0]];
-        auto rhs = opVals[node.operands[1]];
-
-        auto windowStrides = parseNumVec(nodes, nodes[node.operands[2]]);
-        auto padding =
-            parseNumMatrixToDenseAttr(nodes, nodes[node.operands[3]], builder);
-        auto lhsDilation = parseNumVec(nodes, nodes[node.operands[4]]);
-        auto rhsDilation = parseNumVec(nodes, nodes[node.operands[5]]);
-        auto windowReversal = parseNumVec(nodes, nodes[node.operands[6]]);
-        std::vector<uint8_t> windowReversalBool;
-        windowReversalBool.reserve(windowReversal.size());
-        for (int64_t val : windowReversal) {
-          windowReversalBool.push_back(static_cast<uint8_t>(val != 0));
-        }
-        // dimension numbers
-        auto inputBatchDimension = parseNumNode(nodes, nodes[node.operands[7]]);
-        auto inputFeatureDimension =
-            parseNumNode(nodes, nodes[node.operands[8]]);
-        auto inputSpatialDimensions =
-            parseNumVec(nodes, nodes[node.operands[9]]);
-        auto kernelInputFeatureDimension =
-            parseNumNode(nodes, nodes[node.operands[10]]);
-        auto kernelOutputFeatureDimension =
-            parseNumNode(nodes, nodes[node.operands[11]]);
-        auto kernelSpatialDimensions =
-            parseNumVec(nodes, nodes[node.operands[12]]);
-        auto outputBatchDimension =
-            parseNumNode(nodes, nodes[node.operands[13]]);
-        auto outputFeatureDimension =
-            parseNumNode(nodes, nodes[node.operands[14]]);
-        auto outputSpatialDimensions =
-            parseNumVec(nodes, nodes[node.operands[15]]);
-        auto convolutionDimensionNumbersAttr =
-            stablehlo::ConvDimensionNumbersAttr::get(
-                context, inputBatchDimension, inputFeatureDimension,
-                inputSpatialDimensions, kernelInputFeatureDimension,
-                kernelOutputFeatureDimension, kernelSpatialDimensions,
-                outputBatchDimension, outputFeatureDimension,
-                outputSpatialDimensions);
-
-        ConvDimensionNumbers convDims;
-        convDims.lhs_spec = {inputBatchDimension, inputFeatureDimension};
-        convDims.lhs_spec.insert(convDims.lhs_spec.end(),
-                                 inputSpatialDimensions.begin(),
-                                 inputSpatialDimensions.end());
-
-        convDims.rhs_spec = {kernelOutputFeatureDimension,
-                             kernelInputFeatureDimension};
-        convDims.rhs_spec.insert(convDims.rhs_spec.end(),
-                                 kernelSpatialDimensions.begin(),
-                                 kernelSpatialDimensions.end());
-
-        convDims.out_spec = {outputBatchDimension, outputFeatureDimension};
-        convDims.out_spec.insert(convDims.out_spec.end(),
-                                 outputSpatialDimensions.begin(),
-                                 outputSpatialDimensions.end());
-        auto featureGroupCount = parseNumNode(nodes, nodes[node.operands[16]]);
-        auto batchGroupCount = parseNumNode(nodes, nodes[node.operands[17]]);
-        auto precisionConfig = parseNumVec(nodes, nodes[node.operands[18]]);
-
-        std::vector<Attribute> precisionVec;
-        for (auto &precision : precisionConfig) {
-          switch (precision) {
-          case 0:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::DEFAULT));
-            break;
-          case 1:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::HIGH));
-            break;
-          case 2:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::HIGHEST));
-            break;
-          }
-        }
-
-        auto shape = convolutionShapeComputation(
-            getShape(lhs), getShape(rhs), windowStrides, padding, lhsDilation,
-            rhsDilation, convDims, featureGroupCount, batchGroupCount);
-
-        auto newType = deriveOutputType(lhs, shape);
-        newOp = builder.create<stablehlo::ConvolutionOp>(
-            location, newType, lhs, rhs,
-            mlir::DenseI64ArrayAttr::get(context,
-                                         llvm::ArrayRef(windowStrides)),
-            padding,
-            mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(lhsDilation)),
-            mlir::DenseI64ArrayAttr::get(context, llvm::ArrayRef(rhsDilation)),
-            mlir::DenseBoolArrayAttr::get(
-                context, llvm::ArrayRef<bool>(reinterpret_cast<const bool *>(
-                                                  windowReversalBool.data()),
-                                              windowReversalBool.size())),
-            convolutionDimensionNumbersAttr, featureGroupCount, batchGroupCount,
-            mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)));
-        break;
-      }
-      case Ops::DotGeneralOp: {
-        auto lhs = opVals[node.operands[0]];
-        auto rhs = opVals[node.operands[1]];
-
-        auto lhsBatchDim = parseNumVec(nodes, nodes[node.operands[2]]);
-        auto rhsBatchDim = parseNumVec(nodes, nodes[node.operands[3]]);
-        auto lhsContractDim = parseNumVec(nodes, nodes[node.operands[4]]);
-        auto rhsContractDim = parseNumVec(nodes, nodes[node.operands[5]]);
-        auto precisionConfig = parseNumVec(nodes, nodes[node.operands[6]]);
-        auto lhsShape = getShape(lhs);
-        auto rhsShape = getShape(rhs);
-        auto shape = dotGeneralShapeComputation(lhsShape, rhsShape, lhsBatchDim,
-                                                rhsBatchDim, lhsContractDim,
-                                                rhsContractDim);
-
-        auto dotDimensionNumbersAttr = stablehlo::DotDimensionNumbersAttr::get(
-            context, lhsBatchDim, rhsBatchDim, lhsContractDim, rhsContractDim);
-
-        std::vector<Attribute> precisionVec;
-
-        for (auto &precision : precisionConfig) {
-          switch (precision) {
-          case 0:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::DEFAULT));
-            break;
-          case 1:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::HIGH));
-            break;
-          case 2:
-            precisionVec.push_back(stablehlo::PrecisionAttr::get(
-                context, stablehlo::Precision::HIGHEST));
-            break;
-          }
-        }
-
-        // TODO: Is lhs correct here?
-        auto newType = deriveOutputType(lhs, shape);
-        newOp = builder.create<stablehlo::DotGeneralOp>(
-            location, newType, lhs, rhs, dotDimensionNumbersAttr,
-            mlir::ArrayAttr::get(context, llvm::ArrayRef(precisionVec)),
-            nullptr);
-        break;
-      }
-      case Ops::ConcatenateOp: {
-        auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
-        auto dimension = parseNumNode(nodes, nodes[node.operands[1]]);
-        newOp = builder.create<stablehlo::ConcatenateOp>(location, inputs,
-                                                         dimension);
-        break;
-      }
-      case Ops::SliceOp: {
-        auto operand = opVals[node.operands[0]];
-        auto startIndices = parseNumVec(nodes, nodes[node.operands[1]]);
-        auto limitIndices = parseNumVec(nodes, nodes[node.operands[2]]);
-        auto strides = parseNumVec(nodes, nodes[node.operands[3]]);
-        newOp = builder.create<stablehlo::SliceOp>(
-            location, operand, startIndices, limitIndices, strides);
-        break;
-      }
-      case Ops::SSplit0:
-      case Ops::SSplit1: {
-        auto operand = opVals[node.operands[0]];
-        auto axis = parseNumNode(nodes, nodes[node.operands[1]]);
-        auto orig = opVals[node.operands[2]];
-        auto [startIndices, limitIndices] =
-            getSliceIndicesFromSplit(node.op, operand, axis, orig);
-        std::vector<int64_t> strides(getShape(operand).size(), 1);
-        newOp = builder.create<stablehlo::SliceOp>(
-            location, operand, startIndices, limitIndices, strides);
-        break;
-      }
-      case Ops::PadOp: {
-        auto operand = opVals[node.operands[0]];
-        auto paddingValue = opVals[node.operands[1]];
-        auto edgePaddingLow = parseNumVec(nodes, nodes[node.operands[2]]);
-        auto edgePaddingHigh = parseNumVec(nodes, nodes[node.operands[3]]);
-        auto interiorPadding = parseNumVec(nodes, nodes[node.operands[4]]);
-        newOp = builder.create<stablehlo::PadOp>(
-            location, operand, paddingValue, edgePaddingLow, edgePaddingHigh,
-            interiorPadding);
-        break;
-      }
-      case Ops::IotaOp:
-        // TODO: element type handling.
-        newOp = builder.create<stablehlo::IotaOp>(
-            location,
-            RankedTensorType::get(
-                llvm::ArrayRef(parseNumVec(nodes, nodes[node.operands[1]])),
-                builder.getF32Type()),
-            parseNumNode(nodes, nodes[node.operands[0]]));
-        break;
-      case Ops::ReturnOp: {
-        auto inputs = parseOpVec(opVals, nodes[node.operands[0]]);
-        newOp = builder.create<func::ReturnOp>(location, inputs);
-        break;
-      }
-      case Ops::BlackBox: {
-        assert(node.operands.size() == 3);
-        auto blackboxID = parseNumNode(nodes, nodes[node.operands[0]]);
-        auto operands = parseOpVec(opVals, nodes[node.operands[1]]);
-        std::vector<Value> capturedValues =
-            parseOpVec(opVals, nodes[node.operands[2]]);
-        size_t numOperands = operands.size();
-        newOp = blackboxIDToTensorInfo->at(blackboxID);
-
-        // Substitute the old captured values with the new ones
-        std::vector<Value> &oldCapturedValues =
-            blackboxIDToCapturedValues->at(blackboxID);
-        assert(oldCapturedValues.size() == capturedValues.size());
-        IRMapping subst;
-        for (int i = 0; i < capturedValues.size(); i++) {
-          subst.map(oldCapturedValues[i], capturedValues[i]);
-        }
-        newOp = newOp->clone(subst);
-        newOp->insertOperands(0, operands);
-        break;
-      }
-      default:
-        throw std::invalid_argument("unimplemented op");
-      }
-      if (newOp) {
-        opsToAdd.push_back(newOp);
-        opVals.push_back(newOp->getResult(0));
-      } else {
-        // This is bad practice, as we're pushing nullptr
-        // to ops in case of Input, Num, or Var nodes. This
-        // is unsafe, but maintains indexing. We could use
-        // some llvm no-op, but that would not be much better.
-        opVals.push_back(nullptr);
-      }
-    }
-    block.clear();
-    for (auto op : opsToAdd) {
-      block.push_back(op);
-    }
-  }
-
-  bool isUsedOutsideSegment(Value result, Block &entryBlock,
-                            SmallVector<Operation *> &currentOps) {
-    for (auto *user : result.getUsers()) {
-      // Check if the user operation is not in the current segment
-      if (std::find(currentOps.begin(), currentOps.end(), user) ==
-          currentOps.end()) {
-        // Check if the user operation is still within the same block
-        // (entryBlock)
-        if (user->getBlock() == &entryBlock) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  struct SegmentationPoint {
-    /// Operation at the end of a segment
-    Operation *endOp;
-
-    /// Values crossing into the segment
-    SmallVector<Value> inputs;
-
-    /// Values crossing out of the segment
-    SmallVector<Value> outputs;
-  };
-
-  struct SegmentedModule {
-    ModuleOp module;
-    SegmentationPoint segmentPoint;
-  };
-
-  std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp,
-                                            OpBuilder &builder) {
-    auto context = builder.getContext();
-    Block &entryBlock = funcOp.getBody().front();
-
-    // First pass to determine segmentation points and necessary types.
-    // TODO: abstract out as separate function
-
-    const int segmentThreshold = 70;
-    SmallVector<SegmentationPoint> segmentationPoints;
-    SmallVector<Operation *> currentOps;
-    SegmentationPoint segment;
-
-    // We need to keep track of anything that was an output value, so that if
-    // we see it in later segments then we know to add that as an input.
-    DenseSet<Value> outputsBeforeCurrentSegment;
-
-    int nonBlackboxedInCurrentSegment = 0;
-
-    for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
-      Operation &op = *it;
-      currentOps.push_back(&op);
-
-      for (Value operand : op.getOperands()) {
-        if (operand.getDefiningOp() == nullptr ||
-            operand.getDefiningOp()->getBlock() != &entryBlock ||
-            outputsBeforeCurrentSegment.find(operand) !=
-                outputsBeforeCurrentSegment.end()) {
-          if (std::find(segment.inputs.begin(), segment.inputs.end(),
-                        operand) == segment.inputs.end()) {
-            segment.inputs.push_back(operand);
-          }
-        }
-      }
-
-      bool blackboxed = isBlackboxed(&op);
-
-      // TODO: This ensures the last node in segment is blackboxed, but
-      // ideally we actually want to reduce the number of segment outputs.
-      if ((blackboxed && nonBlackboxedInCurrentSegment >= segmentThreshold) ||
-          it == (--entryBlock.end())) {
-        // Track outputs of this segment
-        for (Operation *op : currentOps) {
-          for (Value result : op->getResults()) {
-            if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
-              segment.outputs.push_back(result);
-            }
-          }
-        }
-        segment.endOp = &op;
-        segmentationPoints.push_back(segment);
-        currentOps.clear();
-        nonBlackboxedInCurrentSegment = 0;
-
-        outputsBeforeCurrentSegment.insert(segment.outputs.begin(),
-                                           segment.outputs.end());
-        segment = SegmentationPoint();
-      }
-
-      if (!blackboxed)
-        nonBlackboxedInCurrentSegment++;
-    }
-
-    std::vector<SegmentedModule> segmentedModules;
-
-    auto opIt = entryBlock.begin();
-    for (int i = 0; i < segmentationPoints.size(); i++) {
-      auto segment = segmentationPoints[i];
-      ModuleOp currentModule = ModuleOp::create(builder.getUnknownLoc());
-
-      auto funcType = FunctionType::get(context, getValueTypes(segment.inputs),
-                                        getValueTypes(segment.outputs));
-      auto newFuncOp = builder.create<func::FuncOp>(
-          builder.getUnknownLoc(), "segmented_func_" + std::to_string(i),
-          funcType);
-      auto newBlock = newFuncOp.addEntryBlock();
-
-      IRMapping originalToCloned;
-      // Map original block arguments to new block arguments
-      for (unsigned i = 0; i < segment.inputs.size(); ++i) {
-        originalToCloned.map(segment.inputs[i], newBlock->getArgument(i));
-      }
-
-      // Clone operations
-      while (opIt != entryBlock.end() &&
-             opIt != entryBlock.getOperations().end() &&
-             &(*opIt) != segment.endOp) {
-        Operation *clonedOp = builder.clone(*opIt, originalToCloned);
-        newBlock->push_back(clonedOp);
-        updateMapper(&(*opIt), clonedOp, originalToCloned);
-        ++opIt;
-      }
-
-      // Clone the end operation
-      Operation *clonedEndOp = builder.clone(*opIt, originalToCloned);
-      newBlock->push_back(clonedEndOp);
-      updateMapper(&(*opIt), clonedEndOp, originalToCloned);
-      ++opIt;
-
-      // We need to return all the output values as well as endOp.
-      SmallVector<Value> returns;
-      for (auto output : segment.outputs) {
-        returns.push_back(originalToCloned.lookup(output));
-      }
-
-      if (!returns.empty()) {
-        auto returnOp =
-            builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
-        newBlock->push_back(returnOp);
-      }
-      currentModule.push_back(newFuncOp);
-      SegmentedModule sm;
-      sm.module = currentModule;
-      sm.segmentPoint = segment;
-      segmentedModules.push_back(sm);
-    }
-
-    return segmentedModules;
-  }
-
-  SmallVector<Type> getValueTypes(SmallVector<Value> &values) {
-    SmallVector<Type> types;
-    for (auto val : values) {
-      types.push_back(val.getType());
-    }
-    return types;
-  }
-
-  void updateMapper(Operation *opIt, Operation *clonedOp, IRMapping &mapper) {
-    for (unsigned i = 0; i < opIt->getNumResults(); ++i) {
-      mapper.map(opIt->getResult(i), clonedOp->getResult(i));
-    }
-  }
-
-  /// Inline the operations from each segmented module into the main function
-  void recombineGraph(ModuleOp mainModule,
-                      std::vector<SegmentedModule> &optimizedModules,
-                      OpBuilder &builder) {
-    func::FuncOp mainFunc;
-    for (auto &op : mainModule.getBody()->getOperations()) {
-      if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
-        mainFunc = funcOp;
-        break;
-      }
-    }
-
-    if (!mainFunc) {
-      llvm::errs() << "Error: No main FuncOp found in the main module.\n";
-      return;
-    }
-
-    Block &entryBlock = mainFunc.getBody().front();
-    entryBlock.clear();
-    builder.setInsertionPointToEnd(&entryBlock);
-
-    // Vector to keep track of the outputs from the previous segment
-    SmallVector<Value> previousSegmentOutputs;
-
-    DenseMap<Value, Value> availableValues;
-    // Initialize with main function arguments
-    for (auto arg : mainFunc.getArguments()) {
-      availableValues[arg] = arg;
-    }
-
-    for (size_t i = 0; i < optimizedModules.size(); ++i) {
-      SegmentedModule segmentedModule = optimizedModules[i];
-
-      SegmentationPoint segmentPoint = segmentedModule.segmentPoint;
-      func::FuncOp segmentedFunc;
-
-      segmentedModule.module.walk([&](func::FuncOp funcOp) {
-        if (segmentedFunc) {
-          llvm::errs() << "Error: Segmented module contains two FuncOps.\n";
-          return;
-        }
-        segmentedFunc = funcOp;
-      });
-
-      if (!segmentedFunc) {
-        llvm::errs() << "Error: Segmented module " << i
-                     << " does not contain a FuncOp.\n";
-        continue;
-      }
-
-      IRMapping mapper;
-      // Map inputs using availableValues
-      for (unsigned argIdx = 0; argIdx < segmentedFunc.getNumArguments();
-           ++argIdx) {
-        Value segmentedArg = segmentedFunc.getArgument(argIdx);
-        Value originalValue = segmentPoint.inputs[argIdx];
-        Value correspondingMainValue = availableValues.lookup(originalValue);
-        if (!correspondingMainValue) {
-          llvm::errs() << "Error: Unable to find corresponding value for "
-                          "segmented argument.\n";
-          originalValue.getDefiningOp()->dump();
-          return;
-        }
-        mapper.map(segmentedArg, correspondingMainValue);
-      }
-
-      // Vector to collect the outputs of the current segment
-      SmallVector<Value> currentSegmentOutputs;
-
-      // Clone and insert the operations from the segmented function into the
-      // main function
-      for (auto &op : segmentedFunc.getBody().front().getOperations()) {
-        if (auto retOp = dyn_cast<func::ReturnOp>(op)) {
-          // Collect the return values mapped to the main function's values
-          for (auto operand : retOp.getOperands()) {
-            Value mappedVal = mapper.lookupOrDefault(operand);
-            currentSegmentOutputs.push_back(mappedVal);
-          }
-          // Do not clone the `func.return` operation
-          continue;
-        } else {
-          // Clone the operation with remapped operands
-          Operation *clonedOp = builder.clone(op, mapper);
-          // Map the results for subsequent operations
-          for (auto result : op.getResults()) {
-            mapper.map(result, clonedOp->getResult(result.getResultNumber()));
-          }
-        }
-      }
-
-      // Update the previousSegmentOutputs for the next segment
-      previousSegmentOutputs = currentSegmentOutputs;
-
-      for (size_t idx = 0; idx < segmentPoint.outputs.size(); ++idx) {
-        Value originalOutput = segmentPoint.outputs[idx];
-        Value outputValue = currentSegmentOutputs[idx];
-        availableValues[originalOutput] = outputValue;
-      }
-    }
-
-    // After all segments have been inlined, insert a single `func.return` at
-    // the end
-    if (!previousSegmentOutputs.empty()) {
-      builder.create<func::ReturnOp>(builder.getUnknownLoc(),
-                                     previousSegmentOutputs);
-    } else {
-      // If there are no outputs, insert a void return
-      builder.create<func::ReturnOp>(builder.getUnknownLoc(), ValueRange{});
-    }
-  }
-
-  void cloneToNewBlock(OpBuilder &builder, IRMapping &mapper, Block *oldBlock,
-                       Block *newBlock, bool toWhile) {
-    for (auto &op : *oldBlock) {
-      // Move this op to newBlock
-      Operation *newOp;
-      if ((!toWhile && isa<stablehlo::ReturnOp>(op)) ||
-          (toWhile && isa<func::ReturnOp>(op))) {
-        // Convert stablehlo::ReturnOp <==> func::ReturnOp
-        SmallVector<Value> operands;
-        for (auto operand : op.getOperands()) {
-          operands.push_back(mapper.lookup(operand));
-        }
-        newOp = (toWhile ? builder.create<stablehlo::ReturnOp>(
-                               builder.getUnknownLoc(), operands)
-                         : builder.create<func::ReturnOp>(
-                               builder.getUnknownLoc(), operands));
-      } else {
-        newOp = op.clone(mapper);
-      }
-      updateMapper(&op, newOp, mapper);
-      newBlock->push_back(newOp);
-    }
-  }
-
   void runOnOperation() override {
+    auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
     OpBuilder builder(context);
 
-    // We assume there's only one FuncOp
+    bool foundFuncOp = false;
     func::FuncOp funcOp;
+
     for (Operation &op : module.getBody()->getOperations()) {
-      if (auto foundFuncOp = dyn_cast<func::FuncOp>(op)) {
-        funcOp = foundFuncOp;
+      if (isa<func::FuncOp>(op)) {
+        if (foundFuncOp) {
+          throw std::invalid_argument("found more than one funcOp");
+        }
+        funcOp = dyn_cast<func::FuncOp>(op);
+        foundFuncOp = true;
       }
     }
 
-    if (!funcOp) {
+    if (!foundFuncOp) {
       llvm::errs() << "No FuncOp found in the module.\n";
       return;
     }
@@ -2398,9 +2570,7 @@ public:
         SmallVector<Value> captured;
         body.walk([&](Operation *op) {
           for (auto value : op->getOperands()) {
-            auto definingOp = value.getDefiningOp();
-            if (definingOp != nullptr &&
-                definingOp->getBlock() == &entryBlock &&
+            if (value.getParentBlock() == &entryBlock &&
                 std::find(captured.begin(), captured.end(), value) ==
                     captured.end()) {
               captured.push_back(value);
@@ -2447,7 +2617,25 @@ public:
 
     // llvm::errs() << "Running EqualitySaturationPass on the module.\n";
     // Segment the graph
-    auto segmentedModules = segmentGraph(funcOp, builder);
+    const char *segmentationOffEnv = getenv("SEGMENTATION_OFF");
+    bool segmentationOff =
+        segmentationOffEnv && (strcmp(segmentationOffEnv, "1") == 0 ||
+                               strcmp(segmentationOffEnv, "true") == 0);
+
+    if (segmentationOff) {
+      auto t = getenv("SEGMENTATION_THRESHOLD");
+      auto threshold = t ? std::string(t) : "";
+      if (threshold != "") {
+
+        auto error_string = "SEGMENTATION_OFF cannot be true while "
+                            "SEGMENTATION_THRESHOLD is set to " +
+                            threshold;
+        throw std::invalid_argument(error_string);
+      }
+    }
+
+    std::vector<SegmentedModule> segmentedModules;
+    segmentedModules = segmentGraph(funcOp, segmentationOff, builder);
 
     // Optimize each segmented subgraph
     for (int i = 0; i < segmentedModules.size(); ++i) {
@@ -2473,9 +2661,14 @@ public:
 
       // llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
     }
-    // Recombine the optimized segments into the original function
+
     recombineGraph(module, segmentedModules, builder);
-    llvm::errs() << "EqualitySaturationPass completed.\n";
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = t1 - t0;
+    llvm::errs() << "EqualitySaturationPass completed in "
+                 << llvm::format("%.3f", elapsed.count()) << " seconds with "
+                 << segmentedModules.size() << " segments\n";
   }
 };
 } // end anonymous namespace
