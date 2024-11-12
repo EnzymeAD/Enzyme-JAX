@@ -199,6 +199,10 @@ def ApplyReduceConcatPatterns : EnzymeHLOPatternOp<
     "reduce_concat"> {
   let patterns = ["ReduceConcat"];
 }
+def ApplyConcatSlicePatterns : EnzymeHLOPatternOp<
+    "concat_slice"> {
+  let patterns = ["ConcatSlice"];
+}
 def ApplySliceConcatPatterns : EnzymeHLOPatternOp<
     "slice_concat"> {
   let patterns = ["SliceConcat"];
