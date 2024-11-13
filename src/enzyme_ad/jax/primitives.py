@@ -339,6 +339,7 @@ concat_push_binop_mul<1>;
 scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
+concat_slice<1>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;

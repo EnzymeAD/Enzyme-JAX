@@ -1219,6 +1219,72 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
   return success();
 }
 
+struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
+
+      if (!slice) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      stablehlo::SliceOp otherSlice;
+      while (i + 1 < e &&
+             (otherSlice =
+                  op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>())) {
+        if (otherSlice.getOperand() != slice.getOperand())
+          break;
+
+        bool canMerge = true;
+
+        // Check that both slices are contiguous only in dim
+        ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
+                          otherSliceStarts = otherSlice.getStartIndices(),
+                          sliceLimits = slice.getLimitIndices(),
+                          otherSliceLimits = otherSlice.getLimitIndices(),
+                          sliceStrides = slice.getStrides(),
+                          otherSliceStrides = otherSlice.getStrides();
+
+        for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
+          if (d == dim) {
+            canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
+                        sliceStrides[d] == otherSliceStrides[d];
+          } else {
+            canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
+                        sliceLimits[d] == otherSliceLimits[d] &&
+                        sliceStrides[d] == otherSliceStrides[d];
+          }
+        }
+
+        if (canMerge) {
+          slice = rewriter.create<stablehlo::SliceOp>(
+              slice->getLoc(), slice.getOperand(), sliceStarts,
+              otherSliceLimits, sliceStrides);
+          i++;
+        } else
+          break;
+      }
+
+      newOperands.push_back(slice.getResult());
+    }
+
+    if (newOperands.size() == op->getNumOperands())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -6070,6 +6136,12 @@ struct RealOpCanon final : OpRewritePattern<mlir::stablehlo::RealOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::RealOp op,
                                 PatternRewriter &rewriter) const override {
+    auto elTy = op.getOperand().getType().getElementType();
+    if (!isa<ComplexType>(elTy)) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
     auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
     if (!complex)
       return failure();
@@ -6084,6 +6156,13 @@ struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ImagOp op,
                                 PatternRewriter &rewriter) const override {
+    auto elTy = op.getOperand().getType().getElementType();
+    if (!isa<ComplexType>(elTy)) {
+      rewriter.replaceOp(op, rewriter.create<stablehlo::ConstantOp>(
+                                 op->getLoc(), makeAttr(op.getType(), 0)));
+      return success();
+    }
+
     auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
     if (!complex)
       return failure();
@@ -6538,7 +6617,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  ConcatToBroadcast, PadPad, PadReshapePad,
                  ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, SliceConcat, SliceReshapeConcat,
+                 ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
