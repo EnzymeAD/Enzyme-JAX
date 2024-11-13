@@ -15,16 +15,16 @@ steps:
       arch: "{{matrix.arch}}"
     if: build.tag == null
     plugins:
-      - cache#v0.6.0:
-          manifest: .buildkite/pipeline.yml
-          path: .local
-          restore: file
-          save: file
-      - cache#v0.6.0:
-          manifest: WORKSPACE
-          path: .baztmp
-          restore: file
-          save: file
+      # - cache#v1.3.0:
+      #     manifest: .buildkite/pipeline.yml
+      #     path: .local/bin/bazel
+      #     restore: file
+      #     save: file
+      # - cache#v1.3.0:
+      #     manifest: workspace.bzl
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       mkdir -p .local/bin
       export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
@@ -32,9 +32,11 @@ steps:
       chmod +x .local/bin/md5
 
       if [ "{{matrix.os}}" == "macos" ]; then
-        curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
-        mv bazelisk-darwin .local/bin/bazel
-        chmod +x .local/bin/bazel
+        if [ ! -f ".local/bin/bazel" ]; then
+          curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
+          mv bazelisk-darwin .local/bin/bazel
+          chmod +x .local/bin/bazel
+        fi
       elif [ "{{matrix.os}}" == "linux" ]; then
         mv bazel* .local/bin/bazel
         chmod +x .local/bin/bazel
@@ -56,16 +58,17 @@ steps:
       
       mkdir -p .baztmp
       touch src/enzyme_ad/jax/deps/tensat/cargo-bazel-lock.json
-      # CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --test_output=errors //test/...
-      # CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no //test:bench_vs_xla
-      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no //test:llama
-      cat bazel-out/*/testlogs/test/llama/test.log
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
+      CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --check_visibility=false --cache_test_results=no --test_output-errors //test/...
       rm -f bazel-bin/*.whl
       CARGO_BAZEL_REPIN=true HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
       - "bazel-out/*/testlogs/test/llama/test.log"
-      - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
+      - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
+      - "bazel-out/*/testlogs/test/jaxmd/test.log"
+      - "bazel-out/*/testlogs/test/neuralgcm_test/test.log"
+      - "bazel-out/*/testlogs/test/keras_test/test.log"
 
     timeout_in_minutes: 180

@@ -536,6 +536,37 @@ def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
 
 def : HLOInactiveOp<"CeilOp">;
 
+def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
+  (Select
+    (And
+      (Compare $min, $max, (LT)),
+      (Compare $min, $operand, (GT))
+    ),
+    (DiffeRet),
+    (HLOConstantFP<"0"> $min)
+  ),
+  (Select
+    (Or
+      (Compare $operand, $min, (LT)),
+      (Compare $operand, $max, (GT))
+    ),
+    (HLOConstantFP<"0"> $operand),
+    (DiffeRet)
+  ),
+  (Select
+    (Compare (Max $operand, $min), $max, (GT)),
+    (DiffeRet),
+    (HLOConstantFP<"0"> $max)
+  ),
+], (Select
+    (Compare (Max $operand, $min), $max, (GT)),
+    (SelectIfActive $max, (Shadow $max), (HLOConstantFP<"0"> $max)),
+    (Select
+        (Compare $operand, $min, (LT)),
+        (SelectIfActive $min, (Shadow $min), (HLOConstantFP<"0"> $min)),
+        (SelectIfActive $operand, (Shadow $operand), (HLOConstantFP<"0"> $operand)))
+)>;
+
 def : HLODerivative<"CbrtOp", (Op $x), [
   (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
 ]>;
@@ -602,6 +633,8 @@ def : HLODerivative<"FftOp", (Op $x),
 
 def : HLOInactiveOp<"FloorOp">;
 
+def : HLODerivative<"ImagOp", (Op $x), [(Complex (HLOConstantFP<"0">), (Neg (DiffeRet)))], (Imag (Shadow $x))>;
+
 def : HLOInactiveOp<"IotaOp">;
 
 def : HLOInactiveOp<"IsFiniteOp">;
@@ -654,6 +687,8 @@ def : HLODerivative<"PowOp", (Op $x, $y),
 def : HLODerivative<"AbsOp", (Op $x), [
   (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet)))
 ]>;
+
+def : HLODerivative<"RealOp", (Op $x), [(Complex (DiffeRet), (HLOConstantFP<"0">))], (Real (Shadow $x))>;
 
 def : HLODerivative<"RemOp", (Op $x, $y), 
                   [

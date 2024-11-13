@@ -52,6 +52,11 @@ cc_binary(
         "//src/enzyme_ad/jax:TransformOps",
         "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",
+        "@stablehlo//stablehlo/tests:check_ops"
+    ],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
     ],
 )
 

@@ -22,6 +22,7 @@
 
 // TD: module attributes {transform.with_named_sequence} {
 // TD:  transform.named_sequence @__transform_main(%[[ROOT:.+]]: !transform.any_op) {
+// CLEAN-NOT: attributes {transform.with_named_sequence}
 // CLEAN-NOT: transform.named_sequence
 // TD:    %[[FUNC:.+]] = transform.structured.match ops{["func.func"]} in %[[ROOT]] : (!transform.any_op) -> !transform.any_op
 // TD:    transform.apply_patterns to %[[FUNC]] {

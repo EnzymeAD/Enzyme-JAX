@@ -34,6 +34,7 @@ exports_files(
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
+            "@stablehlo//:stablehlo-translate"
         ] + glob(["**/*.h"]),
     )
     for src in glob(
@@ -108,6 +109,7 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -119,7 +121,8 @@ py_test(
     imports = ["."],
     deps = TEST_DEPS,
     data = ["//src/enzyme_ad/jax:deps/tensat/converted.txt", "//src/enzyme_ad/jax:deps/tensat/converted_multi.txt", "//src/enzyme_ad/jax:deps/tensat/extractor/extract.py"],
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -129,8 +132,45 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
-    timeout='long'
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
+        "//conditions:default": []
+    }),
+    timeout='long',
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "neuralgcm_test",
+    srcs = [
+        "neuralgcm_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
+    timeout='eternal',
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "keras_test",
+    srcs = [
+        "keras_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 # py_test(
@@ -140,5 +180,6 @@ py_test(
 #     ],
 #     imports = ["."],
 #     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
-#     timeout='long'
+#     timeout='long',
+#     tags = ["exclusive"]
 # )
