@@ -439,12 +439,20 @@ public:
       Block *oBB = &orig->getRegion(1).front();
       auto term = oBB->getTerminator();
 
+      // All values defined in the body should have no use outside this block
+      // therefore we can set their diffe to zero upon entering the reverse
+      // block to simplify the work of the remove-unnecessary-enzyme-ops pass.
       for (auto operand : oBB->getArguments()) {
-        // All arguments should have no use outside this block therefore we can
-        // set their diffe to zero upon entering the reverse block to simplify
-        // the work of the remove-unnecessary-enzyme-ops pass.
         if (!gutils->isConstantValue(operand)) {
           gutils->zeroDiffe(operand, bodyBuilder);
+        }
+      }
+
+      for (auto &it : oBB->getOperations()) {
+        for (auto res : it.getResults()) {
+          if (!gutils->isConstantValue(res)) {
+            gutils->zeroDiffe(res, bodyBuilder);
+          }
         }
       }
 

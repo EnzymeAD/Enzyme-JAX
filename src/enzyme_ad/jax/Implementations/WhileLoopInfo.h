@@ -19,9 +19,9 @@ namespace enzyme {
 struct WhileLoopInfo {
   WhileOp op;
 
-  mlir::Value start; // garanteed to dominate the while op
-  mlir::Value limit; // not garanteed to dominate the while op
-  mlir::Value step;  // not garanteed to dominate the while op
+  mlir::Value start; // guaranteed to dominate the while op
+  mlir::Value limit; // not guaranteed to dominate the while op
+  mlir::Value step;  // not guaranteed to dominate the while op
 
   WhileLoopInfo(WhileOp op_) : op(op_) {}
 
