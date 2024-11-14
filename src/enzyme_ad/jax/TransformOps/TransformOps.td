@@ -183,6 +183,10 @@ def ApplyConcatConstPropPatterns : EnzymeHLOPatternOp<
     "concat_const_prop"> {
   let patterns = ["ConcatConstProp"];
 }
+def ApplyDynamicUpdateSliceConstProp : EnzymeHLOPatternOp<
+    "dynamic_update_slice_const_prop"> {
+  let patterns = ["DynamicUpdateSliceConstProp"];
+}
 def ApplyConcatFusePatterns : EnzymeHLOPatternOp<
     "concat_fuse"> {
   let patterns = ["ConcatFuse"];
