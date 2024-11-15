@@ -736,11 +736,11 @@ def _enzyme_primal_lowering(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     if lang == LANG_MHLO:
-        if type(source) == type(''):
+        if type(source) == type(""):
             mfunc = None
             jit_options = {}
-            out_idx_map = {i:-1 for (i, v) in enumerate(out_shapes)}
-            in_idx_map = {i:i for (i, v) in enumerate(ctx.avals_in)}
+            out_idx_map = {i: -1 for (i, v) in enumerate(out_shapes)}
+            in_idx_map = {i: i for (i, v) in enumerate(ctx.avals_in)}
         else:
             (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
         print_mlir = False
@@ -761,7 +761,7 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        if type(source) == type(''):
+        if type(source) == type(""):
             avals_in = avals
             kept = [i for (i, v) in enumerate(orig_shapes)]
         else:
