@@ -736,7 +736,13 @@ def _enzyme_primal_lowering(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     if lang == LANG_MHLO:
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        if type(source) == type(""):
+            mfunc = None
+            jit_options = {}
+            out_idx_map = {i: -1 for (i, v) in enumerate(out_shapes)}
+            in_idx_map = {i: i for (i, v) in enumerate(ctx.avals_in)}
+        else:
+            (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
         print_mlir = False
         if "print_mlir" in jit_options:
             print_mlir = jit_options["print_mlir"]
@@ -755,16 +761,20 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
-        lowered_func = lower(
-            jax.jit(mfunc, **jit_options),
-            avals_in,
-            ctx.module_context.lowering_parameters,
-            kwargs=avals_inkw,
-        )
-        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = mhlo.operation.get_asm(enable_debug_info=True)
-        kept = lowered_func.compile()._executable._kept_var_idx
+        if type(source) == type(""):
+            avals_in = avals
+            kept = [i for (i, v) in enumerate(orig_shapes)]
+        else:
+            (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
+            lowered_func = lower(
+                jax.jit(mfunc, **jit_options),
+                avals_in,
+                ctx.module_context.lowering_parameters,
+                kwargs=avals_inkw,
+            )
+            mhlo = lowered_func.compiler_ir(dialect="stablehlo")
+            source = mhlo.operation.get_asm(enable_debug_info=True)
+            kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(
             arg
             for (i, arg) in enumerate(in_args)
