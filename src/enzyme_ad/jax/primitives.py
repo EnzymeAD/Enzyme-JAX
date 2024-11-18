@@ -1160,6 +1160,44 @@ def ffi_call(
         pipeline_options=pipeline_options
     )
 
+def to_jax_type(mlir_type):
+    import jax._src.interpreters.mlir
+    et = mlir_type.element_type
+    for (jtype, mcall) in jax._src.interpreters.mlir._dtype_to_ir_type:
+        mtype = mcall(mlir_type.context)
+        if mtype == mlir_type:
+            return jax.core.ShapedArray(mlir_type.shape, jtype)
+    assert False
+
+def hlo_call(
+    *args,
+    source : str,
+    fn: str = "f",
+    argv: tuple[str] = (),
+    lang: int = LANG_CPP,
+    pipeline_options=DefaultJaXPipeline
+):
+    nmod = ir.Module.parse(source)
+    func = None
+    for f in nmod.body:
+        if f.sym_name.value == fn:
+            func = f
+    assert func is not None
+    in_tys = list(map(lambda x: to_jax_type(x.type()), fn.regions[0].blocks[0].arguments))
+    out_shapes = list(map(lambda x: to_jax_type(x.type()), fn.regions[0].blocks[0].operations[-1].operands))
+    args_flat, in_tree = jax.tree_util.tree_flatten(args)
+    assert len(args_flat) == len(in_tys)
+    for (jty, hloty) in zip(args_flat, in_tys):
+        assert jty == hloty
+    return _enzyme_primal_p.bind(
+        *args,
+        source=source,
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=lang,
+        pipeline_options=pipeline_options
+    )
 
 def cpp_call(
     *args,
