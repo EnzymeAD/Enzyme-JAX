@@ -1,11 +1,11 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import ffi_call, enzyme_jax_ir
+from enzyme_ad.jax import hlo_call, enzyme_jax_ir
 from test_utils import *
         
 def do_something(mat, scalar):
-    a, b = ffi_call(
+    a, b = hlo_call(
         ones,
         source="""
 module {
