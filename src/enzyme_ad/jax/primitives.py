@@ -821,6 +821,8 @@ def _enzyme_primal_lowering(
                 mod.regions[0].blocks[0].append(f)
                 if f.sym_name.value == name:
                     fn = f
+            if fn is None:
+                raise AssertionError("Could not find function named "+name+" in post opt module "+str(nmod)+", pre opt module was "+str(source)+" pipeline was \"" + pass_pipeline + "\"")
             for f in pushtop[::-1]:
                 f.move_before(next(mod.regions[0].blocks[0].__iter__()))
             if True:
@@ -1163,9 +1165,9 @@ def ffi_call(
 def to_jax_type(mlir_type):
     import jax._src.interpreters.mlir
     et = mlir_type.element_type
-    for (jtype, mcall) in jax._src.interpreters.mlir._dtype_to_ir_type:
-        mtype = mcall(mlir_type.context)
-        if mtype == mlir_type:
+    for (jtype, mcall) in jax._src.interpreters.mlir._dtype_to_ir_type.items():
+        mtype = mcall() # mlir_type.context)
+        if mtype == et:
             return jax.core.ShapedArray(mlir_type.shape, jtype)
     assert False
 
@@ -1174,29 +1176,34 @@ def hlo_call(
     source : str,
     fn: str = "f",
     argv: tuple[str] = (),
-    lang: int = LANG_CPP,
-    pipeline_options=DefaultJaXPipeline
+    passes: str = "",
 ):
-    nmod = ir.Module.parse(source)
-    func = None
-    for f in nmod.body:
-        if f.sym_name.value == fn:
-            func = f
-    assert func is not None
-    in_tys = list(map(lambda x: to_jax_type(x.type()), fn.regions[0].blocks[0].arguments))
-    out_shapes = list(map(lambda x: to_jax_type(x.type()), fn.regions[0].blocks[0].operations[-1].operands))
-    args_flat, in_tree = jax.tree_util.tree_flatten(args)
-    assert len(args_flat) == len(in_tys)
-    for (jty, hloty) in zip(args_flat, in_tys):
-        assert jty == hloty
+    with jax_mlir.make_ir_context():
+        nmod = ir.Module.parse(source)
+        func = None
+        names = []
+        for f in nmod.body:
+            names.append(f.sym_name.value)
+            if f.sym_name.value == fn:
+                func = f
+        if func is None:
+            raise AssertionError(f"Could not find desired function {fn} options are {names}")
+        in_tys = list(map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].arguments))
+        out_shapes = list(map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].operations[len(func.regions[0].blocks[0].operations)-1].operands))
+        args_flat, in_tree = jax.tree_util.tree_flatten(args)
+        assert len(args_flat) == len(in_tys)
+        for (jarg, hloty) in zip(args_flat, in_tys):
+            print(jarg, hloty)
+            assert jarg.shape == hloty.shape
+            assert jarg.dtype == hloty.dtype
     return _enzyme_primal_p.bind(
         *args,
         source=source,
         fn=fn,
         argv=argv,
         out_shapes=out_shapes,
-        lang=lang,
-        pipeline_options=pipeline_options
+        lang=LANG_MHLO,
+        pipeline_options=JaXPipeline(passes),
     )
 
 def cpp_call(
