@@ -487,7 +487,7 @@ def _enzyme_primal_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -500,7 +500,7 @@ def _enzyme_fwd_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -513,7 +513,7 @@ def _enzyme_aug_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -526,7 +526,7 @@ def _enzyme_shadow_aug_impl(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.Array]:
     del args_flat, source, out_shapes
     raise RuntimeError("must be JIT'ed")
@@ -539,7 +539,7 @@ def _enzyme_rev_impl(
     argv: Sequence[str],
     in_shapes,
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.Array]:
     del args_flat, source, in_shapes
     raise RuntimeError("must be JIT'ed")
@@ -552,7 +552,7 @@ def _enzyme_primal_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     # TODO: we may attempt some lightweight parsing of source to extract the
     # result types instead.
@@ -566,7 +566,7 @@ def _enzyme_fwd_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     del source, fn, args_flat
     return tuple(o for o in out_shapes for _ in range(2))
@@ -595,7 +595,7 @@ def _enzyme_aug_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     in_shapes = args_flat
 
@@ -641,7 +641,7 @@ def _enzyme_shadow_aug_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     return out_shapes
 
@@ -653,7 +653,7 @@ def _enzyme_rev_abstract_eval(
     argv: Sequence[str],
     in_shapes,
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     return tuple(
         jax.core.ShapedArray(shape, dejaxify(tyid)) for (shape, tyid) in in_shapes
@@ -717,7 +717,7 @@ def _enzyme_primal_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -822,7 +822,17 @@ def _enzyme_primal_lowering(
                 if f.sym_name.value == name:
                     fn = f
             if fn is None:
-                raise AssertionError("Could not find function named "+name+" in post opt module "+str(nmod)+", pre opt module was "+str(source)+" pipeline was \"" + pass_pipeline + "\"")
+                raise AssertionError(
+                    "Could not find function named "
+                    + name
+                    + " in post opt module "
+                    + str(nmod)
+                    + ", pre opt module was "
+                    + str(source)
+                    + ' pipeline was "'
+                    + pass_pipeline
+                    + '"'
+                )
             for f in pushtop[::-1]:
                 f.move_before(next(mod.regions[0].blocks[0].__iter__()))
             if True:
@@ -936,7 +946,7 @@ def _enzyme_fwd_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -1004,7 +1014,7 @@ def _enzyme_aug_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -1068,7 +1078,7 @@ def _enzyme_rev_lowering(
     argv: Sequence[str],
     in_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[ir.Value]:
     del in_shapes
 
@@ -1149,7 +1159,7 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
-    pipeline_options=DefaultCPPPipeline
+    pipeline_options=DefaultCPPPipeline,
 ):
     assert type(source) == type("") or len(source) == 5
     return _enzyme_primal_p.bind(
@@ -1159,21 +1169,24 @@ def ffi_call(
         argv=argv,
         out_shapes=out_shapes,
         lang=lang,
-        pipeline_options=pipeline_options
+        pipeline_options=pipeline_options,
     )
+
 
 def to_jax_type(mlir_type):
     import jax._src.interpreters.mlir
+
     et = mlir_type.element_type
-    for (jtype, mcall) in jax._src.interpreters.mlir._dtype_to_ir_type.items():
-        mtype = mcall() # mlir_type.context)
+    for jtype, mcall in jax._src.interpreters.mlir._dtype_to_ir_type.items():
+        mtype = mcall()  # mlir_type.context)
         if mtype == et:
             return jax.core.ShapedArray(mlir_type.shape, jtype)
     assert False
 
+
 def hlo_call(
     *args,
-    source : str,
+    source: str,
     fn: str = "f",
     argv: tuple[str] = (),
     passes: str = "",
@@ -1187,12 +1200,24 @@ def hlo_call(
             if f.sym_name.value == fn:
                 func = f
         if func is None:
-            raise AssertionError(f"Could not find desired function {fn} options are {names}")
-        in_tys = list(map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].arguments))
-        out_shapes = list(map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].operations[len(func.regions[0].blocks[0].operations)-1].operands))
+            raise AssertionError(
+                f"Could not find desired function {fn} options are {names}"
+            )
+        in_tys = list(
+            map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].arguments)
+        )
+        out_shapes = list(
+            map(
+                lambda x: to_jax_type(x.type),
+                func.regions[0]
+                .blocks[0]
+                .operations[len(func.regions[0].blocks[0].operations) - 1]
+                .operands,
+            )
+        )
         args_flat, in_tree = jax.tree_util.tree_flatten(args)
         assert len(args_flat) == len(in_tys)
-        for (jarg, hloty) in zip(args_flat, in_tys):
+        for jarg, hloty in zip(args_flat, in_tys):
             print(jarg, hloty)
             assert jarg.shape == hloty.shape
             assert jarg.dtype == hloty.dtype
@@ -1206,13 +1231,14 @@ def hlo_call(
         pipeline_options=JaXPipeline(passes),
     )
 
+
 def cpp_call(
     *args,
     out_shapes: Sequence[jax.core.ShapedArray],
     source: str,
     fn: str = "f",
     argv: tuple[str] = (),
-    pipeline_options=DefaultCPPPipeline
+    pipeline_options=DefaultCPPPipeline,
 ):
     return ffi_call(
         *args,
@@ -1221,7 +1247,7 @@ def cpp_call(
         argv=argv,
         out_shapes=out_shapes,
         lang=LANG_CPP,
-        pipeline_options=pipeline_options
+        pipeline_options=pipeline_options,
     )
 
 
@@ -1311,7 +1337,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
             fn=kwargs["fn"],
             argv=kwargs["argv"],
             lang=kwargs["lang"],
-            pipeline_options=pipeline_options
+            pipeline_options=pipeline_options,
         )
     else:
         arg_tangents = tuple(
@@ -1325,7 +1351,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
             argv=kwargs["argv"],
             out_shapes=kwargs["out_shapes"],
             lang=kwargs["lang"],
-            pipeline_options=kwargs["pipeline_options"]
+            pipeline_options=kwargs["pipeline_options"],
         )
     res = (shadconv[0::2], shadconv[1::2])
     return res
@@ -1569,7 +1595,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             fn=kwargs["fn"],
             argv=kwargs["argv"],
             lang=kwargs["lang"],
-            pipeline_options=pipeline_options
+            pipeline_options=pipeline_options,
         )
         res = tuple(None for _ in prim_args) + tuple(shadconv)
         return res
@@ -1681,7 +1707,7 @@ def enzyme_jax_ir(
                 out_shapes=out_shape_flat,
                 argv=argv,
                 lang=LANG_MHLO,
-                pipeline_options=pipeline_options
+                pipeline_options=pipeline_options,
             )
             return jax.tree_util.tree_unflatten(out_tree, out_flat)
 

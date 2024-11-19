@@ -3,10 +3,12 @@ import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import hlo_call, enzyme_jax_ir
 from test_utils import *
-        
+
+
 def do_something(mat, scalar):
     a, b = hlo_call(
-        mat, scalar,
+        mat,
+        scalar,
         source="""
 module {
 func.func @myfun(%arg0: tensor<2x2xf32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<2x2xf32>) {
@@ -24,19 +26,20 @@ return %1, %4 : tensor<f32>, tensor<2x2xf32>
     )
     return a, b
 
+
 class HLOFFI(EnzymeJaxTest):
     def setUp(self):
         import jax.numpy as jnp
 
         self.ins = [
-            jnp.array(jnp.ones((2,2))),
+            jnp.array(jnp.ones((2, 2))),
             jnp.array(2.7),
         ]
         self.dins = [
-            jnp.array(5 * jnp.ones((2,2))),
+            jnp.array(5 * jnp.ones((2, 2))),
             jnp.array(3.1),
         ]
-        self.douts = [jnp.array(3.4), jnp.array(7 * jnp.ones((2,2)))]
+        self.douts = [jnp.array(3.4), jnp.array(7 * jnp.ones((2, 2)))]
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -45,6 +48,7 @@ class HLOFFI(EnzymeJaxTest):
         self.fn = do_something
 
         self.name = "hlo_ffi"
+
 
 if __name__ == "__main__":
     from test_utils import fix_paths
