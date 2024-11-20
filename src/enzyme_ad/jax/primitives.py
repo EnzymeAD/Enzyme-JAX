@@ -736,13 +736,7 @@ def _enzyme_primal_lowering(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     if lang == LANG_MHLO:
-        if type(source) == type(""):
-            mfunc = None
-            jit_options = {}
-            out_idx_map = {i: -1 for (i, v) in enumerate(out_shapes)}
-            in_idx_map = {i: i for (i, v) in enumerate(ctx.avals_in)}
-        else:
-            (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
         print_mlir = False
         if "print_mlir" in jit_options:
             print_mlir = jit_options["print_mlir"]
@@ -761,9 +755,10 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        if type(source) == type(""):
+        if type(mfunc) == type(""):
             avals_in = avals
             kept = [i for (i, v) in enumerate(orig_shapes)]
+            source = mfunc
         else:
             (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
             lowered_func = lower(
@@ -1187,10 +1182,10 @@ def to_jax_type(mlir_type):
 def hlo_call(
     *args,
     source: str,
-    fn: str = "f",
     argv: tuple[str] = (),
     passes: str = "",
 ):
+    fn = "main"
     with jax_mlir.make_ir_context():
         nmod = ir.Module.parse(source)
         func = None
@@ -1218,12 +1213,17 @@ def hlo_call(
         args_flat, in_tree = jax.tree_util.tree_flatten(args)
         assert len(args_flat) == len(in_tys)
         for jarg, hloty in zip(args_flat, in_tys):
-            print(jarg, hloty)
             assert jarg.shape == hloty.shape
             assert jarg.dtype == hloty.dtype
+
+    mfunc = source
+    jit_options = {}
+    out_idx_map = {i: -1 for (i, v) in enumerate(out_shapes)}
+    in_idx_map = {i: i for (i, v) in enumerate(in_tys)}
+
     return _enzyme_primal_p.bind(
         *args,
-        source=source,
+        source=(in_tree, in_idx_map, out_idx_map, mfunc, jit_options),
         fn=fn,
         argv=argv,
         out_shapes=out_shapes,

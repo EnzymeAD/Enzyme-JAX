@@ -11,7 +11,7 @@ def do_something(mat, scalar):
         scalar,
         source="""
 module {
-func.func @myfun(%arg0: tensor<2x2xf32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<2x2xf32>) {
+func.func @main(%arg0: tensor<2x2xf32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<2x2xf32>) {
 %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
 %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<2x2xf32>, tensor<f32>) -> tensor<f32>
@@ -22,7 +22,6 @@ return %1, %4 : tensor<f32>, tensor<2x2xf32>
 }
 }
 """,
-        fn="myfun",
     )
     return a, b
 
@@ -48,6 +47,8 @@ class HLOFFI(EnzymeJaxTest):
         self.fn = do_something
 
         self.name = "hlo_ffi"
+
+        self.tol = 1e-4
 
 
 if __name__ == "__main__":
