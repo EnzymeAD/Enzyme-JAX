@@ -613,7 +613,7 @@ class EnzymeJaxTest(absltest.TestCase):
         elif len(douts) == 1:
             primalstr = "sync(" + primalstr + "[0])"
         else:
-            primalstr = "syncall(" + primalstr + "[0])"
+            primalstr = "syncall(" + primalstr + ")"
 
         fwdstr = (
             "fwd("
