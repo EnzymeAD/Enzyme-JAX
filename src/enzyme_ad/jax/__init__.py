@@ -8,5 +8,6 @@ from enzyme_ad.jax.primitives import (
     JaXPipeline,
     optimize_module,
     export,
-    hlo_opts,
+    op_like,
+    hlo_opts
 )
