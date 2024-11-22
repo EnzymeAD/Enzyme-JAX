@@ -852,7 +852,7 @@ def _enzyme_primal_lowering(
                 placeholderop.erase()
             else:
                 callop = func.CallOp(fn, list(in_args))                
-                callop.attributes.attrs["noinline"] = jax_mlir.ir.StringAttr.get("")
+                callop.attributes["noinline"] = jax_mlir.ir.StringAttr.get("")
                 print(callop)
                 results = callop.results
                 attrs = fn.attributes
@@ -1761,7 +1761,7 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, 
 
 def op_like(dialect : str, op : str):
     jit_options2 = {"op_like": (dialect, op)}
-    inner_jit=False
+    inner_jit=True
     argv=()
     pipeline_options=JaXPipeline("")
     return common_irgen(argv, pipeline_options, jit_options2, inner_jit)
