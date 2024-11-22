@@ -47,6 +47,10 @@
 
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "Dialects/CommDialect.h"
+
+
+
 using namespace mlir;
 
 namespace mlir {
@@ -89,6 +93,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::stablehlo::StablehloDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::stablehlo::check::CheckDialect>();
+  registry.insert<mlir::comm::CommunicationDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
 

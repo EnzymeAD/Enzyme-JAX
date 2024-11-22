@@ -90,6 +90,35 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
 
+
+td_library(
+    name = "CommDialectFiles",
+    srcs = [
+        "Dialects/CommDialect.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:OpBaseTdFiles"
+    ]
+)
+
+
+gentbl_cc_library(
+    name = "CommDialectIncGen",
+    tbl_outs = [(
+            ["-gen-dialect-decls"],
+            "Dialects/CommDialect.h.inc",
+        ), (
+            ["-gen-dialect-defs"],
+            "Dialects/CommDialect.cpp.inc",
+        ),
+    ],
+    td_file = "Dialects/CommDialect.td",
+    deps = [
+        ":CommDialectFiles",
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
 gentbl_cc_library(
     name = "TransformOpsImplIncGen",
     tbl_outs = [(
@@ -116,7 +145,19 @@ cc_library(
         "@llvm-project//mlir:TransformDialectInterfaces",
         ":TransformOpsIncGen",
         ":TransformOpsImplIncGen",
+        ":CommDialectIncGen",
         ":XLADerivatives",
+    ],
+)
+
+cc_library(
+    name = "Dialects",
+    srcs = glob(["Dialects/*.cpp"]),
+    hdrs = glob(["Dialects/*.h"]),
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        ":CommDialectIncGen",
     ],
 )
 
@@ -228,11 +269,13 @@ cc_library(
         [
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Dialects/*.cpp",
         ],
     ),
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Dialects/*.h",
     ]),
     copts = [
         "-Werror=unused-variable",
@@ -280,6 +323,7 @@ pybind_library(
     deps = [
         ":XLADerivatives",
         ":TransformOps",
+        ":Dialects",
         # This is similar to xla_binary rule and is needed to make XLA client compile.
         # "@tsl//tsl/framework:allocator",
         # "@tsl//tsl/framework:allocator_registry_impl",
@@ -373,6 +417,7 @@ pybind_extension(
         ":clang_compile",
         ":compile_with_xla",
         ":TransformOps",
+        ":Dialects",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@enzyme//:EnzymeStatic",
