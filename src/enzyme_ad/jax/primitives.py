@@ -737,6 +737,7 @@ def _enzyme_primal_lowering(
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
+    print("primal lowering", fn, args_flat)
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
         print_mlir = False
@@ -837,6 +838,7 @@ def _enzyme_primal_lowering(
             for f in pushtop[::-1]:
                 f.move_before(next(mod.regions[0].blocks[0].__iter__()))
 
+            print("op_like=", op_like)
             if op_like is None:
                 identifier_attr = jax_mlir.dense_int_elements([0])
                 placeholderop = stablehlo.ConstantOp(identifier_attr)
@@ -850,10 +852,14 @@ def _enzyme_primal_lowering(
                 placeholderop.erase()
             else:
                 callop = func.CallOp(fn, list(in_args))                
+                callop.attributes.attrs["noinline"] = jax_mlir.ir.StringAttr.get("")
+                print(callop)
+                results = callop.results
                 attrs = fn.attributes
+                attrs["sym_visibility"] = jax_mlir.ir.StringAttr.get("public")
                 attrs["op_name"] = jax_mlir.ir.StringAttr.get(op_like[1])
                 attrs["dialect_name"] = jax_mlir.ir.StringAttr.get(op_like[0])
-                results = callop.results
+                print("fn=", fn)
             if len(results) != len(out_shapes):
                 print(source)
                 print(pass_pipeline)
@@ -1734,6 +1740,7 @@ def common_irgen(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, i
                 for (i, arg) in enumerate(args_flat)
             ]
 
+            print("ffi call", func, jit_options)
             out_flat = ffi_call(
                 *args_flat,
                 source=(in_tree, in_idxs, out_idxs, func, jit_options),
@@ -1753,6 +1760,8 @@ def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, 
     return common_irgen(argv, pipeline_options, jit_options, inner_jit)
 
 def op_like(dialect : str, op : str):
-    jit_options2 = {k: v for (k, v) in jit_options.items()}
-    jit_options2["op_like"] = (dialect, op)
+    jit_options2 = {"op_like": (dialect, op)}
+    inner_jit=False
+    argv=()
+    pipeline_options=JaXPipeline("")
     return common_irgen(argv, pipeline_options, jit_options2, inner_jit)
