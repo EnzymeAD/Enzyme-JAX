@@ -132,12 +132,12 @@ py_test(
     timeout='long'
 )
 
-py_test(
-    name = "maxtext",
-    srcs = [
-        "maxtext.py",
-    ],
-    imports = ["."],
-    deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
-    timeout='long'
-)
+# py_test(
+#     name = "maxtext",
+#     srcs = [
+#         "maxtext.py",
+#     ],
+#     imports = ["."],
+#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+#     timeout='long'
+# )

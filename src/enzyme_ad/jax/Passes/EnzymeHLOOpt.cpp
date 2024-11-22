@@ -6362,6 +6362,74 @@ struct ReorderElementwiseAndShapeOp final
     return success();
   }
 };
+
+
+struct WhileDCE final
+    : OpTraitRewritePattern<WhileOp> {
+  using OpTraitRewritePattern::OpTraitRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp wop,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<BlockArgument> candidates;
+    SmallSet<Value> used;
+    ReturnOp ret = cast<ReturnOp>(wop.getBody()->getTerminator());
+    for (auto &[arg1, arg2, res, yld] : llvm::zip(wop.getCond().getArguments(), wop.getBody().getArguments(), wop.getResults(), ret.getOperands())) {
+      if (!arg1.use_empty()) {
+        used.insert(yld);
+        continue;
+      }
+      if (!res.use_empty()) {
+        used.insert(yld);
+        continue;
+      }
+      candidates.push_back(arg2);
+    }
+    if (candidates.size() == 0) return failure();
+
+    // Here we assume, perhaps incorrectly, that all operations are readnone
+    // Reverse traversal of cfg to determine unnecessary operands within while scope
+    for (auto op : llvm::reverse(wop.getBody().getOperations().without_terminator())) {
+      bool used = false;
+      for (auto res : op->getResults()) {
+        if (used)
+      }
+    }
+
+    if (op->getOperands().size() != 1)
+      return rewriter.notifyMatchFailure(op, "expected to be unary");
+
+    auto definingOp = op->getOperand(0).getDefiningOp();
+    if (!definingOp)
+      return rewriter.notifyMatchFailure(
+          op, "expected to have an op before elementise op");
+
+    if (!isa<mlir::stablehlo::ReshapeOp>(definingOp) &&
+        !isa<mlir::stablehlo::TransposeOp>(definingOp) &&
+        !isa<mlir::stablehlo::BroadcastOp>(definingOp))
+      return rewriter.notifyMatchFailure(
+          op, "defining operation of unexpected type");
+
+    // Only reorder if the defining op has no other uses.
+    if (!llvm::hasSingleElement(definingOp->getResult(0).getUses()))
+      return rewriter.notifyMatchFailure(op, "operation has more than one use");
+
+    Value input = definingOp->getOperand(0);
+    Value result = op->getResult(0);
+    auto intermediateType = input.getType().cast<ShapedType>().clone(
+        getElementTypeOrSelf(result.getType()));
+
+    // Reorder the operation and rewire the inputs/outputs.
+    op->moveBefore(definingOp);
+    definingOp->getResult(0).setType(result.getType());
+    rewriter.replaceAllUsesWith(result, definingOp->getResult(0));
+    result.setType(intermediateType);
+    op->setOperands(input);
+    definingOp->setOperands(result);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"

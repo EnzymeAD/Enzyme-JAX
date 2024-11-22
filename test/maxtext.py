@@ -147,32 +147,40 @@ pipelines = [
     ("DefOpt", JaXPipeline(hlo_opts())),
 ]
 
+
 class MaxText(absltest.TestCase):
     def setUp(self):
         import MaxText
         import MaxText.pyconfig
-        MaxText.pyconfig.initialize([
-            None,
-            "test/maxtext_configs/base.yml",
-            "dataset_type=synthetic",
-            "steps=10"
-        ])
+
+        MaxText.pyconfig.initialize(
+            [
+                None,
+                "test/maxtext_configs/base.yml",
+                "dataset_type=synthetic",
+                "steps=10",
+            ]
+        )
 
     def test(self):
         import MaxText
         import MaxText.pyconfig
         import MaxText.train
+
         config = MaxText.pyconfig.config
 
-        for (name, pipeline) in pipelines:
+        for name, pipeline in pipelines:
             print("name=", name)
+
             def rewrite(fn):
                 if pipeline is None:
                     return fn
                 else:
                     return enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(fn)
+
             res1 = MaxText.train.train_loop(config, prejit=rewrite)
             print("name=", name, res1)
+
 
 if __name__ == "__main__":
     absltest.main()
