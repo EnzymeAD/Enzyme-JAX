@@ -646,6 +646,10 @@ def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
 }
+def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<
+    "select_simplify"> {
+  let patterns = ["SelectSimplify"];
+}
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
