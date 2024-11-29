@@ -1011,7 +1011,7 @@ def : HLODerivative<"FftOp", (Op $x),
                             (FftIsIRFFT), // if IRFFT
                             (Real (DiffeRet)), // call real(diff)
                             (DiffeRet), 
-                          (RevFftType),
+                          (FftTypeInverse),
                           (FftLength))))
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
