@@ -1004,7 +1004,7 @@ def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"FftOp", (Op $x),
                     [
-                      (Multiply
+                      (Mul
                         (FftMultiplier), // TODO fix this
                         (Fft
                           (Select
