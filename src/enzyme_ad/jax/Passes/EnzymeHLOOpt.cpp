@@ -20,6 +20,7 @@
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/reference/Ops.h"
 #include "stablehlo/transforms/Passes.h"
@@ -6172,6 +6173,26 @@ struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
   }
 };
 
+// (conj (complex a, (neg b))) -> (complex a b)
+struct ConjComplexNegate final : OpRewritePattern<mlir::chlo::ConjOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(chlo::ConjOp op,
+                                PatternRewriter &rewriter) const override {
+    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
+    if (!complex)
+      return failure();
+
+    auto neg = complex.getRhs().getDefiningOp<stablehlo::NegOp>();
+    if (!neg)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(
+        op, op.getType(), complex.getLhs(), neg.getOperand());
+    return success();
+  }
+};
+
 struct GetDimensionSizeOpCanon final
     : OpRewritePattern<mlir::stablehlo::GetDimensionSizeOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -6712,10 +6733,10 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              ChainedDynamicBroadcastInDimCanonicalization,
              DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
              EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
-             RealOpCanon, ImagOpCanon, GetDimensionSizeOpCanon, GatherOpCanon,
-             ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-             IfInline, IfToSelect, ZeroExtentTensorCanon,
-             ReorderElementwiseAndShapeOp>(context);
+             RealOpCanon, ImagOpCanon, ConjComplexNegate,
+             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
+             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
+             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,

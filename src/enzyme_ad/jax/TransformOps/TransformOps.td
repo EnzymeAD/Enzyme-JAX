@@ -525,6 +525,11 @@ def ImagOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["ImagOpCanon"];
 }
 
+def ConjComplexNegatePatterns : EnzymeHLOPatternOp<
+    "conj_complex_negate"> {
+  let patterns = ["ConjComplexNegate"];
+}
+
 def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
     "get_dimension_size_op_canon"> {
   let patterns = ["GetDimensionSizeOpCanon"];
