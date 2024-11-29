@@ -901,6 +901,11 @@ def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   builder.create<ConvertOp>(op.getLoc(), op->getResult(0).getType(), ret_broadcast);
 }]>;
 
+def FftIsIRFFT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto cond = op.getFftType() == FftType::IRFFT;
+  builder.create<ConstantOp>(op.getLoc(), builder.getDenseBoolArrayAttr(ArrayRef<bool>({cond})));
+}]>;
+
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -997,12 +1002,17 @@ def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
-// TODO fix `rfft` and `irfft` derivatives:
-// - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` =>
 def : HLODerivative<"FftOp", (Op $x),
                     [
-                      (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
+                      (Multiply
+                        (FftMultiplier), // TODO fix this
+                        (Fft
+                          (Select
+                            (FftIsIRFFT), // if IRFFT
+                            (Real (DiffeRet)), // call real(diff)
+                            (DiffeRet), 
+                          (RevFftType),
+                          (FftLength))))
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
                   >;
