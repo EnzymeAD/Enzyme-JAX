@@ -2159,10 +2159,6 @@ struct DynamicUpdateSliceConstProp final
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
                                 PatternRewriter &rewriter) const override {
-    auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type)
-      return failure();
-
     auto startIndices = op.getStartIndices();
 
     bool legal = true;
