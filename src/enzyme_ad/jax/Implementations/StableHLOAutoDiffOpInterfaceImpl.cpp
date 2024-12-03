@@ -38,6 +38,15 @@ static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
   return builder.getDenseI64ArrayAttr(vals);
 }
 
+static mlir::DenseBoolArrayAttr getBoolAttr(OpBuilder &builder,
+                                            llvm::ArrayRef<bool> vals) {
+  return builder.getDenseBoolArrayAttr(vals);
+}
+
+static llvm::ArrayRef<bool> getBoolIter(llvm::ArrayRef<bool> vals) {
+  return vals;
+}
+
 static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
   auto Ty = builder.getI64Type();
   auto unrankedTensorType = RankedTensorType::get({}, Ty);

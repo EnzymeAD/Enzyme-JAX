@@ -37,6 +37,15 @@ static mlir::DenseIntElementsAttr getI64Attr(OpBuilder &builder,
   return builder.getI64VectorAttr(vals);
 }
 
+static mlir::DenseElementsAttr getBoolAttr(OpBuilder &builder,
+                                           llvm::ArrayRef<bool> vals) {
+  return builder.getBoolVectorAttr(vals);
+}
+
+static auto getBoolIter(mlir::DenseElementsAttr attr) {
+  return attr.getValues<bool>();
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace
