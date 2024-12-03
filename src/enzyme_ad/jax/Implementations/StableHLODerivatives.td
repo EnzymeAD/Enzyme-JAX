@@ -44,4 +44,3 @@ def : ControlFlowOp<"stablehlo", "CaseOp", [{
                                         remappedOperands, original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
   }
 }]>;
-
