@@ -355,106 +355,6 @@ def Dimensions : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getDimensions();
 }]>;
 
-def ConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowStridesAttr();
-}]>;
-
-def ConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getPaddingAttr();
-}]>;
-
-def ConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getLhsDilationAttr();
-}]>;
-
-def ConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getRhsDilationAttr();
-}]>;
-
-def ConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowReversalAttr();
-}]>;
-
-def ConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getDimensionNumbersAttr();
-}]>;
-
-def ConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
-}]>;
-
-def ConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
-}]>;
-
-// TODO
-
-def GradFilterConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowStridesAttr();
-}]>;
-
-def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getPaddingAttr();
-}]>;
-
-def GradFilterConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getLhsDilationAttr();
-}]>;
-
-def GradFilterConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getRhsDilationAttr();
-}]>;
-
-def GradFilterConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowReversalAttr();
-}]>;
-
-def GradFilterConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getDimensionNumbersAttr();
-}]>;
-
-def GradFilterConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
-}]>;
-
-def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
-}]>;
-
-// TODO
-
-def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowStridesAttr();
-}]>;
-
-def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getPaddingAttr();
-}]>;
-
-def GradDataConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getLhsDilationAttr();
-}]>;
-
-def GradDataConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getRhsDilationAttr();
-}]>;
-
-def GradDataConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowReversalAttr();
-}]>;
-
-def GradDataConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getDimensionNumbersAttr();
-}]>;
-
-def GradDataConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
-}]>;
-
-def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
-}]>;
-
 /// Helpers - Max/Min
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
@@ -522,7 +422,7 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     (Add (Shadow $x), (Shadow $y))
                   >;
 
-def : HLODerivative<"Atan2Op", (Op $x, $y), 
+def : HLODerivative<"Atan2Op", (Op $x, $y),
                     [
                       (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
                       (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
@@ -583,23 +483,11 @@ def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
 def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
-def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
-                    [
-                        (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
-                        (Convolution (TypeOf $rhs), (DiffeRet), $rhs, (GradDataConvWindowStrides), (GradDataConvPadding), (GradDataConvLhsDialation), (GradDataConvRhsDialation), (GradDataConvWindowReversal), (GradDataConvDimensionNumbers), (GradDataConvFeatureGroupCount), (GradDataConvBatchGroupCount), (ResultDotPrec))
-                    ],
-                    (Add (SelectIfActive $lhs, 
-                      (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
-                      (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
-                      (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
-                      (HLOConstantFP<"0">)))
-                  >;
-
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
 
 def : HLOInactiveOp<"CreateTokenOp">;
 
-def : HLODerivative<"DivOp", (Op $x, $y), 
+def : HLODerivative<"DivOp", (Op $x, $y),
                     [
                       (CheckedDiv (DiffeRet), $y),
                       (Neg (Mul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
@@ -623,7 +511,7 @@ def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 // TODO fix `rfft` and `irfft` derivatives:
 // - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` => 
+// - `irfft` =>
 def : HLODerivative<"FftOp", (Op $x),
                     [
                       (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
@@ -677,7 +565,7 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
 
 def : HLOInactiveOp<"PartitionIdOp">;
 
-def : HLODerivative<"PowOp", (Op $x, $y), 
+def : HLODerivative<"PowOp", (Op $x, $y),
                   [
                     (CheckedMul (DiffeRet), (Mul $y, (Pow $x, (Sub $y, (HLOConstantFP<"1"> $y))))),
                     (CheckedMul (DiffeRet), (Mul (Pow $x, $y), (Log $x)))
@@ -690,7 +578,7 @@ def : HLODerivative<"AbsOp", (Op $x), [
 
 def : HLODerivative<"RealOp", (Op $x), [(Complex (DiffeRet), (HLOConstantFP<"0">))], (Real (Shadow $x))>;
 
-def : HLODerivative<"RemOp", (Op $x, $y), 
+def : HLODerivative<"RemOp", (Op $x, $y),
                   [
 	            (DiffeRet),
                     (CheckedMul (DiffeRet), (Neg (Mul (Sign (Div $x, $y):$div),(Floor (Abs $div)))))
