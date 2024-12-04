@@ -2182,6 +2182,17 @@ struct DynamicUpdateSliceConstProp final
     if (!legal)
       return failure();
 
+    if (operandConstant.isSplat() && updateConstant.isSplat() &&
+        (isa<FloatType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APFloat>() ==
+                 updateConstant.getSplatValue<llvm::APFloat>() ||
+         isa<IntegerType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APInt>() ==
+                 updateConstant.getSplatValue<llvm::APInt>())) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
     stablehlo::Tensor operandTen = mlir::stablehlo::constantOp(operandConstant);
     stablehlo::Tensor updateTen = mlir::stablehlo::constantOp(updateConstant);
     SmallVector<stablehlo::Tensor> inps;
