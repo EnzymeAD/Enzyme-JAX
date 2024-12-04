@@ -2153,6 +2153,61 @@ struct ConcatToBroadcast final
   }
 };
 
+struct DynamicUpdateSliceConstProp final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto startIndices = op.getStartIndices();
+
+    bool legal = true;
+
+    DenseElementsAttr operandConstant;
+    DenseElementsAttr updateConstant;
+
+    SmallVector<DenseElementsAttr> constants(startIndices.size(),
+                                             DenseElementsAttr());
+    for (auto &operand : op->getOpOperands()) {
+      if (operand.getOperandNumber() == 0)
+        legal &= matchPattern(operand.get(), m_Constant(&operandConstant));
+      else if (operand.getOperandNumber() == 1)
+        legal &= matchPattern(operand.get(), m_Constant(&updateConstant));
+      else
+        legal &= matchPattern(
+            operand.get(),
+            m_Constant(&constants[operand.getOperandNumber() - 2]));
+    }
+
+    if (!legal)
+      return failure();
+
+    if (operandConstant.isSplat() && updateConstant.isSplat() &&
+        (isa<FloatType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APFloat>() ==
+                 updateConstant.getSplatValue<llvm::APFloat>() ||
+         isa<IntegerType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APInt>() ==
+                 updateConstant.getSplatValue<llvm::APInt>())) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
+    stablehlo::Tensor operandTen = mlir::stablehlo::constantOp(operandConstant);
+    stablehlo::Tensor updateTen = mlir::stablehlo::constantOp(updateConstant);
+    SmallVector<stablehlo::Tensor> inps;
+    for (auto &c : constants)
+      inps.push_back(mlir::stablehlo::constantOp(c));
+
+    auto out = mlir::stablehlo::dynamicUpdateSliceOp(operandTen, updateTen,
+                                                     inps, op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(out));
+
+    return success();
+  }
+};
+
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -6613,9 +6668,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 ConcatToBroadcast, PadPad, PadReshapePad,
-                 ConcatPushBinop<stablehlo::AddOp>,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
+                 DynamicUpdateSliceConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
