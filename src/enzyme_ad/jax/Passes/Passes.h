@@ -88,5 +88,6 @@ static void regsiterenzymeXLAPasses() {
   registerPrintPass();
   registerEnzymeHLOOptPass();
   registerEnzymeHLOUnrollPass();
+  registerCommRemoveFooPass();
 }
 #endif // ENZYMEXLA_PASSES_H

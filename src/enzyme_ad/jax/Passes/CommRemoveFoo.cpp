@@ -13,11 +13,9 @@ struct CommRemoveFoo : public CommRemoveFooBase<CommRemoveFoo> {
 
   void runOnOperation() override {
     mlir::Operation* op = getOperation();
-
-    // if op is CommFoo, erase
-    if(isa<CommFoo>(op)){
-        op->erase();
-    }
+    op->walk([](CommFoo foop){
+      foop->erase();
+    });
   }
 };
 
