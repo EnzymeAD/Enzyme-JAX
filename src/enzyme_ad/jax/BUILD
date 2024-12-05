@@ -110,11 +110,18 @@ gentbl_cc_library(
         ), (
             ["-gen-dialect-defs"],
             "Dialects/CommDialect.cpp.inc",
+        ),(
+            ["-gen-op-decls"],
+            "Dialects/CommOps.h.inc",
+        ), (
+            ["-gen-op-defs"],
+            "Dialects/CommOps.cpp.inc",
         ),
     ],
     td_file = "Dialects/CommDialect.td",
     deps = [
         ":CommDialectFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
@@ -152,7 +159,7 @@ cc_library(
 
 cc_library(
     name = "Dialects",
-    srcs = glob(["Dialects/*.cpp"]),
+    srcs = glob(["Dialects/*.cpp", "Dialects/CommDialect.cpp.inc"]),
     hdrs = glob(["Dialects/*.h"]),
     deps = [
         "@llvm-project//mlir:IR",
@@ -284,6 +291,7 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":Dialects",
         ":EnzymeXLAPassesIncGen",
         ":EnzyeHLOPatternsIncGen",
         ":mhlo-derivatives",

@@ -22,6 +22,9 @@ std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 } // namespace enzyme
+namespace comm {
+std::unique_ptr<Pass> createCommRemoveFooPass();
+}
 } // namespace mlir
 
 namespace mlir {
@@ -68,6 +71,10 @@ class FuncDialect;
 class AffineDialect;
 namespace LLVM {
 class LLVMDialect;
+}
+
+namespace comm {
+  class CommunicationDialect;
 }
 
 #define GEN_PASS_REGISTRATION

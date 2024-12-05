@@ -1,8 +1,9 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-unroll %s | FileCheck %s
+// RUN: enzymexlamlir-opt --remove-comm-foo --enzyme-hlo-unroll %s | FileCheck %s
 
 module {
 
   func.func @main(%a : tensor<2x2xf32>) -> tensor<2x2xf32> {
+    comm.Foo
     %start = stablehlo.constant dense<0> : tensor<i32>
     
     %lim = stablehlo.constant dense<5> : tensor<i32>

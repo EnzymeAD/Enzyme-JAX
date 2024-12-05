@@ -11,6 +11,16 @@
 
 include "mlir/Pass/PassBase.td"
 
+
+def CommRemoveFoo : Pass<"remove-comm-foo"> {
+  let summary = "Removes all comm foo operations";
+  let dependentDialects = [
+    "comm::CommunicationDialect"
+  ];
+  let constructor = "mlir::comm::createCommRemoveFooPass()";
+}
+
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [

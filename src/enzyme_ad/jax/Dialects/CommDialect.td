@@ -11,4 +11,11 @@ def CommunicationDialect : Dialect {
 
 class CommOp<string name, list<Trait> traits = []> : Op<CommunicationDialect, name, traits>;
 
-def CommFoo : CommOp<"ComFooStr">;
+def CommFoo : CommOp<"Foo"> {
+  let summary = "do-nothing test op";
+  let arguments = (ins );
+  let results = (outs );
+  let assemblyFormat = [{
+    attr-dict
+  }];
+}
