@@ -145,6 +145,10 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_simplify"> {
   let patterns = ["GatherSimplify"];
 }
+def ApplyGammaConstProp : EnzymeHLOPatternOp<
+    "gamma_const_prop">{
+  let patterns = ["GammaConstProp"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
