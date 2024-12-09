@@ -18,6 +18,9 @@ module {
 
 // REVERSE{LITERAL}:  func.func @main(%arg0: tensor<8x66x66x512xf32>, %arg1: tensor<3x3x512x512xf32>, %arg2: tensor<8x64x64x512xf32>) -> (tensor<8x66x66x512xf32>, tensor<3x3x512x512xf32>) {
 // REVERSE-NEXT{LITERAL}:    %0 = stablehlo.convolution(%arg2, %arg1) dim_numbers = [b, 0, 1, f]x[0, 1, o, i]->[b, 0, 1, f], window = {stride = [1, 1], pad = [[2, 2], [2, 2]], lhs_dilate = [1, 1], rhs_dilate = [1, 1], reverse = [true, true]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<8x64x64x512xf32>, tensor<3x3x512x512xf32>) -> tensor<8x66x66x512xf32>
-// REVERSE-NEXT{LITERAL}:    %1 = stablehlo.convolution(%arg0, %arg2) dim_numbers = [f, 0, 1, b]x[i, 0, 1, o]->[0, 1, b, f], window = {stride = [1, 1], pad = [[0, 0], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 1], reverse = [false, false]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<8x66x66x512xf32>, tensor<8x64x64x512xf32>) -> tensor<3x3x512x512xf32>
-// REVERSE-NEXT{LITERAL}:    return %0, %1 : tensor<8x66x66x512xf32>, tensor<3x3x512x512xf32>
+// REVERSE-NEXT{LITERAL}:    %1 = stablehlo.reshape %0 : (tensor<8x66x66x512xf32>) -> tensor<8x66x66x1x512xf32>
+// REVERSE-NEXT{LITERAL}:    %2 = stablehlo.transpose %1, dims = [1, 2, 0, 3, 4] : (tensor<8x66x66x1x512xf32>) -> tensor<66x66x8x1x512xf32>
+// REVERSE-NEXT{LITERAL}:    %3 = stablehlo.reshape %2 : (tensor<66x66x8x1x512xf32>) -> tensor<8x66x66x512xf32>
+// REVERSE-NEXT{LITERAL}:    %4 = stablehlo.convolution(%arg0, %arg2) dim_numbers = [f, 0, 1, b]x[i, 0, 1, o]->[0, 1, b, f], window = {stride = [1, 1], pad = [[0, 0], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 1], reverse = [false, false]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<8x66x66x512xf32>, tensor<8x64x64x512xf32>) -> tensor<3x3x512x512xf32>
+// REVERSE-NEXT{LITERAL}:    return %3, %4 : tensor<8x66x66x512xf32>, tensor<3x3x512x512xf32>
 // REVERSE-NEXT{LITERAL}:  }

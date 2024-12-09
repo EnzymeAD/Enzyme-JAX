@@ -393,7 +393,9 @@ def ConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def GradDataFilterReshape1 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto featureGroupCount = op.getFeatureGroupCount();
-  assert(op.getBatchGroupCount() == 1);
+  auto batchGroupCount = op.getBatchGroupCount();
+  assert(featureGroupCount == 1 || batchGroupCount == 1);
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
 
   auto rhs = op.getRhs();
   auto dimensionNumbers = op.getDimensionNumbers();
@@ -405,8 +407,8 @@ def GradDataFilterReshape1 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   SmallVector<int64_t> newShape;
   for (int64_t i = 0, e = shape.size(); i < e; ++i) {
     if (i == odim) {
-      newShape.push_back(featureGroupCount);
-      newShape.push_back(shape[i] / featureGroupCount);
+      newShape.push_back(groupCount);
+      newShape.push_back(shape[i] / groupCount);
     } else {
       newShape.push_back(shape[i]);
     }
@@ -438,8 +440,70 @@ def GradDataFilterTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   getI64Attr(builder, transposes);
 }]>;
 
+def GradDataConvOutputType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto Ty = op.getLhs().getType();
+  auto batchGroupCount = op.getBatchGroupCount();
+
+  if (batchGroupCount > 1) {
+    SmallVector<int64_t> shape(Ty.getShape().begin(), Ty.getShape().end());
+    auto dimensionNumbers = op.getDimensionNumbers();
+    shape[dimensionNumbers.getInputFeatureDimension()] *= batchGroupCount;
+    shape[dimensionNumbers.getInputBatchDimension()] /= batchGroupCount;
+    Ty = Ty.clone(shape);
+  }
+
+  Ty;
+}]>;
+
+def GradDataConvBatchGroupCountType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto Ty = op.getLhs().getType();
+  auto batchGroupCount = op.getBatchGroupCount();
+
+    auto dimensionNumbers = op.getDimensionNumbers();
+    auto fdim = dimensionNumbers.getInputFeatureDimension();
+
+    auto shape = Ty.getShape();
+    SmallVector<int64_t> newShape;
+    for (int64_t i = 0, e = shape.size(); i < e; ++i) {
+      if (i == fdim) {
+        newShape.push_back(batchGroupCount);
+        newShape.push_back(shape[i] / batchGroupCount);
+      } else {
+        newShape.push_back(shape[i]);
+      }
+    }
+
+  Ty.clone(newShape);
+}]>;
+
+def GradDataConvBatchGroupPerm : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> transposes;
+
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto fdim = dimensionNumbers.getInputFeatureDimension();
+  auto bdim = dimensionNumbers.getInputBatchDimension();
+
+  if (fdim < bdim)
+    bdim++;
+
+  int64_t i = 0, N = op.getType().getShape().size();
+  while (i <= N) {
+    if (i == fdim) {
+      transposes.push_back(bdim);
+      transposes.push_back(fdim);
+    } else if (i != bdim) {
+      transposes.push_back(i);
+    }
+    i++;
+  }
+
+  getI64Attr(builder, transposes);
+}]>;
+
 def GradDataFilterReshape2 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto featureGroupCount = op.getFeatureGroupCount();
+  auto batchGroupCount = op.getBatchGroupCount();
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
 
   auto rhs = op.getRhs();
   auto dimensionNumbers = op.getDimensionNumbers();
@@ -452,9 +516,9 @@ def GradDataFilterReshape2 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   SmallVector<int64_t> newShape;
   for (int64_t i = 0, e = shape.size(); i < e; ++i) {
     if (i == idim) {
-      newShape.push_back(shape[i] * featureGroupCount);
+      newShape.push_back(shape[i] * groupCount);
     } else if (i == odim) {
-      newShape.push_back(shape[i] / featureGroupCount);
+      newShape.push_back(shape[i] / groupCount);
     } else {
       newShape.push_back(shape[i]);
     }
@@ -566,11 +630,14 @@ def GradDataConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0
 }]>;
 
 def GradDataConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
+  auto featureGroupCount = op.getFeatureGroupCount();
+  auto batchGroupCount = op.getBatchGroupCount();
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
+  builder.getI64IntegerAttr(groupCount);
 }]>;
 
 def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
+  builder.getI64IntegerAttr(1);
 }]>;
 
 // GradFilter
@@ -678,8 +745,8 @@ def GradFilterConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*
 }]>;
 
 def GradFilterConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  unsigned int newFeatureGroupCount = 1;
-  newFeatureGroupCount;
+  auto batchGroupCount = op.getBatchGroupCount();
+  batchGroupCount;
 }]>;
 
 def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -690,26 +757,34 @@ def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/
 
 def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     [
-                        (Convolution
+                        (Reshape
                           (TypeOf $lhs),
-                          (DiffeRet),
-                          // TODO: support batch group count != 1
-                          (Reshape
-                            (GradDataFilterReshape2),
-                            (Transpose
-                                (Reshape (GradDataFilterReshape1), $rhs),
-                                (GradDataFilterTranspose)
-                            )
-                          ),
-                          (GradDataConvWindowStrides),
-                          (GradDataConvPadding),
-                          (GradDataConvLhsDilation),
-                          (GradDataConvRhsDilation),
-                          (GradDataConvWindowReversal),
-                          (GradDataConvDimensionNumbers),
-                          (GradDataConvFeatureGroupCount),
-                          (GradDataConvBatchGroupCount),
-                          (ResultDotPrec)
+                          (Transpose
+                            (Reshape
+                              (GradDataConvBatchGroupCountType),
+                              (Convolution
+                                (GradDataConvOutputType),
+                                (DiffeRet),
+                                (Reshape
+                                  (GradDataFilterReshape2),
+                                  (Transpose
+                                      (Reshape (GradDataFilterReshape1), $rhs),
+                                      (GradDataFilterTranspose)
+                                  )
+                                ),
+                                (GradDataConvWindowStrides),
+                                (GradDataConvPadding),
+                                (GradDataConvLhsDilation),
+                                (GradDataConvRhsDilation),
+                                (GradDataConvWindowReversal),
+                                (GradDataConvDimensionNumbers),
+                                (GradDataConvFeatureGroupCount),
+                                (GradDataConvBatchGroupCount),
+                                (ResultDotPrec)
+                              )
+                            ),
+                            (GradDataConvBatchGroupPerm)
+                          )
                         ),
                         (Reverse
                           (Convolution
