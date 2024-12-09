@@ -25,7 +25,7 @@
 #include "stablehlo/reference/Ops.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
 
 #define DEBUG_TYPE "enzyme"
@@ -2151,6 +2151,14 @@ struct ConcatToBroadcast final
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), op->getOperand(0), bcast2);
     return success();
+  }
+};
+
+struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::chlo::LgammaOp op, PatternRewriter &rewriter) const override {
+    return failure();
   }
 };
 
