@@ -165,6 +165,10 @@ def ApplyChloInfConstProp : EnzymeHLOPatternOp<
     "chlo_inf_const_prop">{
   let patterns = ["ChloInfConstProp"];
 }
+def ApplyGammaConstProp : EnzymeHLOPatternOp<
+    "gamma_const_prop">{
+  let patterns = ["GammaConstProp"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
