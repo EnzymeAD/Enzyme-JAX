@@ -2338,8 +2338,7 @@ struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
                                 PatternRewriter &rewriter) const override {
     // return if not constant
     DenseElementsAttr inputAttr;
-
-    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+    if(!matchPattern(op.getOperand(),m_Constant(&inputAttr)))
       return failure();
 
     Value result = materializeLgamma(rewriter, op.getLoc(), op->getOperands());
