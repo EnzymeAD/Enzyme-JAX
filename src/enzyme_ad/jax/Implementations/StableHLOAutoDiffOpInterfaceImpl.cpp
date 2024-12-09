@@ -38,6 +38,10 @@ static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
   return builder.getDenseI64ArrayAttr(vals);
 }
 
+static int64_t getI64Value(llvm::ArrayRef<int64_t> attr, size_t pos) {
+  return attr[pos];
+}
+
 static mlir::DenseBoolArrayAttr getBoolAttr(OpBuilder &builder,
                                             llvm::ArrayRef<bool> vals) {
   return builder.getDenseBoolArrayAttr(vals);
