@@ -17,6 +17,8 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -7287,6 +7289,12 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
+
+    // legalize all CHLO ops to StableHLO first
+    PassManager pm(context);
+    pm.addNestedPass<func::FuncOp>(mlir::stablehlo::createChloLegalizeToStablehloPass());
+    pm.run(getOperation());
+
     RewritePatternSet patterns(context);
     patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
                  MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
