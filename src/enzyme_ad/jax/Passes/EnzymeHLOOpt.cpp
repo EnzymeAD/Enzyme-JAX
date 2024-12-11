@@ -11,21 +11,25 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/CommonFolders.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/transforms/ChloDecompositionUtils.h"
+#include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-
-#include "stablehlo/dialect/TypeInference.h"
 
 #define DEBUG_TYPE "enzyme"
 
@@ -2149,6 +2153,27 @@ struct ConcatToBroadcast final
     auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), op->getOperand(0), bcast2);
+    return success();
+  }
+};
+
+struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::chlo::LgammaOp op,
+                                PatternRewriter &rewriter) const override {
+    // return if not constant
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    auto &convRewriter = static_cast<ConversionPatternRewriter &>(rewriter);
+    // inline materialization
+    Value result = mlir::stablehlo::materializeLgamma(convRewriter, op.getLoc(),
+                                                      op->getOperands());
+
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -6650,7 +6675,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
+
     RewritePatternSet patterns(context);
+
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
              OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
@@ -6666,17 +6693,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<
+        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
+        DotReshapeDot, ConcatConstProp, DynamicUpdateSliceConstProp,
+        GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, SliceConcat,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
