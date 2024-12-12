@@ -459,19 +459,22 @@ def GradDataConvBatchGroupCountType : GlobalExpr</*needsprimal*/0, /*needsshadow
   auto Ty = op.getLhs().getType();
   auto batchGroupCount = op.getBatchGroupCount();
 
-    auto dimensionNumbers = op.getDimensionNumbers();
-    auto fdim = dimensionNumbers.getInputFeatureDimension();
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto fdim = dimensionNumbers.getInputFeatureDimension();
+  auto bdim = dimensionNumbers.getInputBatchDimension();
 
-    auto shape = Ty.getShape();
-    SmallVector<int64_t> newShape;
-    for (int64_t i = 0, e = shape.size(); i < e; ++i) {
-      if (i == fdim) {
-        newShape.push_back(batchGroupCount);
-        newShape.push_back(shape[i] / batchGroupCount);
-      } else {
-        newShape.push_back(shape[i]);
-      }
+  auto shape = Ty.getShape();
+  SmallVector<int64_t> newShape;
+  for (int64_t i = 0, e = shape.size(); i < e; ++i) {
+    if (i == fdim) {
+      newShape.push_back(batchGroupCount);
+      newShape.push_back(shape[i]);
+    } else if (i == bdim) {
+      newShape.push_back(shape[i] / batchGroupCount);
+    } else {
+      newShape.push_back(shape[i]);
     }
+  }
 
   Ty.clone(newShape);
 }]>;
@@ -488,10 +491,10 @@ def GradDataConvBatchGroupPerm : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, 
 
   int64_t i = 0, N = op.getType().getShape().size();
   while (i <= N) {
-    if (i == fdim) {
-      transposes.push_back(bdim);
+    if (i == bdim) {
       transposes.push_back(fdim);
-    } else if (i != bdim) {
+      transposes.push_back(bdim);
+    } else if (i != fdim) {
       transposes.push_back(i);
     }
     i++;
