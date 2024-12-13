@@ -2929,40 +2929,68 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType,
-                                                void>(
-            constants,
-            [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-              if (a.getSizeInBits(a.getSemantics()) == 64 &&
-                  b.getSizeInBits(b.getSemantics()) == 64)
-                return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
+    if (op.getType().getElementType().isa<FloatType>()) {
+      if (auto res = constFoldBinaryOpConditional<FloatAttr,
+                                                  FloatAttr::ValueType, void>(
+              constants,
+              [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+                if (a.getSizeInBits(a.getSemantics()) == 64 &&
+                    b.getSizeInBits(b.getSemantics()) == 64)
+                  return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
 
-              if (a.getSizeInBits(a.getSemantics()) == 32 &&
-                  b.getSizeInBits(b.getSemantics()) == 32)
-                return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
+                if (a.getSizeInBits(a.getSemantics()) == 32 &&
+                    b.getSizeInBits(b.getSemantics()) == 32)
+                  return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
 
-              return {};
-            })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), res.cast<ElementsAttr>());
-      return success();
-    }
+                return {};
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
 
-    // pow(X, 0.5) -> sqrt(X)
-    {
-      DenseFPElementsAttr rhs;
-      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
-        bool allHalf = true;
-        for (auto v : rhs) {
-          if (!v.isExactlyValue(0.5)) {
-            allHalf = false;
-            break;
+      // pow(X, 0.5) -> sqrt(X)
+      {
+        DenseFPElementsAttr rhs;
+        if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+          bool allHalf = true;
+          for (auto v : rhs) {
+            if (!v.isExactlyValue(0.5)) {
+              allHalf = false;
+              break;
+            }
+          }
+          if (allHalf) {
+            rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
+            return success();
           }
         }
-        if (allHalf) {
-          rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
-          return success();
-        }
+      }
+    } else {
+      if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                  IntegerAttr::ValueType, void>(
+              constants,
+              [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+                if (b.isNegative())
+                  return {}; // Ignore the negative case
+
+                APInt result = APInt(a.getBitWidth(), 1);
+                APInt base = a;
+                uint64_t exponent = b.getLimitedValue();
+
+                while (exponent > 0) {
+                  if (exponent % 2 == 1) {
+                    result *= base;
+                  }
+                  base *= base;
+                  exponent /= 2;
+                }
+
+                return result;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
       }
     }
 
