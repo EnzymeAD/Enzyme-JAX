@@ -327,7 +327,6 @@ pybind_library(
         "@xla//xla/service:compiler",
         "@xla//xla/service:hlo_module_util",
         "@xla//xla/service:hlo_proto_util",
-        "@xla//xla:statusor",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:chlo_ops",
 

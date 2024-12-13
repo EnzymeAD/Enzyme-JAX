@@ -38,8 +38,6 @@
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
 
-#include "xla/statusor.h"
-
 #include "pybind11/pybind11.h"
 
 #include "compile_with_xla.h"
