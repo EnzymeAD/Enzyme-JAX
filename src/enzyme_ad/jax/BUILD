@@ -305,6 +305,8 @@ pybind_library(
         "@xla//xla/client:local_client",
         "@xla//xla/client:xla_computation",
         "@xla//xla/service",
+        "@xla//xla/service:metrics_proto_cc",
+        "@xla//xla/service:metrics_proto_cc_impl",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
         "@xla//xla/service:buffer_assignment_proto_cc",
@@ -327,7 +329,6 @@ pybind_library(
         "@xla//xla/service:compiler",
         "@xla//xla/service:hlo_module_util",
         "@xla//xla/service:hlo_proto_util",
-        "@xla//xla:statusor",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:chlo_ops",
 

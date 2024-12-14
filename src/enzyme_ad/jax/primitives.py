@@ -48,10 +48,10 @@ class PipelineConfig:
         raise NotImplementedError()
 
     def export_llvm(self):
-        return None
+        raise NotImplementedError()
 
 
-class OldXLAPipeline:
+class XLAPipeline:
     def __init__(self, name=None):
         self.exportname = name
 
@@ -83,170 +83,6 @@ class JaXPipeline:
 
     def stablehlo_inject(self):
         return True
-
-    def ad_level(self):
-        return self.passes.count("enzyme-wrap")
-
-
-class NewXLAPipeline:
-    def __init__(self, passes=None, mlirad=False):
-        if passes is None:
-            passes = """
-          stablehlo-legalize-to-hlo,
-          inline{default-pipeline=canonicalize max-iterations=4},
-          expand-hlo-tuples{entry-function=main},
-          func.func(mhlo-flatten-tuple),
-          xla-legalize-abi,
-          func.func(mhlo-test-lower-general-dot),
-          func.func(mhlo-broadcast-propagation),
-          cse,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          func.func(chlo-legalize-to-hlo),
-          func.func(mhlo-legalize-control-flow),
-          func.func(mhlo-legalize-dot-general-to-dot),
-          hlo-legalize-to-arithmetic,
-          func.func(xla-legalize-library-ops),
-          func.func(mhlo-expand-ops-simplifier),
-          func.func(hlo-canonicalize-scatter),
-          func.func(hlo-canonicalize-dot),
-          func.func(group-reduction-dimensions{prefer-columns-reductions=true}),
-          func.func(hlo-legalize-to-linalg{enable-primitive-ops=false}),
-          func.func(lower-index-cast),
-          convert-to-signless,
-          func.func(shape-simplification),
-          func.func(shape-to-shape-lowering),
-          convert-shape-to-std,
-          func.func(convert-shape-constraints),
-          cse,
-          resolve-shaped-type-result-dims,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          func.func(linalg-fuse-elementwise-ops),
-          reconcile-unrealized-casts,
-          convert-tensor-to-linalg,
-          func.func(detensorize-scf-ops),
-          func.func(linalg-detensorize{aggressive-mode=true}),
-          eliminate-empty-tensors,
-          func.func(empty-tensor-to-alloc-tensor),
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          func.func(linalg-generalize-named-ops),
-          eliminate-empty-tensors,
-          sparsification-and-bufferization,
-          sparse-storage-specifier-to-llvm,
-          func.func(canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true}),
-          func.func(finalizing-bufferize),
-          func.func(xla-rewrite-realloc-to-alloc),
-          func.func(vectorize-copy),
-          func.func(naive-copy-removal),
-          func.func(convert-linalg-to-loops),
-          cse,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          buffer-results-to-out-params,
-          func.func(promote-buffers-to-stack{
-              max-alloc-size-in-bytes=1024
-              max-rank-of-allocated-memref=1}),
-          func.func(buffer-deallocation),
-          convert-bufferization-to-memref,
-          func.func(xla-remove-copies-to-out-params),
-          cse,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          func.func(convert-complex-to-standard),
-          cse,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          func.func(convert-vector-to-scf{
-              full-unroll=false
-              lower-tensors=false
-              target-rank=1}),
-          func.func(xla-legalize-i1-vector-transfers),
-          func.func(xla-convert-memref-element-cast-to-llvm),
-          async-func-to-async-runtime,
-          xla-rt-export-functions,
-          xla-cpu-to-cpu-runtime,
-          xla-rt-convert-custom-calls,
-          xla-rt-convert-asserts,
-          inline{default-pipeline=canonicalize max-iterations=4},
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          cse,
-          func.func(convert-linalg-to-parallel-loops),
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          async-to-async-runtime,
-          xla-rt-move-allocas-to-entry-block,
-          async-runtime-policy-based-ref-counting,
-          func.func(arith-expand{include-bf16=false}),
-          func.func(memref-expand),
-          func.func(expand-strided-metadata),
-          lower-affine,
-          func.func(xla-memref-aligned-allocations{alignment=0}),
-          xla-rt-to-llvm,
-          convert-async-to-llvm,
-          generic-host-to-llvm{enable-avx2=false},
-          reconcile-unrealized-casts,
-          canonicalize{
-              max-iterations=10
-              max-num-rewrites=-1
-              region-simplify=true
-              test-convergence=false
-              top-down=true},
-          cse"""
-        assert len(passes) != 0
-        self.passes = passes
-        self.mlirad = mlirad
-
-    def xla_runtime(self):
-        return True
-
-    def pass_pipeline(self):
-        return self.passes
-
-    def mlir_ad(self):
-        return self.mlirad
-
-    def stablehlo_inject(self):
-        return False
 
     def ad_level(self):
         return self.passes.count("enzyme-wrap")
@@ -411,7 +247,7 @@ pad_dot_general<1>(1);
         """
 
 
-DefaultCPPPipeline = OldXLAPipeline()  # NewXLAPipeline(None, True)
+DefaultCPPPipeline = XLAPipeline()
 DefaultJaXPipeline = JaXPipeline(
     "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,"
     + hlo_opts()
@@ -1320,10 +1156,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
                 newpasses = prev_passes + afterad + newpasses + oldpasses[end:]
             else:
                 newpasses = newpasses + "," + oldpasses
-        if pipeline_options.stablehlo_inject():
-            pipeline_options = JaXPipeline(newpasses)
-        else:
-            pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+        pipeline_options = JaXPipeline(newpasses)
         outshapes2 = []
         for o in outshapes:
             outshapes2.append(o)
@@ -1486,10 +1319,7 @@ def primal_partial_eval(trace, *args, **kwargs):
     post_passes = passes[end + 1 :]
     newpasses = prev_passes + post_passes[1:]
 
-    if pipeline_options.stablehlo_inject():
-        pipeline_options = JaXPipeline(newpasses)
-    else:
-        pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+    pipeline_options = JaXPipeline(newpasses)
 
     outmap2 = {k // 2: v for k, v in out_idx_map.items() if k % 2 == 0}
     source = (in_tree, avals, outmap2, mfunc, jit_options)
@@ -1556,10 +1386,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             + post_passes
         )
 
-        if pipeline_options.stablehlo_inject():
-            pipeline_options = JaXPipeline(newpasses)
-        else:
-            pipeline_options = NewXLAPipeline(newpasses, pipeline_options.mlir_ad())
+        pipeline_options = JaXPipeline(newpasses)
 
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
 

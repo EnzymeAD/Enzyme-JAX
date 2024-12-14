@@ -280,8 +280,7 @@ def setup_backends():
 def AllPipelines():
     setup_backends()
     from enzyme_ad.jax import (
-        NewXLAPipeline,
-        OldXLAPipeline,
+        XLAPipeline,
         JaXPipeline,
         hlo_opts,
     )
@@ -289,9 +288,7 @@ def AllPipelines():
     return [
         ("JaX  ", None, AllBackends),
         ("JaXPipe", JaXPipeline(), AllBackends),
-        # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
-        # ("NewXLA", NewXLAPipeline()),
-        ("OldXLA", OldXLAPipeline(), ["cpu"]),
+        ("XLA", XLAPipeline(), ["cpu"]),
     ]
 
 
@@ -404,8 +401,7 @@ broadcast_reduce<1>;
 def pipelines():
     setup_backends()
     from enzyme_ad.jax import (
-        NewXLAPipeline,
-        OldXLAPipeline,
+        XLAPipeline,
         JaXPipeline,
         hlo_opts,
     )
@@ -443,21 +439,15 @@ def pipelines():
 
 
 def no_newxla(x):
-    return [
-        (name, a, b) for (name, a, b) in x if name != "NewXLAMLIR" and name != "NewXLA"
-    ]
+    return x
 
 
 def no_newxlamlir(x):
-    return [(name, a, b) for (name, a, b) in x if name != "NewXLAMLIR"]
+    return x
 
 
 def nomlir(x):
-    return [
-        (name, a, b)
-        for (name, a, b) in x
-        if name != "NewXLAMLIR" and name != "NewXLA"  # and name != "OldXLA"
-    ]
+    return [(name, a, b) for (name, a, b) in x if name == "XLA"]
 
 
 def justjax(x):
