@@ -491,7 +491,7 @@ struct tensor<T, n0, N...>
         CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
 
   // Create the actual diagnostics engine.
-  Clang->createDiagnostics();
+  Clang->createDiagnostics(*fuseFS);
   if (!Clang->hasDiagnostics()) {
     llvm::errs() << " failed create diag\n";
     return {};

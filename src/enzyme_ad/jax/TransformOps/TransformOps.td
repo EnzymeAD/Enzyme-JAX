@@ -97,6 +97,10 @@ def ApplyNoopSlicePatterns : EnzymeHLOPatternOp<
     "noop_slice"> {
   let patterns = ["NoopSlice"];
 }
+def ApplyNoopReversePatterns : EnzymeHLOPatternOp<
+    "noop_reverse"> {
+  let patterns = ["NoopReverse"];
+}
 def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
     "slice_slice"> {
   let patterns = ["SliceSlice"];
@@ -182,6 +186,10 @@ def ApplyDotReshapeDotPatterns : EnzymeHLOPatternOp<
 def ApplyConcatConstPropPatterns : EnzymeHLOPatternOp<
     "concat_const_prop"> {
   let patterns = ["ConcatConstProp"];
+}
+def ApplyDynamicUpdateSliceConstProp : EnzymeHLOPatternOp<
+    "dynamic_update_slice_const_prop"> {
+  let patterns = ["DynamicUpdateSliceConstProp"];
 }
 def ApplyConcatFusePatterns : EnzymeHLOPatternOp<
     "concat_fuse"> {

@@ -1,18 +1,18 @@
 load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "XLA_PATCHES")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-http_archive(
-    name = "rules_cc",
-    sha256 = "85723d827f080c5e927334f1fb18a294c0b3f94fee6d6b45945f5cdae6ea0fd4",
-    strip_prefix = "rules_cc-c8c38f8c710cbbf834283e4777916b68261b359c",
-    urls = [
-        "https://github.com/bazelbuild/rules_cc/archive/c8c38f8c710cbbf834283e4777916b68261b359c.tar.gz",
-    ],
-)
-
-load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
-
-rules_cc_dependencies()
+# http_archive(
+#     name = "rules_cc",
+#     sha256 = "a281b09e003a119bda2cea98c590129b783cc241fdd1a1de3baa656117e6cc3f"
+#     strip_prefix = "rules_cc-34f0e1f038cff9bf28d65d101c806b48f35bf92e",
+#     urls = [
+#         "https://github.com/bazelbuild/rules_cc/archive/34f0e1f038cff9bf28d65d101c806b48f35bf92e.tar.gz",
+#     ],
+# )
+# 
+# load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
+# 
+# rules_cc_dependencies()
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
 

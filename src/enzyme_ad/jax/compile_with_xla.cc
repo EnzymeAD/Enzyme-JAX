@@ -1,3 +1,5 @@
+#include <string>
+
 #define protected public
 #include "xla/service/service.h"
 #undef protected
@@ -37,8 +39,6 @@
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
-
-#include "xla/statusor.h"
 
 #include "pybind11/pybind11.h"
 
@@ -342,8 +342,13 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
 
   // Convert to XLA Computation.
   xla::HloProto hlo_proto;
-  mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
-                            /*use_tuple_args=*/false, /*return_tuple=*/false);
+  auto status = mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
+                                          /*use_tuple_args=*/false,
+                                          /*return_tuple=*/false);
+
+  if (!status.ok()) {
+    throw pybind11::value_error(std::string(status.message()));
+  }
 
   for (auto &computation :
        *hlo_proto.mutable_hlo_module()->mutable_computations()) {

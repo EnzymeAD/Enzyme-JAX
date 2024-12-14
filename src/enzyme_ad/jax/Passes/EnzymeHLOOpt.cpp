@@ -2154,6 +2154,61 @@ struct ConcatToBroadcast final
   }
 };
 
+struct DynamicUpdateSliceConstProp final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto startIndices = op.getStartIndices();
+
+    bool legal = true;
+
+    DenseElementsAttr operandConstant;
+    DenseElementsAttr updateConstant;
+
+    SmallVector<DenseElementsAttr> constants(startIndices.size(),
+                                             DenseElementsAttr());
+    for (auto &operand : op->getOpOperands()) {
+      if (operand.getOperandNumber() == 0)
+        legal &= matchPattern(operand.get(), m_Constant(&operandConstant));
+      else if (operand.getOperandNumber() == 1)
+        legal &= matchPattern(operand.get(), m_Constant(&updateConstant));
+      else
+        legal &= matchPattern(
+            operand.get(),
+            m_Constant(&constants[operand.getOperandNumber() - 2]));
+    }
+
+    if (!legal)
+      return failure();
+
+    if (operandConstant.isSplat() && updateConstant.isSplat() &&
+        (isa<FloatType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APFloat>() ==
+                 updateConstant.getSplatValue<llvm::APFloat>() ||
+         isa<IntegerType>(op.getType().getElementType()) &&
+             operandConstant.getSplatValue<llvm::APInt>() ==
+                 updateConstant.getSplatValue<llvm::APInt>())) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
+    stablehlo::Tensor operandTen = mlir::stablehlo::constantOp(operandConstant);
+    stablehlo::Tensor updateTen = mlir::stablehlo::constantOp(updateConstant);
+    SmallVector<stablehlo::Tensor> inps;
+    for (auto &c : constants)
+      inps.push_back(mlir::stablehlo::constantOp(c));
+
+    auto out = mlir::stablehlo::dynamicUpdateSliceOp(operandTen, updateTen,
+                                                     inps, op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(out));
+
+    return success();
+  }
+};
+
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -2875,40 +2930,68 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (auto res = constFoldBinaryOpConditional<FloatAttr, FloatAttr::ValueType,
-                                                void>(
-            constants,
-            [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
-              if (a.getSizeInBits(a.getSemantics()) == 64 &&
-                  b.getSizeInBits(b.getSemantics()) == 64)
-                return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
+    if (op.getType().getElementType().isa<FloatType>()) {
+      if (auto res = constFoldBinaryOpConditional<FloatAttr,
+                                                  FloatAttr::ValueType, void>(
+              constants,
+              [](const APFloat &a, const APFloat &b) -> std::optional<APFloat> {
+                if (a.getSizeInBits(a.getSemantics()) == 64 &&
+                    b.getSizeInBits(b.getSemantics()) == 64)
+                  return APFloat(pow(a.convertToDouble(), b.convertToDouble()));
 
-              if (a.getSizeInBits(a.getSemantics()) == 32 &&
-                  b.getSizeInBits(b.getSemantics()) == 32)
-                return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
+                if (a.getSizeInBits(a.getSemantics()) == 32 &&
+                    b.getSizeInBits(b.getSemantics()) == 32)
+                  return APFloat(powf(a.convertToFloat(), b.convertToFloat()));
 
-              return {};
-            })) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), res.cast<ElementsAttr>());
-      return success();
-    }
+                return {};
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
+      }
 
-    // pow(X, 0.5) -> sqrt(X)
-    {
-      DenseFPElementsAttr rhs;
-      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
-        bool allHalf = true;
-        for (auto v : rhs) {
-          if (!v.isExactlyValue(0.5)) {
-            allHalf = false;
-            break;
+      // pow(X, 0.5) -> sqrt(X)
+      {
+        DenseFPElementsAttr rhs;
+        if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+          bool allHalf = true;
+          for (auto v : rhs) {
+            if (!v.isExactlyValue(0.5)) {
+              allHalf = false;
+              break;
+            }
+          }
+          if (allHalf) {
+            rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
+            return success();
           }
         }
-        if (allHalf) {
-          rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
-          return success();
-        }
+      }
+    } else {
+      if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                  IntegerAttr::ValueType, void>(
+              constants,
+              [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+                if (b.isNegative())
+                  return {}; // Ignore the negative case
+
+                APInt result = APInt(a.getBitWidth(), 1);
+                APInt base = a;
+                uint64_t exponent = b.getLimitedValue();
+
+                while (exponent > 0) {
+                  if (exponent % 2 == 1) {
+                    result *= base;
+                  }
+                  base *= base;
+                  exponent /= 2;
+                }
+
+                return result;
+              })) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), res.cast<ElementsAttr>());
+        return success();
       }
     }
 
@@ -6214,6 +6297,35 @@ struct GetDimensionSizeOpCanon final
   }
 };
 
+struct NoopReverse final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReverseOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<int64_t> newDimensions;
+    auto dimensions = op.getDimensions();
+    auto shape = op.getResult().getType().getShape();
+
+    for (auto dim : dimensions) {
+      auto size = shape[dim];
+      if (size != 1)
+        newDimensions.push_back(dim);
+    }
+
+    if (newDimensions.empty()) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
+    }
+
+    if (newDimensions.size() == dimensions.size())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, op.getOperand(),
+                                                      newDimensions);
+    return success();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final : OpRewritePattern<mlir::stablehlo::GatherOp> {
@@ -6621,7 +6733,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
              OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
              PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
-             SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
+             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
              NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
              ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
@@ -6634,9 +6746,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 ConcatToBroadcast, PadPad, PadReshapePad,
-                 ConcatPushBinop<stablehlo::AddOp>,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
+                 DynamicUpdateSliceConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,

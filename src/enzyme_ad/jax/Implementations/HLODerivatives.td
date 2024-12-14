@@ -355,6 +355,8 @@ def Dimensions : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getDimensions();
 }]>;
 
+// ConvolutionOp
+
 def ConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getWindowStridesAttr();
 }]>;
@@ -363,11 +365,11 @@ def ConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getPaddingAttr();
 }]>;
 
-def ConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def ConvLhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getLhsDilationAttr();
 }]>;
 
-def ConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def ConvRhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getRhsDilationAttr();
 }]>;
 
@@ -387,22 +389,341 @@ def ConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getBatchGroupCountAttr();
 }]>;
 
-// TODO
+// GradData
 
-def GradFilterConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradDataFilterReshape1 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto featureGroupCount = op.getFeatureGroupCount();
+  auto batchGroupCount = op.getBatchGroupCount();
+  assert(featureGroupCount == 1 || batchGroupCount == 1);
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
+
+  auto rhs = op.getRhs();
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto Ty = cast<RankedTensorType>(rhs.getType());
+  auto shape = Ty.getShape();
+
+  auto odim = dimensionNumbers.getKernelOutputFeatureDimension();
+
+  SmallVector<int64_t> newShape;
+  for (int64_t i = 0, e = shape.size(); i < e; ++i) {
+    if (i == odim) {
+      newShape.push_back(groupCount);
+      newShape.push_back(shape[i] / groupCount);
+    } else {
+      newShape.push_back(shape[i]);
+    }
+  }
+
+  RankedTensorType::get(newShape, Ty.getElementType());
+}]>;
+
+def GradDataFilterTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> transposes;
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto idim = dimensionNumbers.getKernelInputFeatureDimension();
+  auto odim = dimensionNumbers.getKernelOutputFeatureDimension();
+
+  if (odim < idim)
+    idim++;
+
+  int64_t i = 0, N = op.getType().getShape().size();
+  while (i <= N) {
+    if (i == idim) {
+      transposes.push_back(odim);
+      transposes.push_back(idim);
+    } else if (i != odim) {
+      transposes.push_back(i);
+    }
+    i++;
+  }
+
+  getI64Attr(builder, transposes);
+}]>;
+
+def GradDataConvOutputType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto Ty = op.getLhs().getType();
+  auto batchGroupCount = op.getBatchGroupCount();
+
+  if (batchGroupCount > 1) {
+    SmallVector<int64_t> shape(Ty.getShape().begin(), Ty.getShape().end());
+    auto dimensionNumbers = op.getDimensionNumbers();
+    shape[dimensionNumbers.getInputFeatureDimension()] *= batchGroupCount;
+    shape[dimensionNumbers.getInputBatchDimension()] /= batchGroupCount;
+    Ty = Ty.clone(shape);
+  }
+
+  Ty;
+}]>;
+
+def GradDataConvBatchGroupCountType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto Ty = op.getLhs().getType();
+  auto batchGroupCount = op.getBatchGroupCount();
+
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto fdim = dimensionNumbers.getInputFeatureDimension();
+  auto bdim = dimensionNumbers.getInputBatchDimension();
+
+  auto shape = Ty.getShape();
+  SmallVector<int64_t> newShape;
+  for (int64_t i = 0, e = shape.size(); i < e; ++i) {
+    if (i == fdim) {
+      newShape.push_back(batchGroupCount);
+      newShape.push_back(shape[i]);
+    } else if (i == bdim) {
+      newShape.push_back(shape[i] / batchGroupCount);
+    } else {
+      newShape.push_back(shape[i]);
+    }
+  }
+
+  Ty.clone(newShape);
+}]>;
+
+def GradDataConvBatchGroupPerm : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> transposes;
+
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto fdim = dimensionNumbers.getInputFeatureDimension();
+  auto bdim = dimensionNumbers.getInputBatchDimension();
+
+  if (fdim < bdim)
+    bdim++;
+
+  int64_t i = 0, N = op.getType().getShape().size();
+  while (i <= N) {
+    if (i == bdim) {
+      transposes.push_back(fdim);
+      transposes.push_back(bdim);
+    } else if (i != fdim) {
+      transposes.push_back(i);
+    }
+    i++;
+  }
+
+  getI64Attr(builder, transposes);
+}]>;
+
+def GradDataFilterReshape2 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto featureGroupCount = op.getFeatureGroupCount();
+  auto batchGroupCount = op.getBatchGroupCount();
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
+
+  auto rhs = op.getRhs();
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto Ty = cast<RankedTensorType>(rhs.getType());
+  auto shape = Ty.getShape();
+
+  auto odim = dimensionNumbers.getKernelOutputFeatureDimension();
+  auto idim = dimensionNumbers.getKernelInputFeatureDimension();
+
+  SmallVector<int64_t> newShape;
+  for (int64_t i = 0, e = shape.size(); i < e; ++i) {
+    if (i == idim) {
+      newShape.push_back(shape[i] * groupCount);
+    } else if (i == odim) {
+      newShape.push_back(shape[i] / groupCount);
+    } else {
+      newShape.push_back(shape[i]);
+    }
+  }
+
+  RankedTensorType::get(newShape, Ty.getElementType());
+}]>;
+
+def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  int64_t N = op.getType().getShape().size() - 2;
+  llvm::SmallVector<int64_t> windowStrides(N, 1);
+  auto windowStridesAttr = getI64Attr(builder, windowStrides);
+  windowStridesAttr;
+}]>;
+
+def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto dimensionNumbers = op.getDimensionNumbers();
+  int64_t N = dimensionNumbers.getKernelSpatialDimensions().size();
+
+  SmallVector<int64_t> newPaddingValues(2 * N, 0);
+
+  auto initialPadding = op.getPadding();
+  if (initialPadding.has_value()) {
+    newPaddingValues.assign(initialPadding.value().value_begin<int64_t>(),
+                            initialPadding.value().value_end<int64_t>());
+  }
+
+  auto dilateShape = [](int64_t shape, int64_t dilation) {
+    if (dilation == 1) return shape;
+    int64_t dilated = 1 + dilation * (shape - 1);
+    return dilated < 0 ? 0 : dilated;
+  };
+
+  auto lhsDilations = op.getLhsDilation();
+  auto rhsDilations = op.getRhsDilation();
+  auto windowStrides = op.getWindowStrides();
+  for (int i = 0; i < N; ++i) {
+    auto weightDim = dimensionNumbers.getKernelSpatialDimensions()[i];
+    auto dataDim = dimensionNumbers.getInputSpatialDimensions()[i];
+    auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
+
+    auto padBefore = newPaddingValues[2 * i];
+    auto padAfter = newPaddingValues[2 * i + 1];
+
+    auto lhsDilation = lhsDilations.has_value() ?
+        getI64Value(lhsDilations.value(), i) :
+        1;
+    auto rhsDilation = rhsDilations.has_value() ?
+        getI64Value(rhsDilations.value(), i) :
+        1;
+    auto windowStride = windowStrides.has_value() ?
+        getI64Value(windowStrides.value(), i) :
+        1;
+
+    auto lhsShape = dilateShape(op.getLhs().getType().getShape()[dataDim], lhsDilation);
+    auto rhsShape = dilateShape(op.getRhs().getType().getShape()[weightDim], rhsDilation);
+    auto outShape = dilateShape(op.getType().getShape()[outputDim], windowStride);
+
+    auto newPadBefore = rhsShape - padBefore - 1;
+    newPaddingValues[2 * i] = newPadBefore;
+    newPaddingValues[2 * i + 1] = lhsShape + rhsShape - 1 - outShape - newPadBefore;
+  }
+
+  auto paddingType = mlir::RankedTensorType::get({N, 2}, builder.getI64Type());
+  auto newPaddingAttr = mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+
+  newPaddingAttr;
+}]>;
+
+def GradDataConvLhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getWindowStridesAttr();
 }]>;
 
-def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getPaddingAttr();
+def GradDataConvRhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getRhsDilationAttr();
 }]>;
 
-def GradFilterConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradDataConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto dimensionNumbers = op.getDimensionNumbers();
+  int64_t N = dimensionNumbers.getKernelSpatialDimensions().size();
+  llvm::SmallVector<bool> newWindowReversalValues(N, true);
+  auto windowReversal = op.getWindowReversal();
+
+  if (windowReversal.has_value()) {
+    for (auto &&[i, rev] : llvm::enumerate(getBoolIter(windowReversal.value()))) {
+      newWindowReversalValues[i] = !rev;
+    }
+  }
+
+  auto newWindowReversalAttr = getBoolAttr(builder, newWindowReversalValues);
+  newWindowReversalAttr;
+}]>;
+
+def GradDataConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto newDimensionNumbers = ConvDimensionNumbersAttr::get(
+    op.getContext(),
+    dimensionNumbers.getOutputBatchDimension(),
+    dimensionNumbers.getOutputFeatureDimension(),
+    dimensionNumbers.getOutputSpatialDimensions(),
+    dimensionNumbers.getKernelOutputFeatureDimension(),
+    dimensionNumbers.getKernelInputFeatureDimension(),
+    dimensionNumbers.getKernelSpatialDimensions(),
+    dimensionNumbers.getInputBatchDimension(),
+    dimensionNumbers.getInputFeatureDimension(),
+    dimensionNumbers.getInputSpatialDimensions()
+  );
+  newDimensionNumbers;
+}]>;
+
+def GradDataConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto featureGroupCount = op.getFeatureGroupCount();
+  auto batchGroupCount = op.getBatchGroupCount();
+  auto groupCount = featureGroupCount == 1 ? batchGroupCount : featureGroupCount;
+  builder.getI64IntegerAttr(groupCount);
+}]>;
+
+def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  builder.getI64IntegerAttr(1);
+}]>;
+
+// GradFilter
+
+def GradFilterConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getRhsDilationAttr();
+}]>;
+
+def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto dimensionNumbers = op.getDimensionNumbers();
+  int64_t N = dimensionNumbers.getKernelSpatialDimensions().size();
+
+  SmallVector<int64_t> newPaddingValues(2 * N, 0);
+
+  auto initialPadding = op.getPadding();
+  if (initialPadding.has_value()) {
+    newPaddingValues.assign(initialPadding.value().value_begin<int64_t>(),
+                            initialPadding.value().value_end<int64_t>());
+  }
+
+  auto dilateShape = [](int64_t shape, int64_t dilation) {
+    if (dilation == 1) return shape;
+    int64_t dilated = 1 + dilation * (shape - 1);
+    return dilated < 0 ? 0 : dilated;
+  };
+
+  auto lhsDilations = op.getLhsDilation();
+  auto rhsDilations = op.getRhsDilation();
+  auto windowStrides = op.getWindowStrides();
+  for (int i = 0; i < N; ++i) {
+    auto dataDim = dimensionNumbers.getInputSpatialDimensions()[i];
+    auto weightDim = dimensionNumbers.getKernelSpatialDimensions()[i];
+    auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
+
+    auto padBefore = newPaddingValues[2 * i];
+    auto padAfter = newPaddingValues[2 * i + 1];
+
+    auto lhsDilation = lhsDilations.has_value() ?
+        getI64Value(lhsDilations.value(), i) :
+        1;
+    auto rhsDilation = rhsDilations.has_value() ?
+        getI64Value(rhsDilations.value(), i) :
+        1;
+    auto windowStride = windowStrides.has_value() ?
+        getI64Value(windowStrides.value(), i) :
+        1;
+
+    auto lhsShape = dilateShape(op.getLhs().getType().getShape()[dataDim], lhsDilation);
+    auto rhsShape = dilateShape(op.getRhs().getType().getShape()[weightDim], rhsDilation);
+    auto outShape = dilateShape(op.getType().getShape()[outputDim], windowStride);
+
+    newPaddingValues[2 * i] = padBefore;
+    newPaddingValues[2 * i + 1] = outShape - lhsShape + rhsShape - padBefore - 1;
+  }
+
+  auto paddingType = mlir::RankedTensorType::get({N, 2}, builder.getI64Type());
+  auto newPaddingAttr = mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+
+  newPaddingAttr;
+}]>;
+
+def GradFilterConvReverseDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto windowReversals = op.getWindowReversal();
+
+  SmallVector<int64_t> reverseDims;
+
+  if (windowReversals.has_value()) {
+    for (auto it : llvm::enumerate(getBoolIter(windowReversals.value()))) {
+      if (it.value()) {
+        reverseDims.push_back(it.index());
+      }
+    }
+  }
+
+  getI64Attr(builder, reverseDims);
+}]>;
+
+def GradFilterConvLhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getLhsDilationAttr();
 }]>;
 
-def GradFilterConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getRhsDilationAttr();
+def GradFilterConvRhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getWindowStridesAttr();
 }]>;
 
 def GradFilterConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -410,50 +731,119 @@ def GradFilterConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0
 }]>;
 
 def GradFilterConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getDimensionNumbersAttr();
+  auto dimensionNumbers = op.getDimensionNumbers();
+  auto newDimensionNumbers = ConvDimensionNumbersAttr::get(
+    op.getContext(),
+    dimensionNumbers.getInputFeatureDimension(),
+    dimensionNumbers.getInputBatchDimension(),
+    dimensionNumbers.getInputSpatialDimensions(),
+    dimensionNumbers.getOutputBatchDimension(),
+    dimensionNumbers.getOutputFeatureDimension(),
+    dimensionNumbers.getOutputSpatialDimensions(),
+    dimensionNumbers.getKernelInputFeatureDimension(),
+    dimensionNumbers.getKernelOutputFeatureDimension(),
+    dimensionNumbers.getKernelSpatialDimensions()
+  );
+  newDimensionNumbers;
 }]>;
 
 def GradFilterConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
+  auto batchGroupCount = op.getBatchGroupCount();
+  batchGroupCount;
 }]>;
 
 def GradFilterConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
+  auto featureGroupCount = op.getFeatureGroupCount();
+  unsigned int newBatchGroupCount = featureGroupCount > 1 ? featureGroupCount : 1;
+  newBatchGroupCount;
 }]>;
 
-// TODO
-
-def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowStridesAttr();
-}]>;
-
-def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getPaddingAttr();
-}]>;
-
-def GradDataConvLhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getLhsDilationAttr();
-}]>;
-
-def GradDataConvRhsDialation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getRhsDilationAttr();
-}]>;
-
-def GradDataConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowReversalAttr();
-}]>;
-
-def GradDataConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getDimensionNumbersAttr();
-}]>;
-
-def GradDataConvFeatureGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFeatureGroupCountAttr();
-}]>;
-
-def GradDataConvBatchGroupCount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getBatchGroupCountAttr();
-}]>;
+def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
+                    [
+                        (Reshape
+                          (TypeOf $lhs),
+                          (Transpose
+                            (Reshape
+                              (GradDataConvBatchGroupCountType),
+                              (Convolution
+                                (GradDataConvOutputType),
+                                (DiffeRet),
+                                (Reshape
+                                  (GradDataFilterReshape2),
+                                  (Transpose
+                                      (Reshape (GradDataFilterReshape1), $rhs),
+                                      (GradDataFilterTranspose)
+                                  )
+                                ),
+                                (GradDataConvWindowStrides),
+                                (GradDataConvPadding),
+                                (GradDataConvLhsDilation),
+                                (GradDataConvRhsDilation),
+                                (GradDataConvWindowReversal),
+                                (GradDataConvDimensionNumbers),
+                                (GradDataConvFeatureGroupCount),
+                                (GradDataConvBatchGroupCount),
+                                (ResultDotPrec)
+                              )
+                            ),
+                            (GradDataConvBatchGroupPerm)
+                          )
+                        ),
+                        (Reverse
+                          (Convolution
+                            (TypeOf $rhs),
+                            $lhs,
+                            (DiffeRet),
+                            (GradFilterConvWindowStrides),
+                            (GradFilterConvPadding),
+                            (GradFilterConvLhsDilation),
+                            (GradFilterConvRhsDilation),
+                            (GradFilterConvWindowReversal),
+                            (GradFilterConvDimensionNumbers),
+                            (GradFilterConvFeatureGroupCount),
+                            (GradFilterConvBatchGroupCount),
+                            (ResultDotPrec)
+                          ),
+                          (GradFilterConvReverseDims)
+                        )
+                    ],
+                    (Add
+                      (SelectIfActive $lhs,
+                        (Convolution
+                          (ResultTypes),
+                          (Shadow $lhs),
+                          $rhs,
+                          (ConvWindowStrides),
+                          (ConvPadding),
+                          (ConvLhsDilation),
+                          (ConvRhsDilation),
+                          (ConvWindowReversal),
+                          (ConvDimensionNumbers),
+                          (ConvFeatureGroupCount),
+                          (ConvBatchGroupCount),
+                          (ResultDotPrec)
+                        ),
+                        (HLOConstantFP<"0">)
+                      ),
+                      (SelectIfActive $rhs,
+                        (Convolution
+                          (ResultTypes),
+                          $lhs,
+                          (Shadow $rhs),
+                          (ConvWindowStrides),
+                          (ConvPadding),
+                          (ConvLhsDilation),
+                          (ConvRhsDilation),
+                          (ConvWindowReversal),
+                          (ConvDimensionNumbers),
+                          (ConvFeatureGroupCount),
+                          (ConvBatchGroupCount),
+                          (ResultDotPrec)
+                        ),
+                        (HLOConstantFP<"0">)
+                      )
+                    )
+                  >;
 
 /// Helpers - Max/Min
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
@@ -522,7 +912,7 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     (Add (Shadow $x), (Shadow $y))
                   >;
 
-def : HLODerivative<"Atan2Op", (Op $x, $y), 
+def : HLODerivative<"Atan2Op", (Op $x, $y),
                     [
                       (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
                       (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
@@ -583,23 +973,11 @@ def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
 def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
-def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
-                    [
-                        (Convolution (TypeOf $lhs), (DiffeRet), $lhs, (GradFilterConvWindowStrides), (GradFilterConvPadding), (GradFilterConvLhsDialation), (GradFilterConvRhsDialation), (GradFilterConvWindowReversal), (GradFilterConvDimensionNumbers), (GradFilterConvFeatureGroupCount), (GradFilterConvBatchGroupCount), (ResultDotPrec)),
-                        (Convolution (TypeOf $rhs), (DiffeRet), $rhs, (GradDataConvWindowStrides), (GradDataConvPadding), (GradDataConvLhsDialation), (GradDataConvRhsDialation), (GradDataConvWindowReversal), (GradDataConvDimensionNumbers), (GradDataConvFeatureGroupCount), (GradDataConvBatchGroupCount), (ResultDotPrec))
-                    ],
-                    (Add (SelectIfActive $lhs, 
-                      (Convolution (ResultTypes), (Shadow $lhs), $rhs, (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)),
-                      (HLOConstantFP<"0">)), (SelectIfActive $rhs, 
-                      (Convolution (ResultTypes), $lhs, (Shadow $rhs), (ConvWindowStrides), (ConvPadding), (ConvLhsDialation), (ConvRhsDialation), (ConvWindowReversal), (ConvDimensionNumbers), (ConvFeatureGroupCount), (ConvBatchGroupCount), (ResultDotPrec)), 
-                      (HLOConstantFP<"0">)))
-                  >;
-
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
 
 def : HLOInactiveOp<"CreateTokenOp">;
 
-def : HLODerivative<"DivOp", (Op $x, $y), 
+def : HLODerivative<"DivOp", (Op $x, $y),
                     [
                       (CheckedDiv (DiffeRet), $y),
                       (Neg (Mul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
@@ -623,7 +1001,7 @@ def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 // TODO fix `rfft` and `irfft` derivatives:
 // - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` => 
+// - `irfft` =>
 def : HLODerivative<"FftOp", (Op $x),
                     [
                       (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
@@ -682,7 +1060,7 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
 
 def : HLOInactiveOp<"PartitionIdOp">;
 
-def : HLODerivative<"PowOp", (Op $x, $y), 
+def : HLODerivative<"PowOp", (Op $x, $y),
                   [
                     (CheckedMul (DiffeRet), (Mul $y, (Pow $x, (Sub $y, (HLOConstantFP<"1"> $y))))),
                     (CheckedMul (DiffeRet), (Mul (Pow $x, $y), (Log $x)))
@@ -709,7 +1087,7 @@ def : HLODerivative<"RealOp", (Op $x),
                         (DiffeRet))
                   ], (Real (Shadow $x))>;
 
-def : HLODerivative<"RemOp", (Op $x, $y), 
+def : HLODerivative<"RemOp", (Op $x, $y),
                   [
 	            (DiffeRet),
                     (CheckedMul (DiffeRet), (Neg (Mul (Sign (Div $x, $y):$div),(Floor (Abs $div)))))
