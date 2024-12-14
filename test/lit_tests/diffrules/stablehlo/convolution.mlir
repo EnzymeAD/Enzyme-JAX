@@ -8,7 +8,6 @@ module {
   }
 }
 
-
 // FORWARD:  func.func @main(%arg0: tensor<8x66x66x512xf32>, %arg1: tensor<8x66x66x512xf32>, %arg2: tensor<3x3x512x512xf32>, %arg3: tensor<3x3x512x512xf32>) -> (tensor<8x64x64x512xf32>, tensor<8x64x64x512xf32>) {
 // FORWARD-NEXT:    %0 = stablehlo.convolution(%arg1, %arg2) dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], window = {stride = [1, 1], pad = {{\[\[}}0, 0], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 1], reverse = [false, false]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<8x66x66x512xf32>, tensor<3x3x512x512xf32>) -> tensor<8x64x64x512xf32>
 // FORWARD-NEXT:    %1 = stablehlo.convolution(%arg0, %arg3) dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], window = {stride = [1, 1], pad = {{\[\[}}0, 0], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 1], reverse = [false, false]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<8x66x66x512xf32>, tensor<3x3x512x512xf32>) -> tensor<8x64x64x512xf32>
