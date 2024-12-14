@@ -26,7 +26,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/reference/Ops.h"
-#include "stablehlo/transforms/ChloDecompositionUtils.h"
+// #include "stablehlo/transforms/ChloDecompositionUtils.h"
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
