@@ -185,7 +185,6 @@ class Concat(EnzymeJaxTest):
         self.douts = jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)
 
         self.revfilter = justjax
-        # self.revfilter = nomlir
 
         def f(x, y):
             return jnp.concat([x, y], axis=None)
