@@ -102,6 +102,7 @@ dynamic_reshape_op_canon<16>;
 get_tuple_element_op_canon<16>;
 real_op_canon<16>;
 imag_op_canon<16>;
+conj_complex_negate<16>;
 get_dimension_size_op_canon<16>;
 gather_op_canon<16>;
 reshape_op_canon<16>;

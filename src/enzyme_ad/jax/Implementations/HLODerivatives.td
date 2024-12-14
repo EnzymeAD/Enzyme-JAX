@@ -1011,7 +1011,12 @@ def : HLODerivative<"FftOp", (Op $x),
 
 def : HLOInactiveOp<"FloorOp">;
 
-def : HLODerivative<"ImagOp", (Op $x), [(Complex (HLOConstantFP<"0">), (Neg (DiffeRet)))], (Imag (Shadow $x))>;
+def : HLODerivative<"ImagOp", (Op $x),
+                  [
+                    (SelectIfComplex $x,
+                      (Complex (HLOConstantFP<"0">), (Neg (DiffeRet))),
+                      (HLOConstantFP<"0">))
+                  ], (Imag (Shadow $x))>;
 
 def : HLOInactiveOp<"IotaOp">;
 
@@ -1062,11 +1067,25 @@ def : HLODerivative<"PowOp", (Op $x, $y),
                   ]
                   >;
 
-def : HLODerivative<"AbsOp", (Op $x), [
-  (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet)))
-]>;
+def : HLODerivative<"AbsOp", (Op $x),
+                  [
+                    (SelectIfComplex $x,
+                      (Complex
+                        (Div (Real $x), (Abs $x)),
+                        (Neg (Div (Imag $x), (Abs $x)))
+                      ),
+                      (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet))))
+                  ], (SelectIfComplex $x,
+                      (Div (Real (Mul (Shadow $x), $x)), (Abs $x)),
+                      (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (Shadow $x), (Neg (Shadow $x)))
+                    )>;
 
-def : HLODerivative<"RealOp", (Op $x), [(Complex (DiffeRet), (HLOConstantFP<"0">))], (Real (Shadow $x))>;
+def : HLODerivative<"RealOp", (Op $x),
+                  [
+                    (SelectIfComplex $x,
+                        (Complex (DiffeRet), (HLOConstantFP<"0">)),
+                        (DiffeRet))
+                  ], (Real (Shadow $x))>;
 
 def : HLODerivative<"RemOp", (Op $x, $y),
                   [
