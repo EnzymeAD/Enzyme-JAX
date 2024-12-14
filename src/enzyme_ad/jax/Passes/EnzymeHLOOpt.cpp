@@ -3656,6 +3656,13 @@ struct TransposeTranspose
   }
 };
 
+size_t getBitWidth(mlir::Type ty) {
+  if (auto CT = dyn_cast<ComplexType>(ty)) {
+    return 2 * getBitWidth(CT.getElementType());
+  }
+  return ty.getIntOrFloatBitWidth();
+}
+
 struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
 
@@ -3665,8 +3672,10 @@ struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
     auto operandType = op.getOperand().getType().cast<TensorType>();
     if (!resultType.hasStaticShape() || !operandType.hasStaticShape())
       return failure();
-    if (resultType.getNumElements() * resultType.getElementTypeBitWidth() >=
-        operandType.getNumElements() * operandType.getElementTypeBitWidth())
+    if (resultType.getNumElements() *
+            getBitWidth(resultType.getElementType()) >=
+        operandType.getNumElements() *
+            getBitWidth(operandType.getElementType()))
       return failure();
 
     auto transpose =
