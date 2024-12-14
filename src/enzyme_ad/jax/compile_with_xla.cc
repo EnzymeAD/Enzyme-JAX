@@ -343,8 +343,9 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   // Convert to XLA Computation.
   xla::HloProto hlo_proto;
   auto status = mlir::ConvertMlirHloToHlo(*parsed_module, &hlo_proto,
-                            /*use_tuple_args=*/false, /*return_tuple=*/false);
-  
+                                          /*use_tuple_args=*/false,
+                                          /*return_tuple=*/false);
+
   if (!status.ok()) {
     throw pybind11::value_error(std::string(status.message()));
   }
