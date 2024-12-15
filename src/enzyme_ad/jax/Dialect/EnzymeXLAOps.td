@@ -29,6 +29,10 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 //include "stablehlo/dialect/Base.td"
 //include "stablehlo/dialect/StablehloAttrs.td"
 
+def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
+                 "::mlir::TensorType">,
+            BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
+
 def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
   let summary = "Kernel Call operation";
   let description = [{
@@ -36,12 +40,12 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
 
   let arguments = (ins
     FlatSymbolRefAttr:$fn, 
-    Index:$gridx,
-    Index:$gridy,
-    Index:$gridz,
-    Index:$blockx,
-    Index:$blocky,
-    Index:$blockz,
+    TensorI64:$gridx,
+    TensorI64:$gridy,
+    TensorI64:$gridz,
+    TensorI64:$blockx,
+    TensorI64:$blocky,
+    TensorI64:$blockz,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,

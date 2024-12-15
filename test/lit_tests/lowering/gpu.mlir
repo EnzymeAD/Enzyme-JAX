@@ -1,10 +1,10 @@
-// RUN: enzymexlamlir-opt %s --lower-kernel | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-kernel{jit=false})" | FileCheck %s
 
 module {
-  llvm.func internal unnamed_addr fastcc @julia_throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
+  llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
     llvm.unreachable
   }
-  llvm.func local_unnamed_addr ptx_kernelcc @kern(%arg0: !llvm.ptr<1>) {
+  llvm.func internal ptx_kernelcc @kern(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %2 = llvm.icmp "ugt" %1, %0 : i32
@@ -17,14 +17,19 @@ module {
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
     llvm.return
   ^bb2:  // pred: ^bb0
-    llvm.call fastcc @julia_throw_boundserror_2676() : () -> ()
+    llvm.call fastcc @throw_boundserror_2676() : () -> ()
     llvm.unreachable
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-    %c1 = arith.constant 1 : index
-    %c40 = arith.constant 40 : index
+    %c1 = stablehlo.constant dense<1> : tensor<i64>
+    %c40 = stablehlo.constant dense<40> : tensor<i64>
     %0 = enzymexla.kernel_call @kern (%c1, %c1, %c1) (%c1, %c1, %c40) (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
 
+// CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
+// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_gpu(%arg0) {api_version = 2 : i32, backend_config = "\00\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00(\00\00\00\00\00\00\00", output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    return %0 : tensor<64xi64>
+// CHECK-NEXT:  }
+// CHECK-NEXT:}

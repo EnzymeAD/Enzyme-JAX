@@ -125,6 +125,16 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     "stablehlo::StablehloDialect",
     "tensor::TensorDialect",
   ];
+
+  let options = [
+    Option<
+      /*C++ variable name=*/"jit",
+      /*CLI argument=*/"jit",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to jit the kernel"
+    >
+    ];
 }
 
 #endif
