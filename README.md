@@ -70,3 +70,10 @@ Alternatively, if you have installed the wheel, you can manually invoke the test
 ```sh
 cd test && python test.py
 ```
+## LSP Support
+
+Enzyme-Jax exposes a bunch of different tensor rewrites as MLIR passes in `src/enzyme_ad/jax/Passes`. If you want to enable LSP support when working with this code, we recommend that you generate a `compile_commands.json` by running
+
+```bash
+bazel run :refresh_compile_commands
+```
