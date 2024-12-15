@@ -205,6 +205,55 @@ gentbl_cc_library(
     deps = [":EnzymeXLAPassesTdFiles"],
 )
 
+
+td_library(
+    name = "EnzymeXLADialectTdFiles",
+    srcs = [
+        "Dialect/Dialect.td",
+    ],
+    includes = ["."],
+    deps = [
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:LoopLikeInterfaceTdFiles",
+        "@llvm-project//mlir:MemorySlotInterfacesTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+        "@llvm-project//mlir:ViewLikeInterfaceTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "EnzymeXLAOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/EnzymeXLAOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/EnzymeXLAOps.cpp.inc",
+        ),
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=enzymexla",
+            ],
+            "Dialect/EnzymeXLADialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=enzymexla",
+            ],
+            "Dialect/EnzymeXLADialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/EnzymeXLAOps.td",
+    deps = [":EnzymeXLADialectTdFiles", "@enzyme//:EnzymeDialectTdFiles", "@stablehlo//:stablehlo_ops_td_files"],
+)
+
 gentbl_cc_library(
     name = "EnzyeHLOPatternsIncGen",
     tbl_outs = [
@@ -228,11 +277,13 @@ cc_library(
         [
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Dialect/*.cpp",
         ],
     ),
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Dialect/*.h",
     ]),
     copts = [
         "-Werror=unused-variable",
@@ -241,6 +292,7 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":EnzyeHLOPatternsIncGen",
         ":mhlo-derivatives",

@@ -1,0 +1,69 @@
+//===- EnzymeXLAOps.td - EnzymeXLA dialect ops ------------------*- tablegen -*-===//
+//
+// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ENZYMEXLA_OPS
+#define ENZYMEXLA_OPS
+
+include "Enzyme/MLIR/Dialect/Dialect.td"
+include "Dialect.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
+include "mlir/IR/SymbolInterfaces.td"
+include "mlir/IR/EnumAttr.td"
+
+include "mlir/IR/OpBase.td"
+include "mlir/IR/SymbolInterfaces.td"
+
+include "mlir/IR/AttrTypeBase.td"
+
+include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/FunctionInterfaces.td"
+include "mlir/Interfaces/LoopLikeInterface.td"
+include "mlir/Interfaces/MemorySlotInterfaces.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+
+//include "stablehlo/dialect/Base.td"
+//include "stablehlo/dialect/StablehloAttrs.td"
+
+def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+  let summary = "Kernel Call operation";
+  let description = [{
+  }];
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$fn, 
+    Index:$gridx,
+    Index:$gridy,
+    Index:$gridz,
+    Index:$blockx,
+    Index:$blocky,
+    Index:$blockz,
+    Variadic<AnyType>:$inputs,
+    DefaultValuedStrAttr<StrAttr, "">:$backend_config,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<AnyAttr>:$result_layouts,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases
+    //OptionalAttr<StableHLO_ArrayOfLayoutAttr>:$operand_layouts,
+    //OptionalAttr<StableHLO_ArrayOfLayoutAttr>:$result_layouts,
+    //DefaultValuedOptionalAttr<
+    //    TypedArrayAttrBase<
+    //        StableHLO_OutputOperandAlias,
+    //        "Aliasing attribute for outputs and operands of CustomCall">,
+    //    "{}">:$output_operand_aliases
+  );
+
+  let results = (outs Variadic<AnyType>);
+
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `(` $blockx `,` $blocky `,` $blockz `)` ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+}
+
+#endif // ENZYMEXLA_OPS

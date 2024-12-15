@@ -21,7 +21,12 @@ std::unique_ptr<Pass> createArithRaisingPass();
 std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
+std::unique_ptr<Pass> createLowerKernelPass();
 } // namespace enzyme
+
+//namespace enzymexla {
+//class EnzymeXLADialect;
+//}
 } // namespace mlir
 
 namespace mlir {
@@ -81,5 +86,6 @@ static void regsiterenzymeXLAPasses() {
   registerPrintPass();
   registerEnzymeHLOOptPass();
   registerEnzymeHLOUnrollPass();
+  registerLowerKernelPass();
 }
 #endif // ENZYMEXLA_PASSES_H

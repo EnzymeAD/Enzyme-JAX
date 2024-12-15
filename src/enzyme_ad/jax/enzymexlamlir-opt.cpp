@@ -16,6 +16,7 @@
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 #include "Implementations/XLADerivatives.h"
+#include "Dialect/Dialect.h"
 #include "Passes/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -91,6 +92,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::stablehlo::check::CheckDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
+  registry.insert<mlir::enzymexla::EnzymeXLADialect>();
 
   mlir::registerenzymePasses();
   regsiterenzymeXLAPasses();

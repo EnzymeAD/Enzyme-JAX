@@ -116,4 +116,15 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def LowerKernelPass : Pass<"lower-kernel"> {
+  let summary = "Lower kernel to custom call";
+  let dependentDialects = [
+  ];
+  let constructor = "mlir::enzyme::createLowerKernelPass()";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+  ];
+}
+
 #endif
