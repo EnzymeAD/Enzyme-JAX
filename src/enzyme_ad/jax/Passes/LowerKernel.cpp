@@ -372,7 +372,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   mlir::registerLLVMDialectTranslation(registry);
   mlir::registerNVVMDialectTranslation(registry);
   context.appendDialectRegistry(registry);
-  context.loadAllAvailableDialects();
+  //context.loadAllAvailableDialects();
 
   mlir::ParserConfig parse_config(&context);
   auto out_module =

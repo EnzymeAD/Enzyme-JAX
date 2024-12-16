@@ -46,6 +46,22 @@ namespace tensor {
 class TensorDialect;
 } // namespace tensor
 
+namespace math {
+class MathDialect;
+} // namespace tensor
+
+namespace vector {
+class VectorDialect;
+} // namespace tensor
+
+namespace nvgpu {
+class NVGPUDialect;
+} // namespace tensor
+
+namespace NVVM {
+class NVVMDialect;
+} // namespace tensor
+
 namespace stablehlo {
 class StablehloDialect;
 } // namespace stablehlo
