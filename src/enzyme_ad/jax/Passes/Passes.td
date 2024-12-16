@@ -123,7 +123,12 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   let constructor = "mlir::enzyme::createLowerKernelPass()";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "gpu::GPUDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
     "tensor::TensorDialect",
+    "async::AsyncDialect"
   ];
 
   let options = [

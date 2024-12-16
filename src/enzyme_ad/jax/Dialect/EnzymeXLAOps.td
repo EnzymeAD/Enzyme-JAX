@@ -65,7 +65,7 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
 
 
   let assemblyFormat = [{
-    $fn ` ` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `(` $blockx `,` $blocky `,` $blockz `)` ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    $fn ` ` `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)` ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
   }];
 
 }

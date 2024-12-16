@@ -58,12 +58,20 @@ namespace cf {
 class ControlFlowDialect;
 } // end namespace cf
 
+namespace gpu {
+class GPUDialect;
+} // end namespace gpu
+
 namespace scf {
 class SCFDialect;
 } // end namespace scf
 
 namespace memref {
 class MemRefDialect;
+} // end namespace memref
+
+namespace async {
+class AsyncDialect;
 } // end namespace memref
 
 namespace func {
