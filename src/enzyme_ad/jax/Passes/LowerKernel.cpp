@@ -347,7 +347,8 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
     if (found != kernels.end()) {
       ptr = found->second;
     } else {
-  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  //mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::MLIRContext &context = *builder.getContext();
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
