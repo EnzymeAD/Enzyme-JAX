@@ -33,7 +33,10 @@ py_package(
 
 cc_binary(
     name = "enzymexlamlir-opt",
-    srcs = ["//src/enzyme_ad/jax:enzymexlamlir-opt.cpp"],
+    srcs = [
+        "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
+        "//src/enzyme_ad/jax:RegistryUtils.cpp",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "@enzyme//:EnzymeMLIR",

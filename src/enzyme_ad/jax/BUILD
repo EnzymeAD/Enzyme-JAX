@@ -2,7 +2,7 @@ load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 
-exports_files(["enzymexlamlir-opt.cpp"])
+exports_files(["enzymexlamlir-opt.cpp", "RegistryUtils.cpp"])
 
 licenses(["notice"])
 
@@ -328,11 +328,12 @@ cc_library(
 
 pybind_library(
     name = "compile_with_xla",
-    srcs = ["compile_with_xla.cc"],
+    srcs = ["compile_with_xla.cc", "RegistryUtils.cpp"],
     hdrs = glob([
         "compile_with_xla.h",
         "Implementations/*.h",
         "Passes/*.h",
+        "RegistryUtils.h"
     ]),
     deps = [
         ":XLADerivatives",
@@ -425,7 +426,9 @@ pybind_library(
 
 pybind_extension(
     name = "enzyme_call",
-    srcs = ["enzyme_call.cc"],
+    srcs = ["enzyme_call.cc",
+            "RegistryUtils.cpp"
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":clang_compile",

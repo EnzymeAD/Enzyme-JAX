@@ -44,22 +44,11 @@
 
 #include "compile_with_xla.h"
 
-#include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
-#include "Implementations/XLADerivatives.h"
 #include "TransformOps/TransformOps.h"
-
-#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 
 #include "pybind11/stl.h"
 
-void prepareRegistry(mlir::DialectRegistry &registry) {
-  mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
-  mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
-  mlir::linalg::registerTransformDialectExtension(registry);
-  mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
-  mlir::func::registerInlinerExtension(registry);
-  mlir::registerConvertToLLVMDependentDialectLoading(registry);
-}
+#include "RegistryUtils.h"
 
 /// Returns an unused symbol in `module` for `oldSymbolName` by trying numeric
 /// suffix in `lastUsedID`.
@@ -148,13 +137,6 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   mlir::DialectRegistry registry;
   prepareRegistry(registry);
   MLIRContext context(registry);
-  context.loadDialect<mlir::arith::ArithDialect>();
-  context.loadDialect<mlir::complex::ComplexDialect>();
-  context.loadDialect<mlir::tensor::TensorDialect>();
-  context.loadDialect<mlir::func::FuncDialect>();
-  context.loadDialect<mlir::mhlo::MhloDialect>();
-  context.loadDialect<mlir::stablehlo::StablehloDialect>();
-  context.loadDialect<mlir::chlo::ChloDialect>();
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mlir, parser_config);
@@ -302,13 +284,6 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   mlir::DialectRegistry registry;
   prepareRegistry(registry);
   mlir::MLIRContext context(registry);
-  context.loadDialect<mlir::arith::ArithDialect>();
-  context.loadDialect<mlir::complex::ComplexDialect>();
-  context.loadDialect<mlir::tensor::TensorDialect>();
-  context.loadDialect<mlir::func::FuncDialect>();
-  context.loadDialect<mlir::mhlo::MhloDialect>();
-  context.loadDialect<mlir::stablehlo::StablehloDialect>();
-  context.loadDialect<mlir::chlo::ChloDialect>();
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
