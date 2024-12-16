@@ -35,35 +35,12 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
-
-
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
-#include "mlir/Conversion/ComplexToLLVM/ComplexToLLVM.h"
-#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
-#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
-#include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
-#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
-#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
-#include "mlir/Conversion/Passes.h"
-#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
-
-#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
-#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
-
-#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
-#include "mlir/Target/LLVM/NVVM/Target.h"
-#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
-
-#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
-#include "mlir/include/mlir/Parser/Parser.h"
-
 
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
@@ -268,7 +245,6 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
         op.erase();
     });
   
-    llvm::errs() << gpufunc << "\n";
   }
   SmallVector<Operation*> tocopy;
   op->walk([&](CallOpInterface cop) {
@@ -327,10 +303,6 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
 
   builder.create<mlir::func::ReturnOp>(loc);
 
-  llvm::errs() << func << "\n";
-  
-  llvm::errs() << submod << "\n";
-
   std::string modstr;
   llvm::raw_string_ostream ss(modstr);
 
@@ -349,8 +321,6 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
     } else {
   //mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
 
-  llvm::errs() << "pre out_module:\n" << submod << "\n";
-  
   PassManager pm(submod.getContext());
   mlir::gpu::GPUToNVVMPipelineOptions options;
   options.indexBitWidth = 64;
@@ -365,8 +335,6 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   
   pm.run(submod);
   
-  llvm::errs() << "post out_module:\n" << submod << "\n";
-
   OpBuilder builder(submod);
   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
@@ -398,14 +366,6 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
         "str",
         builder.getStringAttr(value + '\0'));
   }
-
-   if (false) {
-   Block *blk2 = new Block();
-   builder.setInsertionPointToEnd(blk2);
-   mlir::Value nres = builder.create<LLVM::ZeroOp>(loc, ptrty);
-   builder.create<LLVM::ReturnOp>(loc, ValueRange(nres));
-   glob.getInitializerRegion().push_back(blk2);
-   }
 
    builder.setInsertionPointToStart(&submod.getBodyRegion().front());
    
@@ -496,6 +456,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
 
 	ptr = CompileHostModule(ss.str(), submod);
 
+    submod.erase();
    }
 
   }

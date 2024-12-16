@@ -63,6 +63,13 @@ cc_binary(
         "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",
         "@stablehlo//stablehlo/tests:check_ops",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",
