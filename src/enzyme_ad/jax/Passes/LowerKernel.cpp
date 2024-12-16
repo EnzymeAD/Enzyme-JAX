@@ -348,9 +348,8 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
       ptr = found->second;
     } else {
   //mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
-  auto out_module = &submod; 
 
-  llvm::errs() << "pre out_module:\n" << *out_module << "\n";
+  llvm::errs() << "pre out_module:\n" << submod << "\n";
   
   PassManager pm(submod.getContext());
   mlir::gpu::GPUToNVVMPipelineOptions options;
@@ -364,17 +363,17 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   options.hostUseBarePtrCallConv = false;
   mlir::gpu::buildLowerToNVVMPassPipeline(pm, options);
   
-  pm.run(*out_module);
+  pm.run(submod);
   
-  llvm::errs() << "post out_module:\n" << *out_module << "\n";
+  llvm::errs() << "post out_module:\n" << submod << "\n";
 
-  OpBuilder builder(out_module->getContext());
-  builder.setInsertionPointToStart(&out_module->getBodyRegion().front());
+  OpBuilder builder(submod);
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
   auto i64 = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
   auto idx = i64;
-  auto voidty = LLVM::LLVMVoidType::get(out_module->getContext());
+  auto voidty = LLVM::LLVMVoidType::get(submod.getContext());
 
 
   auto glob = builder.create<LLVM::GlobalOp>(
@@ -408,7 +407,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
    glob.getInitializerRegion().push_back(blk2);
    }
 
-   builder.setInsertionPointToStart(&out_module->getBodyRegion().front());
+   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
    
    auto initfn = builder.create<LLVM::LLVMFuncOp>(
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(voidty, {}, false), LLVM::Linkage::Private);
@@ -421,7 +420,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
 
   
   LLVM::GlobalOp binary;
-  out_module->walk([&](gpu::BinaryOp op) {
+  submod.walk([&](gpu::BinaryOp op) {
     gpu::ObjectAttr object = getSelectedObject(op);
     auto value = object.getObject().getValue();
     auto type = LLVM::LLVMArrayType::get(
@@ -471,7 +470,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
       builder.create<LLVM::ReturnOp>(loc, ValueRange());
     }  
 
-  out_module->walk([&](gpu::LaunchFuncOp op) {
+  submod.walk([&](gpu::LaunchFuncOp op) {
     builder.setInsertionPoint(op);
     auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
     assert(ldop);
@@ -492,13 +491,10 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
     ldop.erase();
   });
   
- llvm::errs() << "post2 out_module:\n" << *out_module << "\n";
-  pm.run(*out_module);
- llvm::errs() << "post3 out_module:\n" << *out_module << "\n";
-  pm.run(*out_module);
- llvm::errs() << "post4 out_module:\n" << *out_module << "\n";
+ llvm::errs() << "post2 out_module:\n" << submod << "\n";
+ // pm.run(submod);
 
-	ptr = CompileHostModule(ss.str(), *out_module);
+	ptr = CompileHostModule(ss.str(), submod);
 
    }
 
