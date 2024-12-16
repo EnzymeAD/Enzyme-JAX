@@ -303,8 +303,6 @@ def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
-
   SmallVector<int64_t> transposes;
 
   // Result order is batches, lhs results [in this case contracting dims], rhs results
