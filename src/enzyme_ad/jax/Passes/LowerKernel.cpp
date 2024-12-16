@@ -539,6 +539,28 @@ namespace {
 
 struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+      OpPassManager pm;
+      mlir::gpu::GPUToNVVMPipelineOptions options;
+      options.indexBitWidth = 64;
+      options.cubinTriple = "nvptx64-nvidia-cuda";
+      options.cubinChip = "sm_50";
+      options.cubinFeatures = "+ptx60";
+      options.cubinFormat = "fatbin";
+      options.optLevel = 2;
+      options.kernelUseBarePtrCallConv = false;
+      options.hostUseBarePtrCallConv = false;
+      mlir::gpu::buildLowerToNVVMPassPipeline(pm, options);
+      pm.getDependentDialects(registry);
+  
+      registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::vector::VectorDialect,
+                  mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
+                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
+  }
+
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     
