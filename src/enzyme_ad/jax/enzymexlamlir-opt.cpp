@@ -36,17 +36,31 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 
+#include "llvm/Support/TargetSelect.h"
+
+#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/tests/CheckOps.h"
 
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
 using namespace mlir;
 
@@ -67,6 +81,9 @@ struct PtrElementModel
           PtrElementModel<T>, T> {};
 
 int main(int argc, char **argv) {
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+
   mlir::DialectRegistry registry;
 
   // Register MLIR stuff
@@ -90,6 +107,8 @@ int main(int argc, char **argv) {
   registry.insert<mlir::stablehlo::StablehloDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::stablehlo::check::CheckDialect>();
+  registry.insert<mlir::vector::VectorDialect>();
+  registry.insert<mlir::nvgpu::NVGPUDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
@@ -111,6 +130,31 @@ int main(int argc, char **argv) {
   mlir::registerConvertSCFToOpenMPPass();
   mlir::affine::registerAffinePasses();
   mlir::registerReconcileUnrealizedCasts();
+
+  mlir::registerConvertNVVMToLLVMInterface(registry);
+
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::vector::VectorDialect,
+                  mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
+                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
+  mlir::registerConvertNVVMToLLVMInterface(registry);
+  mlir::registerConvertComplexToLLVMInterface(registry);
+  mlir::registerConvertMemRefToLLVMInterface(registry);
+  mlir::registerConvertMathToLLVMInterface(registry);
+  mlir::registerConvertFuncToLLVMInterface(registry);
+  mlir::index::registerConvertIndexToLLVMInterface(registry);
+  mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
+  mlir::ub::registerConvertUBToLLVMInterface(registry);
+  mlir::arith::registerConvertArithToLLVMInterface(registry);
+  mlir::registerConvertMemRefToLLVMInterface(registry);
+  mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
+  mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerGPUDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
+  mlir::registerNVVMDialectTranslation(registry);
+
 
   registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
     LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);

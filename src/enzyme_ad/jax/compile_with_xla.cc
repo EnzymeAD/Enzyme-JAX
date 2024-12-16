@@ -39,7 +39,7 @@
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
-
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "pybind11/pybind11.h"
 
 #include "compile_with_xla.h"
@@ -58,6 +58,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::linalg::registerTransformDialectExtension(registry);
   mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
   mlir::func::registerInlinerExtension(registry);
+  mlir::registerConvertToLLVMDependentDialectLoading(registry);
 }
 
 /// Returns an unused symbol in `module` for `oldSymbolName` by trying numeric

@@ -26,8 +26,59 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/GPU/Pipelines/Passes.h"
+#include "mlir/Pass/PassManager.h"
+#include "llvm/Support/raw_ostream.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
+
+
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/ComplexToLLVM/ComplexToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
+
+#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/include/mlir/Parser/Parser.h"
+
+
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
+#include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
+
+#include "mlir/Target/LLVMIR/Export.h"
 
 #define DEBUG_TYPE "lower-kernel"
 
@@ -41,6 +92,74 @@ using namespace stablehlo;
 
 typedef size_t KernelContext[7];
 typedef void XlaCustomCallStatus;
+
+
+llvm::StringMap<void*> kernels;
+llvm::sys::SmartRWMutex<true> kernel_mutex;
+std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
+
+void* CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
+   if (!JIT) {  
+     auto tJIT = llvm::orc::LLJITBuilder().setLinkProcessSymbolsByDefault(true)
+              .setObjectLinkingLayerCreator(
+                  [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
+                      -> llvm::Expected<
+                          std::unique_ptr<llvm::orc::ObjectLayer>> {
+                    auto obj = std::make_unique<
+                        llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
+                      return std::make_unique<llvm::SectionMemoryManager>();
+                    });
+                    if (getenv("ENABLE_GDBLISTENER")) {
+                      auto list = llvm::JITEventListener::
+                          createGDBRegistrationListener();
+                      obj->registerJITEventListener(*list);
+                    }
+                    return obj;
+                  })
+              .create();
+      if (!tJIT) {
+        llvm::errs() << " jit creating error: " << tJIT.takeError() << "\n";
+		return nullptr;
+      }
+      JIT = std::move(tJIT.get());
+      assert(JIT);
+   }
+
+
+  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
+  auto llvmModule = translateModuleToLLVMIR(modOp, *ctx); 
+  if (!llvmModule) {
+    llvm::errs() << "could not convert to LLVM IR" << "\n";
+    return nullptr;
+  }
+  llvmModule->setDataLayout(JIT->getDataLayout());
+  llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
+
+  llvm::errs() << " llmod: " << *llvmModule << "\n";
+  
+  auto LibA = JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
+  if (auto Err = JIT->addIRModule(
+            LibA.get(),
+            llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
+      llvm::errs() << " addIRModuleError " << Err << "\n";
+	  return nullptr;
+  }
+
+  // Look up the JIT'd code entry point.
+  auto EntrySym = JIT->lookup(LibA.get(), "entry");
+  if (!EntrySym) {
+      llvm::errs() << " lookupError " << EntrySym.takeError() << "\n";
+    return nullptr;
+  }
+
+  auto ptr = (void*)EntrySym->getValue();
+  
+  llvm::errs() << " ptr: " << ptr << "\n";
+
+  kernels[key] = ptr;
+  return ptr;
+}
+
 
 // See API details at https://github.com/openxla/xla/blob/37fb0612d36ac3d08ff984b1d61e4bc4dedf4809/xla/service/hlo.proto#L73
 extern "C" void EnzymeGPUCustomCall(void* __restrict__ stream, void** __restrict__ buffers, void** __restrict__ opaqueptr,
@@ -57,6 +176,39 @@ extern "C" void EnzymeGPUCustomCall(void* __restrict__ stream, void** __restrict
   //size_t blockz = opaqueptr[0][6];
 
   ptr(stream, buffers);//, gridx, gridy, gridz, blockx, blocky, blockz);
+}
+
+gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
+  ArrayRef<Attribute> objects = op.getObjectsAttr().getValue();
+
+  // Obtain the index of the object to select.
+  int64_t index = -1;
+  if (Attribute target =
+          cast<gpu::SelectObjectAttr>(op.getOffloadingHandlerAttr())
+              .getTarget()) {
+    // If the target attribute is a number it is the index. Otherwise compare
+    // the attribute to every target inside the object array to find the index.
+    if (auto indexAttr = mlir::dyn_cast<IntegerAttr>(target)) {
+      index = indexAttr.getInt();
+    } else {
+      for (auto [i, attr] : llvm::enumerate(objects)) {
+        auto obj = mlir::dyn_cast<gpu::ObjectAttr>(attr);
+        if (obj.getTarget() == target) {
+          index = i;
+        }
+      }
+    }
+  } else {
+    // If the target attribute is null then it's selecting the first object in
+    // the object array.
+    index = 0;
+  }
+
+  if (index < 0 || index >= static_cast<int64_t>(objects.size())) {
+    op->emitError("the requested target object couldn't be found");
+    return nullptr;
+  }
+  return mlir::dyn_cast<gpu::ObjectAttr>(objects[index]);
 }
 
 void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, FunctionOpInterface op, bool jit, size_t gridx, size_t gridy, size_t gridz, size_t blockx, size_t blocky, size_t blockz) {
@@ -139,7 +291,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
-  auto func = builder.create<func::FuncOp>(loc, "caller", calleeType);
+  auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
   
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
@@ -147,17 +299,18 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   mlir::Value stream = entryBlock.getArgument(0);
   auto buffers = entryBlock.getArgument(1);
  
+  auto idx = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
   gpu::KernelDim3 gridSize{
-      builder.create<arith::ConstantIntOp>(loc, gridx, i32),
-      builder.create<arith::ConstantIntOp>(loc, gridy, i32),
-      builder.create<arith::ConstantIntOp>(loc, gridz, i32),
+      builder.create<arith::ConstantIntOp>(loc, gridx, idx),
+      builder.create<arith::ConstantIntOp>(loc, gridy, idx),
+      builder.create<arith::ConstantIntOp>(loc, gridz, idx),
   };
   
   gpu::KernelDim3 blockSize{
-      builder.create<arith::ConstantIntOp>(loc, blockx, i32),
-      builder.create<arith::ConstantIntOp>(loc, blocky, i32),
-      builder.create<arith::ConstantIntOp>(loc, blockz, i32),
+      builder.create<arith::ConstantIntOp>(loc, blockx, idx),
+      builder.create<arith::ConstantIntOp>(loc, blocky, idx),
+      builder.create<arith::ConstantIntOp>(loc, blockz, idx),
   };
 
   SmallVector<mlir::Value> arguments;
@@ -178,11 +331,207 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   
   llvm::errs() << submod << "\n";
 
+  std::string modstr;
+  llvm::raw_string_ostream ss(modstr);
+
+  ss << submod;
+  
   if (!jit)
       return nullptr;
 
-  op->emitError() << "JIT compilation of kernels not yet implemented";
-  return nullptr;
+  void* ptr = nullptr;
+  {
+    llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
+    
+    auto found = kernels.find(ss.str());
+    if (found != kernels.end()) {
+      ptr = found->second;
+    } else {
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::vector::VectorDialect,
+                  mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
+                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
+  mlir::registerConvertNVVMToLLVMInterface(registry);
+  mlir::registerConvertComplexToLLVMInterface(registry);
+  mlir::registerConvertMemRefToLLVMInterface(registry);
+  mlir::registerConvertMathToLLVMInterface(registry);
+  mlir::registerConvertFuncToLLVMInterface(registry);
+  mlir::index::registerConvertIndexToLLVMInterface(registry);
+  mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
+  mlir::ub::registerConvertUBToLLVMInterface(registry);
+  mlir::arith::registerConvertArithToLLVMInterface(registry);
+  mlir::registerConvertMemRefToLLVMInterface(registry);
+  mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
+  mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerGPUDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
+  mlir::registerNVVMDialectTranslation(registry);
+  context.appendDialectRegistry(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::ParserConfig parse_config(&context);
+  auto out_module =
+      mlir::parseSourceString<mlir::ModuleOp>(ss.str(), parse_config);
+
+  llvm::errs() << "pre out_module:\n" << *out_module << "\n";
+  
+  PassManager pm(&context);
+  mlir::gpu::GPUToNVVMPipelineOptions options;
+  options.indexBitWidth = 64;
+  options.cubinTriple = "nvptx64-nvidia-cuda";
+  options.cubinChip = "sm_50";
+  options.cubinFeatures = "+ptx60";
+  options.cubinFormat = "fatbin";
+  options.optLevel = 2;
+  options.kernelUseBarePtrCallConv = false;
+  options.hostUseBarePtrCallConv = false;
+  mlir::gpu::buildLowerToNVVMPassPipeline(pm, options);
+  
+  pm.run(*out_module);
+  
+  llvm::errs() << "post out_module:\n" << *out_module << "\n";
+
+  OpBuilder builder(out_module->getContext());
+  builder.setInsertionPointToStart(&out_module->getBodyRegion().front());
+  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
+  auto i64 = builder.getIntegerType(64);
+  auto i32 = builder.getIntegerType(32);
+  auto idx = i64;
+  auto voidty = LLVM::LLVMVoidType::get(out_module->getContext());
+
+
+  auto glob = builder.create<LLVM::GlobalOp>(
+      loc, ptrty, /*constant*/ false, LLVM::Linkage::Private, "nv_func", mlir::Attribute());
+
+  mlir::Type cumodtys[] = {ptrty, ptrty};
+  auto modload = builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleLoadData", LLVM::LLVMFunctionType::get(i32, cumodtys));
+
+  mlir::Type cutys[] = {ptrty, idx, idx, idx, idx, idx, idx, i32, ptrty, ptrty, ptrty};
+  auto launch = builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", LLVM::LLVMFunctionType::get(voidty, cutys));
+
+  mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
+  auto funcload = builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleGetFunction", LLVM::LLVMFunctionType::get(i32, cufunctys));
+
+  LLVM::GlobalOp kernStr;
+	{
+    std::string value = "kernel";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    kernStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+        "str",
+        builder.getStringAttr(value + '\0'));
+  }
+
+   if (false) {
+   Block *blk2 = new Block();
+   builder.setInsertionPointToEnd(blk2);
+   mlir::Value nres = builder.create<LLVM::ZeroOp>(loc, ptrty);
+   builder.create<LLVM::ReturnOp>(loc, ValueRange(nres));
+   glob.getInitializerRegion().push_back(blk2);
+   }
+
+   builder.setInsertionPointToStart(&out_module->getBodyRegion().front());
+   
+   auto initfn = builder.create<LLVM::LLVMFuncOp>(
+          loc, "nv_func_init", LLVM::LLVMFunctionType::get(voidty, {}, false), LLVM::Linkage::Private);
+
+   mlir::Attribute funcs[] = {FlatSymbolRefAttr::get(initfn)};
+   mlir::Attribute idxs[] = { builder.getI32IntegerAttr(0) };
+   builder.create<LLVM::GlobalCtorsOp>(loc,
+                                        builder.getArrayAttr(funcs),
+                                        builder.getArrayAttr(idxs));
+
+  
+  LLVM::GlobalOp binary;
+  out_module->walk([&](gpu::BinaryOp op) {
+    gpu::ObjectAttr object = getSelectedObject(op);
+    auto value = object.getObject().getValue();
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size());
+    binary = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+        "binary",
+        builder.getStringAttr(value));
+
+
+  if (object.getProperties()) {
+    if (auto section = mlir::dyn_cast_or_null<mlir::StringAttr>(
+            object.getProperties().get("section"))) {
+      binary.setSectionAttr(section);
+    }
+  }
+  
+  binary.setAlignmentAttr(builder.getI64IntegerAttr(8));
+  binary.setUnnamedAddrAttr(LLVM::UnnamedAddrAttr::get(builder.getContext(), mlir::LLVM::UnnamedAddr::None));
+  op.erase();
+  });
+
+   {
+   auto blk = new Block();
+   initfn.getRegion().push_back(blk);
+   builder.setInsertionPointToEnd(blk);
+
+    auto one = builder.create<LLVM::ConstantOp>(loc, i64,
+                                                 builder.getI64IntegerAttr(1));
+   auto modptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
+   auto funcptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
+   
+   auto addr_modbin = builder.create<LLVM::AddressOfOp>(loc, binary);
+   mlir::Value modargs[] = {modptr->getResult(0), addr_modbin->getResult(0)};
+   builder.create<LLVM::CallOp>(loc, modload, modargs);
+   auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
+   
+   auto addr_kernstr = builder.create<LLVM::AddressOfOp>(loc, ptrty, "str");
+   
+   mlir::Value funcargs[] = {funcptr->getResult(0), mod->getResult(0), addr_kernstr->getResult(0)};
+   builder.create<LLVM::CallOp>(loc, funcload, funcargs);
+   auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
+   
+   auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
+    builder.create<LLVM::StoreOp>(
+          loc, func, addr_glob);
+      builder.create<LLVM::ReturnOp>(loc, ValueRange());
+    }  
+
+  out_module->walk([&](gpu::LaunchFuncOp op) {
+    builder.setInsertionPoint(op);
+    auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
+    assert(ldop);
+  	auto params = ldop.getOperand();
+    auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
+    auto cufunc = builder.create<LLVM::LoadOp>(loc, ptrty, addr_glob);
+    mlir::Value args[] = {
+		cufunc,
+		op.getGridSizeX(), op.getGridSizeY(), op.getGridSizeZ(),
+		op.getBlockSizeX(), op.getBlockSizeY(), op.getBlockSizeZ(),
+		op.getDynamicSharedMemorySize(),
+		op.getAsyncObject(),
+		params,
+		builder.create<LLVM::ZeroOp>(loc, ptrty)
+	};
+	builder.create<LLVM::CallOp>(loc, launch, args);
+	op.erase();
+    ldop.erase();
+  });
+  
+ llvm::errs() << "post2 out_module:\n" << *out_module << "\n";
+  pm.run(*out_module);
+ llvm::errs() << "post3 out_module:\n" << *out_module << "\n";
+  pm.run(*out_module);
+ llvm::errs() << "post4 out_module:\n" << *out_module << "\n";
+
+	ptr = CompileHostModule(ss.str(), out_module.get());
+
+   }
+
+  }
+
+  return ptr;
 };
 
 namespace {

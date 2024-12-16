@@ -128,7 +128,6 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     "LLVM::LLVMDialect",
     "arith::ArithDialect",
     "tensor::TensorDialect",
-    "async::AsyncDialect"
   ];
 
   let options = [
