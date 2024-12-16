@@ -348,39 +348,11 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
       ptr = found->second;
     } else {
   //mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
-  mlir::MLIRContext &context = *builder.getContext();
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::vector::VectorDialect,
-                  mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
-                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
-  mlir::registerConvertNVVMToLLVMInterface(registry);
-  mlir::registerConvertComplexToLLVMInterface(registry);
-  mlir::registerConvertMemRefToLLVMInterface(registry);
-  mlir::registerConvertMathToLLVMInterface(registry);
-  mlir::registerConvertFuncToLLVMInterface(registry);
-  mlir::index::registerConvertIndexToLLVMInterface(registry);
-  mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
-  mlir::ub::registerConvertUBToLLVMInterface(registry);
-  mlir::arith::registerConvertArithToLLVMInterface(registry);
-  mlir::registerConvertMemRefToLLVMInterface(registry);
-  mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
-  mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
-  mlir::registerBuiltinDialectTranslation(registry);
-  mlir::registerGPUDialectTranslation(registry);
-  mlir::registerLLVMDialectTranslation(registry);
-  mlir::registerNVVMDialectTranslation(registry);
-  context.appendDialectRegistry(registry);
-  //context.loadAllAvailableDialects();
-
-  mlir::ParserConfig parse_config(&context);
-  auto out_module =
-      mlir::parseSourceString<mlir::ModuleOp>(ss.str(), parse_config);
+  auto out_module = &submod; 
 
   llvm::errs() << "pre out_module:\n" << *out_module << "\n";
   
-  PassManager pm(&context);
+  PassManager pm(submod.getContext());
   mlir::gpu::GPUToNVVMPipelineOptions options;
   options.indexBitWidth = 64;
   options.cubinTriple = "nvptx64-nvidia-cuda";
@@ -526,7 +498,7 @@ void* CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc, Func
   pm.run(*out_module);
  llvm::errs() << "post4 out_module:\n" << *out_module << "\n";
 
-	ptr = CompileHostModule(ss.str(), out_module.get());
+	ptr = CompileHostModule(ss.str(), *out_module);
 
    }
 
