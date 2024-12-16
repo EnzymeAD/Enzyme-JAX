@@ -6605,9 +6605,18 @@ struct DynamicGatherOpIsNotDynamic
       return failure();
     }
 
-    // Ensure the element type of sliceSizes is int64.
+    // dynamic_gather allows non-int64 slice sizes, but we need to convert them
+    // to int64 for the gather.
     if (!sliceSizesAttr.getType().getElementType().isInteger(64)) {
-      return failure();
+      SmallVector<APInt> sliceSizes;
+      for (auto size : sliceSizesAttr.getValues<APInt>()) {
+        sliceSizes.push_back(size);
+      }
+      auto newSliceSizesAttr = DenseElementsAttr::get(
+          RankedTensorType::get(sliceSizesAttr.getType().getShape(),
+                                rewriter.getIntegerType(64)),
+          sliceSizes);
+      sliceSizesAttr = newSliceSizesAttr.cast<DenseIntElementsAttr>();
     }
 
     SmallVector<int64_t> sliceSizes;
