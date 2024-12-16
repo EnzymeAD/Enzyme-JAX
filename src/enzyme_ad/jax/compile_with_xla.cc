@@ -18,6 +18,7 @@
 #include "absl/status/statusor.h"
 #include "llvm/ADT/StringRef.h"
 
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -25,6 +26,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "pybind11/pybind11.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
@@ -39,8 +41,6 @@
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
-#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
-#include "pybind11/pybind11.h"
 
 #include "compile_with_xla.h"
 

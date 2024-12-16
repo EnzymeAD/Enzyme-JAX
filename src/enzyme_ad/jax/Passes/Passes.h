@@ -24,8 +24,8 @@ std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
 } // namespace enzyme
 
-//namespace enzymexla {
-//class EnzymeXLADialect;
+// namespace enzymexla {
+// class EnzymeXLADialect;
 //}
 } // namespace mlir
 
@@ -48,19 +48,19 @@ class TensorDialect;
 
 namespace math {
 class MathDialect;
-} // namespace tensor
+} // namespace math
 
 namespace vector {
 class VectorDialect;
-} // namespace tensor
+} // namespace vector
 
 namespace nvgpu {
 class NVGPUDialect;
-} // namespace tensor
+} // namespace nvgpu
 
 namespace NVVM {
 class NVVMDialect;
-} // namespace tensor
+} // namespace NVVM
 
 namespace stablehlo {
 class StablehloDialect;
@@ -88,7 +88,7 @@ class MemRefDialect;
 
 namespace async {
 class AsyncDialect;
-} // end namespace memref
+} // namespace async
 
 namespace func {
 class FuncDialect;

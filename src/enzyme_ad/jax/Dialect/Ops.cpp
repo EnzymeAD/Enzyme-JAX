@@ -1,4 +1,5 @@
-//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------------*- C++ -*-===//
+//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------------*- C++
+//-*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -38,7 +39,8 @@ using namespace mlir;
 using namespace enzymexla;
 using namespace mlir::arith;
 
-LogicalResult KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+LogicalResult
+KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
   auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(

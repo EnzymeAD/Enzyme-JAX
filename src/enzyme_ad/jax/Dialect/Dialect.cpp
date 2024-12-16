@@ -1,4 +1,5 @@
-//===- EnzymeXLADialect.cpp - EnzymeXLA dialect -----------------------*- C++ -*-===//
+//===- EnzymeXLADialect.cpp - EnzymeXLA dialect -----------------------*- C++
+//-*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -37,14 +38,14 @@ void EnzymeXLADialect::initialize() {
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
       >();
-//  addAttributes<
-//#define GET_ATTRDEF_LIST
-//#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
-//      >();
-//  addTypes<
-//#define GET_TYPEDEF_LIST
-//#include "src/enzyme_ad/jax/Dialect/EnzymeXLAOpsTypes.cpp.inc"
-//      >();
+  //  addAttributes<
+  //#define GET_ATTRDEF_LIST
+  //#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
+  //      >();
+  //  addTypes<
+  //#define GET_TYPEDEF_LIST
+  //#include "src/enzyme_ad/jax/Dialect/EnzymeXLAOpsTypes.cpp.inc"
+  //      >();
 }
 
 //#define GET_ATTRDEF_CLASSES
