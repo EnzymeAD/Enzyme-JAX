@@ -77,7 +77,7 @@ struct PtrElementModel
     : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
           PtrElementModel<T>, T> {};
 
-void prepareRegistry(mlir::DialectRegistry &registry); 
+void prepareRegistry(mlir::DialectRegistry &registry);
 
 int main(int argc, char **argv) {
   llvm::InitializeNativeTarget();

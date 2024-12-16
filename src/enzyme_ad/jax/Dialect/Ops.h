@@ -22,11 +22,11 @@
 
 // #include "Dialect/EnzymeXLAEnums.h.inc"
 
-//#define GET_ATTRDEF_CLASSES
-//#include "Dialect/EnzymeXLAAttributes.h.inc"
+// #define GET_ATTRDEF_CLASSES
+// #include "Dialect/EnzymeXLAAttributes.h.inc"
 
-//#define GET_TYPEDEF_CLASSES
-//#include "Dialect/EnzymeXLAOpsTypes.h.inc"
+// #define GET_TYPEDEF_CLASSES
+// #include "Dialect/EnzymeXLAOpsTypes.h.inc"
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.h.inc"

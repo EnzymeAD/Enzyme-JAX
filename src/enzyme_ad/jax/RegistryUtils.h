@@ -1,7 +1,7 @@
 #pragma once
 
 namespace mlir {
-    class DialectRegistry;
+class DialectRegistry;
 }
 
-void prepareRegistry(mlir::DialectRegistry &registry); 
+void prepareRegistry(mlir::DialectRegistry &registry);

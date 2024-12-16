@@ -467,7 +467,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         op.erase();
         ldop.erase();
       });
-      
+
       ptr = CompileHostModule(ss.str(), submod);
 
       submod.erase();

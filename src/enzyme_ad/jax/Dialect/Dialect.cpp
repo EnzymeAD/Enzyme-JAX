@@ -16,15 +16,15 @@
 
 #include "mlir/IR/Dialect.h"
 
-//#include "Dialect/EnzymeEnums.cpp.inc"
+// #include "Dialect/EnzymeEnums.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLADialect.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
 
-//#define GET_TYPEDEF_CLASSES
-//#include "Dialect/EnzymeXLAOpsTypes.cpp.inc"
-// #include "Dialect/EnzymeTypes.cpp.inc"
+// #define GET_TYPEDEF_CLASSES
+// #include "Dialect/EnzymeXLAOpsTypes.cpp.inc"
+//  #include "Dialect/EnzymeTypes.cpp.inc"
 
 using namespace mlir;
 using namespace mlir::enzymexla;
@@ -39,14 +39,14 @@ void EnzymeXLADialect::initialize() {
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
       >();
   //  addAttributes<
-  //#define GET_ATTRDEF_LIST
-  //#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
+  // #define GET_ATTRDEF_LIST
+  // #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
   //      >();
   //  addTypes<
-  //#define GET_TYPEDEF_LIST
-  //#include "src/enzyme_ad/jax/Dialect/EnzymeXLAOpsTypes.cpp.inc"
+  // #define GET_TYPEDEF_LIST
+  // #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOpsTypes.cpp.inc"
   //      >();
 }
 
-//#define GET_ATTRDEF_CLASSES
-//#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
+// #define GET_ATTRDEF_CLASSES
+// #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
