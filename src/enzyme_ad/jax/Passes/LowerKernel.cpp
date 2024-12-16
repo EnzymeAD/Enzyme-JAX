@@ -112,8 +112,6 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
 
-  llvm::errs() << " llmod: " << *llvmModule << "\n";
-
   auto LibA =
       JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
   if (auto Err = JIT->addIRModule(
@@ -131,8 +129,6 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   }
 
   auto ptr = (void *)EntrySym->getValue();
-
-  llvm::errs() << " ptr: " << ptr << "\n";
 
   kernels[key] = ptr;
   return ptr;
@@ -471,10 +467,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         op.erase();
         ldop.erase();
       });
-
-      llvm::errs() << "post2 out_module:\n" << submod << "\n";
-      // pm.run(submod);
-
+      
       ptr = CompileHostModule(ss.str(), submod);
 
       submod.erase();
