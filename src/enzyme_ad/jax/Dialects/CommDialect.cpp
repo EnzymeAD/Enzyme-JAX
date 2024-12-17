@@ -7,10 +7,10 @@
 using namespace mlir;
 using namespace mlir::comm;
 
-
 void CommunicationDialect::initialize() {
-  addOperations<
-      CommFoo>(); // Register CommFoo operation
+  addOperations<CommFoo>(); // Register CommFoo operation
+  addOperations<CommSplitBranch>();
+  addOperations<CommJoin>();
 }
 
 // CommunicationDialect::CommunicationDialect(mlir::MLIRContext*){}

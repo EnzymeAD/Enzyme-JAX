@@ -3,7 +3,12 @@
 module {
 
   func.func @main(%a : tensor<2x2xf32>) -> tensor<2x2xf32> {
-    comm.Foo
+    comm.foo
+    comm.split_branch <1> {
+      ^start:
+      comm.foo
+      comm.join
+    }
     %start = stablehlo.constant dense<0> : tensor<i32>
     
     %lim = stablehlo.constant dense<5> : tensor<i32>

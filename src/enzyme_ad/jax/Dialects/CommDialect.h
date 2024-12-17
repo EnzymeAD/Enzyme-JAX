@@ -1,4 +1,5 @@
 #include "mlir/IR/Dialect.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/Support/TypeID.h"
 #include "mlir/include/mlir/IR/DialectImplementation.h"
 #include "src/enzyme_ad/jax/Dialects/CommDialect.h.inc"
