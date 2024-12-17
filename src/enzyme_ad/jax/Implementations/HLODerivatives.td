@@ -893,7 +893,7 @@ def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto op_type = op->getResult(0).getType().cast<RankedTensorType>();
-  auto lengths = op.getFftLength();
+  auto lengths = op.getFftLengthAttr().getValues<int64_t>();
   auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
 
   double value = N;
@@ -919,15 +919,15 @@ def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto zero_constant = builder.create<ConstantOp>(op.getLoc(), SplatElementsAttr::get(
         RT, FloatAttr::get(resTy.getElementType(), 0)));
     auto end_constant = builder.create<ConstantOp>(op.getLoc(), SplatElementsAttr::get(
-        RT, FloatAttr::get(resTy.getElementType(), lengths.back()-1)));
+        RT, FloatAttr::get(resTy.getElementType(), lengths[lengths.size()-1]-1)));
     
     auto RT64 = RankedTensorType::get({1}, builder.getIntegerType(64));
 
     Value start[] = {
-       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, op.getI64IntegerAttr(0)))
+       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, rewriter.getI64IntegerAttr(0)))
     };
     Value end[] = {
-       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, op.getI64IntegerAttr(lengths.size()-1)))
+       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, rewriter.getI64IntegerAttr(lengths.size()-1)))
     };
     ret_constant = builder.create<stablehlo::DynamicUpdateSliceOp>(op.getLoc(), resTy, ret_constant, zero_constant, start);
     ret_constant = builder.create<stablehlo::DynamicUpdateSliceOp>(op.getLoc(), resTy, ret_constant, end_constant, end);
