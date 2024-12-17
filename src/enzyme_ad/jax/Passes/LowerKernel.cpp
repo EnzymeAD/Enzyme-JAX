@@ -67,7 +67,6 @@ using namespace enzymexla;
 
 using namespace stablehlo;
 
-typedef size_t KernelContext[7];
 typedef void XlaCustomCallStatus;
 
 llvm::StringMap<void *> kernels;
@@ -105,8 +104,7 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
-    llvm::errs() << "could not convert to LLVM IR"
-                 << "\n";
+    llvm::errs() << "could not convert to LLVM IR" << "\n";
     return nullptr;
   }
   llvmModule->setDataLayout(JIT->getDataLayout());
@@ -192,7 +190,7 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
 void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     FunctionOpInterface op, bool jit, size_t gridx,
                     size_t gridy, size_t gridz, size_t blockx, size_t blocky,
-                    size_t blockz) {
+                    size_t blockz, size_t shmem) {
 
   OpBuilder builder(op);
 
@@ -302,7 +300,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto ld = builder.create<LLVM::LoadOp>(loc, arg.getType(), gep);
     arguments.push_back(ld);
   }
-  auto dynshmem = builder.create<arith::ConstantIntOp>(loc, 0, i32);
+  auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
   stream = builder
                .create<UnrealizedConversionCastOp>(
                    loc, gpu::AsyncTokenType::get(stream.getContext()), stream)
@@ -518,13 +516,14 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
                                 : nullptr;
       mlir::ArrayAttr output_operand_aliases = op.getOutputOperandAliases();
 
-      KernelContext data;
+      size_t data[8];
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
 
-      Value vals[6] = {op.getGridx(),  op.getGridy(),  op.getGridz(),
-                       op.getBlockx(), op.getBlocky(), op.getBlockz()};
+      Value vals[] = {op.getGridx(),  op.getGridy(),  op.getGridz(),
+                      op.getBlockx(), op.getBlocky(), op.getBlockz(),
+                      op.getShmem()};
       for (auto en : llvm::enumerate(vals)) {
         DenseIntElementsAttr stepAttr;
         if (!matchPattern(en.value(), m_Constant(&stepAttr))) {
@@ -542,9 +541,9 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
       }
 
       // Compiled kernel goes here once ready
-      data[0] =
-          (size_t)CompileKernel(symbolTable, op.getLoc(), fn, jit, data[1],
-                                data[2], data[3], data[4], data[5], data[6]);
+      data[0] = (size_t)CompileKernel(symbolTable, op.getLoc(), fn, jit,
+                                      data[1], data[2], data[3], data[4],
+                                      data[5], data[6], data[7]);
 
       std::string backendinfo((char *)&data, sizeof(void *));
 
