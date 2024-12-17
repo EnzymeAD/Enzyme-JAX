@@ -143,7 +143,42 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"Whether to jit the kernel"
-    >
+    >,
+    Option<
+      /*C++ variable name=*/"toolkitPath",
+      /*CLI argument=*/"toolkitPath",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"The location of the cuda toolkit"
+    >,
+    Option<
+      /*C++ variable name=*/"linkFiles",
+      /*CLI argument=*/"linkFiles",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"Semicolon separated list of files to link"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinChip",
+      /*CLI argument=*/"cubinChip",
+      /*type=*/"std::string",
+      /*default=*/"\"sm_50\"",
+      /*description=*/"cubinChip"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinFeatures",
+      /*CLI argument=*/"cubinFeatures",
+      /*type=*/"std::string",
+      /*default=*/"\"+ptx60\"",
+      /*description=*/"cubinChip"
+    >,
+    Option<
+      /*C++ variable name=*/"indexBitWidth",
+      /*CLI argument=*/"indexBitWidth",
+      /*type=*/"int",
+      /*default=*/"64",
+      /*description=*/"indexBitWidth"
+    >,
     ];
 }
 
