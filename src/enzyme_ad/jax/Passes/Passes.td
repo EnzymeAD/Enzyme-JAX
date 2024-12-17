@@ -116,4 +116,35 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def LowerKernelPass : Pass<"lower-kernel"> {
+  let summary = "Lower kernel to custom call";
+  let dependentDialects = [
+  ];
+  let constructor = "mlir::enzyme::createLowerKernelPass()";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "gpu::GPUDialect",
+    "func::FuncDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "vector::VectorDialect",
+    "nvgpu::NVGPUDialect",
+    "NVVM::NVVMDialect",
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect",
+  ];
+
+  let options = [
+    Option<
+      /*C++ variable name=*/"jit",
+      /*CLI argument=*/"jit",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to jit the kernel"
+    >
+    ];
+}
+
 #endif

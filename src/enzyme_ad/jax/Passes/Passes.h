@@ -21,7 +21,12 @@ std::unique_ptr<Pass> createArithRaisingPass();
 std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
+std::unique_ptr<Pass> createLowerKernelPass();
 } // namespace enzyme
+
+// namespace enzymexla {
+// class EnzymeXLADialect;
+//}
 } // namespace mlir
 
 namespace mlir {
@@ -41,6 +46,22 @@ namespace tensor {
 class TensorDialect;
 } // namespace tensor
 
+namespace math {
+class MathDialect;
+} // namespace math
+
+namespace vector {
+class VectorDialect;
+} // namespace vector
+
+namespace nvgpu {
+class NVGPUDialect;
+} // namespace nvgpu
+
+namespace NVVM {
+class NVVMDialect;
+} // namespace NVVM
+
 namespace stablehlo {
 class StablehloDialect;
 } // namespace stablehlo
@@ -53,6 +74,10 @@ namespace cf {
 class ControlFlowDialect;
 } // end namespace cf
 
+namespace gpu {
+class GPUDialect;
+} // end namespace gpu
+
 namespace scf {
 class SCFDialect;
 } // end namespace scf
@@ -60,6 +85,10 @@ class SCFDialect;
 namespace memref {
 class MemRefDialect;
 } // end namespace memref
+
+namespace async {
+class AsyncDialect;
+} // namespace async
 
 namespace func {
 class FuncDialect;
@@ -81,5 +110,6 @@ static void regsiterenzymeXLAPasses() {
   registerPrintPass();
   registerEnzymeHLOOptPass();
   registerEnzymeHLOUnrollPass();
+  registerLowerKernelPass();
 }
 #endif // ENZYMEXLA_PASSES_H
