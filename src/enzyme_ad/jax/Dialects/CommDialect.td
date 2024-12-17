@@ -1,5 +1,6 @@
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/Traits.td"
 
@@ -40,7 +41,7 @@ def CommSplitBranch : CommOp<"split_branch"> {
 
   // Takes in list of participating devices (TODO- currently list of int literals), code region as attributes
   let arguments = (ins 
-    I32Attr:$device_list
+    ArrayAttr:$device_list
   );
   let regions = (region 
     AnyRegion:$branch_code // TODO constraint on region?

@@ -105,10 +105,10 @@ td_library(
 gentbl_cc_library(
     name = "CommDialectIncGen",
     tbl_outs = [(
-            ["-gen-dialect-decls"],
+            ["-gen-dialect-decls", "-dialect=comm"],
             "Dialects/CommDialect.h.inc",
         ), (
-            ["-gen-dialect-defs"],
+            ["-gen-dialect-defs", "-dialect=comm"],
             "Dialects/CommDialect.cpp.inc",
         ),(
             ["-gen-op-decls"],
@@ -122,6 +122,8 @@ gentbl_cc_library(
     deps = [
         ":CommDialectFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:AttrTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles"
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
