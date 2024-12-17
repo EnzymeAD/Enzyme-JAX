@@ -104,7 +104,8 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
-    llvm::errs() << "could not convert to LLVM IR" << "\n";
+    llvm::errs() << "could not convert to LLVM IR"
+                 << "\n";
     return nullptr;
   }
   llvmModule->setDataLayout(JIT->getDataLayout());
