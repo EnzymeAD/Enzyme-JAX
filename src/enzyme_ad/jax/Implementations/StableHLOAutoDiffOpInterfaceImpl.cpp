@@ -837,7 +837,9 @@ public:
     }
 
     Operation &innerOp = *block.begin();
-    if (!isa<MaxOp>(innerOp) || innerOp.getOperand(0) != block.getArgument(0) ||
+    bool ismin = isa<MinOp>(innerOp), ismax = isa<MaxOp>(innerOp);
+
+    if (!(ismin || ismax) || innerOp.getOperand(0) != block.getArgument(0) ||
         innerOp.getOperand(1) != block.getArgument(1)) {
       orig->emitError() << "Unsupported reduce window rev autodiff(1): "
                         << *orig << "\n";
@@ -857,7 +859,7 @@ public:
 
       auto cmpOp = builder.create<CompareOp>(
           op.getLoc(), select->getArgument(0), select->getArgument(1),
-          ComparisonDirection::GE);
+          ismax ? ComparisonDirection::GE : ComparisonDirection::LE);
       builder.create<ReturnOp>(op.getLoc(), cmpOp.getResult());
     }
 
@@ -1856,7 +1858,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicSliceUpdateRev>(
         *context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
-    ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);    
+    ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);

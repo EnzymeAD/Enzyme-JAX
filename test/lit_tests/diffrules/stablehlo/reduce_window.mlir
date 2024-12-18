@@ -13,7 +13,7 @@ module {
   }
 
   func.func @main() {
-    %value = stablehlo.constant dense<[42.0, 0.0, 0.0]> : tensor<3xf32>
+    %value = stablehlo.constant dense<[42.0, 42.0, 0.0]> : tensor<3xf32>
     %diff_result = stablehlo.constant dense<[1.0]> : tensor<1xf32>
 
     %result_diff:2 = enzyme.autodiff @maxpool(%value, %diff_result) {
