@@ -9,7 +9,6 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -39,9 +38,6 @@
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
-
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
@@ -55,7 +51,7 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
-#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+//#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
@@ -205,6 +201,21 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
     }
     JIT = std::move(tJIT.get());
     assert(JIT);
+    auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
+
+    DynamicLibrarySearchGenerator::SymbolPredicate Pred;
+
+    auto ProcessSymsGenerator =
+        DynamicLibrarySearchGenerator::GetForCurrentProcess(GlobalPrefix, Pred);
+
+    if (!ProcessSymsGenerator) {
+    llvm:
+      errs() << " failure creating symbol generator: "
+             << ProcessSymsGenerator.takeError() << "\n";
+      return nullptr;
+    }
+
+    JIT->addGenerator(std::move(ProcessSymsGenerator));
   }
 
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
