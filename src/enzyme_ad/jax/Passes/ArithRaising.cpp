@@ -19,6 +19,8 @@
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -90,6 +92,31 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
         constOp.replaceAllUsesWith(newConstOp);
         constOp.erase();
       }
+    });
+    op->walk([=](enzyme::BroadcastOp broadcastOp) {
+      OpBuilder builder(broadcastOp);
+      Value newBroadcastOp;
+      if (use_stablehlo) {
+        SmallVector<int64_t> broadcastDims;
+        auto shape = broadcastOp.getInput().getType().cast<TensorType>().getShape();
+        broadcastDims.reserve(shape.size());
+        for (auto en : llvm::enumerate(shape)) {
+          // original dimensions end up one further because the batch dimension is prepended:
+          broadcastDims.push_back(en.index() + 1);
+        }
+        newBroadcastOp = builder.create<stablehlo::BroadcastInDimOp>(
+          broadcastOp.getLoc(),
+          broadcastOp.getType(),
+          broadcastOp.getInput(),
+          builder.getDenseI64ArrayAttr(broadcastDims)
+        );
+      } else {
+        newBroadcastOp = builder.create<mhlo::BroadcastOp>(
+            broadcastOp.getLoc(), broadcastOp.getInput(),
+            builder.getI64TensorAttr({broadcastOp.getWidth()}));
+      }
+      broadcastOp.replaceAllUsesWith(newBroadcastOp);
+      broadcastOp.erase();
     });
   }
 };
