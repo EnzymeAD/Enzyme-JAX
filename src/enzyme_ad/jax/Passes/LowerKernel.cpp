@@ -51,7 +51,7 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
-//#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
@@ -203,19 +203,18 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
     assert(JIT);
     auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
 
-    DynamicLibrarySearchGenerator::SymbolPredicate Pred;
+    llvm::orc::DynamicLibrarySearchGenerator::SymbolPredicate Pred;
 
     auto ProcessSymsGenerator =
-        DynamicLibrarySearchGenerator::GetForCurrentProcess(GlobalPrefix, Pred);
+        llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(GlobalPrefix, Pred);
 
     if (!ProcessSymsGenerator) {
-    llvm:
-      errs() << " failure creating symbol generator: "
+        llvm::errs() << " failure creating symbol generator: "
              << ProcessSymsGenerator.takeError() << "\n";
       return nullptr;
     }
 
-    JIT->addGenerator(std::move(ProcessSymsGenerator));
+    JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
   }
 
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
