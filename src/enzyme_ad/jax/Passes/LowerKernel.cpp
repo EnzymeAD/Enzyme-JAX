@@ -309,7 +309,9 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     size_t blockz, size_t shmem, std::string toolkitPath,
                     llvm::SmallVectorImpl<std::string> &linkFiles,
                     int indexBitWidth, std::string cubinChip,
-                    std::string cubinFeatures) {
+                    std::string cubinFeatures, size_t cuLaunchKernelPtr,
+                    size_t cuModuleLoadDataPtr,
+                    size_t cuModuleGetFunctionPtr) {
 
   OpBuilder builder(op);
 
@@ -475,16 +477,17 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                                                  "nv_func", mlir::Attribute());
 
       mlir::Type cumodtys[] = {ptrty, ptrty};
-      auto modload = builder.create<LLVM::LLVMFuncOp>(
+      LLVM::LLVMFuncOp modload = builder.create<LLVM::LLVMFuncOp>(
           loc, "cuModuleLoadData", LLVM::LLVMFunctionType::get(i32, cumodtys));
 
       mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
                             idx,   i32, ptrty, ptrty, ptrty};
-      auto launch = builder.create<LLVM::LLVMFuncOp>(
+
+      LLVM::LLVMFuncOp launch = builder.create<LLVM::LLVMFuncOp>(
           loc, "cuLaunchKernel", LLVM::LLVMFunctionType::get(voidty, cutys));
 
       mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
-      auto funcload = builder.create<LLVM::LLVMFuncOp>(
+      LLVM::LLVMFuncOp funcload = builder.create<LLVM::LLVMFuncOp>(
           loc, "cuModuleGetFunction",
           LLVM::LLVMFunctionType::get(i32, cufunctys));
 
@@ -500,7 +503,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
-      auto initfn = builder.create<LLVM::LLVMFuncOp>(
+      LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(voidty, {}, false),
           LLVM::Linkage::Private);
 
@@ -569,7 +572,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto params = ldop.getOperand();
         auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
         auto cufunc = builder.create<LLVM::LoadOp>(loc, ptrty, addr_glob);
-        mlir::Value args[] = {cufunc,
+        llvm::SmallVector<mlir::Value> args = {cufunc,
                               op.getGridSizeX(),
                               op.getGridSizeY(),
                               op.getGridSizeZ(),
@@ -580,7 +583,16 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                               op.getAsyncObject(),
                               params,
                               builder.create<LLVM::ZeroOp>(loc, ptrty)};
-        builder.create<LLVM::CallOp>(loc, launch, args);
+
+        if (cuLaunchKernelPtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(loc, i64, builder.getI64IntegerAttr(cuLaunchKernelPtr));
+          auto addr_glob = builder.create<LLVM::IntToPtrOp>(loc, ptr, addr_glob_int);
+          args.push_front(addr_glob);
+          builder.create<LLVM::CallOp>(loc, TypeRange(voidty), args);
+        } else {
+          builder.create<LLVM::CallOp>(loc, launch, args);
+        }
+
         op.erase();
         ldop.erase();
       });
@@ -680,7 +692,9 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
-          cubinFeatures.getValue());
+          cubinFeatures.getValue(), cuLaunchKernelPtr,
+                    cuModuleLoadDataPtr,
+                    cuModuleGetFunctionPtr);
 
       std::string backendinfo((char *)&data, sizeof(void *));
 

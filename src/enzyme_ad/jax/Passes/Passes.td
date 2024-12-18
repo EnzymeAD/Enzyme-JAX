@@ -179,6 +179,27 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"64",
       /*description=*/"indexBitWidth"
     >,
+    Option<
+      /*C++ variable name=*/"cuLaunchKernelPtr",
+      /*CLI argument=*/"cuLaunchKernelPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuLaunchKernelPtr"
+    >,
+    Option<
+      /*C++ variable name=*/"cuModuleLoadDataPtr",
+      /*CLI argument=*/"cuModuleLoadDataPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuModuleLoadDataPtr"
+    >,
+    Option<
+      /*C++ variable name=*/"cuModuleGetFunctionPtr",
+      /*CLI argument=*/"cuModuleGetFunctionPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuModuleGetFunctionPtr"
+    >,
     ];
 }
 
