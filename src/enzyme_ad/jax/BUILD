@@ -316,6 +316,7 @@ cc_library(
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:AffineToStandard",
         "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:MemRefTransforms",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
         "@llvm-project//mlir:GPUCommonTransforms",
         "@llvm-project//mlir:GPUToNVVMTransforms",
