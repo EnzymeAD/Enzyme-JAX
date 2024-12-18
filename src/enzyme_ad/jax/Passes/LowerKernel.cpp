@@ -478,21 +478,20 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       mlir::Type cumodtys[] = {ptrty, ptrty};
       auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
-      LLVM::LLVMFuncOp modload = builder.create<LLVM::LLVMFuncOp>(
-          loc, "cuModuleLoadData", modload_ty);
+      LLVM::LLVMFuncOp modload =
+          builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleLoadData", modload_ty);
 
       mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
                             idx,   i32, ptrty, ptrty, ptrty};
 
-      auto launch_ty =  LLVM::LLVMFunctionType::get(voidty, cutys);
-      LLVM::LLVMFuncOp launch = builder.create<LLVM::LLVMFuncOp>(
-          loc, "cuLaunchKernel", launch_ty);
+      auto launch_ty = LLVM::LLVMFunctionType::get(voidty, cutys);
+      LLVM::LLVMFuncOp launch =
+          builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
 
       mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
       auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
       LLVM::LLVMFuncOp funcload = builder.create<LLVM::LLVMFuncOp>(
-          loc, "cuModuleGetFunction",
-          funcload_ty);
+          loc, "cuModuleGetFunction", funcload_ty);
 
       LLVM::GlobalOp kernStr;
       {
@@ -549,8 +548,8 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto funcptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
 
         auto addr_modbin = builder.create<LLVM::AddressOfOp>(loc, binary);
-        SmallVector<mlir::Value> modargs[] = {modptr->getResult(0),
-                                 addr_modbin->getResult(0)};
+        SmallVector<mlir::Value> modargs = {modptr->getResult(0),
+                                            addr_modbin->getResult(0)};
         if (cuModuleLoadDataPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleLoadDataPtr));
