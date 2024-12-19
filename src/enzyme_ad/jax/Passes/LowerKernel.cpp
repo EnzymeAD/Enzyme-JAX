@@ -226,6 +226,8 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   }
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
+  
+  llvm::errs() << "llmod: " << *llvmModule << "\n";
 
   auto LibA =
       JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
