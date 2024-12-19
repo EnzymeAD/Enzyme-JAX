@@ -374,6 +374,12 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     if (auto op2 = cop.resolveCallable())
       tocopy.push_back(op2);
   });
+  op->walk([&](LLVM::AddressOfOp cop) {
+    if (auto op2 = cop.getGlobal(symbolTable))
+      tocopy.push_back(op2);
+    else if (auto op2 = cop.getFunction(symbolTable))
+      tocopy.push_back(op2);
+  });
   SmallPtrSet<Operation *, 1> done;
 
   builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
@@ -385,6 +391,12 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     builder.clone(*cur);
     cur->walk([&](CallOpInterface cop) {
       if (auto op2 = cop.resolveCallable())
+        tocopy.push_back(op2);
+    });
+    op->walk([&](LLVM::AddressOfOp cop) {
+      if (auto op2 = cop.getGlobal(symbolTable))
+        tocopy.push_back(op2);
+      else if (auto op2 = cop.getFunction(symbolTable))
         tocopy.push_back(op2);
     });
   }
