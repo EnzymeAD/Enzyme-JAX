@@ -449,6 +449,8 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   ss << submod;
 
+  llvm::errs() << "submod: " << submod << "\n";
+
   if (!jit)
     return nullptr;
 
@@ -632,6 +634,8 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         op.erase();
         ldop.erase();
       });
+  
+      llvm::errs() << "submod2: " << submod << "\n";
 
       ptr = CompileHostModule(ss.str(), submod);
 
