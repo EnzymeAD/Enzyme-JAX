@@ -10,6 +10,8 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/IR/Builders.h"
@@ -19,8 +21,6 @@
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Dialect/Ops.h"
 
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -98,18 +98,17 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       Value newBroadcastOp;
       if (use_stablehlo) {
         SmallVector<int64_t> broadcastDims;
-        auto shape = broadcastOp.getInput().getType().cast<TensorType>().getShape();
+        auto shape =
+            broadcastOp.getInput().getType().cast<TensorType>().getShape();
         broadcastDims.reserve(shape.size());
         for (auto en : llvm::enumerate(shape)) {
-          // original dimensions end up one further because the batch dimension is prepended:
+          // original dimensions end up one further because the batch dimension
+          // is prepended:
           broadcastDims.push_back(en.index() + 1);
         }
         newBroadcastOp = builder.create<stablehlo::BroadcastInDimOp>(
-          broadcastOp.getLoc(),
-          broadcastOp.getType(),
-          broadcastOp.getInput(),
-          builder.getDenseI64ArrayAttr(broadcastDims)
-        );
+            broadcastOp.getLoc(), broadcastOp.getType(), broadcastOp.getInput(),
+            builder.getDenseI64ArrayAttr(broadcastDims));
       } else {
         newBroadcastOp = builder.create<mhlo::BroadcastOp>(
             broadcastOp.getLoc(), broadcastOp.getInput(),
