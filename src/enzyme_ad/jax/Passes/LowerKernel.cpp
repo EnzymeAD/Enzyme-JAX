@@ -176,6 +176,7 @@ llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
 void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
+  llvm::errs() <<" compiling host module: " << modOp << "\n";
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -259,6 +260,8 @@ extern "C" void EnzymeGPUCustomCall(void *__restrict__ stream,
                                     size_t opaque_len,
                                     XlaCustomCallStatus *__restrict__ status) {
   auto ptr = (void (*)(void *, void **))(opaqueptr[0]);
+  printf("ptr=%p\n", ptr);
+  printf("buffer[0]=%p\n", buffers[0]);
   // auto ptr = (void(*)(void*, void**, size_t, size_t, size_t, size_t, size_t,
   // size_t)) (opaqueptr[0][0]);
 
@@ -315,6 +318,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     std::string cubinFeatures, size_t cuLaunchKernelPtr,
                     size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr) {
 
+  llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz << "," << blockx << "," << blocky << "," << blockz << "\n";
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
@@ -689,6 +693,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
+    llvm::errs() <<" Lowering Kernel in: " << *getOperation() << "\n";
 
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
@@ -728,6 +733,8 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
         auto val = (*stepAttr.begin()).getZExtValue();
         data[1 + en.index()] = val;
       }
+    
+      llvm::errs() <<" Lowering KernelCall in: " << *op << "\n";
 
       // Compiled kernel goes here once ready
       data[0] = (size_t)CompileKernel(
@@ -754,6 +761,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
       op.replaceAllUsesWith(replacement);
       op.erase();
+      llvm::errs() <<" Lowering KernelCall replacement: " << *replacement << "\n";
     });
   }
 };
