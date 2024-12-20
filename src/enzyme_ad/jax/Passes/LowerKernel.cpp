@@ -176,6 +176,7 @@ llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
 void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
+  llvm::errs() << " compiling host module: " << modOp << "\n";
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -227,6 +228,8 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
 
+  llvm::errs() << "llmod: " << *llvmModule << "\n";
+
   auto LibA =
       JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
   if (auto Err = JIT->addIRModule(
@@ -257,6 +260,8 @@ extern "C" void EnzymeGPUCustomCall(void *__restrict__ stream,
                                     size_t opaque_len,
                                     XlaCustomCallStatus *__restrict__ status) {
   auto ptr = (void (*)(void *, void **))(opaqueptr[0]);
+  printf("ptr=%p\n", ptr);
+  printf("buffer[0]=%p\n", buffers[0]);
   // auto ptr = (void(*)(void*, void**, size_t, size_t, size_t, size_t, size_t,
   // size_t)) (opaqueptr[0][0]);
 
@@ -311,8 +316,11 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     llvm::SmallVectorImpl<std::string> &linkFiles,
                     int indexBitWidth, std::string cubinChip,
                     std::string cubinFeatures, size_t cuLaunchKernelPtr,
-                    size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr) {
+                    size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr,
+                    bool compileLaunch) {
 
+  llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz
+               << "," << blockx << "," << blocky << "," << blockz << "\n";
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
@@ -448,6 +456,8 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   llvm::raw_string_ostream ss(modstr);
 
   ss << submod;
+
+  llvm::errs() << "submod: " << submod << "\n";
 
   if (!jit)
     return nullptr;
@@ -633,6 +643,11 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         ldop.erase();
       });
 
+      llvm::errs() << "submod2: " << submod << "\n";
+
+      if (!compileLaunch)
+        return nullptr;
+
       ptr = CompileHostModule(ss.str(), submod);
 
       submod.erase();
@@ -683,6 +698,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
+    llvm::errs() << " Lowering Kernel in: " << *getOperation() << "\n";
 
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
@@ -723,13 +739,15 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
         data[1 + en.index()] = val;
       }
 
+      llvm::errs() << " Lowering KernelCall in: " << *op << "\n";
+
       // Compiled kernel goes here once ready
       data[0] = (size_t)CompileKernel(
           symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr);
+          cuModuleGetFunctionPtr, compileLaunch);
 
       std::string backendinfo((char *)&data, sizeof(void *));
 
@@ -748,6 +766,8 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
       op.replaceAllUsesWith(replacement);
       op.erase();
+      llvm::errs() << " Lowering KernelCall replacement: " << *replacement
+                   << "\n";
     });
   }
 };
