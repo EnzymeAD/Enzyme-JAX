@@ -176,7 +176,7 @@ llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
 void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
-  llvm::errs() <<" compiling host module: " << modOp << "\n";
+  llvm::errs() << " compiling host module: " << modOp << "\n";
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -227,7 +227,7 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   }
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
-  
+
   llvm::errs() << "llmod: " << *llvmModule << "\n";
 
   auto LibA =
@@ -316,9 +316,11 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     llvm::SmallVectorImpl<std::string> &linkFiles,
                     int indexBitWidth, std::string cubinChip,
                     std::string cubinFeatures, size_t cuLaunchKernelPtr,
-                    size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr) {
+                    size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr,
+                    bool compileLaunch) {
 
-  llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz << "," << blockx << "," << blocky << "," << blockz << "\n";
+  llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz
+               << "," << blockx << "," << blocky << "," << blockz << "\n";
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
@@ -640,8 +642,11 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         op.erase();
         ldop.erase();
       });
-  
+
       llvm::errs() << "submod2: " << submod << "\n";
+
+      if (!compileLaunch)
+        return nullptr;
 
       ptr = CompileHostModule(ss.str(), submod);
 
@@ -693,7 +698,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
-    llvm::errs() <<" Lowering Kernel in: " << *getOperation() << "\n";
+    llvm::errs() << " Lowering Kernel in: " << *getOperation() << "\n";
 
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
@@ -733,8 +738,8 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
         auto val = (*stepAttr.begin()).getZExtValue();
         data[1 + en.index()] = val;
       }
-    
-      llvm::errs() <<" Lowering KernelCall in: " << *op << "\n";
+
+      llvm::errs() << " Lowering KernelCall in: " << *op << "\n";
 
       // Compiled kernel goes here once ready
       data[0] = (size_t)CompileKernel(
@@ -742,7 +747,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr);
+          cuModuleGetFunctionPtr, compileLaunch);
 
       std::string backendinfo((char *)&data, sizeof(void *));
 
@@ -761,7 +766,8 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
       op.replaceAllUsesWith(replacement);
       op.erase();
-      llvm::errs() <<" Lowering KernelCall replacement: " << *replacement << "\n";
+      llvm::errs() << " Lowering KernelCall replacement: " << *replacement
+                   << "\n";
     });
   }
 };

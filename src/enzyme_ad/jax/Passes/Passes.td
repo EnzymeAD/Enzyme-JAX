@@ -145,6 +145,13 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*description=*/"Whether to jit the kernel"
     >,
     Option<
+      /*C++ variable name=*/"compileLaunch",
+      /*CLI argument=*/"compileLaunch",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to jit the host code"
+    >,
+    Option<
       /*C++ variable name=*/"toolkitPath",
       /*CLI argument=*/"toolkitPath",
       /*type=*/"std::string",
