@@ -116,4 +116,98 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def LowerKernelPass : Pass<"lower-kernel"> {
+  let summary = "Lower kernel to custom call";
+  let dependentDialects = [
+  ];
+  let constructor = "mlir::enzyme::createLowerKernelPass()";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "gpu::GPUDialect",
+    "func::FuncDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "vector::VectorDialect",
+    "nvgpu::NVGPUDialect",
+    "NVVM::NVVMDialect",
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect",
+  ];
+
+  let options = [
+    Option<
+      /*C++ variable name=*/"jit",
+      /*CLI argument=*/"jit",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to jit the kernel"
+    >,
+    Option<
+      /*C++ variable name=*/"compileLaunch",
+      /*CLI argument=*/"compileLaunch",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to jit the host code"
+    >,
+    Option<
+      /*C++ variable name=*/"toolkitPath",
+      /*CLI argument=*/"toolkitPath",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"The location of the cuda toolkit"
+    >,
+    Option<
+      /*C++ variable name=*/"linkFiles",
+      /*CLI argument=*/"linkFiles",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"Semicolon separated list of files to link"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinChip",
+      /*CLI argument=*/"cubinChip",
+      /*type=*/"std::string",
+      /*default=*/"\"sm_50\"",
+      /*description=*/"cubinChip"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinFeatures",
+      /*CLI argument=*/"cubinFeatures",
+      /*type=*/"std::string",
+      /*default=*/"\"+ptx60\"",
+      /*description=*/"cubinChip"
+    >,
+    Option<
+      /*C++ variable name=*/"indexBitWidth",
+      /*CLI argument=*/"indexBitWidth",
+      /*type=*/"int",
+      /*default=*/"64",
+      /*description=*/"indexBitWidth"
+    >,
+    Option<
+      /*C++ variable name=*/"cuLaunchKernelPtr",
+      /*CLI argument=*/"cuLaunchKernelPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuLaunchKernelPtr"
+    >,
+    Option<
+      /*C++ variable name=*/"cuModuleLoadDataPtr",
+      /*CLI argument=*/"cuModuleLoadDataPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuModuleLoadDataPtr"
+    >,
+    Option<
+      /*C++ variable name=*/"cuModuleGetFunctionPtr",
+      /*CLI argument=*/"cuModuleGetFunctionPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"cuModuleGetFunctionPtr"
+    >,
+    ];
+}
+
 #endif

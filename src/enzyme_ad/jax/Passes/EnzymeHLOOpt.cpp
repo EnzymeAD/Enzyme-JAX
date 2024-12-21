@@ -3656,6 +3656,13 @@ struct TransposeTranspose
   }
 };
 
+size_t getBitWidth(mlir::Type ty) {
+  if (auto CT = dyn_cast<ComplexType>(ty)) {
+    return 2 * getBitWidth(CT.getElementType());
+  }
+  return ty.getIntOrFloatBitWidth();
+}
+
 struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
 
@@ -3665,8 +3672,10 @@ struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
     auto operandType = op.getOperand().getType().cast<TensorType>();
     if (!resultType.hasStaticShape() || !operandType.hasStaticShape())
       return failure();
-    if (resultType.getNumElements() * resultType.getElementTypeBitWidth() >=
-        operandType.getNumElements() * operandType.getElementTypeBitWidth())
+    if (resultType.getNumElements() *
+            getBitWidth(resultType.getElementType()) >=
+        operandType.getNumElements() *
+            getBitWidth(operandType.getElementType()))
       return failure();
 
     auto transpose =
@@ -6593,6 +6602,54 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
+struct DynamicGatherOpIsNotDynamic
+    : public OpRewritePattern<stablehlo::DynamicGatherOp> {
+  using OpRewritePattern<stablehlo::DynamicGatherOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicGatherOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if slice sizes are constant.
+    DenseIntElementsAttr sliceSizesAttr;
+    if (!matchPattern(op.getSliceSizes(), m_Constant(&sliceSizesAttr))) {
+      return failure();
+    }
+
+    // dynamic_gather allows non-int64 slice sizes, but we need to convert them
+    // to int64 for the gather.
+    if (!sliceSizesAttr.getType().getElementType().isInteger(64)) {
+      SmallVector<APInt> sliceSizes;
+      for (auto size : sliceSizesAttr.getValues<APInt>()) {
+        sliceSizes.push_back(size);
+      }
+      auto newSliceSizesAttr = DenseElementsAttr::get(
+          RankedTensorType::get(sliceSizesAttr.getType().getShape(),
+                                rewriter.getIntegerType(64)),
+          sliceSizes);
+      sliceSizesAttr = newSliceSizesAttr.cast<DenseIntElementsAttr>();
+    }
+
+    SmallVector<int64_t> sliceSizes;
+    for (auto size : sliceSizesAttr.getValues<int64_t>()) {
+      sliceSizes.push_back(size);
+    }
+    auto sliceSizesArrayAttr =
+        DenseI64ArrayAttr::get(op.getContext(), sliceSizes);
+
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), op.getOperand(), op.getStartIndices(),
+        stablehlo::GatherDimensionNumbersAttr::get(
+            op.getContext(), op.getDimensionNumbers().getOffsetDims(),
+            op.getDimensionNumbers().getCollapsedSliceDims(),
+            /*operandBatchingDims=*/{},
+            /*startIndicesBatchingDims=*/{},
+            op.getDimensionNumbers().getStartIndexMap(),
+            op.getDimensionNumbers().getIndexVectorDim()),
+        sliceSizesArrayAttr);
+
+    return success();
+  }
+};
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
@@ -6839,16 +6896,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (no_nan || all_finite)
       patterns.add<NoNan>(context);
 
-    patterns
-        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-             DynamicBroadcastInDimOpNotActuallyDynamic,
-             ChainedDynamicBroadcastInDimCanonicalization,
-             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
-             RealOpCanon, ImagOpCanon, ConjComplexNegate,
-             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
-             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
-             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp>(context);
+    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+                 DynamicBroadcastInDimOpNotActuallyDynamic,
+                 ChainedDynamicBroadcastInDimCanonicalization,
+                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
+                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
+                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
+                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
+                 IfInline, IfToSelect, ZeroExtentTensorCanon,
+                 ReorderElementwiseAndShapeOp, DynamicGatherOpIsNotDynamic>(
+        context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,

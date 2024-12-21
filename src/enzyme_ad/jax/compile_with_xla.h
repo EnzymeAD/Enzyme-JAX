@@ -19,3 +19,4 @@ namespace mlir {
 class Operation;
 }
 void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline);
+void prepareRegistry(mlir::DialectRegistry &registry);

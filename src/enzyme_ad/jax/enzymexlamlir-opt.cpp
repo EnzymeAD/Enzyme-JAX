@@ -11,12 +11,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 #include "Implementations/XLADerivatives.h"
 #include "Passes/Passes.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -33,25 +36,34 @@
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "llvm/Support/TargetSelect.h"
+
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/tests/CheckOps.h"
 
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
 using namespace mlir;
 
 namespace mlir {
 namespace enzyme {
-void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
 void registerGenerateApplyPatternsPass();
 void registerRemoveTransformPass();
 } // namespace enzyme
@@ -65,38 +77,18 @@ struct PtrElementModel
     : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
           PtrElementModel<T>, T> {};
 
+void prepareRegistry(mlir::DialectRegistry &registry);
+
 int main(int argc, char **argv) {
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+
   mlir::DialectRegistry registry;
-
-  // Register MLIR stuff
-  registry.insert<mlir::affine::AffineDialect>();
-  registry.insert<mlir::LLVM::LLVMDialect>();
-  registry.insert<mlir::memref::MemRefDialect>();
-  registry.insert<mlir::async::AsyncDialect>();
-  registry.insert<mlir::tensor::TensorDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  registry.insert<mlir::arith::ArithDialect>();
-  registry.insert<mlir::cf::ControlFlowDialect>();
-  registry.insert<mlir::complex::ComplexDialect>();
-  registry.insert<mlir::scf::SCFDialect>();
-  registry.insert<mlir::gpu::GPUDialect>();
-  registry.insert<mlir::NVVM::NVVMDialect>();
-  registry.insert<mlir::omp::OpenMPDialect>();
-  registry.insert<mlir::math::MathDialect>();
-  registry.insert<mlir::linalg::LinalgDialect>();
-  registry.insert<DLTIDialect>();
-  registry.insert<mlir::mhlo::MhloDialect>();
-  registry.insert<mlir::stablehlo::StablehloDialect>();
-  registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::stablehlo::check::CheckDialect>();
-
-  registry.insert<mlir::enzyme::EnzymeDialect>();
+  prepareRegistry(registry);
 
   mlir::registerenzymePasses();
   regsiterenzymeXLAPasses();
-  mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
-
-  mlir::func::registerInlinerExtension(registry);
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
@@ -124,15 +116,10 @@ int main(int argc, char **argv) {
         *ctx);
   });
 
-  // Register the autodiff interface implementations for upstream dialects.
-  enzyme::registerCoreDialectAutodiffInterfaces(registry);
-
   // Transform dialect and extensions.
   mlir::transform::registerInterpreterPass();
-  mlir::linalg::registerTransformDialectExtension(registry);
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
-  mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Enzyme modular optimizer driver", registry));

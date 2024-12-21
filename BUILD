@@ -2,6 +2,15 @@ load("@rules_python//python:packaging.bzl", "py_wheel")
 load(":package.bzl", "py_package")
 load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
 
+load(
+    "@xla//xla/tsl/platform:build_config_root.bzl",
+    "if_llvm_aarch32_available",
+    "if_llvm_aarch64_available",
+    "if_llvm_powerpc_available",
+    "if_llvm_system_z_available",
+    "if_llvm_x86_available",
+)
+
 licenses(["notice"])
 
 package(
@@ -24,7 +33,10 @@ py_package(
 
 cc_binary(
     name = "enzymexlamlir-opt",
-    srcs = ["//src/enzyme_ad/jax:enzymexlamlir-opt.cpp"],
+    srcs = [
+        "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
+        "//src/enzyme_ad/jax:RegistryUtils.cpp",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "@enzyme//:EnzymeMLIR",
@@ -44,6 +56,7 @@ cc_binary(
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
@@ -52,8 +65,30 @@ cc_binary(
         "//src/enzyme_ad/jax:TransformOps",
         "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",
-        "@stablehlo//stablehlo/tests:check_ops"
-    ],
+        "@stablehlo//stablehlo/tests:check_ops",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+    ] + if_llvm_aarch32_available([
+        "@llvm-project//llvm:ARMAsmParser",
+        "@llvm-project//llvm:ARMCodeGen",
+    ]) + if_llvm_aarch64_available([
+        "@llvm-project//llvm:AArch64AsmParser",
+        "@llvm-project//llvm:AArch64CodeGen",
+    ]) + if_llvm_powerpc_available([
+        "@llvm-project//llvm:PowerPCAsmParser",
+        "@llvm-project//llvm:PowerPCCodeGen",
+    ]) + if_llvm_system_z_available([
+        "@llvm-project//llvm:SystemZAsmParser",
+        "@llvm-project//llvm:SystemZCodeGen",
+    ]) + if_llvm_x86_available([
+        "@llvm-project//llvm:X86AsmParser",
+        "@llvm-project//llvm:X86CodeGen",
+    ]),
     copts = [
         "-Wno-unused-variable",
         "-Wno-return-type",

@@ -2,7 +2,7 @@ load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 
-exports_files(["enzymexlamlir-opt.cpp"])
+exports_files(["enzymexlamlir-opt.cpp", "RegistryUtils.cpp"])
 
 licenses(["notice"])
 
@@ -205,6 +205,55 @@ gentbl_cc_library(
     deps = [":EnzymeXLAPassesTdFiles"],
 )
 
+
+td_library(
+    name = "EnzymeXLADialectTdFiles",
+    srcs = [
+        "Dialect/Dialect.td",
+    ],
+    includes = ["."],
+    deps = [
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:LoopLikeInterfaceTdFiles",
+        "@llvm-project//mlir:MemorySlotInterfacesTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+        "@llvm-project//mlir:ViewLikeInterfaceTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "EnzymeXLAOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/EnzymeXLAOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/EnzymeXLAOps.cpp.inc",
+        ),
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=enzymexla",
+            ],
+            "Dialect/EnzymeXLADialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=enzymexla",
+            ],
+            "Dialect/EnzymeXLADialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/EnzymeXLAOps.td",
+    deps = [":EnzymeXLADialectTdFiles", "@enzyme//:EnzymeDialectTdFiles", "@stablehlo//:stablehlo_ops_td_files"],
+)
+
 gentbl_cc_library(
     name = "EnzyeHLOPatternsIncGen",
     tbl_outs = [
@@ -228,11 +277,13 @@ cc_library(
         [
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Dialect/*.cpp",
         ],
     ),
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Dialect/*.h",
     ]),
     copts = [
         "-Werror=unused-variable",
@@ -241,21 +292,61 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":EnzyeHLOPatternsIncGen",
+        "@llvm-project//mlir:GPUPipelines",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:ExecutionEngine",
+        "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:OrcTargetProcess",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         ":chlo-derivatives",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:AffineToStandard",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:MemRefTransforms",
+        "@llvm-project//mlir:GPUToGPURuntimeTransforms",
+        "@llvm-project//mlir:GPUCommonTransforms",
+        "@llvm-project//mlir:GPUToNVVMTransforms",
+        "@llvm-project//mlir:GPUTransforms",
+        "@llvm-project//mlir:LinalgTransforms",
+        "@llvm-project//mlir:ToLLVMIRTranslation",
+        "@llvm-project//mlir:FuncToLLVM",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:IndexToLLVM",
+        "@llvm-project//mlir:NVVMToLLVM",
+        "@llvm-project//mlir:ReconcileUnrealizedCasts",
+        "@llvm-project//mlir:SCFToControlFlow",
+        "@llvm-project//mlir:MathToLLVM",
+        "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:VectorToSCF",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:MemRefToLLVM",
+        "@llvm-project//mlir:NVGPUToNVVM",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMCommonConversion",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
@@ -271,11 +362,12 @@ cc_library(
 
 pybind_library(
     name = "compile_with_xla",
-    srcs = ["compile_with_xla.cc"],
+    srcs = ["compile_with_xla.cc", "RegistryUtils.cpp"],
     hdrs = glob([
         "compile_with_xla.h",
         "Implementations/*.h",
         "Passes/*.h",
+        "RegistryUtils.h"
     ]),
     deps = [
         ":XLADerivatives",
@@ -368,7 +460,9 @@ pybind_library(
 
 pybind_extension(
     name = "enzyme_call",
-    srcs = ["enzyme_call.cc"],
+    srcs = ["enzyme_call.cc",
+            "RegistryUtils.cpp"
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":clang_compile",
