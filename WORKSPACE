@@ -1,18 +1,6 @@
 # add support for generating compile_commands
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-
-
-# Hedron's Compile Commands Extractor for Bazel
-# https://github.com/hedronvision/bazel-compile-commands-extractor
-http_archive(
-    name = "hedron_compile_commands",
-
-    # Replace the commit hash (0e990032f3c5a866e72615cf67e5ce22186dcb97) in both places (below) with the latest (https://github.com/hedronvision/bazel-compile-commands-extractor/commits/main), rather than using the stale one here.
-    # Even better, set up Renovate and let it do the work for you (see "Suggestion: Updates" in the README).
-    url = "https://github.com/hedronvision/bazel-compile-commands-extractor/archive/4f28899228fb3ad0126897876f147ca15026151e.tar.gz",
-    strip_prefix = "bazel-compile-commands-extractor-4f28899228fb3ad0126897876f147ca15026151e",
-    # When you first run this tool, it'll recommend a sha256 hash to put here with a message like: "DEBUG: Rule 'hedron_compile_commands' indicated that a canonical reproducible form can be obtained by modifying arguments sha256 = ..."
-)
+load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
+hedron_compile_commands_workspace()
 load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
 hedron_compile_commands_setup()
 load("@hedron_compile_commands//:workspace_setup_transitive.bzl", "hedron_compile_commands_setup_transitive")
@@ -22,41 +10,11 @@ hedron_compile_commands_setup_transitive_transitive()
 load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
 hedron_compile_commands_setup_transitive_transitive_transitive()
 
-load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256", "ENZYME_COMMIT", "ENZYME_SHA256", "XLA_PATCHES")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
+jax_workspace()
 
-# http_archive(
-#     name = "rules_cc",
-#     sha256 = "a281b09e003a119bda2cea98c590129b783cc241fdd1a1de3baa656117e6cc3f"
-#     strip_prefix = "rules_cc-34f0e1f038cff9bf28d65d101c806b48f35bf92e",
-#     urls = [
-#         "https://github.com/bazelbuild/rules_cc/archive/34f0e1f038cff9bf28d65d101c806b48f35bf92e.tar.gz",
-#     ],
-# )
-# 
-# load("@rules_cc//cc:repositories.bzl", "rules_cc_dependencies")
-# 
-# rules_cc_dependencies()
-
-LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
-
-http_archive(
-    name = "jax",
-    sha256 = JAX_SHA256,
-    strip_prefix = "jax-" + JAX_COMMIT,
-    urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = JAX_COMMIT)],
-    patch_args = ["-p1"],
-    patches = ["//:patches/jax.patch"],
-)
-
-load("@jax//third_party/xla:workspace.bzl", "XLA_COMMIT", "XLA_SHA256")
-http_archive(
-    name = "xla",
-    sha256 = XLA_SHA256,
-    strip_prefix = "xla-" + XLA_COMMIT,
-    urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = XLA_COMMIT)],
-    patch_cmds = XLA_PATCHES,
-)
+load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
+xla_workspace()
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 python_init_rules()
@@ -82,14 +40,11 @@ python_init_pip()
 load("@pypi//:requirements.bzl", "install_deps")
 install_deps()
 
-http_archive(
-    name = "enzyme",
-    sha256 = ENZYME_SHA256,
-    strip_prefix = "Enzyme-" + ENZYME_COMMIT + "/enzyme",
-    urls = ["https://github.com/EnzymeAD/Enzyme/archive/{commit}.tar.gz".format(commit = ENZYME_COMMIT)],
-)
+load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
+enzyme_workspace()
 
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
+load("//:workspace.bzl", "LLVM_TARGETS")
 llvm("llvm-raw")
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
