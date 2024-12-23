@@ -529,7 +529,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(voidty, {}, false),
-          LLVM::Linkage::Private);
+          LLVM::Linkage::External);
 
       mlir::Attribute funcs[] = {FlatSymbolRefAttr::get(initfn)};
       mlir::Attribute idxs[] = {builder.getI32IntegerAttr(0)};
