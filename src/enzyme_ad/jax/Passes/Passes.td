@@ -207,6 +207,13 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"0",
       /*description=*/"cuModuleGetFunctionPtr"
     >,
+    Option<
+      /*C++ variable name=*/"run_init",
+      /*CLI argument=*/"run_init",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Run initialization of cuda module"
+    >,
     ];
 }
 

@@ -175,7 +175,7 @@ llvm::StringMap<void *> kernels;
 llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
-void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
+void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
   llvm::errs() << " compiling host module: " << modOp << "\n";
   if (!JIT) {
     auto tJIT =
@@ -249,6 +249,17 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp) {
   auto ptr = (void *)EntrySym->getValue();
 
   kernels[key] = ptr;
+
+  auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+  if (!NVSym) {
+    llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+    return nullptr;
+  }
+
+  auto nvptr = (void *)NVSym->getValue();
+
+  ((void (*)())(nvptr))();
+
   return ptr;
 }
 
@@ -317,7 +328,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                     int indexBitWidth, std::string cubinChip,
                     std::string cubinFeatures, size_t cuLaunchKernelPtr,
                     size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr,
-                    bool compileLaunch) {
+                    bool compileLaunch, bool run_init) {
 
   llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz
                << "," << blockx << "," << blocky << "," << blockz << "\n";
@@ -648,7 +659,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       if (!compileLaunch)
         return nullptr;
 
-      ptr = CompileHostModule(ss.str(), submod);
+      ptr = CompileHostModule(ss.str(), submod, run_init);
 
       submod.erase();
     }
@@ -747,7 +758,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr, compileLaunch);
+          cuModuleGetFunctionPtr, compileLaunch, run_init);
 
       std::string backendinfo((char *)&data, sizeof(void *));
 
