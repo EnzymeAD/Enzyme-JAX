@@ -709,7 +709,6 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
-    llvm::errs() << " Lowering Kernel in: " << *getOperation() << "\n";
 
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
@@ -750,8 +749,6 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
         data[1 + en.index()] = val;
       }
 
-      llvm::errs() << " Lowering KernelCall in: " << *op << "\n";
-
       // Compiled kernel goes here once ready
       data[0] = (size_t)CompileKernel(
           symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
@@ -777,8 +774,6 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
       op.replaceAllUsesWith(replacement);
       op.erase();
-      llvm::errs() << " Lowering KernelCall replacement: " << *replacement
-                   << "\n";
     });
   }
 };
