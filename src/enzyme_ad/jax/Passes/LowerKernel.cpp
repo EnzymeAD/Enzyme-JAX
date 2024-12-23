@@ -247,18 +247,21 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
   }
 
   auto ptr = (void *)EntrySym->getValue();
+  llvm::errs() << " entry ptr: " << ptr << "\n";
 
   kernels[key] = ptr;
 
-  auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
-  if (!NVSym) {
-    llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
-    return nullptr;
+  if (run_init) {
+    auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+    if (!NVSym) {
+      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+      return nullptr;
+    }
+
+    auto nvptr = (void *)NVSym->getValue();
+
+    ((void (*)())(nvptr))();
   }
-
-  auto nvptr = (void *)NVSym->getValue();
-
-  ((void (*)())(nvptr))();
 
   return ptr;
 }
@@ -272,6 +275,8 @@ extern "C" void EnzymeGPUCustomCall(void *__restrict__ stream,
                                     XlaCustomCallStatus *__restrict__ status) {
   auto ptr = (void (*)(void *, void **))(opaqueptr[0]);
   printf("ptr=%p\n", ptr);
+  printf("stream=%p\n", stream);
+  printf("bufferptr=%p\n", buffers);
   printf("buffer[0]=%p\n", buffers[0]);
   // auto ptr = (void(*)(void*, void**, size_t, size_t, size_t, size_t, size_t,
   // size_t)) (opaqueptr[0][0]);
@@ -422,6 +427,49 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
+  auto printfunc = builder.create<func::FuncOp>(loc, "printf", calleeType);
+  printfunc.setVisibility(SymbolTable::Visibility::Private);
+
+  LLVM::GlobalOp printStrSet;
+  {
+    std::string value = "found pointer [set] = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrSet = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrStream;
+  {
+    std::string value = "found pointer [stream] = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrStream = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrGlob;
+  {
+    std::string value = "found pointer [glob] = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrGlob = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrCu;
+  {
+    std::string value = "found pointer [cu] = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrCu = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        builder.getStringAttr(value + '\0'));
+  }
+
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -453,10 +501,18 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     arguments.push_back(ld);
   }
   auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
+
   stream = builder
                .create<UnrealizedConversionCastOp>(
                    loc, gpu::AsyncTokenType::get(stream.getContext()), stream)
                ->getResult(0);
+  {
+    Value printargs1[] = {
+        builder.create<LLVM::AddressOfOp>(loc, printStrStream)->getResult(0),
+        stream};
+    builder.create<func::CallOp>(loc, printfunc, printargs1);
+  }
+
   builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize, dynshmem,
                                     arguments, stream.getType(),
                                     ValueRange(stream));
@@ -614,6 +670,12 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
 
         auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrSet)->getResult(0),
+              addr_glob};
+          builder.create<func::CallOp>(loc, printfunc, printargs1);
+        }
         builder.create<LLVM::StoreOp>(loc, func, addr_glob);
         builder.create<LLVM::ReturnOp>(loc, ValueRange());
       }
@@ -638,6 +700,21 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             op.getAsyncObject(),
             params,
             builder.create<LLVM::ZeroOp>(loc, ptrty)};
+
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrGlob)
+                  ->getResult(0),
+              addr_glob};
+          builder.create<func::CallOp>(loc, printfunc, printargs1);
+        }
+
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrCu)->getResult(0),
+              cufunc};
+          builder.create<func::CallOp>(loc, printfunc, printargs1);
+        }
 
         if (cuLaunchKernelPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
