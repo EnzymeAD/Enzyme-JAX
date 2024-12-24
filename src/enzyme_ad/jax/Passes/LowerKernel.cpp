@@ -470,6 +470,46 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         builder.getStringAttr(value + '\0'));
   }
 
+  LLVM::GlobalOp printStrMod;
+  {
+    std::string value = "found pointer mod = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrMod = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrLdFunc;
+  {
+    std::string value = "found pointer ld func = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrMod = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrFunc;
+  {
+    std::string value = "found pointer func = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrMod = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp printStrLaunch;
+  {
+    std::string value = "found pointer launch = %p\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    printStrLaunch = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strlaunch",
+        builder.getStringAttr(value + '\0'));
+  }
+
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -578,7 +618,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
                             idx,   i32, ptrty, ptrty, ptrty};
 
-      auto launch_ty = LLVM::LLVMFunctionType::get(voidty, cutys);
+      auto launch_ty = LLVM::LLVMFunctionType::get(i32, cutys);
       LLVM::LLVMFuncOp launch =
           builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
 
@@ -644,16 +684,28 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto addr_modbin = builder.create<LLVM::AddressOfOp>(loc, binary);
         SmallVector<mlir::Value> modargs = {modptr->getResult(0),
                                             addr_modbin->getResult(0)};
+
+        mlir::Value loadRes;
         if (cuModuleLoadDataPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleLoadDataPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           modargs.insert(modargs.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, modload_ty, modargs);
+          loadRes = builder.create<LLVM::CallOp>(loc, modload_ty, modargs)
+                        ->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, modload, modargs);
+          loadRes =
+              builder.create<LLVM::CallOp>(loc, modload, modargs)->getResult(0);
         }
+        loadRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadRes);
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrMod)->getResult(0),
+              loadRes};
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+        }
+
         auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
 
         auto addr_kernstr =
@@ -662,17 +714,37 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> funcargs = {funcptr->getResult(0),
                                              mod->getResult(0),
                                              addr_kernstr->getResult(0)};
+        mlir::Value loadRes;
         if (cuModuleGetFunctionPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleGetFunctionPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           funcargs.insert(funcargs.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs);
+          loadRes = builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
+                        ->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, funcload, funcargs);
+          loadRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
+                        ->getResult(0);
         }
+
+        loadRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadRes);
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrFunc)
+                  ->getResult(0),
+              loadRes};
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+        }
+
         auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrLdFunc)
+                  ->getResult(0),
+              func};
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+        }
 
         auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
         {
@@ -721,15 +793,27 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
 
+        mlir::Value callRes;
         if (cuLaunchKernelPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuLaunchKernelPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           args.insert(args.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, launch_ty, args);
+          callRes =
+              builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, launch, args);
+          callRes =
+              builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
+        }
+
+        callRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, callRes);
+        {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, printStrLaunch)
+                  ->getResult(0),
+              callRes};
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
 
         op.erase();
