@@ -612,7 +612,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         std::string value = "found pointer ld func = %p\n";
         auto type = LLVM::LLVMArrayType::get(
             mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrMod = builder.create<LLVM::GlobalOp>(
+        printStrLdFunc = builder.create<LLVM::GlobalOp>(
             loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
             "strldfunc", builder.getStringAttr(value + '\0'));
       }
