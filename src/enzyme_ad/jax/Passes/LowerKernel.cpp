@@ -714,26 +714,26 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> funcargs = {funcptr->getResult(0),
                                              mod->getResult(0),
                                              addr_kernstr->getResult(0)};
-        mlir::Value loadRes;
+        mlir::Value getRes;
         if (cuModuleGetFunctionPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleGetFunctionPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           funcargs.insert(funcargs.begin(), addr_glob);
-          loadRes = builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
+          getRes = builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
                         ->getResult(0);
         } else {
-          loadRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
+          getRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
                         ->getResult(0);
         }
 
-        loadRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadRes);
+        getRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, getRes);
         {
           Value printargs1[] = {
               builder.create<LLVM::AddressOfOp>(loc, printStrFunc)
                   ->getResult(0),
-              loadRes};
+              getRes};
           builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
 
