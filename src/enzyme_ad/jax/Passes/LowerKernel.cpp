@@ -557,7 +557,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       OpBuilder builder(submod);
 
       SymbolTable st2(submod);
-      auto print2 = st2.lookup<LLVM::FuncOp>(submod);
+      auto print2 = st2.lookup<LLVM::LLVMFuncOp>(submod);
 
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
       auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
