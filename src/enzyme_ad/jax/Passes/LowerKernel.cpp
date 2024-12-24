@@ -555,6 +555,10 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       pm.run(submod);
 
       OpBuilder builder(submod);
+
+      SymbolTable st2(submod);
+      auto print2 = st2.lookup<LLVM::FuncOp>(submod);
+
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
       auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
       auto i64 = builder.getIntegerType(64);
@@ -675,7 +679,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           Value printargs1[] = {
               builder.create<LLVM::AddressOfOp>(loc, printStrSet)->getResult(0),
               addr_glob};
-          builder.create<func::CallOp>(loc, printfunc, printargs1);
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
         builder.create<LLVM::StoreOp>(loc, func, addr_glob);
         builder.create<LLVM::ReturnOp>(loc, ValueRange());
@@ -707,14 +711,14 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
               builder.create<LLVM::AddressOfOp>(loc, printStrGlob)
                   ->getResult(0),
               addr_glob};
-          builder.create<func::CallOp>(loc, printfunc, printargs1);
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
 
         {
           Value printargs1[] = {
               builder.create<LLVM::AddressOfOp>(loc, printStrCu)->getResult(0),
               cufunc};
-          builder.create<func::CallOp>(loc, printfunc, printargs1);
+          builder.create<LLVM::CallOp>(loc, print2, printargs1);
         }
 
         if (cuLaunchKernelPtr) {
