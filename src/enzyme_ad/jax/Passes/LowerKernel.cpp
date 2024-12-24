@@ -502,16 +502,17 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
   auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
 
-  stream = builder
-               .create<UnrealizedConversionCastOp>(
-                   loc, gpu::AsyncTokenType::get(stream.getContext()), stream)
-               ->getResult(0);
   {
     Value printargs1[] = {
         builder.create<LLVM::AddressOfOp>(loc, printStrStream)->getResult(0),
         stream};
     builder.create<func::CallOp>(loc, printfunc, printargs1);
   }
+
+  stream = builder
+               .create<UnrealizedConversionCastOp>(
+                   loc, gpu::AsyncTokenType::get(stream.getContext()), stream)
+               ->getResult(0);
 
   builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize, dynshmem,
                                     arguments, stream.getType(),
