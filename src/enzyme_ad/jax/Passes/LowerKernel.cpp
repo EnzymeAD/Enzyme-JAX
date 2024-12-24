@@ -430,16 +430,6 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto printfunc = builder.create<func::FuncOp>(loc, "printf", calleeType);
   printfunc.setVisibility(SymbolTable::Visibility::Private);
 
-  LLVM::GlobalOp printStrSet;
-  {
-    std::string value = "found pointer [set] = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrSet = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strset",
-        builder.getStringAttr(value + '\0'));
-  }
-
   LLVM::GlobalOp printStrStream;
   {
     std::string value = "found pointer [stream] = %p\n";
@@ -447,66 +437,6 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     printStrStream = builder.create<LLVM::GlobalOp>(
         loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strstream",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrGlob;
-  {
-    std::string value = "found pointer [glob] = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrGlob = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strglob",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrCu;
-  {
-    std::string value = "found pointer [cu] = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrCu = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strcu",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrMod;
-  {
-    std::string value = "found pointer mod = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrMod = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrLdFunc;
-  {
-    std::string value = "found pointer ld func = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrMod = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strldfunc",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrFunc;
-  {
-    std::string value = "found pointer func = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrMod = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
-        builder.getStringAttr(value + '\0'));
-  }
-
-  LLVM::GlobalOp printStrLaunch;
-  {
-    std::string value = "found pointer launch = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrLaunch = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strlaunch",
         builder.getStringAttr(value + '\0'));
   }
 
@@ -637,6 +567,66 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             builder.getStringAttr(value + '\0'));
       }
 
+      LLVM::GlobalOp printStrSet;
+      {
+        std::string value = "found pointer [set] = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrSet = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strset",
+            builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp printStrGlob;
+      {
+        std::string value = "found pointer [glob] = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrGlob = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strglob",
+            builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp printStrCu;
+      {
+        std::string value = "found pointer [cu] = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrCu = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strcu",
+            builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp printStrMod;
+      {
+        std::string value = "found pointer mod = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrMod = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
+            builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp printStrLdFunc;
+      {
+        std::string value = "found pointer ld func = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrMod = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+            "strldfunc", builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp printStrLaunch;
+      {
+        std::string value = "found pointer launch = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrLaunch = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+            "strlaunch", builder.getStringAttr(value + '\0'));
+      }
+
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
       LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
@@ -647,6 +637,16 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       mlir::Attribute idxs[] = {builder.getI32IntegerAttr(0)};
       builder.create<LLVM::GlobalCtorsOp>(loc, builder.getArrayAttr(funcs),
                                           builder.getArrayAttr(idxs));
+
+      LLVM::GlobalOp printStrFunc;
+      {
+        std::string value = "found pointer func = %p\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        printStrMod = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
+            builder.getStringAttr(value + '\0'));
+      }
 
       LLVM::GlobalOp binary;
       submod.walk([&](gpu::BinaryOp op) {
@@ -722,10 +722,10 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           funcargs.insert(funcargs.begin(), addr_glob);
           getRes = builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
-                        ->getResult(0);
+                       ->getResult(0);
         } else {
           getRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
-                        ->getResult(0);
+                       ->getResult(0);
         }
 
         getRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, getRes);
