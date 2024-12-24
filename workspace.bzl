@@ -30,3 +30,5 @@ XLA_PATCHES = [
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
     "find xla/mlir -type f -name BUILD -exec sed -i.bak3 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +"
 ]
+
+LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
