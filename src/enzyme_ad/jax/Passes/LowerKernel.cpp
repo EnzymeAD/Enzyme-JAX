@@ -436,7 +436,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     printStrSet = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strset",
         builder.getStringAttr(value + '\0'));
   }
 
@@ -446,7 +446,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     printStrStream = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strstream",
         builder.getStringAttr(value + '\0'));
   }
 
@@ -456,7 +456,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     printStrGlob = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strglob",
         builder.getStringAttr(value + '\0'));
   }
 
@@ -466,7 +466,7 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     printStrCu = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strcu",
         builder.getStringAttr(value + '\0'));
   }
 
