@@ -274,10 +274,10 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init
   return CallInfo{(void (*)(void*, void**))ptr, (void (*)())nvptr, (bool*)calloc(1, 1)};
 }
 
-#include "third_party/gpus/cuda/include/cuda.h"
-#include "third_party/gpus/cuda/include/driver_types.h"
-#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
-
+//#include "third_party/gpus/cuda/include/cuda.h"
+//#include "third_party/gpus/cuda/include/driver_types.h"
+//#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
+#if 0
 typedef CUresult (*cuLaunchKernelPtrType)(
         CUfunction /*f*/,
         unsigned int /*gridDimX*/,
@@ -291,7 +291,6 @@ typedef CUresult (*cuLaunchKernelPtrType)(
         void** /*params*/,
         void** /*extras*/
         );
-
 
 
 // See API details at
@@ -367,6 +366,7 @@ extern "C" void EnzymeGPUCustomCall(CUstream __restrict__ stream,
   */
   //printf("result=%p\n", result);
 }
+#endif
 
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
