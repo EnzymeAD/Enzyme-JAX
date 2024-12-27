@@ -1017,6 +1017,8 @@ void Callback(void *out, void **ins) {
   kernel->call(out, ins + 1);
 }
 
+extern "C" void RegisterEnzymeXLAGPUHandler();
+
 PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
   llvm::InitializeAllTargetMCs();
@@ -1242,6 +1244,9 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
         });
+
+  m.def("register_enzymexla_gpu_handler",
+        []() { RegisterEnzymeXLAGPUHandler(); });
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,

@@ -11,6 +11,15 @@ package(
     features = ["layering_check"],
 )
 
+cc_library(
+    name = "gpu",
+    srcs = ["gpu.cc"],
+    deps = [
+        "@xla//xla/ffi/api:ffi",
+        "@xla//xla/ffi:ffi_api"
+    ],
+)
+
 pybind_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
@@ -357,8 +366,6 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
-        "@xla//xla/ffi/api:ffi",
-        "@xla//xla/ffi:ffi_api"
     ],
 )
 
@@ -467,6 +474,7 @@ pybind_extension(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":gpu",
         ":clang_compile",
         ":compile_with_xla",
         ":TransformOps",
