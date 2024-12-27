@@ -169,3 +169,71 @@ refresh_compile_commands(
       # As are additional targets (+) and subtractions (-), like in bazel query https://docs.bazel.build/versions/main/query.html#expressions
     # And if you're working on a header-only library, specify a test or binary target that compiles it.
 )
+
+cc_library(
+    name = "everything",
+    srcs = [
+        "//src/enzyme_ad/jax:TransformOps",
+        "//src/enzyme_ad/jax:XLADerivatives",
+        "//src/enzyme_ad/jax:RegistryUtils.cpp",
+    ],
+    hdrs = [
+        "//src/enzyme_ad/jax:TransformOps",
+        "//src/enzyme_ad/jax:XLADerivatives",
+        "//src/enzyme_ad/jax:RegistryUtils.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AllPassesAndDialects",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ComplexDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:ConversionPasses",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:Transforms",
+        "//src/enzyme_ad/jax:TransformOps",
+        "//src/enzyme_ad/jax:XLADerivatives",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+
+        "@llvm-project//llvm:X86AsmParser",
+        "@llvm-project//llvm:X86CodeGen",
+    ],
+)
+
+cc_binary(
+    name = "example",
+    linkstatic = True,
+    srcs = ["example.cpp"],
+    deps = [
+        "@xla//xla/hlo/builder:xla_builder",
+        "@xla//xla/hlo/translate:stablehlo",
+        "@xla//xla/hlo/builder/lib:math",
+        "@xla//xla/mlir_hlo:hlo_dialect_registration",
+        ":everything",
+    ],
+    visibility = ["//visibility:public"],
+)
