@@ -171,12 +171,17 @@ void buildLowerToNVVMPassPipeline(
 
 typedef void XlaCustomCallStatus;
 
-llvm::StringMap<void *> kernels;
+struct CallInfo {
+  void (*run)(void *, void *, void **);
+  void *(*init)();
+};
+
+llvm::StringMap<CallInfo> kernels;
 llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
-void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
-  llvm::errs() << " compiling host module: " << modOp << "\n";
+CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
+                           bool run_init, size_t *cuLaunchPtr) {
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -198,7 +203,7 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
             .create();
     if (!tJIT) {
       llvm::errs() << " jit creating error: " << tJIT.takeError() << "\n";
-      return nullptr;
+      return {};
     }
     JIT = std::move(tJIT.get());
     assert(JIT);
@@ -213,7 +218,7 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
     if (!ProcessSymsGenerator) {
       llvm::errs() << " failure creating symbol generator: "
                    << ProcessSymsGenerator.takeError() << "\n";
-      return nullptr;
+      return {};
     }
 
     JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
@@ -223,12 +228,10 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
     llvm::errs() << "could not convert to LLVM IR\n";
-    return nullptr;
+    return {};
   }
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
-
-  llvm::errs() << "llmod: " << *llvmModule << "\n";
 
   auto LibA =
       JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
@@ -236,60 +239,147 @@ void *CompileHostModule(std::string &key, mlir::ModuleOp modOp, bool run_init) {
           LibA.get(),
           llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
     llvm::errs() << " addIRModuleError " << Err << "\n";
-    return nullptr;
+    return {};
   }
 
-  // Look up the JIT'd code entry point.
-  auto EntrySym = JIT->lookup(LibA.get(), "entry");
-  if (!EntrySym) {
-    llvm::errs() << " lookupError " << EntrySym.takeError() << "\n";
-    return nullptr;
-  }
-
-  auto ptr = (void *)EntrySym->getValue();
-  llvm::errs() << " entry ptr: " << ptr << "\n";
-
-  kernels[key] = ptr;
-
-  if (run_init) {
-    auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
-    if (!NVSym) {
-      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
-      return nullptr;
+  if (cuLaunchPtr[0] == 0) {
+    // Look up the JIT'd code entry point.
+    auto LaunchSym = JIT->lookup(LibA.get(), "cuLaunchKernel");
+    if (!LaunchSym) {
+      llvm::errs() << " lookupError[cuLaunchKernel] " << LaunchSym.takeError()
+                   << "\n";
+      return {};
     }
-
-    auto nvptr = (void *)NVSym->getValue();
-
-    ((void (*)())(nvptr))();
+    *cuLaunchPtr = (size_t)LaunchSym->getValue();
   }
 
-  return ptr;
+  auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+  if (!NVSym) {
+    llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+    return {};
+  }
+
+  auto nvptr = (void *)NVSym->getValue();
+
+  auto Entry = JIT->lookup(LibA.get(), "entry");
+  if (!Entry) {
+    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
+    return {};
+  }
+
+  auto ptr = (void *)Entry->getValue();
+
+  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
 }
 
-// See API details at
-// https://github.com/openxla/xla/blob/37fb0612d36ac3d08ff984b1d61e4bc4dedf4809/xla/service/hlo.proto#L73
-extern "C" void EnzymeGPUCustomCall(void *__restrict__ stream,
-                                    void **__restrict__ buffers,
-                                    void **__restrict__ opaqueptr,
-                                    size_t opaque_len,
-                                    XlaCustomCallStatus *__restrict__ status) {
-  auto ptr = (void (*)(void *, void **))(opaqueptr[0]);
-  printf("ptr=%p\n", ptr);
-  printf("stream=%p\n", stream);
-  printf("bufferptr=%p\n", buffers);
-  printf("buffer[0]=%p\n", buffers[0]);
-  // auto ptr = (void(*)(void*, void**, size_t, size_t, size_t, size_t, size_t,
-  // size_t)) (opaqueptr[0][0]);
+// #include "third_party/gpus/cuda/include/cuda.h"
+// #include "third_party/gpus/cuda/include/driver_types.h"
+// #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
 
-  // size_t gridx = opaqueptr[0][1];
-  // size_t gridy = opaqueptr[0][2];
-  // size_t gridz = opaqueptr[0][3];
+#include "xla/ffi/api/ffi.h"
+#include "xla/ffi/ffi_api.h"
 
-  // size_t blockx = opaqueptr[0][4];
-  // size_t blocky = opaqueptr[0][5];
-  // size_t blockz = opaqueptr[0][6];
+XLA_FFI_Error *instantiate(XLA_FFI_CallFrame *call_frame) { return nullptr; }
 
-  ptr(stream, buffers); //, gridx, gridy, gridz, blockx, blocky, blockz);
+XLA_FFI_Error *prepare(XLA_FFI_CallFrame *call_frame) { return nullptr; }
+
+struct CuFuncWrapper {
+  void *func;
+};
+
+void noop(void *){};
+
+XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
+  assert(call_frame->attrs.size == 1);
+  assert(call_frame->attrs.types[0] == XLA_FFI_AttrType_STRING);
+
+  auto *bspan =
+      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
+  auto cinfo = (CallInfo *)bspan->ptr;
+
+  auto internal_api = call_frame->api->internal_api;
+  auto ctx = call_frame->ctx;
+  void *stream =
+      ((stream_executor::Stream *)internal_api->XLA_FFI_INTERNAL_Stream_Get(
+           ctx))
+          ->platform_specific_handle()
+          .stream;
+
+  /*
+  CUcontext pctx;
+  auto err = cuStreamGetCtx ((CUstream)stream, &pctx);
+
+  CUcontext cctx;
+  err = cuCtxGetCurrent ( &cctx );
+
+  err = cuCtxPushCurrent (pctx);
+  */
+
+  void *cufunc = cinfo->init();
+
+  /*
+  CUcontext tctx;
+  err = cuCtxPopCurrent(&tctx);
+  */
+
+  auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
+      internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(ctx));
+  execution_state->Set(xla::ffi::TypeIdRegistry::GetTypeId<CuFuncWrapper>(),
+                       cufunc, noop);
+
+  return nullptr;
+}
+
+XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
+  // If passed a call frame with the metadata extension, just return the
+  // metadata.
+  if (call_frame->extension_start != nullptr &&
+      call_frame->extension_start->type == XLA_FFI_Extension_Metadata) {
+    auto extension = reinterpret_cast<XLA_FFI_Metadata_Extension *>(
+        call_frame->extension_start);
+    extension->metadata->api_version = XLA_FFI_Api_Version{
+        XLA_FFI_Api_Version_STRUCT_SIZE,
+        /*extension_start=*/nullptr,
+        XLA_FFI_API_MAJOR,
+        XLA_FFI_API_MINOR,
+    };
+    return nullptr;
+  }
+
+  auto *bspan =
+      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
+  auto cinfo = (CallInfo *)bspan->ptr;
+
+  auto internal_api = call_frame->api->internal_api;
+  auto ctx = call_frame->ctx;
+  void *stream =
+      ((stream_executor::Stream *)internal_api->XLA_FFI_INTERNAL_Stream_Get(
+           ctx))
+          ->platform_specific_handle()
+          .stream;
+
+  size_t numargs = call_frame->args.size;
+  void *ptrs[numargs];
+  for (size_t i = 0; i < numargs; i++) {
+    ptrs[i] =
+        &reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
+  }
+
+  auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
+      internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(ctx));
+  auto cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
+
+  cinfo->run(cufunc, stream, ptrs);
+
+  return nullptr;
+}
+
+extern "C" void RegisterEnzymeXLAGPUHandler() {
+  XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize, execute};
+
+  xla::ffi::Ffi::RegisterStaticHandler(xla::ffi::GetXlaFfiApi(),
+                                       "enzymexla_compile_gpu", "CUDA", bundle,
+                                       /*XLA_FFI_Handler_Traits traits = */ 0);
 }
 
 gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
@@ -325,34 +415,43 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   return mlir::dyn_cast<gpu::ObjectAttr>(objects[index]);
 }
 
-void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
-                    FunctionOpInterface op, bool jit, size_t gridx,
-                    size_t gridy, size_t gridz, size_t blockx, size_t blocky,
-                    size_t blockz, size_t shmem, std::string toolkitPath,
-                    llvm::SmallVectorImpl<std::string> &linkFiles,
-                    int indexBitWidth, std::string cubinChip,
-                    std::string cubinFeatures, size_t cuLaunchKernelPtr,
-                    size_t cuModuleLoadDataPtr, size_t cuModuleGetFunctionPtr,
-                    bool compileLaunch, bool run_init) {
+CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
+                       FunctionOpInterface op, bool jit, size_t gridx,
+                       size_t gridy, size_t gridz, size_t blockx, size_t blocky,
+                       size_t blockz, size_t shmem, std::string toolkitPath,
+                       llvm::SmallVectorImpl<std::string> &linkFiles,
+                       int indexBitWidth, std::string cubinChip,
+                       std::string cubinFeatures, size_t cuLaunchKernelPtr,
+                       size_t cuModuleLoadDataPtr,
+                       size_t cuModuleGetFunctionPtr, bool compileLaunch,
+                       bool run_init) {
 
-  llvm::errs() << " Compiling kernel: " << gridx << "," << gridy << "," << gridz
-               << "," << blockx << "," << blocky << "," << blockz << "\n";
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-  mlir::Type intys[] = {ptrty, ptrty};
+  mlir::Type intys[] = {ptrty, ptrty, ptrty};
   FunctionType calleeType = builder.getFunctionType(intys, {});
+  mlir::Type intys2[] = {ptrty, ptrty};
+  FunctionType printType = builder.getFunctionType(intys2, {});
 
-  FunctionType gpuTy = dyn_cast<FunctionType>(op.getFunctionType());
-  if (!gpuTy) {
+  FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
+  if (!gpuTy0) {
     if (auto lty = dyn_cast<LLVM::LLVMFunctionType>(op.getFunctionType())) {
-      gpuTy = builder.getFunctionType(lty.getParams(), {});
+      gpuTy0 = builder.getFunctionType(lty.getParams(), {});
     } else {
       op.emitError(
           "Require target operand to have functiontype or llvmfunctiontype");
-      return nullptr;
+      return {};
     }
   }
+  SmallVector<Type, 1> newParams;
+  for (Type p : gpuTy0.getInputs()) {
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(p)) {
+      p = AT.getElementType();
+    }
+    newParams.push_back(p);
+  }
+  FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
   auto submod = builder.create<ModuleOp>(loc, "offload");
   submod->setAttr("gpu.container_module", builder.getUnitAttr());
@@ -363,12 +462,27 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, "kernel", gpuTy);
   {
+    auto entry = &gpufunc.getBody().front();
+    builder.setInsertionPointToEnd(entry);
     IRMapping map;
-    map.map(op.getArguments(), gpufunc.getArguments());
+    for (auto &&[oldarg, newarg] :
+         zip(op.getArguments(), gpufunc.getArguments())) {
+      Value newval = newarg;
+
+      if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
+        auto ud =
+            builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
+        int64_t c0[1] = {0};
+        newval = builder.create<LLVM::InsertValueOp>(
+            newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+      }
+
+      map.map(oldarg, newval);
+    }
+
     op.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
     gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
 
-    auto entry = &gpufunc.getBody().front();
     auto second = entry->getNextNode();
     entry->getOperations().splice(entry->getOperations().end(),
                                   second->getOperations());
@@ -427,26 +541,14 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
-  auto printfunc = builder.create<func::FuncOp>(loc, "printf", calleeType);
-  printfunc.setVisibility(SymbolTable::Visibility::Private);
-
-  LLVM::GlobalOp printStrStream;
-  {
-    std::string value = "found pointer [stream] = %p\n";
-    auto type = LLVM::LLVMArrayType::get(
-        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    printStrStream = builder.create<LLVM::GlobalOp>(
-        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strstream",
-        builder.getStringAttr(value + '\0'));
-  }
-
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
 
-  mlir::Value stream = entryBlock.getArgument(0);
-  auto buffers = entryBlock.getArgument(1);
+  mlir::Value cufunc = entryBlock.getArgument(0);
+  mlir::Value stream = entryBlock.getArgument(1);
+  mlir::Value buffers = entryBlock.getArgument(2);
 
   auto idx = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
@@ -467,17 +569,14 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     LLVM::GEPArg args[1] = {arg.getArgNumber()};
     auto gep =
         builder.create<LLVM::GEPOp>(loc, ptrty, ptrty, buffers, args, true);
-    auto ld = builder.create<LLVM::LoadOp>(loc, arg.getType(), gep);
+    auto argTy = arg.getType();
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
+      argTy = AT.getElementType();
+    }
+    auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
     arguments.push_back(ld);
   }
   auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
-
-  {
-    Value printargs1[] = {
-        builder.create<LLVM::AddressOfOp>(loc, printStrStream)->getResult(0),
-        stream};
-    builder.create<func::CallOp>(loc, printfunc, printargs1);
-  }
 
   stream = builder
                .create<UnrealizedConversionCastOp>(
@@ -495,12 +594,10 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   ss << submod;
 
-  llvm::errs() << "submod: " << submod << "\n";
-
   if (!jit)
-    return nullptr;
+    return {};
 
-  void *ptr = nullptr;
+  CallInfo ptr;
   {
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
 
@@ -526,19 +623,12 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       OpBuilder builder(submod);
 
-      SymbolTable st2(submod);
-      auto print2 = st2.lookup<LLVM::LLVMFuncOp>("printf");
-
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
       auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
       auto i64 = builder.getIntegerType(64);
       auto i32 = builder.getIntegerType(32);
       auto idx = i64;
       auto voidty = LLVM::LLVMVoidType::get(submod.getContext());
-
-      auto glob = builder.create<LLVM::GlobalOp>(loc, ptrty, /*constant*/ false,
-                                                 LLVM::Linkage::Private,
-                                                 "nv_func", mlir::Attribute());
 
       mlir::Type cumodtys[] = {ptrty, ptrty};
       auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
@@ -567,76 +657,11 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             builder.getStringAttr(value + '\0'));
       }
 
-      LLVM::GlobalOp printStrSet;
-      {
-        std::string value = "found pointer [set] = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrSet = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strset",
-            builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp printStrGlob;
-      {
-        std::string value = "found pointer [glob] = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrGlob = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strglob",
-            builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp printStrCu;
-      {
-        std::string value = "found pointer [cu] = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrCu = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strcu",
-            builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp printStrMod;
-      {
-        std::string value = "found pointer mod = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrMod = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
-            builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp printStrLdFunc;
-      {
-        std::string value = "found pointer ld func = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrLdFunc = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-            "strldfunc", builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp printStrLaunch;
-      {
-        std::string value = "found pointer launch = %p\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrLaunch = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-            "strlaunch", builder.getStringAttr(value + '\0'));
-      }
-
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
       LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
-          loc, "nv_func_init", LLVM::LLVMFunctionType::get(voidty, {}, false),
+          loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
           LLVM::Linkage::External);
-
-      mlir::Attribute funcs[] = {FlatSymbolRefAttr::get(initfn)};
-      mlir::Attribute idxs[] = {builder.getI32IntegerAttr(0)};
-      builder.create<LLVM::GlobalCtorsOp>(loc, builder.getArrayAttr(funcs),
-                                          builder.getArrayAttr(idxs));
 
       LLVM::GlobalOp printStrFunc;
       {
@@ -685,25 +710,15 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> modargs = {modptr->getResult(0),
                                             addr_modbin->getResult(0)};
 
-        mlir::Value loadRes;
         if (cuModuleLoadDataPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleLoadDataPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           modargs.insert(modargs.begin(), addr_glob);
-          loadRes = builder.create<LLVM::CallOp>(loc, modload_ty, modargs)
-                        ->getResult(0);
+          builder.create<LLVM::CallOp>(loc, modload_ty, modargs);
         } else {
-          loadRes =
-              builder.create<LLVM::CallOp>(loc, modload, modargs)->getResult(0);
-        }
-        loadRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadRes);
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrMod)->getResult(0),
-              loadRes};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+          builder.create<LLVM::CallOp>(loc, modload, modargs);
         }
 
         auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
@@ -714,57 +729,32 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> funcargs = {funcptr->getResult(0),
                                              mod->getResult(0),
                                              addr_kernstr->getResult(0)};
-        mlir::Value getRes;
         if (cuModuleGetFunctionPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleGetFunctionPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           funcargs.insert(funcargs.begin(), addr_glob);
-          getRes = builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
-                       ->getResult(0);
+          builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs);
         } else {
-          getRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
-                       ->getResult(0);
-        }
-
-        getRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, getRes);
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrFunc)
-                  ->getResult(0),
-              getRes};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+          builder.create<LLVM::CallOp>(loc, funcload, funcargs);
         }
 
         auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrLdFunc)
-                  ->getResult(0),
-              func};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
-        }
 
-        auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrSet)->getResult(0),
-              addr_glob};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
-        }
-        builder.create<LLVM::StoreOp>(loc, func, addr_glob);
-        builder.create<LLVM::ReturnOp>(loc, ValueRange());
+        builder.create<LLVM::ReturnOp>(loc, ValueRange(func));
       }
 
       submod.walk([&](gpu::LaunchFuncOp op) {
         builder.setInsertionPoint(op);
+        auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+        mlir::Value cufunc = pfunc.getBody().begin()->getArgument(0);
+
         auto ldop =
             op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
         assert(ldop);
         auto params = ldop.getOperand();
-        auto addr_glob = builder.create<LLVM::AddressOfOp>(loc, glob);
-        auto cufunc = builder.create<LLVM::LoadOp>(loc, ptrty, addr_glob);
+
         llvm::SmallVector<mlir::Value> args = {
             cufunc,
             op.getGridSizeX(),
@@ -778,54 +768,25 @@ void *CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             params,
             builder.create<LLVM::ZeroOp>(loc, ptrty)};
 
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrGlob)
-                  ->getResult(0),
-              addr_glob};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
-        }
-
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrCu)->getResult(0),
-              cufunc};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
-        }
-
-        mlir::Value callRes;
         if (cuLaunchKernelPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuLaunchKernelPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           args.insert(args.begin(), addr_glob);
-          callRes =
-              builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
+          builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
         } else {
-          callRes =
-              builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
-        }
-
-        callRes = builder.create<LLVM::IntToPtrOp>(loc, ptrty, callRes);
-        {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrLaunch)
-                  ->getResult(0),
-              callRes};
-          builder.create<LLVM::CallOp>(loc, print2, printargs1);
+          builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
         }
 
         op.erase();
         ldop.erase();
       });
 
-      llvm::errs() << "submod2: " << submod << "\n";
-
       if (!compileLaunch)
-        return nullptr;
+        return {};
 
-      ptr = CompileHostModule(ss.str(), submod, run_init);
+      ptr = CompileHostModule(ss.str(), submod, run_init, &cuLaunchKernelPtr);
 
       submod.erase();
     }
@@ -916,25 +877,31 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
       }
 
       // Compiled kernel goes here once ready
-      data[0] = (size_t)CompileKernel(
+      CallInfo cdata = CompileKernel(
           symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
           cuModuleGetFunctionPtr, compileLaunch, run_init);
 
-      std::string backendinfo((char *)&data, sizeof(void *));
+      std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
       OpBuilder rewriter(op);
+
+      SmallVector<NamedAttribute> names;
+      names.push_back(NamedAttribute(rewriter.getStringAttr("attr"),
+                                     rewriter.getStringAttr(backendinfo)));
+      auto dattr = DictionaryAttr::get(op.getContext(), names);
+
       auto replacement = rewriter.create<stablehlo::CustomCallOp>(
           op.getLoc(), op.getResultTypes(), op.getInputs(),
-          rewriter.getStringAttr("enzymexla_gpu"),
+          rewriter.getStringAttr("enzymexla_compile_gpu"),
           /* has_side_effect*/ rewriter.getBoolAttr(false),
-          /*backend_config*/ rewriter.getStringAttr(backendinfo),
+          /*backend_config*/ dattr,
           /* api_version*/
-          CustomCallApiVersionAttr::get(rewriter.getContext(),
-                                        mlir::stablehlo::CustomCallApiVersion::
-                                            API_VERSION_STATUS_RETURNING),
+          CustomCallApiVersionAttr::get(
+              rewriter.getContext(),
+              mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
           /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
           output_operand_aliases);
 

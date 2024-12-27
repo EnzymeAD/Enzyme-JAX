@@ -357,7 +357,14 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
+    ] + select({
+        "@xla//xla/tsl:is_cuda_enabled_and_oss":[
+        # "@local_config_cuda//cuda:cuda_headers",
+        "@xla//xla/ffi/api:ffi",
+        "@xla//xla/ffi:ffi_api"
     ],
+    "//conditions:default": [],
+    })
 )
 
 pybind_library(
