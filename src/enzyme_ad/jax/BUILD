@@ -11,6 +11,15 @@ package(
     features = ["layering_check"],
 )
 
+cc_library(
+    name = "gpu",
+    srcs = ["gpu.cc"],
+    deps = [
+        "@xla//xla/ffi/api:ffi",
+        "@xla//xla/ffi:ffi_api"
+    ],
+)
+
 pybind_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
@@ -357,14 +366,7 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
-    ] + select({
-        "@xla//xla/tsl:is_cuda_enabled_and_oss":[
-        # "@local_config_cuda//cuda:cuda_headers",
-        "@xla//xla/ffi/api:ffi",
-        "@xla//xla/ffi:ffi_api"
     ],
-    "//conditions:default": [],
-    })
 )
 
 pybind_library(
@@ -472,6 +474,7 @@ pybind_extension(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":gpu",
         ":clang_compile",
         ":compile_with_xla",
         ":TransformOps",
