@@ -96,24 +96,19 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
     op->walk([=](enzyme::BroadcastOp broadcastOp) {
       OpBuilder builder(broadcastOp);
       Value newBroadcastOp;
-      if (use_stablehlo) {
-        SmallVector<int64_t> broadcastDims;
-        auto shape =
-            broadcastOp.getInput().getType().cast<TensorType>().getShape();
-        broadcastDims.reserve(shape.size());
-        for (auto en : llvm::enumerate(shape)) {
-          // original dimensions end up one further because the batch dimension
-          // is prepended:
-          broadcastDims.push_back(en.index() + 1);
-        }
-        newBroadcastOp = builder.create<stablehlo::BroadcastInDimOp>(
-            broadcastOp.getLoc(), broadcastOp.getType(), broadcastOp.getInput(),
-            builder.getDenseI64ArrayAttr(broadcastDims));
-      } else {
-        newBroadcastOp = builder.create<mhlo::BroadcastOp>(
-            broadcastOp.getLoc(), broadcastOp.getInput(),
-            builder.getI64TensorAttr({broadcastOp.getWidth()}));
+      assert(use_stablehlo);
+      SmallVector<int64_t> broadcastDims;
+      auto shape =
+          broadcastOp.getInput().getType().cast<TensorType>().getShape();
+      broadcastDims.reserve(shape.size());
+      for (auto en : llvm::enumerate(shape)) {
+        // original dimensions end up one further because the batch dimension
+        // is prepended:
+        broadcastDims.push_back(en.index() + 1);
       }
+      newBroadcastOp = builder.create<stablehlo::BroadcastInDimOp>(
+          broadcastOp.getLoc(), broadcastOp.getType(), broadcastOp.getInput(),
+          builder.getDenseI64ArrayAttr(broadcastDims));
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
