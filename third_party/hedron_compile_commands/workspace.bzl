@@ -2,7 +2,7 @@
 # https://github.com/hedronvision/bazel-compile-commands-extractor
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("://workspace.bzl", "HEDRON_COMPILE_COMMANDS_COMMIT", "HEDRON_COMPILE_COMMANDS_SHA256")
+load("//:workspace.bzl", "HEDRON_COMPILE_COMMANDS_COMMIT", "HEDRON_COMPILE_COMMANDS_SHA256")
 
 def repo():
     http_archive(
