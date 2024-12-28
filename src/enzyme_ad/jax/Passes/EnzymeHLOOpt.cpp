@@ -27,6 +27,9 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/TypeInference.h"
+#include <cstdint>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
 
 #define DEBUG_TYPE "enzyme"
 
@@ -6650,6 +6653,61 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
+struct ConcatenateGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getDimension() != 0)
+      return failure();
+    SmallVector<std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>>
+        gatherParameters;
+    SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
+    auto n_element = 0;
+    for (auto ope : op->getOperands())
+      if (auto operation = llvm::dyn_cast_if_present<stablehlo::GatherOp>(
+              ope.getDefiningOp())) {
+
+        DenseIntElementsAttr sliceSizesAttr;
+        if (!matchPattern(operation.getStartIndices(),
+                          m_Constant(&sliceSizesAttr)))
+          return failure();
+        n_element += sliceSizesAttr.size();
+        sliceSizesAttrs.push_back(sliceSizesAttr);
+        gatherParameters.push_back(
+            {operation.getDimensionNumbers(), operation.getOperand(),
+             operation.getSliceSizes(), operation.getIndicesAreSorted()});
+      } else
+        return failure();
+
+    if (!llvm::all_equal(gatherParameters))
+      return failure();
+
+    SmallVector<uint64_t> buffer;
+    buffer.reserve(n_element);
+    auto output_shape = 0;
+    for (auto ssa : sliceSizesAttrs) {
+      for (auto i : ssa)
+        buffer.push_back(i.getSExtValue());
+      output_shape += ssa.getType().getShape()[0];
+    }
+    auto type = sliceSizesAttrs[0].getType();
+    SmallVector<long> shape(type.getShape());
+    shape[0] = output_shape;
+    auto cstAttrib = DenseIntElementsAttr::get(
+        RankedTensorType::get(shape, type.getElementType()), buffer);
+    auto cstOp =
+        rewriter.create<stablehlo::ConstantOp>(op->getLoc(), cstAttrib);
+    auto gatherOp =
+        dyn_cast<stablehlo::GatherOp>(op->getOperand(0).getDefiningOp());
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, gatherOp->getOperand(0), cstOp.getResult(),
+        gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
+        gatherOp.getIndicesAreSorted());
+    return success();
+  }
+};
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
@@ -6896,17 +6954,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (no_nan || all_finite)
       patterns.add<NoNan>(context);
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-                 DynamicBroadcastInDimOpNotActuallyDynamic,
-                 ChainedDynamicBroadcastInDimCanonicalization,
-                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
-                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
-                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
-                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 IfInline, IfToSelect, ZeroExtentTensorCanon,
-                 ReorderElementwiseAndShapeOp, DynamicGatherOpIsNotDynamic>(
-        context);
+    patterns
+        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+             DynamicBroadcastInDimOpNotActuallyDynamic,
+             ChainedDynamicBroadcastInDimCanonicalization,
+             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
+             RealOpCanon, ImagOpCanon, ConjComplexNegate,
+             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
+             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
+             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
+             DynamicGatherOpIsNotDynamic, ConcatenateGather>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
