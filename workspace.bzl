@@ -4,6 +4,9 @@ JAX_SHA256 = ""
 ENZYME_COMMIT = "eeb6200dafad352aa44ba163e3e9cd4f4eae5a8f"
 ENZYME_SHA256 = ""
 
+HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
+HEDRON_COMPILE_COMMANDS_SHA256 = ""
+
 XLA_PATCHES = [
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
