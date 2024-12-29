@@ -6650,6 +6650,49 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
+struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>>
+        gatherParameters;
+    SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
+    for (auto ope : op->getOperands())
+      if (auto operation = llvm::dyn_cast_if_present<stablehlo::GatherOp>(
+              ope.getDefiningOp())) {
+
+        DenseIntElementsAttr sliceSizesAttr;
+        if (!matchPattern(operation.getStartIndices(),
+                          m_Constant(&sliceSizesAttr)))
+          return failure();
+        sliceSizesAttrs.push_back(sliceSizesAttr);
+        gatherParameters.push_back(
+            {operation.getDimensionNumbers(), operation.getOperand(),
+             operation.getSliceSizes(), operation.getIndicesAreSorted()});
+      } else
+        return failure();
+
+    if (!llvm::all_equal(gatherParameters))
+      return failure();
+
+    SmallVector<Value> constantOps;
+    for (auto sliceSizesAttr : sliceSizesAttrs) {
+      constantOps.push_back(
+          rewriter.create<stablehlo::ConstantOp>(op->getLoc(), sliceSizesAttr));
+    }
+    auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op->getLoc(), constantOps, op.getDimension());
+    auto gatherOp =
+        dyn_cast<stablehlo::GatherOp>(op->getOperand(0).getDefiningOp());
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, gatherOp->getOperand(0), concatOp.getResult(),
+        gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
+        gatherOp.getIndicesAreSorted());
+    return success();
+  }
+};
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
@@ -6896,17 +6939,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (no_nan || all_finite)
       patterns.add<NoNan>(context);
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-                 DynamicBroadcastInDimOpNotActuallyDynamic,
-                 ChainedDynamicBroadcastInDimCanonicalization,
-                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
-                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
-                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
-                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 IfInline, IfToSelect, ZeroExtentTensorCanon,
-                 ReorderElementwiseAndShapeOp, DynamicGatherOpIsNotDynamic>(
-        context);
+    patterns
+        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+             DynamicBroadcastInDimOpNotActuallyDynamic,
+             ChainedDynamicBroadcastInDimCanonicalization,
+             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
+             RealOpCanon, ImagOpCanon, ConjComplexNegate,
+             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
+             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
+             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
+             DynamicGatherOpIsNotDynamic, ConcatGather>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
