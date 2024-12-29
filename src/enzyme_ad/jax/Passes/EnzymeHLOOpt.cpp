@@ -27,6 +27,7 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/TypeInference.h"
+#include <llvm/ADT/SmallVector.h>
 
 #define DEBUG_TYPE "enzyme"
 
@@ -6650,17 +6651,14 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
-struct ConcatenateGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
+struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getDimension() != 0)
-      return failure();
     SmallVector<std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>>
         gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
-    auto n_element = 0;
     for (auto ope : op->getOperands())
       if (auto operation = llvm::dyn_cast_if_present<stablehlo::GatherOp>(
               ope.getDefiningOp())) {
@@ -6669,7 +6667,6 @@ struct ConcatenateGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
         if (!matchPattern(operation.getStartIndices(),
                           m_Constant(&sliceSizesAttr)))
           return failure();
-        n_element += sliceSizesAttr.size();
         sliceSizesAttrs.push_back(sliceSizesAttr);
         gatherParameters.push_back(
             {operation.getDimensionNumbers(), operation.getOperand(),
@@ -6680,25 +6677,17 @@ struct ConcatenateGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
     if (!llvm::all_equal(gatherParameters))
       return failure();
 
-    SmallVector<uint64_t> buffer;
-    buffer.reserve(n_element);
-    auto output_shape = 0;
-    for (auto ssa : sliceSizesAttrs) {
-      for (auto i : ssa)
-        buffer.push_back(i.getSExtValue());
-      output_shape += ssa.getType().getShape()[0];
+    SmallVector<Value> constantOps;
+    for (auto sliceSizesAttr : sliceSizesAttrs) {
+      constantOps.push_back(
+          rewriter.create<stablehlo::ConstantOp>(op->getLoc(), sliceSizesAttr));
     }
-    auto type = sliceSizesAttrs[0].getType();
-    SmallVector<long> shape(type.getShape());
-    shape[0] = output_shape;
-    auto cstAttrib = DenseIntElementsAttr::get(
-        RankedTensorType::get(shape, type.getElementType()), buffer);
-    auto cstOp =
-        rewriter.create<stablehlo::ConstantOp>(op->getLoc(), cstAttrib);
+    auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op->getLoc(), constantOps, op.getDimension());
     auto gatherOp =
         dyn_cast<stablehlo::GatherOp>(op->getOperand(0).getDefiningOp());
     rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
-        op, gatherOp->getOperand(0), cstOp.getResult(),
+        op, gatherOp->getOperand(0), concatOp.getResult(),
         gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
         gatherOp.getIndicesAreSorted());
     return success();
@@ -6961,7 +6950,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
              MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
              ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
-             DynamicGatherOpIsNotDynamic, ConcatenateGather>(context);
+             DynamicGatherOpIsNotDynamic, ConcatGather>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,

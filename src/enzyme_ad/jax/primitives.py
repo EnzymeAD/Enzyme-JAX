@@ -111,7 +111,7 @@ transpose_is_reshape<16>;
 zero_extent_tensor_canon<16>;
 reorder_elementwise_and_shape_op<16>;
 dynamic_gather_op_is_not_dynamic<16>;
-concatenate_gather<16>;
+concat_gather<16>;
 
 cse_broadcast_in_dim<16>;
 cse_slice<16>;
