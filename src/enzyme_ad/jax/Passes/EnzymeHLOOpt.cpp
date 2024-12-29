@@ -27,7 +27,6 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/TypeInference.h"
-#include <llvm/ADT/SmallVector.h>
 
 #define DEBUG_TYPE "enzyme"
 
