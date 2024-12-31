@@ -323,6 +323,10 @@ def ApplyNoNanPatterns : EnzymeHLOPatternOp<
     "no_nan"> {
   let patterns = ["NoNan"];
 }
+def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
+    "no_nan_self_sub_simplify"> {
+  let patterns = ["NoNanSelfSubSimplify"];
+}
 
 def ApplyConcatPushBinopAddPatterns : EnzymeHLOPatternOp<
     "concat_push_binop_add"> {

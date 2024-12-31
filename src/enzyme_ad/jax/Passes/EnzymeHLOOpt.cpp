@@ -2679,6 +2679,23 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
   }
 };
 
+struct NoNanSelfSubSimplify
+    : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
+  using OpRewritePattern<mlir::stablehlo::SubtractOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SubtractOp op,
+                                PatternRewriter &rewriter) const final {
+
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+          op, rewriter.getZeroAttr(op.getType()));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
   using OpRewritePattern<mlir::stablehlo::NegOp>::OpRewritePattern;
 
@@ -6805,17 +6822,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns
-        .add<AddSimplify, ReplaceNegAddWithSubtract, SubSimplify, AndSimplify,
-             MaxSimplify, MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-             DivSimplify, RemSimplify, PowSimplify, SqrtSimplify, CosSimplify,
-             SinSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
-             ShiftRightLogicalSimplify, NegativePadToSlice, TanhSimplify,
-             ExpSimplify, SliceSimplify, ConvertSimplify, TransposeSimplify,
-             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
-             ReduceToReshape, BroadcastToReshape, GatherSimplify,
-             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier>(
-            context, PatternBenefit(65000));
+    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
+                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
+                 CosSimplify, SinSimplify, NoopSlice, NoopReverse, SliceSlice,
+                 PadSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
+                 TanhSimplify, ExpSimplify, SliceSimplify, ConvertSimplify,
+                 TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,
+                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
+                 GatherSimplify, ReshapeEmptyBroadcast, BroadcastReshape,
+                 ConstPropThroughBarrier, ReplaceNegAddWithSubtract>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
@@ -6912,8 +6929,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     if (all_finite)
       patterns.add<AllFinite>(context);
-    if (no_nan || all_finite)
-      patterns.add<NoNan>(context);
+    if (no_nan || all_finite) {
+      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
+    }
 
     patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
                  DynamicBroadcastInDimOpNotActuallyDynamic,

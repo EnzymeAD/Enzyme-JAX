@@ -131,7 +131,6 @@ cse_concatenate<16>;
 concatenate_op_canon<16>(1024);
 select_op_canon<16>(1024);
 add_simplify<16>;
-replace_neg_add_with_subtract<16>;
 sub_simplify<16>;
 and_simplify<16>;
 max_simplify<16>;
@@ -181,6 +180,7 @@ scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
+replace_neg_add_with_subtract<16>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;
