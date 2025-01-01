@@ -6650,19 +6650,20 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
+
+
 struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
 
+  using GatherParams = std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>;
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
-    SmallVector<std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>>
-        gatherParameters;
+    SmallVector<GatherParams> gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
     SmallVector<Value> newConcat;
-    auto process_part = [&](unsigned long i) {
+    auto process_part = [&](unsigned long i, bool current_gather) {
       auto n = sliceSizesAttrs.size();
       if (n > 1) {
-
         SmallVector<Value> constantOps;
         for (auto sliceSizesAttr : sliceSizesAttrs) {
           constantOps.push_back(rewriter.create<stablehlo::ConstantOp>(
@@ -6677,7 +6678,7 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
             gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
             gatherOp.getIndicesAreSorted());
         newConcat.push_back(new_gather);
-        n = 0;
+        n = current_gather ? 0 : 1;
       }
       for (auto j = i - n + 1; j <= i; j++)
         newConcat.push_back(op->getOperand(j));
@@ -6692,25 +6693,35 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
         if (!matchPattern(operation.getStartIndices(),
                           m_Constant(&sliceSizesAttr)))
           return failure();
-        sliceSizesAttrs.push_back(sliceSizesAttr);
-        gatherParameters.push_back(
-            {operation.getDimensionNumbers(), operation.getOperand(),
-             operation.getSliceSizes(), operation.getIndicesAreSorted()});
-        if (!llvm::all_equal(gatherParameters)) {
-          process_part(i);
+
+        GatherParams t = {operation.getDimensionNumbers(),
+                          operation.getOperand(), operation.getSliceSizes(),
+                          operation.getIndicesAreSorted()};
+
+        if (!llvm::all_of(gatherParameters,
+                          [t](GatherParams e) { return e == t; })) {
+          process_part(i, true);
         }
+        gatherParameters.push_back(t);
+        sliceSizesAttrs.push_back(sliceSizesAttr);
       } else
-        process_part(i);
+        process_part(i, false);
     }
-    process_part(op->getNumOperands());
+    process_part(op->getNumOperands() - 1, true);
+
+    if (newConcat.size() == op.getNumOperands())
+      return failure();
+
     auto new_op = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         op, op->getResultTypes(), newConcat, op.getDimension());
+
     return success();
-  }
+  };
 };
 
 /// Check if a `t` is a tensor with zero extents.
-static std::optional<RankedTensorType> isZeroExtent(Type t) {
+static std::optional<RankedTensorType>
+isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
   if (type && type.hasStaticShape() && type.getNumElements() == 0)
     return type;
