@@ -2543,6 +2543,32 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
+template <typename OpType>
+LogicalResult simplifyBinaryOpWithTranspose(OpType op,
+                                            PatternRewriter &rewriter) {
+  auto lhsOp = op.getLhs().template getDefiningOp<stablehlo::TransposeOp>();
+  auto rhsOp = op.getRhs().template getDefiningOp<stablehlo::TransposeOp>();
+  if ((lhsOp && rhsOp) && (lhsOp.getPermutation() == rhsOp.getPermutation()) &&
+      lhsOp->hasOneUse() && rhsOp->hasOneUse()) {
+    auto newOp = rewriter.create<OpType>(
+        op.getLoc(), op.getType(), lhsOp.getOperand(), rhsOp.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, op.getType(), newOp,
+                                                        lhsOp.getPermutation());
+    return success();
+  }
+  return failure();
+}
+
+template <typename OpType>
+struct BinaryOpTransposeSimplify : public OpRewritePattern<OpType> {
+  using OpRewritePattern<OpType>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpType op,
+                                PatternRewriter &rewriter) const override {
+    return simplifyBinaryOpWithTranspose(op, rewriter);
+  }
+};
+
 struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
 
@@ -6895,6 +6921,18 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>>(context);
+
+    patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
+                 BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MulOp>,
+                 BinaryOpTransposeSimplify<stablehlo::DivOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MinOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MaxOp>,
+                 BinaryOpTransposeSimplify<stablehlo::AndOp>,
+                 BinaryOpTransposeSimplify<stablehlo::OrOp>,
+                 BinaryOpTransposeSimplify<stablehlo::XorOp>,
+                 BinaryOpTransposeSimplify<stablehlo::PowOp>,
+                 BinaryOpTransposeSimplify<stablehlo::RemOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
