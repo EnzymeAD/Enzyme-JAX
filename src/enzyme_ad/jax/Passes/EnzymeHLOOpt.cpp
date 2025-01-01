@@ -6777,6 +6777,53 @@ struct ReorderElementwiseAndShapeOp final
     return success();
   }
 };
+
+// c = a + b; d = c - b => d = a
+// c = a + b; d = b - c => d = -a
+struct NoNanAddSubSimplify final
+    : public OpRewritePattern<stablehlo::SubtractOp> {
+  using OpRewritePattern<stablehlo::SubtractOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SubtractOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsOp = lhs.getDefiningOp<stablehlo::AddOp>();
+
+    if (!lhsOp) {
+      auto rhsOp = rhs.getDefiningOp<stablehlo::AddOp>();
+
+      if (!rhsOp)
+        return failure();
+
+      if (rhsOp.getLhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getRhs());
+        return success();
+      }
+
+      if (rhsOp.getRhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getLhs());
+        return success();
+      }
+
+      return failure();
+    }
+
+    if (lhsOp.getRhs() == rhs) {
+      rewriter.replaceOp(op, lhsOp.getLhs());
+      return success();
+    }
+
+    if (lhsOp.getLhs() == rhs) {
+      rewriter.replaceOp(op, lhsOp.getRhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -6930,7 +6977,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (all_finite)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite) {
-      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
+      patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
     patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
