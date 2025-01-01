@@ -6659,9 +6659,7 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
         gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
     for (auto ope : op->getOperands())
-      if (auto operation = llvm::dyn_cast_if_present<stablehlo::GatherOp>(
-              ope.getDefiningOp())) {
-
+      if (auto operation = ope.getDefiningOp<stablehlo::GatherOp>()) {
         DenseIntElementsAttr sliceSizesAttr;
         if (!matchPattern(operation.getStartIndices(),
                           m_Constant(&sliceSizesAttr)))
