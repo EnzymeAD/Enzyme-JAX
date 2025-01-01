@@ -6658,7 +6658,35 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
     SmallVector<std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>>
         gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
-    for (auto ope : op->getOperands())
+    SmallVector<Value> newConcat;
+    auto process_part = [&](unsigned long i) {
+      auto n = sliceSizesAttrs.size();
+      if (n > 1) {
+
+        SmallVector<Value> constantOps;
+        for (auto sliceSizesAttr : sliceSizesAttrs) {
+          constantOps.push_back(rewriter.create<stablehlo::ConstantOp>(
+              op->getLoc(), sliceSizesAttr));
+        }
+        auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
+            op->getLoc(), constantOps, op.getDimension());
+        auto gatherOp =
+            op->getOperand(i - n + 1).getDefiningOp<stablehlo::GatherOp>();
+        auto new_gather = rewriter.create<stablehlo::GatherOp>(
+            gatherOp->getLoc(), gatherOp->getOperand(0), concatOp.getResult(),
+            gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
+            gatherOp.getIndicesAreSorted());
+        newConcat.push_back(new_gather);
+        n = 0;
+      }
+      for (auto j = i - n + 1; j <= i; j++)
+        newConcat.push_back(op->getOperand(j));
+
+      sliceSizesAttrs.clear();
+      gatherParameters.clear();
+    };
+
+    for (auto [i, ope] : llvm::enumerate(op->getOperands())) {
       if (auto operation = ope.getDefiningOp<stablehlo::GatherOp>()) {
         DenseIntElementsAttr sliceSizesAttr;
         if (!matchPattern(operation.getStartIndices(),
@@ -6668,25 +6696,15 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
         gatherParameters.push_back(
             {operation.getDimensionNumbers(), operation.getOperand(),
              operation.getSliceSizes(), operation.getIndicesAreSorted()});
+        if (!llvm::all_equal(gatherParameters)) {
+          process_part(i);
+        }
       } else
-        return failure();
-
-    if (!llvm::all_equal(gatherParameters))
-      return failure();
-
-    SmallVector<Value> constantOps;
-    for (auto sliceSizesAttr : sliceSizesAttrs) {
-      constantOps.push_back(
-          rewriter.create<stablehlo::ConstantOp>(op->getLoc(), sliceSizesAttr));
+        process_part(i);
     }
-    auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), constantOps, op.getDimension());
-    auto gatherOp =
-        dyn_cast<stablehlo::GatherOp>(op->getOperand(0).getDefiningOp());
-    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
-        op, gatherOp->getOperand(0), concatOp.getResult(),
-        gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
-        gatherOp.getIndicesAreSorted());
+    process_part(op->getNumOperands());
+    auto new_op = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        op, op->getResultTypes(), newConcat, op.getDimension());
     return success();
   }
 };
