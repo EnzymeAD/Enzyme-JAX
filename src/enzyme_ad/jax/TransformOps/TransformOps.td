@@ -45,6 +45,10 @@ def ApplyAddSimplifyPatterns : EnzymeHLOPatternOp<
     "add_simplify"> {
   let patterns = ["AddSimplify"];
 }
+def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
+    "replace_neg_add_with_subtract"> {
+  let patterns = ["ReplaceNegAddWithSubtract"];
+}
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
   let patterns = ["SubSimplify"];
@@ -319,6 +323,14 @@ def ApplyNoNanPatterns : EnzymeHLOPatternOp<
     "no_nan"> {
   let patterns = ["NoNan"];
 }
+def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
+    "no_nan_self_sub_simplify"> {
+  let patterns = ["NoNanSelfSubSimplify"];
+}
+def ApplyNoNanAddSubSimplify : EnzymeHLOPatternOp<
+    "no_nan_add_sub_simplify"> {
+  let patterns = ["NoNanAddSubSimplify"];
+}
 
 def ApplyConcatPushBinopAddPatterns : EnzymeHLOPatternOp<
     "concat_push_binop_add"> {
@@ -344,6 +356,52 @@ def ApplyBinBroadcastSplatMulPatterns : EnzymeHLOPatternOp<
     "bin_broadcast_splat_mul"> {
   let patterns = ["BinBroadcastSplat<stablehlo::MulOp>"];
 }
+
+def ApplyBinaryOpTransposeSimplifyAddPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_add"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::AddOp>"];
+}
+def ApplyBinaryOpTransposeSimplifySubPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_sub"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::SubtractOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyMulPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_mul"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MulOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyDivPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_div"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::DivOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyMinPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_min"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MinOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyMaxPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_max"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MaxOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyPowPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_pow"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::PowOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyAndPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_and"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::AndOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyOrPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_or"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::OrOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyXorPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_xor"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::XorOp>"];
+}
+def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
+    "binary_op_transpose_simplify_rem"> {
+  let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
+}
+
 def AddPadPadToConcatPatterns : EnzymeHLOPatternOp<
     "add_pad_pad_to_concat"> {
   let patterns = ["AddPadPadToConcat"];

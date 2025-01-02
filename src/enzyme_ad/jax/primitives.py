@@ -180,6 +180,7 @@ scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
+replace_neg_add_with_subtract<16>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;
@@ -192,6 +193,18 @@ transpose_simplify<16>;
 reshape_empty_broadcast<1>;
 add_pad_pad_to_concat<1>;
 broadcast_reshape<1>;
+
+binary_op_transpose_simplify_add<1>;
+binary_op_transpose_simplify_sub<1>;
+binary_op_transpose_simplify_mul<1>;
+binary_op_transpose_simplify_div<1>;
+binary_op_transpose_simplify_min<1>;
+binary_op_transpose_simplify_max<1>;
+binary_op_transpose_simplify_pow<1>;
+binary_op_transpose_simplify_and<1>;
+binary_op_transpose_simplify_or<1>;
+binary_op_transpose_simplify_xor<1>;
+binary_op_transpose_simplify_rem<1>;
 
 slice_reshape_concat<1>;
 slice_reshape_elementwise<1>;
