@@ -722,6 +722,11 @@ def DynamicGatherOpIsNotDynamic : EnzymeHLOPatternOp<
   let patterns = ["DynamicGatherOpIsNotDynamic"];
 }
 
+def ConcatGather : EnzymeHLOPatternOp<
+    "concat_gather"> {
+  let patterns = ["ConcatGather"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
