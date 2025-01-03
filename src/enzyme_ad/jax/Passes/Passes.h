@@ -18,6 +18,7 @@ class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
 std::unique_ptr<Pass> createArithRaisingPass();
+std::unique_ptr<Pass> createConsumingInterpreterPass();
 std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
@@ -111,5 +112,6 @@ static void regsiterenzymeXLAPasses() {
   registerEnzymeHLOOptPass();
   registerEnzymeHLOUnrollPass();
   registerLowerKernelPass();
+  registerConsumingInterpreterPass();
 }
 #endif // ENZYMEXLA_PASSES_H
