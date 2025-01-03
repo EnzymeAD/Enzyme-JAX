@@ -6094,6 +6094,23 @@ struct ConvertOpCanon final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
   }
 };
 
+struct DivideSqrtToMultiplyRsqrt final
+    : OpRewritePattern<mlir::stablehlo::DivOp> {
+  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rhsOp = op.getRhs().getDefiningOp<stablehlo::SqrtOp>();
+    if ((!rhsOp) && !rhsOp->hasOneUse())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+        op, op.getLhs(),
+        rewriter.create<stablehlo::RsqrtOp>(op.getLoc(), rhsOp.getOperand()));
+    return success();
+  }
+};
+
 /// Does the same as PatternRewriter::replaceOpWithNewOp, but with a twist.
 ///
 /// Sometimes, we want to replace an op with a new op and simultaneously refine
@@ -7051,17 +7068,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-                 DynamicBroadcastInDimOpNotActuallyDynamic,
-                 ChainedDynamicBroadcastInDimCanonicalization,
-                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
-                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
-                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
-                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 IfInline, IfToSelect, ZeroExtentTensorCanon,
-                 ReorderElementwiseAndShapeOp, DynamicGatherOpIsNotDynamic>(
-        context);
+    patterns
+        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+             DynamicBroadcastInDimOpNotActuallyDynamic,
+             ChainedDynamicBroadcastInDimCanonicalization,
+             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
+             RealOpCanon, ImagOpCanon, ConjComplexNegate,
+             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
+             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
+             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
+             DynamicGatherOpIsNotDynamic, DivideSqrtToMultiplyRsqrt>(context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,

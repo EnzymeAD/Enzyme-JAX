@@ -717,9 +717,14 @@ def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
 }
-def DynamicGatherOpIsNotDynamic : EnzymeHLOPatternOp<
+def DynamicGatherOpIsNotDynamicPatterns : EnzymeHLOPatternOp<
     "dynamic_gather_op_is_not_dynamic"> {
   let patterns = ["DynamicGatherOpIsNotDynamic"];
+}
+
+def DivideSqrtToMultiplyRsqrtPatterns : EnzymeHLOPatternOp<
+    "divide_sqrt_to_multiply_rsqrt"> {
+  let patterns = ["DivideSqrtToMultiplyRsqrt"];
 }
 
 // TODO: better naming for parameters requires a static interface for
