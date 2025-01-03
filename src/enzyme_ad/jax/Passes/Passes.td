@@ -32,6 +32,15 @@ def ArithRaisingPass : Pass<"arith-raise"> {
     ];
 }
 
+def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
+  let summary = "Run the transform interpreter and remove the script";
+  let constructor = "mlir::enzyme::createConsumingInterpreterPass()";
+  let description = [{
+    This pass isolates the transform script in a separate module, making it
+    possible to apply the script to the anchor operation of the pass.
+  }];
+}
+
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
   let dependentDialects = [
