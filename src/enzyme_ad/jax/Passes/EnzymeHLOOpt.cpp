@@ -2209,6 +2209,57 @@ struct DynamicUpdateSliceConstProp final
   }
 };
 
+struct LogConstProp final : OpRewritePattern<mlir::stablehlo::LogOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::LogOp op,
+                                PatternRewriter &rewriter) const override {
+    // return if not constant
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    // get the resultType
+    auto resultType = op.getType().cast<ShapedType>();
+
+    // Convert constant to tensor, compute log, then convert back to attribute
+    stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(inputAttr);
+    auto out = mlir::stablehlo::logOp(inputTen, resultType);
+
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
+                                                       fromTensor(out));
+
+    return success();
+  }
+};
+
+struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
+
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::Log1pOp op,
+                                PatternRewriter &rewriter) const override {
+    // return if not constant
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    // get the resultType
+    auto resultType = op.getType().cast<ShapedType>();
+
+    // Convert constant to tensor, compute log, then convert back to attribute
+    stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(inputAttr);
+    auto out = mlir::stablehlo::log1pOp(inputTen, resultType);
+
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
+                                                       fromTensor(out));
+
+    return success();
+  }
+};
+
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -6963,8 +7014,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
                  SliceReshapePad, DotReshapeDot, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 DynamicUpdateSliceConstProp, LogConstProp, LogPlusConstProp,
+                 ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+                 ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
