@@ -2,7 +2,7 @@
 
 module {
   func.func @main(%arg0: tensor<f64>, %arg1: tensor<2xf64>) -> tensor<2xf64> {
-    %0 = "enzyme.broadcast"(%arg0) <{width = 2 : i64}> : (tensor<f64>) -> tensor<2xf64>
+    %0 = "enzyme.broadcast"(%arg0) <{shape = array<i64: 2>}> : (tensor<f64>) -> tensor<2xf64>
     %1 = arith.addf %0, %arg1 : tensor<2xf64>
     return %1 : tensor<2xf64>
   }
