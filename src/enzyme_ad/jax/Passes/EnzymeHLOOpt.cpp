@@ -6101,7 +6101,7 @@ struct DivideSqrtToMultiplyRsqrt final
   LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
                                 PatternRewriter &rewriter) const override {
     auto rhsOp = op.getRhs().getDefiningOp<stablehlo::SqrtOp>();
-    if ((!rhsOp) && !rhsOp->hasOneUse())
+    if ((!rhsOp) || !rhsOp->hasOneUse())
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
