@@ -126,8 +126,20 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
       }
     }
 
-    OperationState state(loc,
-                         "transform.apply_patterns.enzyme_hlo." + opName.str());
+    std::string potentialOpName =
+        "transform.apply_patterns.enzyme_hlo." + opName.str();
+    if (!RegisteredOperationName::lookup(potentialOpName,
+                                         builder.getContext())) {
+      potentialOpName = "transform.apply_patterns." + opName.str();
+      if (!RegisteredOperationName::lookup(potentialOpName,
+                                           builder.getContext())) {
+        return ::emitError(loc)
+               << "couldn't find a pattern operation corresponding to "
+               << opName;
+      }
+    }
+
+    OperationState state(loc, potentialOpName);
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1)
@@ -166,10 +178,14 @@ public:
     }
 
     OpBuilder builder(&getContext());
+    builder.setInsertionPointToStart(&op->getRegion(0).front());
+    if (createModule) {
+      auto transformModule = builder.create<ModuleOp>(op->getLoc());
+      op = transformModule;
+      builder.setInsertionPointToStart(&op->getRegion(0).front());
+    }
     op->setAttr(transform::TransformDialect::kWithNamedSequenceAttrName,
                 builder.getUnitAttr());
-
-    builder.setInsertionPointToStart(&op->getRegion(0).front());
 
     if (!flags.empty()) {
       llvm::APInt version(
@@ -186,6 +202,7 @@ public:
   Option<std::string> flags{*this, "flags", llvm::cl::init("")};
   Option<int> radix{*this, "radix", llvm::cl::init(10)};
   Option<std::string> patterns{*this, "patterns", llvm::cl::init("")};
+  Option<bool> createModule{*this, "create-module", llvm::cl::init(false)};
 };
 
 class RemoveTransform : public PassWrapper<RemoveTransform, OperationPass<>> {

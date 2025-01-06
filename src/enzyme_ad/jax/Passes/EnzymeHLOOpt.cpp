@@ -2543,6 +2543,65 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
+template <typename OpType>
+LogicalResult simplifyBinaryOpWithTranspose(OpType op,
+                                            PatternRewriter &rewriter) {
+  auto lhsOp = op.getLhs().template getDefiningOp<stablehlo::TransposeOp>();
+  auto rhsOp = op.getRhs().template getDefiningOp<stablehlo::TransposeOp>();
+  if ((lhsOp && rhsOp) && (lhsOp.getPermutation() == rhsOp.getPermutation()) &&
+      lhsOp->hasOneUse() && rhsOp->hasOneUse()) {
+    auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
+                                         rhsOp.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, newOp,
+                                                        lhsOp.getPermutation());
+    return success();
+  }
+
+  if (lhsOp && lhsOp->hasOneUse()) {
+    auto rhsConstOp =
+        op.getRhs().template getDefiningOp<stablehlo::ConstantOp>();
+    if (rhsConstOp && rhsConstOp->hasOneUse()) {
+      // This will be eliminated by a transpose(constant) -> constant
+      // optimization
+      auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
+          rhsConstOp.getLoc(), rhsConstOp, lhsOp.getPermutation());
+      auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
+                                           transposedConstOp);
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+          op, newOp, lhsOp.getPermutation());
+      return success();
+    }
+  }
+
+  if (rhsOp && rhsOp->hasOneUse()) {
+    auto lhsConstOp =
+        op.getLhs().template getDefiningOp<stablehlo::ConstantOp>();
+    if (lhsConstOp && lhsConstOp->hasOneUse()) {
+      // This will be eliminated by a transpose(constant) -> constant
+      // optimization
+      auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
+          lhsConstOp.getLoc(), lhsConstOp, rhsOp.getPermutation());
+      auto newOp = rewriter.create<OpType>(op.getLoc(), transposedConstOp,
+                                           rhsOp.getOperand());
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+          op, newOp, rhsOp.getPermutation());
+      return success();
+    }
+  }
+
+  return failure();
+}
+
+template <typename OpType>
+struct BinaryOpTransposeSimplify : public OpRewritePattern<OpType> {
+  using OpRewritePattern<OpType>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpType op,
+                                PatternRewriter &rewriter) const override {
+    return simplifyBinaryOpWithTranspose(op, rewriter);
+  }
+};
+
 struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
 
@@ -2595,6 +2654,25 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
     }
 
     return failure();
+  }
+};
+
+struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::AddOp op,
+                                PatternRewriter &rewriter) const final {
+    auto negateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>();
+
+    if (!negateOp)
+      return failure();
+
+    if (!negateOp->hasOneUse())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getLhs(),
+                                                       negateOp.getOperand());
+    return success();
   }
 };
 
@@ -2654,6 +2732,23 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
+    }
+
+    return failure();
+  }
+};
+
+struct NoNanSelfSubSimplify
+    : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
+  using OpRewritePattern<mlir::stablehlo::SubtractOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SubtractOp op,
+                                PatternRewriter &rewriter) const final {
+
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+          op, rewriter.getZeroAttr(op.getType()));
+      return success();
     }
 
     return failure();
@@ -5999,6 +6094,23 @@ struct ConvertOpCanon final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
   }
 };
 
+struct DivideSqrtToMultiplyRsqrt final
+    : OpRewritePattern<mlir::stablehlo::DivOp> {
+  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
+                                PatternRewriter &rewriter) const override {
+    auto rhsOp = op.getRhs().getDefiningOp<stablehlo::SqrtOp>();
+    if ((!rhsOp) || !rhsOp->hasOneUse())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+        op, op.getLhs(),
+        rewriter.create<stablehlo::RsqrtOp>(op.getLoc(), rhsOp.getOperand()));
+    return success();
+  }
+};
+
 /// Does the same as PatternRewriter::replaceOpWithNewOp, but with a twist.
 ///
 /// Sometimes, we want to replace an op with a new op and simultaneously refine
@@ -6811,6 +6923,53 @@ struct ReorderElementwiseAndShapeOp final
     return success();
   }
 };
+
+// c = a + b; d = c - b => d = a
+// c = a + b; d = b - c => d = -a
+struct NoNanAddSubSimplify final
+    : public OpRewritePattern<stablehlo::SubtractOp> {
+  using OpRewritePattern<stablehlo::SubtractOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SubtractOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsOp = lhs.getDefiningOp<stablehlo::AddOp>();
+
+    if (!lhsOp) {
+      auto rhsOp = rhs.getDefiningOp<stablehlo::AddOp>();
+
+      if (!rhsOp)
+        return failure();
+
+      if (rhsOp.getLhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getRhs());
+        return success();
+      }
+
+      if (rhsOp.getRhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getLhs());
+        return success();
+      }
+
+      return failure();
+    }
+
+    if (lhsOp.getRhs() == rhs) {
+      rewriter.replaceOp(op, lhsOp.getLhs());
+      return success();
+    }
+
+    if (lhsOp.getLhs() == rhs) {
+      rewriter.replaceOp(op, lhsOp.getRhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -6856,17 +7015,17 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
-             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
-             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier>(context,
-                                                        PatternBenefit(65000));
+    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
+                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
+                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
+                 CosSimplify, SinSimplify, NoopSlice, NoopReverse, SliceSlice,
+                 PadSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
+                 TanhSimplify, ExpSimplify, SliceSimplify, ConvertSimplify,
+                 TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,
+                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
+                 GatherSimplify, ReshapeEmptyBroadcast, BroadcastReshape,
+                 ConstPropThroughBarrier, ReplaceNegAddWithSubtract>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
@@ -6882,6 +7041,18 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>>(context);
+
+    patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
+                 BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MulOp>,
+                 BinaryOpTransposeSimplify<stablehlo::DivOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MinOp>,
+                 BinaryOpTransposeSimplify<stablehlo::MaxOp>,
+                 BinaryOpTransposeSimplify<stablehlo::AndOp>,
+                 BinaryOpTransposeSimplify<stablehlo::OrOp>,
+                 BinaryOpTransposeSimplify<stablehlo::XorOp>,
+                 BinaryOpTransposeSimplify<stablehlo::PowOp>,
+                 BinaryOpTransposeSimplify<stablehlo::RemOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
@@ -6963,8 +7134,10 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
     if (all_finite)
       patterns.add<AllFinite>(context);
-    if (no_nan || all_finite)
-      patterns.add<NoNan>(context);
+
+    if (no_nan || all_finite) {
+      patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
+    }
 
     patterns
         .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
@@ -6976,7 +7149,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
              GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
              MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
              ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
-             DynamicGatherOpIsNotDynamic, ConcatGather>(context);
+             DynamicGatherOpIsNotDynamic, ConcatGather, DivideSqrtToMultiplyRsqrt>(context);
+
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
