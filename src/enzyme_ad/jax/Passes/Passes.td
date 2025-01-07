@@ -126,6 +126,15 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
+  let summary = "Raise libdevice function calls to arith/math operations";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "math::MathDialect",
+  ];
+  let constructor = "mlir::enzyme::createLibDeviceFuncsRaisingPass()";
+}
+
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [

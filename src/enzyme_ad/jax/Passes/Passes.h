@@ -23,6 +23,10 @@ std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
+std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
+
+void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
+                                         RewritePatternSet &patterns);
 } // namespace enzyme
 
 // namespace enzymexla {
@@ -113,5 +117,6 @@ static void regsiterenzymeXLAPasses() {
   registerEnzymeHLOUnrollPass();
   registerLowerKernelPass();
   registerConsumingInterpreterPass();
+  registerLibDeviceFuncsRaisingPass();
 }
 #endif // ENZYMEXLA_PASSES_H
