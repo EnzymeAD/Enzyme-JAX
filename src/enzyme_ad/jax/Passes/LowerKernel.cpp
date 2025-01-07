@@ -675,6 +675,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         return {};
 
       ptr = CompileHostModule(ss.str(), submod, run_init, &cuLaunchKernelPtr);
+      kernels[ss.str()] = ptr;
 
       submod.erase();
     }
