@@ -31,23 +31,13 @@ module {
 
 // REVERSE:  func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<i1>, %arg2: tensor<10xf32>) -> tensor<10xf32> {
 // REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %0 = "enzyme.init"() : () -> !enzyme.Gradient<tensor<10xf32>>
-// REVERSE-NEXT:    "enzyme.set"(%0, %cst) : (!enzyme.Gradient<tensor<10xf32>>, tensor<10xf32>) -> ()
-// REVERSE-NEXT:    %1 = "enzyme.init"() : () -> !enzyme.Gradient<tensor<10xf32>>
-// REVERSE-NEXT:    "enzyme.set"(%1, %cst) : (!enzyme.Gradient<tensor<10xf32>>, tensor<10xf32>) -> ()
-// REVERSE-NEXT:    %2 = arith.addf %arg2, %cst : tensor<10xf32>
-// REVERSE-NEXT:    "stablehlo.if"(%arg1) ({
-// REVERSE-NEXT:      %4 = "enzyme.get"(%1) : (!enzyme.Gradient<tensor<10xf32>>) -> tensor<10xf32>
-// REVERSE-NEXT:      %5 = arith.addf %4, %2 : tensor<10xf32>
-// REVERSE-NEXT:      "enzyme.set"(%1, %5) : (!enzyme.Gradient<tensor<10xf32>>, tensor<10xf32>) -> ()
-// REVERSE-NEXT:      "enzyme.set"(%1, %cst) : (!enzyme.Gradient<tensor<10xf32>>, tensor<10xf32>) -> ()
-// REVERSE-NEXT:      %6 = "enzyme.get"(%0) : (!enzyme.Gradient<tensor<10xf32>>) -> tensor<10xf32>
-// REVERSE-NEXT:      %7 = arith.addf %6, %5 : tensor<10xf32>
-// REVERSE-NEXT:      "enzyme.set"(%0, %7) : (!enzyme.Gradient<tensor<10xf32>>, tensor<10xf32>) -> ()
-// REVERSE-NEXT:      stablehlo.return 
+// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst : tensor<10xf32>
+// REVERSE-NEXT:    %1:2 = "stablehlo.if"(%arg1) ({
+// REVERSE-NEXT:      %2 = arith.addf %0, %cst : tensor<10xf32>
+// REVERSE-NEXT:      %3 = arith.addf %2, %cst : tensor<10xf32>
+// REVERSE-NEXT:      stablehlo.return %3, %cst : tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:    }, {
-// REVERSE-NEXT:      stablehlo.return 
-// REVERSE-NEXT:    }) : (tensor<i1>) -> ()
-// REVERSE-NEXT:    %3 = "enzyme.get"(%0) : (!enzyme.Gradient<tensor<10xf32>>) -> tensor<10xf32>
-// REVERSE-NEXT:    return %3 : tensor<10xf32>
+// REVERSE-NEXT:      stablehlo.return %cst, %cst : tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    }) : (tensor<i1>) -> (tensor<10xf32>, tensor<10xf32>)
+// REVERSE-NEXT:    return %1#0 : tensor<10xf32>
 // REVERSE-NEXT:  }
