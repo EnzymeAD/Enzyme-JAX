@@ -2209,46 +2209,46 @@ struct DynamicUpdateSliceConstProp final
   }
 };
 
+template <auto f>
+LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
+  // return if not constant
+  DenseElementsAttr inputAttr;
+  if (!matchPattern(op->getOperand(0), m_Constant(&inputAttr)))
+    return failure();
+
+  stablehlo::Tensor inputTen;
+  RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+
+  if (inputAttr.isSplat()) {
+
+    ty = RankedTensorType::get(
+        {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+    inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(ty));
+  } else {
+    inputTen = mlir::stablehlo::constantOp(inputAttr);
+  }
+  // get the resultType
+  auto resultType = ty.cast<ShapedType>();
+
+  // Convert constant to tensor, compute log, then convert back to attribute
+  auto out = fromTensor(f(inputTen, resultType));
+
+  if (inputAttr.isSplat()) {
+    out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+  }
+  // Replace with new constant op containing the computed result
+  auto tmp = rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+      op, op->getResultTypes()[0], out);
+
+  return success();
+}
+
 struct LogConstProp final : OpRewritePattern<mlir::stablehlo::LogOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::LogOp op,
                                 PatternRewriter &rewriter) const override {
-    // return if not constant
-    DenseElementsAttr inputAttr;
-    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
-      return failure();
-
-    // get the resultType
-    auto resultType = op.getType().cast<ShapedType>();
-
-    // handle splat
-    if (inputAttr.isSplat() &&
-        (isa<FloatType>(op.getType().getElementType()))) {
-      llvm::dbgs() << "I am here lol\n" ;
-      // Get splat value and compute log
-      llvm::APFloat splatVal = inputAttr.getSplatValue<llvm::APFloat>();
-      llvm::dbgs() << "I am here lol 2\n" ;
-      // Create a splat attribute from the APFloat
-      auto splatAttr = DenseElementsAttr::get(resultType, splatVal);
-      llvm::dbgs() << "I am here lol3 \n" ;
-      stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(splatAttr);
-      llvm::dbgs() << "I am here lol4\n" ;
-      auto out = mlir::stablehlo::logOp(inputTen, resultType);
-      llvm::dbgs() << "I am here lol5\n" ;
-      // todo: replace this with something else
-      llvm::dbgs() << "I am here lol6\n" ;
-      return success();
-    }
-    // Convert constant to tensor, compute log, then convert back to attribute
-    stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(inputAttr);
-    auto out = mlir::stablehlo::logOp(inputTen, resultType);
-
-    // Replace with new constant op containing the computed result
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
-                                                       fromTensor(out));
-
-    return success();
+    return unaryConstProp<mlir::stablehlo::logOp>(op, rewriter);
   }
 };
 
@@ -2258,37 +2258,7 @@ struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::Log1pOp op,
                                 PatternRewriter &rewriter) const override {
-    // return if not constant
-    DenseElementsAttr inputAttr;
-    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
-      return failure();
-
-    // get the resultType
-    auto resultType = op.getType().cast<ShapedType>();
-
-    // handle splat
-    if (inputAttr.isSplat() &&
-        (isa<FloatType>(op.getType().getElementType()))) {
-      // Get splat value and compute log
-      llvm::APFloat splatVal = inputAttr.getSplatValue<llvm::APFloat>();
-      // Create a splat attribute from the APFloat
-      auto splatAttr = DenseElementsAttr::get(resultType, splatVal);
-      stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(splatAttr);
-      auto out = mlir::stablehlo::log1pOp(inputTen, resultType);
-
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, resultType, DenseElementsAttr::get(resultType, fromTensor(out)));
-      return success();
-    }
-    // Convert constant to tensor, compute log, then convert back to attribute
-    stablehlo::Tensor inputTen = mlir::stablehlo::constantOp(inputAttr);
-    auto out = mlir::stablehlo::log1pOp(inputTen, resultType);
-
-    // Replace with new constant op containing the computed result
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
-                                                       fromTensor(out));
-
-    return success();
+    return unaryConstProp<stablehlo::log1pOp>(op, rewriter);
   }
 };
 
