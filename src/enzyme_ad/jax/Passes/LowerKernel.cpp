@@ -419,7 +419,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       if (auto op2 = cop.resolveCallable())
         tocopy.push_back(op2);
     });
-    op->walk([&](LLVM::AddressOfOp cop) {
+    cur->walk([&](LLVM::AddressOfOp cop) {
       if (auto op2 = cop.getGlobal(symbolTable))
         tocopy.push_back(op2);
       else if (auto op2 = cop.getFunction(symbolTable))
@@ -507,7 +507,10 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       options.hostUseBarePtrCallConv = false;
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
 
-      pm.run(submod);
+      auto subres = pm.run(submod);
+      if (!subres.succeeded()) {
+        return {};
+      }
 
       OpBuilder builder(submod);
 
