@@ -5911,6 +5911,64 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
+struct SelectOpUsedWithinIf final
+    : OpRewritePattern<mlir::stablehlo::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    Value pred = op.getPred();
+    Value result = op.getResult();
+
+    if (pred.getType().cast<TensorType>().getShape().size() != 0)
+      return failure();
+
+    auto block = op->getBlock();
+
+    bool anyModified = false;
+
+    rewriter.replaceUsesWithIf(result, op.getOnTrue(), [&](auto &use) {
+      Operation *user = use.getOwner();
+      if (user->getBlock() == block)
+        return false;
+
+      Operation *p = user->getParentOp();
+      while (p && p != op) {
+        if (auto ifOp = dyn_cast<stablehlo::IfOp>(p)) {
+          if (ifOp.getPred() == pred &&
+              ifOp.getTrueBranch().isAncestor(user->getParentRegion())) {
+            anyModified = true;
+            return true;
+          }
+        }
+        p = p->getParentOp();
+      }
+      return false;
+    });
+
+    rewriter.replaceUsesWithIf(result, op.getOnFalse(), [&](auto &use) {
+      Operation *user = use.getOwner();
+      if (user->getBlock() == block)
+        return false;
+
+      Operation *p = user->getParentOp();
+      while (p && p != op) {
+        if (auto ifOp = dyn_cast<stablehlo::IfOp>(p)) {
+          if (ifOp.getPred() == pred &&
+              ifOp.getFalseBranch().isAncestor(user->getParentRegion())) {
+            anyModified = true;
+            return true;
+          }
+        }
+        p = p->getParentOp();
+      }
+      return false;
+    });
+
+    return success(anyModified);
+  }
+};
+
 struct SelectOpCanon final : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
   size_t max_constant_expansion;
@@ -7068,17 +7126,18 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
-    patterns
-        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-             DynamicBroadcastInDimOpNotActuallyDynamic,
-             ChainedDynamicBroadcastInDimCanonicalization,
-             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
-             RealOpCanon, ImagOpCanon, ConjComplexNegate,
-             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
-             MergeConsecutiveReshapes, TransposeIsReshape, IfInline, IfToSelect,
-             ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
-             DynamicGatherOpIsNotDynamic, DivideSqrtToMultiplyRsqrt>(context);
+    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+                 DynamicBroadcastInDimOpNotActuallyDynamic,
+                 ChainedDynamicBroadcastInDimCanonicalization,
+                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
+                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
+                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
+                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
+                 SelectOpUsedWithinIf, IfInline, IfToSelect,
+                 ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
+                 DynamicGatherOpIsNotDynamic, DivideSqrtToMultiplyRsqrt>(
+        context);
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
