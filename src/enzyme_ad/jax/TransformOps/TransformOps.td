@@ -153,6 +153,15 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_simplify"> {
   let patterns = ["GatherSimplify"];
 }
+def ApplyLogConstProp : EnzymeHLOPatternOp<
+    "log_const_prop">{
+  let patterns = ["LogConstProp"];
+}
+
+def ApplyLogPlusConstProp : EnzymeHLOPatternOp<
+    "log_plus_one_const_prop">{
+  let patterns = ["LogPlusConstProp"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
