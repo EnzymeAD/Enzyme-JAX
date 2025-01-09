@@ -561,7 +561,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             builder.getStringAttr(value + '\0'));
       }
 
-      LLVM::GlobalOp binary;
+      LLVM::GlobalOp binary = nullptr;
       submod.walk([&](gpu::BinaryOp op) {
         gpu::ObjectAttr object = getSelectedObject(op);
         auto value = object.getObject().getValue();
@@ -583,6 +583,11 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             builder.getContext(), mlir::LLVM::UnnamedAddr::None));
         op.erase();
       });
+      if (!binary) {
+        llvm::errs() << "could not find binary object in submod:\n"
+                     << *submod << "\n";
+        assert(binary);
+      }
 
       {
         auto blk = new Block();
