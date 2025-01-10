@@ -1942,7 +1942,7 @@ struct IfOpEnzymeOpsRemover
     removalBlockExplore(falseBlock, falseMapping, builder, gradients,
                         pushedCaches);
 
-    if (gradients.size() == 0 || pushedCaches.size() == 0)
+    if (gradients.size() == 0 && pushedCaches.size() == 0)
       return success();
 
     Operation *trueTerm = trueBlock->getTerminator();
