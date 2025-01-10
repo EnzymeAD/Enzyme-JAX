@@ -60,6 +60,8 @@
 
 #include "Enzyme/FunctionUtils.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 
 #include "stablehlo/transforms/Passes.h"
 
@@ -1215,6 +1217,12 @@ PYBIND11_MODULE(enzyme_call, m) {
                              "xla._CUSTOM_CALL_TARGET");
   });
 
+  m.def("register_enzyme_dialect",
+        [](MlirContext context) {
+          auto ctx = unwrap(context);
+          ctx->loadDialect<mlir::enzyme::EnzymeDialect>();
+          ctx->loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+        });
   m.def("optimize_module",
         [](MlirModule cmod, const std::string &pass_pipeline) {
           run_pass_pipeline(unwrap(cmod), pass_pipeline);

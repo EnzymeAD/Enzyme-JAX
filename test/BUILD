@@ -124,6 +124,17 @@ py_test(
 )
 
 py_test(
+    name = "testgpu",
+    srcs = [
+        "testgpu.py",
+        "test_utils.py"
+    ],
+    imports = ["."],
+    deps = TEST_DEPS,
+    tags = ["exclusive"]
+)
+
+py_test(
     name = "llama",
     srcs = [
         "llama.py",
