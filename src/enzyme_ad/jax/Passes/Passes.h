@@ -24,6 +24,7 @@ std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
 std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
+std::unique_ptr<Pass> createSROAJuliaWrappersPass();
 
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
@@ -109,14 +110,4 @@ class LLVMDialect;
 
 } // end namespace mlir
 
-static void regsiterenzymeXLAPasses() {
-  using namespace mlir;
-  registerArithRaisingPass();
-  registerPrintPass();
-  registerEnzymeHLOOptPass();
-  registerEnzymeHLOUnrollPass();
-  registerLowerKernelPass();
-  registerConsumingInterpreterPass();
-  registerLibDeviceFuncsRaisingPass();
-}
 #endif // ENZYMEXLA_PASSES_H

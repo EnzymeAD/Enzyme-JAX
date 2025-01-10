@@ -126,6 +126,12 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def SROAJuliaWrappersPass : Pass<"sroa-julia-wrappers", "mlir::ModuleOp"> {
+  let summary = "";
+  let dependentDialects = [];
+  let constructor = "mlir::enzyme::createSROAJuliaWrappersPass()";
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
