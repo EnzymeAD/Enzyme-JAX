@@ -1,4 +1,4 @@
-//===- PrintPass.cpp - Print the MLIR module                     ------------ //
+//===- SROAWrappers.cpp - Run SROA on ABI conversion wrappers --------------- //
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
