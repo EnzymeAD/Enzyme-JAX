@@ -1,5 +1,6 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
-load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
+
+load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 
 exports_files(["enzymexlamlir-opt.cpp", "RegistryUtils.cpp"])
@@ -20,11 +21,12 @@ cc_library(
     ],
 )
 
-pybind_library(
+cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
     deps = [
+        "@nanobind",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -372,7 +374,7 @@ cc_library(
     ],
 )
 
-pybind_library(
+cc_library(
     name = "compile_with_xla",
     srcs = ["compile_with_xla.cc", "RegistryUtils.cpp"],
     hdrs = glob([
@@ -382,6 +384,7 @@ pybind_library(
         "RegistryUtils.h"
     ]),
     deps = [
+        "@nanobind",
         ":XLADerivatives",
         ":TransformOps",
         # This is similar to xla_binary rule and is needed to make XLA client compile.

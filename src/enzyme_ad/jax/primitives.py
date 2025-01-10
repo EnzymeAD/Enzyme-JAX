@@ -1036,6 +1036,8 @@ def to_jax_type(mlir_type):
     assert False
 
 
+xla_gpu_handler = False
+
 def hlo_call(
     *args,
     source: str,
@@ -1043,7 +1045,17 @@ def hlo_call(
     passes: str = "",
 ):
     fn = "main"
-    with jax_mlir.make_ir_context():
+    with jax_mlir.make_ir_context() as ctx:
+        if "kernel_call" in source:
+            global xla_gpu_handler
+            if not xla_gpu_handler:
+                xla_gpu_handler = True
+                enzyme_call.register_enzymexla_gpu_handler()
+        if "enzyme" in source:
+            print("ctx=", ctx)
+            print("dict=", ctx.__dict__)
+            enzyme_call.register_enzyme_dialect(ctx)
+
         nmod = ir.Module.parse(source)
         func = None
         names = []

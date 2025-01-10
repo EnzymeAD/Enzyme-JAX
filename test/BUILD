@@ -68,6 +68,20 @@ TEST_DEPS = [
         "//conditions:default": []
     })
 
+REAL_TEST_DEPS = [
+        "//:enzyme_ad",
+        "@jax//jaxlib:jaxlib",
+        "@pypi_jax//:pkg",
+        "@pypi_zstandard//:pkg",
+        "@pypi_colorama//:pkg",
+        "@pypi_filelock//:pkg",
+        "@pypi_absl_py//:pkg",
+    ] + select({
+        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+        "//conditions:default": []
+    })
+
 
 [
     lit_test(
@@ -120,6 +134,17 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "testgpu",
+    srcs = [
+        "testgpu.py",
+        "test_utils.py"
+    ],
+    imports = ["."],
+    deps = REAL_TEST_DEPS,
     tags = ["exclusive"]
 )
 

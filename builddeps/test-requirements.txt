@@ -24,4 +24,14 @@ keras-cv; sys_platform == 'linux'
 # tensorflow-cpu-datasets; sys_platform == 'linux'
 
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-# libtpu-nightly == 0.1.dev20240729; sys_platform == 'linux' 
+# libtpu-nightly == 0.1.dev20240729; sys_platform == 'linux'
+
+# Jax build deps for the sake of gpu testing
+# ml_dtypes>=0.4.0
+# opt_einsum
+zstandard
+colorama
+filelock
+# etils[epath]
+# TODO(ybaturina): remove setuptools version
+# setuptools<71.0.0
