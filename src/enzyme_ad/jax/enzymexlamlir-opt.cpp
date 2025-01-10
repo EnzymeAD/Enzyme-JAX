@@ -114,6 +114,12 @@ int main(int argc, char **argv) {
         PtrElementModel<LLVM::LLVMPointerType>>(*ctx);
     LLVM::LLVMArrayType::attachInterface<PtrElementModel<LLVM::LLVMArrayType>>(
         *ctx);
+
+    // This is very stupid but we need it because the SROAWrappers pass does a
+    // round trip to LLVM and the translation from LLVMIR to MLIR loads all
+    // available dialects and doing that in a pass is forbidden. Preload them
+    // here.
+    ctx->loadAllAvailableDialects();
   });
 
   // Transform dialect and extensions.

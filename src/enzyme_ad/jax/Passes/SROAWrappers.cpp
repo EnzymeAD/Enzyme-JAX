@@ -11,49 +11,128 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Target/LLVMIR/Export.h"
+#include "mlir/Target/LLVMIR/ModuleImport.h"
+
+#include "llvm/IR/PassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include <optional>
+
 #define DEBUG_TYPE "sroa-julia-wrappers"
 
-using namespace mlir;
 using namespace mlir::enzyme;
-using namespace enzyme;
 
 namespace {
 struct SROAJuliaWrappersPass
     : public SROAJuliaWrappersPassBase<SROAJuliaWrappersPass> {
   void runOnOperation() override {
-    ModuleOp m = getOperation();
-    SmallVector<LLVM::LLVMFuncOp> fs;
-    auto st = SymbolTable::getNearestSymbolTable(m);
-    auto res = m->walk([&](LLVM::LLVMFuncOp f) {
-      if (f.getCConv() == LLVM::CConv::PTX_Kernel) {
-        fs.push_back(f);
-        if (f.walk([&](LLVM::CallOp call) {
-               auto callee = call.getCallee();
-               if (callee) {
-                 auto f = dyn_cast<LLVM::LLVMFuncOp>(m.lookupSymbol(*callee));
-                 if (!f) {
-                   llvm::errs() << "Callee not llvm.func\n";
-                   return WalkResult::interrupt();
-                 }
-                 fs.push_back(f);
-               }
-               return WalkResult::advance();
-             }).wasInterrupted())
-          return WalkResult::interrupt();
+    mlir::ModuleOp m = getOperation();
+
+    mlir::OpBuilder b(m);
+
+    auto mToTranslate = b.cloneWithoutRegions(m);
+
+    llvm::SmallVector<mlir::Operation *> toOpt;
+    for (auto [oldRegion, newRegion] :
+         llvm::zip(m->getRegions(), mToTranslate->getRegions())) {
+      for (auto &oldBlock : oldRegion.getBlocks()) {
+        assert(oldBlock.getNumArguments() == 0);
+        auto newBlock = b.createBlock(&newRegion, newRegion.end());
+        for (auto &op : oldBlock) {
+          assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
+          // FIXME in reality, this check should be whether the entirety
+          // (all nested ops with all (transitively) used symbol as well) of
+          // the op is translatable to llvm ir.
+          // FIXME we also need to mark them `used` so the llvm optimizer
+          // does not get rid of them.
+          if (isa<mlir::LLVM::LLVMDialect>(op.getDialect())) {
+            // There should be no need for mapping because all top level
+            // operations in the module should be isolated from above
+            b.clone(op);
+            toOpt.push_back(&op);
+          }
+        }
       }
-      return WalkResult::skip();
-    });
-    if (res.wasInterrupted()) {
-      signalPassFailure();
-      return;
     }
-    llvm::dbgs() << fs.size() << "\n";
-    for (auto f : fs)
-      llvm::dbgs() << f.getName() << "\n";
+
+    llvm::LLVMContext llvmCtx;
+    auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
+    llvm::errs() << *llvmModule;
+
+    {
+      using namespace llvm;
+      PipelineTuningOptions PTO;
+      PTO.LoopUnrolling = false;
+      // For historical reasons, loop interleaving is set to mirror setting for
+      // loop unrolling.
+      PTO.LoopInterleaving = false;
+      PTO.LoopVectorization = false;
+      PTO.SLPVectorization = false;
+      PTO.MergeFunctions = false;
+      // Only enable CGProfilePass when using integrated assembler, since
+      // non-integrated assemblers don't recognize .cgprofile section.
+      PTO.CallGraphProfile = false;
+      PTO.UnifiedLTO = false;
+
+      LoopAnalysisManager LAM;
+      FunctionAnalysisManager FAM;
+      CGSCCAnalysisManager CGAM;
+      ModuleAnalysisManager MAM;
+
+      PassInstrumentationCallbacks PIC;
+      PassBuilder PB(nullptr, PTO, std::nullopt, nullptr);
+
+      PB.registerModuleAnalyses(MAM);
+      PB.registerCGSCCAnalyses(CGAM);
+      PB.registerFunctionAnalyses(FAM);
+      PB.registerLoopAnalyses(LAM);
+      PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+      ModulePassManager MPM;
+      FunctionPassManager FPM;
+      FPM.addPass(SROAPass(SROAOptions::ModifyCFG));
+      FPM.addPass(InstCombinePass());
+      MPM.addPass(
+          createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
+
+      MPM.run(*llvmModule, MAM);
+
+      llvm::errs() << *llvmModule;
+    }
+    auto translatedFromLLVMIR =
+        mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext());
+
+    b.setInsertionPoint(m);
+    mlir::ModuleOp newM = cast<mlir::ModuleOp>(b.clone(**translatedFromLLVMIR));
+
+    for (auto op : toOpt) {
+      op->erase();
+    }
+    for (auto [oldRegion, newRegion] :
+         llvm::zip(m->getRegions(), newM->getRegions())) {
+      for (auto [oldBlock, newBlock] :
+           llvm::zip(oldRegion.getBlocks(), newRegion.getBlocks())) {
+        b.setInsertionPointToEnd(&oldBlock);
+        for (auto &op : newBlock) {
+          assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
+          assert(isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
+          // There should be no need for mapping because all top level
+          // operations in the module should be isolated from above
+          b.clone(op);
+        }
+      }
+    }
+
+    mToTranslate->erase();
+    newM->erase();
   }
 };
 

@@ -1,3 +1,4 @@
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(sroa-julia-wrappers)" | FileCheck %s
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
 #tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_type_desc, access_type = #tbaa_type_desc, offset = 0>
