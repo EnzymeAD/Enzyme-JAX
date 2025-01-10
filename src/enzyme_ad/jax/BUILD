@@ -329,7 +329,7 @@ cc_library(
         "@llvm-project//mlir:AffineToStandard",
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:MemRefTransforms",
-	    "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
         "@llvm-project//mlir:TransformDialectTransforms",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
