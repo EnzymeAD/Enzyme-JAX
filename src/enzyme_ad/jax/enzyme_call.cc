@@ -18,7 +18,8 @@
 
 #include "absl/status/statusor.h"
 #include "clang_compile.h"
-#include "pybind11/pybind11.h"
+
+#include "nanobind/nanobind.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
