@@ -1219,7 +1219,10 @@ NB_MODULE(enzyme_call, m) {
   });
 
   m.def("register_enzyme_dialect",
-        [](MlirContext context) {
+        [](nanobind::object context0) {
+          nanobind::object capsule = nanobind::detail::mlirApiObjectToCapsule(context0.ptr()); 
+          void *ptr = PyCapsule_GetPointer(capsule.ptr(), "jaxlib.mlir.ir.Context._CAPIPtr");
+          MlirContext context = {ptr};
           auto ctx = unwrap(context);
           ctx->loadDialect<mlir::enzyme::EnzymeDialect>();
           ctx->loadDialect<mlir::enzymexla::EnzymeXLADialect>();

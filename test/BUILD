@@ -68,6 +68,19 @@ TEST_DEPS = [
         "//conditions:default": []
     })
 
+REAL_TEST_DEPS = [
+        "//:enzyme_ad",
+        "@jax//jax:jax",
+        "@pypi_zstandard//:pkg",
+        "@pypi_colorama//:pkg",
+        "@pypi_filelock//:pkg",
+        "@pypi_absl_py//:pkg",
+    ] + select({
+        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+        "//conditions:default": []
+    })
+
 
 [
     lit_test(
@@ -130,7 +143,7 @@ py_test(
         "test_utils.py"
     ],
     imports = ["."],
-    deps = TEST_DEPS,
+    deps = REAL_TEST_DEPS,
     tags = ["exclusive"]
 )
 
