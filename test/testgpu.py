@@ -1,6 +1,22 @@
 from absl.testing import absltest
+
+import os
+import sys
+# path1 = os.path.join(sys.path[0], 'jax', 'jax')
+#sys.path.insert(0,path1)
+#sys.path.insert(-1,path1)
+print(sys.path)
+#print(path1)
 import jax
-import jax.numpy as jnp
+import jax.numpy
+path2 = os.path.join(os.path.dirname(os.path.abspath(jax.__file__)), 'jax')
+print(path2)
+
+import sys
+sys.path.insert(0,path2)
+
+print(os.path.abspath(jax.__file__))
+
 from enzyme_ad.jax import hlo_call, enzyme_jax_ir
 from test_utils import *
 

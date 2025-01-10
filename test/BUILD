@@ -70,7 +70,8 @@ TEST_DEPS = [
 
 REAL_TEST_DEPS = [
         "//:enzyme_ad",
-        "@jax//jax:jax",
+        "@jax//jaxlib:jaxlib",
+        "@pypi_jax//:pkg",
         "@pypi_zstandard//:pkg",
         "@pypi_colorama//:pkg",
         "@pypi_filelock//:pkg",
