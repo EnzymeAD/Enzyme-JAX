@@ -341,7 +341,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
-  auto submod = builder.create<ModuleOp>(loc, "offload");
+  static size_t id = 0;
+  id++;
+  auto submod = builder.create<ModuleOp>(loc, "offload" + std::to_string(id));
   submod->setAttr("gpu.container_module", builder.getUnitAttr());
   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
