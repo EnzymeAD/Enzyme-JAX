@@ -107,7 +107,7 @@ struct SROAJuliaWrappersPass
         mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext());
 
     b.setInsertionPoint(m);
-    mlir::ModuleOp newM = cast<mlir::ModuleOp>(b.clone(**translatedFromLLVMIR));
+    mlir::ModuleOp newM = *translatedFromLLVMIR;
 
     for (auto op : toOpt) {
       op->erase();
@@ -128,7 +128,6 @@ struct SROAJuliaWrappersPass
     }
 
     mToTranslate->erase();
-    newM->erase();
   }
 };
 
