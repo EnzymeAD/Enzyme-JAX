@@ -1022,7 +1022,7 @@ void Callback(void *out, void **ins) {
 
 extern "C" void RegisterEnzymeXLAGPUHandler();
 
-PYBIND11_MODULE(enzyme_call, m) {
+NB_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmPrinters();
@@ -1085,25 +1085,25 @@ PYBIND11_MODULE(enzyme_call, m) {
           in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
@@ -1135,25 +1135,25 @@ PYBIND11_MODULE(enzyme_call, m) {
           in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
 
@@ -1187,25 +1187,25 @@ PYBIND11_MODULE(enzyme_call, m) {
           in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<nanobind::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<nanobind::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           return CpuKernel::tapeAndTempSize(
@@ -1219,9 +1219,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   });
 
   m.def("register_enzyme_dialect",
-        [](PyMlirContext context0) {
-          MlirContext context = context0.get();
-          
+        [](MlirContext context) {
           auto ctx = unwrap(context);
           ctx->loadDialect<mlir::enzyme::EnzymeDialect>();
           ctx->loadDialect<mlir::enzymexla::EnzymeXLADialect>();
