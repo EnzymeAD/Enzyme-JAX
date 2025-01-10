@@ -935,10 +935,7 @@ def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   ret_constant;
 }]>;
 
-def FftIsIRFFT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto cond = op.getFftType() == FftType::IRFFT;
-  builder.create<ConstantOp>(op.getLoc(), builder.getDenseBoolArrayAttr(ArrayRef<bool>({cond})));
-}]>;
+def SelectIfIRFFT : StaticSelect<"op.getFftType() == FftType::IRFFT">;
 
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
@@ -1039,14 +1036,19 @@ def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 def : HLODerivative<"FftOp", (Op $x),
                     [
                       (Mul
-                        (FftMultiplier), // TODO fix this
+                        // multiplier
+                        // (FftMultiplier), // TODO fix this
+                        (HLOConstantFP<"1">),
+                        // inverse fft
                         (Fft
-                          (Select
-                            (FftIsIRFFT), // if IRFFT
-                            (Real (DiffeRet)), // call real(diff)
-                            (DiffeRet), 
+                          (SelectIfIRFFT
+                            (Real (DiffeRet)), // IRFFT is complex to real, so reverse-mode needs to pass a real diff
+                            (DiffeRet)
+                          ),
                           (FftTypeInverse),
-                          (FftLength))))
+                          (FftLength) // TODO revise
+                        )
+                      )
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
                   >;
