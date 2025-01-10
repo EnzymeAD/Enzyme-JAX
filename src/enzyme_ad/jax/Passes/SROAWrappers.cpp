@@ -71,14 +71,10 @@ struct SROAJuliaWrappersPass
       using namespace llvm;
       PipelineTuningOptions PTO;
       PTO.LoopUnrolling = false;
-      // For historical reasons, loop interleaving is set to mirror setting for
-      // loop unrolling.
       PTO.LoopInterleaving = false;
       PTO.LoopVectorization = false;
       PTO.SLPVectorization = false;
       PTO.MergeFunctions = false;
-      // Only enable CGProfilePass when using integrated assembler, since
-      // non-integrated assemblers don't recognize .cgprofile section.
       PTO.CallGraphProfile = false;
       PTO.UnifiedLTO = false;
 
