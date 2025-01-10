@@ -1052,6 +1052,8 @@ def hlo_call(
                 xla_gpu_handler = True
                 enzyme_call.register_enzymexla_gpu_handler()
         if "enzyme" in source:
+            print("ctx=", ctx)
+            print("dict=", ctx.__dict__)
             enzyme_call.register_enzyme_dialect(ctx)
 
         nmod = ir.Module.parse(source)
