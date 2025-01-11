@@ -66,8 +66,7 @@ struct SROAWrappersPass
     }
 
     llvm::LLVMContext llvmCtx;
-    auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
-    llvm::errs() << *llvmModule;
+    auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx, false);
 
     {
       using namespace llvm;
@@ -105,8 +104,6 @@ struct SROAWrappersPass
       MPM.addPass(ReversePostOrderFunctionAttrsPass());
 
       MPM.run(*llvmModule, MAM);
-
-      llvm::errs() << *llvmModule;
     }
     auto translatedFromLLVMIR =
         mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext());

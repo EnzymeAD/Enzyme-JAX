@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
     // round trip to LLVM and the translation from LLVMIR to MLIR loads all
     // available dialects and doing that in a pass is forbidden. Preload them
     // here.
-    ctx->loadAllAvailableDialects();
+    // ctx->loadAllAvailableDialects();
   });
 
   // Transform dialect and extensions.
