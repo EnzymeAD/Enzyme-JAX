@@ -1106,8 +1106,8 @@ def : HLOInactiveOp<"RngBitGeneratorOp">;
 
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
-                      // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
-                      (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Mul $x, (Sqrt $x))))
+                      // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"-2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
+                      (Div (DiffeRet), (Mul (HLOConstantFP<"-2"> $x), (Mul $x, (Sqrt $x))))
                     ]
                   >;
 
