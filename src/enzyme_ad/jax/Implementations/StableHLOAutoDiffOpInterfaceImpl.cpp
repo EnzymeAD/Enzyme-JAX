@@ -802,69 +802,6 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
-class AutoDiffDynamicSliceRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffDynamicSliceRev,
-                                                       DynamicSliceOp> {
-public:
-  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
-                                         MGradientUtilsReverse *gutils,
-                                         SmallVector<Value> caches) const {
-    auto op = cast<DynamicSliceOp>(orig);
-    auto operand = op.getOperand();
-
-    SmallVector<Value> startIndices;
-
-    Value diffe;
-    if (!gutils->isConstantValue(operand)) {
-      for (auto cache : caches) {
-        startIndices.push_back(gutils->popCache(cache, builder));
-      }
-
-      diffe = gutils->diffe(orig->getResult(0), builder);
-
-      auto operandDiffe = builder.create<DynamicUpdateSliceOp>(
-          orig->getLoc(),
-          cast<AutoDiffTypeInterface>(operand.getType())
-              .createNullValue(builder, orig->getLoc()),
-          diffe, startIndices);
-
-      gutils->addToDiffe(operand, operandDiffe, builder);
-    }
-
-    if (diffe)
-      gutils->zeroDiffe(op, builder);
-
-    return success();
-  }
-
-  SmallVector<Value> cacheValues(Operation *orig,
-                                 MGradientUtilsReverse *gutils) const {
-    auto op = cast<DynamicSliceOp>(orig);
-
-    if (gutils->isConstantValue(op.getOperand()))
-      return {};
-
-    Operation *newOp = gutils->getNewFromOriginal(orig);
-    OpBuilder cacheBuilder(newOp);
-
-    auto startIndices = op.getStartIndices();
-
-    SmallVector<Value> caches;
-    caches.reserve(startIndices.size());
-
-    for (auto startIndex : startIndices) {
-      Value predCache = gutils->initAndPushCache(
-          gutils->getNewFromOriginal(startIndex), cacheBuilder);
-      caches.push_back(predCache);
-    }
-
-    return caches;
-  }
-
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
-};
-
 class AutoDiffReduceWindowRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceWindowRev,
                                                        ReduceWindowOp> {
@@ -2119,7 +2056,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
     SliceOp::attachInterface<AutoDiffSliceRev>(*context);
-    DynamicSliceOp::attachInterface<AutoDiffDynamicSliceRev>(*context);
     DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicSliceUpdateRev>(
         *context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);

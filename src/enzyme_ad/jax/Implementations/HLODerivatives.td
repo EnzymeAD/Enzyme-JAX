@@ -993,6 +993,28 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
 
 def : HLOInactiveOp<"DynamicIotaOp">;
 
+def : HLODerivative<"DynamicSliceOp", (Op $operand, $start_indices),
+                    [
+                      (DynamicUpdateSlice
+                        (TypeOf $operand),
+                        (HLOConstantFP<"0"> $operand),
+                        (DiffeRet),
+                        $start_indices
+                      ),
+                      (AssertingInactiveArg)
+                    ],
+                    (
+                      SelectIfActive $operand,
+                        (DynamicUpdateSlice
+                          (TypeOf $operand),
+                          (HLOConstantFP<"0"> $operand),
+                          (Shadow $operand),
+                          $start_indices
+                        ),
+                        (HLOConstantFP<"0"> $operand)
+                    )
+                    >;
+
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
