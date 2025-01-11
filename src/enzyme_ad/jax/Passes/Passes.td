@@ -126,10 +126,10 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
-def SROAJuliaWrappersPass : Pass<"sroa-julia-wrappers", "mlir::ModuleOp"> {
+def SROAWrappersPass : Pass<"sroa-julia-wrappers", "mlir::ModuleOp"> {
   let summary = "";
   let dependentDialects = [];
-  let constructor = "mlir::enzyme::createSROAJuliaWrappersPass()";
+  let constructor = "mlir::enzyme::createSROAWrappersPass()";
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {

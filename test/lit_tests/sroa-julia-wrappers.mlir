@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(sroa-julia-wrappers)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(inline{default-pipeline=canonicalize max-iterations=4},sroa-julia-wrappers)" | FileCheck %s
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
 #tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_type_desc, access_type = #tbaa_type_desc, offset = 0>
@@ -13,13 +13,13 @@ module {
     llvm.store %5, %3 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : i64, !llvm.ptr<1>
     llvm.return
   }
-  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.array<1 x ptr<1>>) attributes {sym_visibility = "private"} {
+  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
     %0 = llvm.mlir.constant(1 : i64) : i64
     %1 = llvm.alloca %0 x !llvm.struct<(i64, array<1 x ptr<1>>)> : (i64) -> !llvm.ptr
     %2 = llvm.mlir.constant(dense<[5, 0, 0, 0, 0, 0, 0, 0, 112, 231, 165, 87, 9, 117, 0, 0]> : tensor<16xui8>) : !llvm.array<16 x i8>
     llvm.store %2, %1 : !llvm.array<16 x i8>, !llvm.ptr
     %3 = llvm.getelementptr %1[8] : (!llvm.ptr) -> !llvm.ptr, ui8
-    llvm.store %arg0, %3 : !llvm.array<1 x ptr<1>>, !llvm.ptr
+    llvm.store %arg0, %3 : !llvm.ptr<1>, !llvm.ptr
     %4 = llvm.load %1 : !llvm.ptr -> !llvm.struct<(i64, array<1 x ptr<1>>)>
     llvm.call @_Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE(%4) : (!llvm.struct<(i64, array<1 x ptr<1>>)>) -> ()
     llvm.return

@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 
 #include "Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
@@ -82,6 +83,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 
   mlir::func::registerInlinerExtension(registry);
+  mlir::LLVM::registerInlinerInterface(registry);
 
   mlir::registerConvertNVVMToLLVMInterface(registry);
 

@@ -24,7 +24,7 @@ std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
 std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
-std::unique_ptr<Pass> createSROAJuliaWrappersPass();
+std::unique_ptr<Pass> createSROAWrappersPass();
 
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);

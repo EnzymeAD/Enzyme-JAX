@@ -31,8 +31,8 @@
 using namespace mlir::enzyme;
 
 namespace {
-struct SROAJuliaWrappersPass
-    : public SROAJuliaWrappersPassBase<SROAJuliaWrappersPass> {
+struct SROAWrappersPass
+    : public SROAWrappersPassBase<SROAWrappersPass> {
   void runOnOperation() override {
     mlir::ModuleOp m = getOperation();
 
@@ -53,7 +53,7 @@ struct SROAJuliaWrappersPass
           // the op is translatable to llvm ir.
           // FIXME we also need to mark them `used` so the llvm optimizer
           // does not get rid of them.
-          if (isa<mlir::LLVM::LLVMDialect>(op.getDialect())) {
+          if (llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect())) {
             // There should be no need for mapping because all top level
             // operations in the module should be isolated from above
             b.clone(op);
@@ -119,7 +119,7 @@ struct SROAJuliaWrappersPass
         b.setInsertionPointToEnd(&oldBlock);
         for (auto &op : newBlock) {
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
-          assert(isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
+          assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
           // There should be no need for mapping because all top level
           // operations in the module should be isolated from above
           b.clone(op);
@@ -135,8 +135,8 @@ struct SROAJuliaWrappersPass
 
 namespace mlir {
 namespace enzyme {
-std::unique_ptr<Pass> createSROAJuliaWrappersPass() {
-  return std::make_unique<SROAJuliaWrappersPass>();
+std::unique_ptr<Pass> createSROAWrappersPass() {
+  return std::make_unique<SROAWrappersPass>();
 }
 } // namespace enzyme
 } // namespace mlir
