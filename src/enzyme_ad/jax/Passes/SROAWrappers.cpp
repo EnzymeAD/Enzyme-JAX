@@ -24,6 +24,8 @@
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "llvm/Transforms/IPO/FunctionAttrs.h"
+
 #include <optional>
 
 #define DEBUG_TYPE "sroa-julia-wrappers"
@@ -94,10 +96,13 @@ struct SROAWrappersPass
 
       ModulePassManager MPM;
       FunctionPassManager FPM;
-      FPM.addPass(SROAPass(SROAOptions::ModifyCFG));
-      FPM.addPass(InstCombinePass());
       MPM.addPass(
           createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
+      MPM.addPass(
+          createModuleToFunctionPassAdaptor(InstCombinePass()));
+      MPM.addPass(
+          createModuleToFunctionPassAdaptor(InstCombinePass()));
+      MPM.addPass(ReversePostOrderFunctionAttrsPass());
 
       MPM.run(*llvmModule, MAM);
 
