@@ -5,8 +5,8 @@
 #include "Implementations/XLADerivatives.h"
 
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 
 #include "Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"

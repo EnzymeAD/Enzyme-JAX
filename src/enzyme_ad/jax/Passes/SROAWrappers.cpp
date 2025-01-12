@@ -9,13 +9,13 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/ModuleImport.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -34,8 +34,7 @@
 using namespace mlir::enzyme;
 
 namespace {
-struct SROAWrappersPass
-    : public SROAWrappersPassBase<SROAWrappersPass> {
+struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
   void runOnOperation() override {
     mlir::ModuleOp m = getOperation();
 
@@ -98,16 +97,15 @@ struct SROAWrappersPass
       FunctionPassManager FPM;
       MPM.addPass(
           createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
-      MPM.addPass(
-          createModuleToFunctionPassAdaptor(InstCombinePass()));
-      MPM.addPass(
-          createModuleToFunctionPassAdaptor(InstCombinePass()));
+      MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+      MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
       MPM.addPass(ReversePostOrderFunctionAttrsPass());
 
       MPM.run(*llvmModule, MAM);
     }
-    auto translatedFromLLVMIR =
-        mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/true, /*dropDICompositeTypeElements*/false, /*loadAllDialects*/false);
+    auto translatedFromLLVMIR = mlir::translateLLVMIRToModule(
+        std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/ true,
+        /*dropDICompositeTypeElements*/ false, /*loadAllDialects*/ false);
 
     b.setInsertionPoint(m);
     mlir::ModuleOp newM = *translatedFromLLVMIR;
