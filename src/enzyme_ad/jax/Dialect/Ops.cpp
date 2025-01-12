@@ -117,7 +117,7 @@ public:
             launchOp->getContext(), {}, operandIndex, {}));
       } else {
         outputAliases.push_back(OutputOperandAliasAttr::get(
-            launchOp->getContext(), {out_idx}, operandIndex, {}));
+            launchOp->getContext(), {(long)out_idx}, operandIndex, {}));
       }
       out_idx++;
     }
