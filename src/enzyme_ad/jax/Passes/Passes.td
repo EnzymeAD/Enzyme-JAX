@@ -126,7 +126,7 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
-def SROAWrappersPass : Pass<"sroa-julia-wrappers", "mlir::ModuleOp"> {
+def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   let summary = "";
   let dependentDialects = [];
   let constructor = "mlir::enzyme::createSROAWrappersPass()";

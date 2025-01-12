@@ -29,7 +29,7 @@
 
 #include <optional>
 
-#define DEBUG_TYPE "sroa-julia-wrappers"
+#define DEBUG_TYPE "sroa-wrappers"
 
 using namespace mlir::enzyme;
 
