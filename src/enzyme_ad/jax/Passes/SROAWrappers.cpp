@@ -15,6 +15,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/ModuleImport.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -66,7 +67,7 @@ struct SROAWrappersPass
     }
 
     llvm::LLVMContext llvmCtx;
-    auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx, false);
+    auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
 
     {
       using namespace llvm;
@@ -106,7 +107,7 @@ struct SROAWrappersPass
       MPM.run(*llvmModule, MAM);
     }
     auto translatedFromLLVMIR =
-        mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext());
+        mlir::translateLLVMIRToModule(std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/true, /*dropDICompositeTypeElements*/false, /*loadAllDialects*/false);
 
     b.setInsertionPoint(m);
     mlir::ModuleOp newM = *translatedFromLLVMIR;

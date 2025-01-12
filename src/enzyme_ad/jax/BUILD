@@ -304,6 +304,7 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":EnzyeHLOPatternsIncGen",
+        "@llvm-project//mlir:DLTIDialect",
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",

@@ -40,6 +40,8 @@ namespace mlir {
 template <typename ConcreteDialect>
 void registerDialect(DialectRegistry &registry);
 
+class DLTIDialect;
+
 namespace mhlo {
 class MhloDialect;
 } // end namespace mhlo

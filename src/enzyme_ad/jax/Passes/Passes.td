@@ -130,6 +130,10 @@ def SROAWrappersPass : Pass<"sroa-julia-wrappers", "mlir::ModuleOp"> {
   let summary = "";
   let dependentDialects = [];
   let constructor = "mlir::enzyme::createSROAWrappersPass()";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "DLTIDialect",
+  ];
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
