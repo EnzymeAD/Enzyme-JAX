@@ -129,6 +129,8 @@ public:
         launchOp.getInputs(), launchOp.getBackendConfigAttr(),
         launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
         ArrayAttr::get(launchOp->getContext(), outputAliases));
+
+    assert(outputAliases.size() == newOp.getNumResults());
     SmallVector<Value> replacements;
     out_idx = 0;
     for (auto alias_attr : operand_aliases) {
