@@ -225,6 +225,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
+    llvm::errs() << "modOp: " << *modOp << "\n";
     llvm::errs() << "could not convert to LLVM IR\n";
     return {};
   }
@@ -556,13 +557,12 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
           LLVM::Linkage::External);
 
-
       auto printfunc = builder.create<func::FuncOp>(loc, "printf", calleeType);
       printfunc.setVisibility(SymbolTable::Visibility::Private);
 
       LLVM::GlobalOp printStrFunc;
       {
-        std::string value = "launch Kernel result = %d\n modstr="+modstr;
+        std::string value = "launch Kernel result = %d\n modstr=" + modstr;
         auto type = LLVM::LLVMArrayType::get(
             mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
         printStrFunc = builder.create<LLVM::GlobalOp>(
@@ -677,14 +677,18 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           args.insert(args.begin(), addr_glob);
-          kernRes = builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
+          kernRes =
+              builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
         } else {
-          kernRes = builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
+          kernRes =
+              builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
         }
         {
           Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, printStrFunc)->getResult(0),
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)->getResult(0)};
+              builder.create<LLVM::AddressOfOp>(loc, printStrFunc)
+                  ->getResult(0),
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)
+                  ->getResult(0)};
           builder.create<func::CallOp>(loc, printfunc, printargs1);
         }
 
