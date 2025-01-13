@@ -97,13 +97,16 @@ public:
     SmallVector<Attribute> outputAliases;
     SmallVector<Type> resTys;
     size_t out_idx = 0;
-    for (auto alias_attr : operand_aliases) {
-      auto alias = cast<OutputOperandAliasAttr>(alias_attr);
+    for (auto en : llvm::enumerate(operand_aliases)) {
+      auto idx = en.index();
+      auto alias = cast<OutputOperandAliasAttr>(en.value());
       auto outputTupleIndices = alias.getOutputTupleIndices();
       auto operandIndex = alias.getOperandIndex();
       auto operandTupleIndices = alias.getOperandTupleIndices();
 
       auto operand = fn.front().getArgument(operandIndex);
+      assert(launchOp.getInputs()[operandIndex].getType() ==
+             launchOp.getResultTypes()[idx]);
       bool readonly =
           fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
@@ -111,7 +114,7 @@ public:
       if (readonly) {
         continue;
       }
-      resTys.push_back(launchOp.getResultTypes()[out_idx]);
+      resTys.push_back(launchOp.getResultTypes()[idx]);
       if (outputs == 1) {
         outputAliases.push_back(OutputOperandAliasAttr::get(
             launchOp->getContext(), {}, operandIndex, {}));
