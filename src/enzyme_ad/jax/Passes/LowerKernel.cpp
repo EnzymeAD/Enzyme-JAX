@@ -313,7 +313,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                        std::string cubinFeatures, size_t cuLaunchKernelPtr,
                        size_t cuModuleLoadDataPtr,
                        size_t cuModuleGetFunctionPtr, bool compileLaunch,
-                       bool run_init) {
+                       bool run_init, enzymexla::KernelCallOp kernelCallOp) {
 
   OpBuilder builder(op);
 
@@ -564,7 +564,11 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       LLVM::GlobalOp printStrFunc;
       {
-        std::string value = "launch Kernel result = %d\n modstr=" + modstr;
+        std::string opstr;
+  llvm::raw_string_ostream ss(opstr);
+
+  ss << kernelCallOp;
+        std::string value = "launch Kernel result = %d\n modstr=" + modstr + "\n" + opstr + "\n\n";
         auto type = LLVM::LLVMArrayType::get(
             mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
         printStrFunc = builder.create<LLVM::GlobalOp>(
@@ -798,7 +802,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr, compileLaunch, run_init);
+          cuModuleGetFunctionPtr, compileLaunch, run_init, op);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
