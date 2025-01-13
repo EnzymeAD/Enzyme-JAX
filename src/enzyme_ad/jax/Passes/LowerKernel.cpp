@@ -557,7 +557,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
           LLVM::Linkage::External);
 
-      auto printfunc = builder.create<func::FuncOp>(loc, "printf", calleeType);
+      auto printfunc = builder.create<LLVM::LLVMFuncOp>(
+          loc, "printf", LLVM::LLVMFunctionType::get(ptrty, {ptrty}, false),
+          LLVM::Linkage::External);
       printfunc.setVisibility(SymbolTable::Visibility::Private);
 
       LLVM::GlobalOp printStrFunc;
@@ -689,7 +691,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                   ->getResult(0),
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)
                   ->getResult(0)};
-          builder.create<func::CallOp>(loc, printfunc, printargs1);
+          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
         }
 
         op.erase();
