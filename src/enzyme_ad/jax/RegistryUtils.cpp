@@ -45,6 +45,9 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
+
 namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
@@ -84,6 +87,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
 
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
+  mlir::NVVM::registerInlinerInterface(registry);
 
   mlir::registerConvertNVVMToLLVMInterface(registry);
 
@@ -117,4 +121,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::linalg::registerTransformDialectExtension(registry);
 
   mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
+
+  mlir::registerLLVMDialectImport(registry);
+  mlir::registerNVVMDialectImport(registry);
 }

@@ -9,16 +9,22 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/ModuleImport.h"
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 
@@ -26,6 +32,10 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "llvm/Transforms/IPO/FunctionAttrs.h"
+
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 
 #include <optional>
 
@@ -65,6 +75,15 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
       }
     }
 
+    mlir::PassManager pm(mToTranslate.getContext());
+    pm.addPass(mlir::createConvertMathToLLVMPass());
+    pm.addPass(mlir::createArithToLLVMConversionPass());
+    pm.addPass(mlir::createConvertNVVMToLLVMPass());
+    auto subres = pm.run(mToTranslate);
+    if (!subres.succeeded()) {
+      return;
+    }
+
     llvm::LLVMContext llvmCtx;
     auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
 
@@ -99,8 +118,7 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
           createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
       MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
       MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
-      MPM.addPass(ReversePostOrderFunctionAttrsPass());
-
+      MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
     }
     auto translatedFromLLVMIR = mlir::translateLLVMIRToModule(

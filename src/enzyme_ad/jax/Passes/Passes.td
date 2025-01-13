@@ -131,8 +131,11 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   let dependentDialects = [];
   let constructor = "mlir::enzyme::createSROAWrappersPass()";
   let dependentDialects = [
-    "LLVM::LLVMDialect",
-    "DLTIDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::DLTIDialect",
+    "mlir::NVVM::NVVMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect",
   ];
 }
 
