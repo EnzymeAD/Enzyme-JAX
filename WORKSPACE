@@ -13,7 +13,7 @@ hedron_compile_commands_setup_transitive_transitive()
 hedron_compile_commands_setup_transitive_transitive_transitive()
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-LLVM_COMMIT = "9b4bf06be33f0fe6a4c487bb9244d8c0f6acab3f"
+LLVM_COMMIT = "b39c5cb6977f35ad727d86b2dd6232099734ffd3"
 LLVM_SHA256 = ""
 http_archive(
     name = "llvm-raw",
