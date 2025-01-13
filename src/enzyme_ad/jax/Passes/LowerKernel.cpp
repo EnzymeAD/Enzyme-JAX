@@ -558,7 +558,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           LLVM::Linkage::External);
 
       auto printfunc = builder.create<LLVM::LLVMFuncOp>(
-          loc, "printf", LLVM::LLVMFunctionType::get(ptrty, {ptrty}, false),
+          loc, "printf", LLVM::LLVMFunctionType::get(ptrty, {ptrty, ptrty}, false),
           LLVM::Linkage::External);
       printfunc.setVisibility(SymbolTable::Visibility::Private);
 
