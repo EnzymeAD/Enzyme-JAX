@@ -260,6 +260,13 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"0",
       /*description=*/"Function handler to call with result of curesult"
     >,
+    Option<
+      /*C++ variable name=*/"cuStreamSynchronizePtr",
+      /*CLI argument=*/"cuStreamSynchronizePtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to sync results"
+    >,
     ];
 }
 

@@ -314,7 +314,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                        size_t cuModuleLoadDataPtr,
                        size_t cuModuleGetFunctionPtr, bool compileLaunch,
                        bool run_init, enzymexla::KernelCallOp kernelCallOp,
-                       bool debug, size_t cuResultHandlerPtr) {
+                       bool debug, size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr) {
 
   OpBuilder builder(op);
 
@@ -539,6 +539,8 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           LLVM::LLVMFunctionType::get(voidty, curesulttys);
       LLVM::LLVMFuncOp launch =
           builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
+      auto cusync_ty =
+          LLVM::LLVMFunctionType::get(i32, {ptrty});
 
       mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
       auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
@@ -794,6 +796,31 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           mlir::Value args[2] = {addr_glob, kernRes};
           builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
         }
+        
+        if (cuStreamSynchronizePtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+              loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
+          auto addr_glob =
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
+          mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
+          auto syncRes =
+              builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
+
+          if (debug) {
+              Value printargs1[] = {
+                  builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
+              builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
+          }
+          if (cuResultHandlerPtr) {
+              auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+                  loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+              auto addr_glob =
+                  builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                      ->getResult(0);
+              mlir::Value args[2] = {addr_glob, syncRes};
+              builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+          }
+        }
 
         op.erase();
         ldop.erase();
@@ -906,7 +933,7 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
           cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
-          cuResultHandlerPtr);
+          cuResultHandlerPtr, cuStreamSynchronizePtr);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
