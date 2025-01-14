@@ -534,7 +534,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                             idx,   i32, ptrty, ptrty, ptrty};
 
       auto launch_ty = LLVM::LLVMFunctionType::get(i32, cutys);
-      auto curesult_handler_ty = LLVM::LLVMFunctionType::get(voidty, {i32});
+      mlir::Type curesulttys[] = {i32};
+      auto curesult_handler_ty =
+          LLVM::LLVMFunctionType::get(voidty, curesulttys);
       LLVM::LLVMFuncOp launch =
           builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
 
