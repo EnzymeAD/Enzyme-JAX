@@ -59,10 +59,6 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
-      
-      - name: Clean bazel workspace
-        run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel clean --expunge
           
       - name: test
         run: |
