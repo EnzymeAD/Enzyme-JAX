@@ -157,10 +157,13 @@ def ApplyLogConstProp : EnzymeHLOPatternOp<
     "log_const_prop">{
   let patterns = ["LogConstProp"];
 }
-
 def ApplyLogPlusConstProp : EnzymeHLOPatternOp<
     "log_plus_one_const_prop">{
   let patterns = ["LogPlusConstProp"];
+}
+def ApplyChloInfConstProp : EnzymeHLOPatternOp<
+    "chlo_inf_const_prop">{
+  let patterns = ["ChloInfConstProp"];
 }
 
 // regular benefit
