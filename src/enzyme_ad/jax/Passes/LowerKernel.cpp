@@ -688,7 +688,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
                   ->getResult(0);
           mlir::Value args[2] = {addr_glob, loadModRes};
-          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, loadModRes);
+          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
         }
 
         auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
