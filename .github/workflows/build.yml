@@ -22,19 +22,17 @@ jobs:
         run: |
             if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
               # add the ppa
-              sudo apt-get install -y software-properties-common
-              sudo add-apt-repository ppa:ubuntu-toolchain-r/ppa
               sudo apt-get update
-              sudo apt-get install -y git gcc-12 g++-12 libc6-dev build-essential
-              sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
-              sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 50
-              sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
-              sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 50
-              sudo update-alternatives --install /usr/bin/cpp cpp-bin /usr/bin/cpp-12 100
-              sudo update-alternatives --install /usr/bin/cpp cpp-bin /usr/bin/cpp-11 50
-              sudo update-alternatives --set g++ /usr/bin/g++-12
-              sudo update-alternatives --set gcc /usr/bin/gcc-12
-              sudo update-alternatives --set cpp-bin /usr/bin/cpp-12 
+              sudo apt-get install -y git gcc g++
+              #sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+              #sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 50
+              #sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+              #sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 50
+              #sudo update-alternatives --install /usr/bin/cpp cpp-bin /usr/bin/cpp-12 100
+              #sudo update-alternatives --install /usr/bin/cpp cpp-bin /usr/bin/cpp-11 50
+              #sudo update-alternatives --set g++ /usr/bin/g++-12
+              #sudo update-alternatives --set gcc /usr/bin/gcc-12
+              #sudo update-alternatives --set cpp-bin /usr/bin/cpp-12 
               #sudo python3 -m pip install --upgrade lit
               #- run: python3 -m pip install --user numpy
             fi
@@ -48,8 +46,9 @@ jobs:
         run: |
           g++ --version 
           gcc --version
-          echo $CC
-          echo $CXX
+          export CC=/usr/bin/gcc
+          export CXX=/usr/bin/g++
+          ls /usr/lib/gcc/x86_64-linux-gnu/12/include/
           
           
       - uses: bazel-contrib/setup-bazel@0.8.5
