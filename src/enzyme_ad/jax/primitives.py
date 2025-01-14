@@ -174,6 +174,7 @@ concat_const_prop<1>;
 dynamic_update_slice_const_prop<1>;
 log_const_prop<1>;
 log_plus_one_const_prop<1>;
+chlo_inf_const_prop<1>;
 concat_fuse<1>;
 pad_reshape_pad<1>;
 pad_pad<1>;

@@ -2262,6 +2262,54 @@ struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
   }
 };
 
+struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::chlo::IsInfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // return if not constant
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    DenseElementsAttr outAttr;
+    auto resultTy = cast<ShapedType>(op->getResultTypes()[0]);
+
+    // handle splat separately
+    if (inputAttr.isSplat()) {
+      llvm::APInt resVals;
+      if (matchPattern(op.getOperand(), m_PosInfFloat()) ||
+          matchPattern(op.getOperand(), m_NegInfFloat())) {
+        // true
+        resVals = llvm::APInt(1, 1);
+      } else {
+        // false
+        resVals = llvm::APInt(1, 0);
+      }
+
+      outAttr = DenseElementsAttr::get(resultTy, resVals);
+    } else {
+      SmallVector<APInt> resVals;
+      resVals.reserve(inputAttr.getNumElements());
+
+      // iterate over every element in inputAttr and run check.
+      for (APFloat val : inputAttr.getValues<APFloat>()) {
+        bool isInf = val.isInfinity();
+        resVals.push_back(APInt(1, isInf ? 1 : 0));
+      }
+
+      outAttr = DenseElementsAttr::get(resultTy, resVals);
+    }
+
+    // replace op with the bool const op
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], outAttr);
+
+    return success();
+  }
+};
+
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -7075,8 +7123,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
                  SliceReshapePad, DotReshapeDot, ConcatConstProp,
                  DynamicUpdateSliceConstProp, LogConstProp, LogPlusConstProp,
-                 ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-                 ConcatPushBinop<stablehlo::AddOp>,
+                 ChloInfConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
