@@ -40,6 +40,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
     auto op = getOperation();
 
     op->walk([=](arith::AddFOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -52,6 +54,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::AddOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -64,6 +68,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::ConjOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp =
@@ -72,6 +78,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](arith::AddIOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -84,6 +92,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](arith::ConstantOp constOp) {
+      if (!constOp.getType().isa<RankedTensorType>())
+        return;
       auto CT = constOp.getType();
       if (isa<TensorType>(CT)) {
         OpBuilder builder(constOp);
