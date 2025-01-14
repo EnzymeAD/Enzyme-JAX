@@ -40,7 +40,7 @@ jobs:
         with:
           submodules: recursive
       
-      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk ~/.bazel/*
+      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
 
       - name: Check compiler env and setup stuff
         run: |
@@ -59,19 +59,19 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
-
-      - name: test
-        run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --test_output=errors ...
-
+      
       - name: Clean bazel workspace
         run: |
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel clean --expunge
           
+      - name: test
+        run: |
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --define xnn_enable_avxvnni=false --define xnn_enable_avx512amx=false --test_output=errors ...
+          
       - name: Build Wheel
         run: |
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define xnn_enable_avxvnni=false --define xnn_enable_avx512amx=false :wheel
           cp bazel-bin/*.whl .
 
       - name: Upload Build
