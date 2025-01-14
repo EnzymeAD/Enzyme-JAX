@@ -246,6 +246,20 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"false",
       /*description=*/"Run initialization of cuda module"
     >,
+    Option<
+      /*C++ variable name=*/"debug",
+      /*CLI argument=*/"debug",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Compile in debug prints"
+    >,
+    Option<
+      /*C++ variable name=*/"cuResultHandlerPtr",
+      /*CLI argument=*/"cuResultHandlerPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to call with result of curesult"
+    >,
     ];
 }
 
