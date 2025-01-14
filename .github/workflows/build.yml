@@ -40,7 +40,7 @@ jobs:
         with:
           submodules: recursive
       
-      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
+      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk ~/.bazel/*
 
       - name: Check compiler env and setup stuff
         run: |
