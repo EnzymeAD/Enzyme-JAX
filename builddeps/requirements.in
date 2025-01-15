@@ -3,6 +3,5 @@
 #
 -r test-requirements.txt
 
-jax
-jaxlib
+/home/wmoses/git/jax/dist/jaxlib-0.4.39.dev20250110-cp312-cp312-manylinux2014_x86_64.whl
 absl_py >= 2.0.0

@@ -1224,8 +1224,12 @@ NB_MODULE(enzyme_call, m) {
           void *ptr = PyCapsule_GetPointer(capsule.ptr(), "jaxlib.mlir.ir.Context._CAPIPtr");
           MlirContext context = {ptr};
           auto ctx = unwrap(context);
+	  mlir::DialectRegistry registry;
+	  registry.insert<mlir::enzyme::EnzymeDialect, mlir::enzymexla::EnzymeXLADialect>();
+	  ctx->appendDialectRegistry(registry);
           ctx->loadDialect<mlir::enzyme::EnzymeDialect>();
           ctx->loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+	  //ctx->loadAllAvailableDialects();
         });
   m.def("optimize_module",
         [](MlirModule cmod, const std::string &pass_pipeline) {
