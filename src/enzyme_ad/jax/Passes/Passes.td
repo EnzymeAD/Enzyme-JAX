@@ -126,6 +126,19 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
+  let summary = "";
+  let dependentDialects = [];
+  let constructor = "mlir::enzyme::createSROAWrappersPass()";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::DLTIDialect",
+    "mlir::NVVM::NVVMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect",
+  ];
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
@@ -232,6 +245,27 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Run initialization of cuda module"
+    >,
+    Option<
+      /*C++ variable name=*/"debug",
+      /*CLI argument=*/"debug",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Compile in debug prints"
+    >,
+    Option<
+      /*C++ variable name=*/"cuResultHandlerPtr",
+      /*CLI argument=*/"cuResultHandlerPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to call with result of curesult"
+    >,
+    Option<
+      /*C++ variable name=*/"cuStreamSynchronizePtr",
+      /*CLI argument=*/"cuStreamSynchronizePtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to sync results"
     >,
     ];
 }

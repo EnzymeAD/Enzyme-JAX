@@ -24,6 +24,7 @@ std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
 std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
+std::unique_ptr<Pass> createSROAWrappersPass();
 
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
@@ -38,6 +39,8 @@ namespace mlir {
 // Forward declaration from Dialect.h
 template <typename ConcreteDialect>
 void registerDialect(DialectRegistry &registry);
+
+class DLTIDialect;
 
 namespace mhlo {
 class MhloDialect;
@@ -109,14 +112,4 @@ class LLVMDialect;
 
 } // end namespace mlir
 
-static void regsiterenzymeXLAPasses() {
-  using namespace mlir;
-  registerArithRaisingPass();
-  registerPrintPass();
-  registerEnzymeHLOOptPass();
-  registerEnzymeHLOUnrollPass();
-  registerLowerKernelPass();
-  registerConsumingInterpreterPass();
-  registerLibDeviceFuncsRaisingPass();
-}
 #endif // ENZYMEXLA_PASSES_H

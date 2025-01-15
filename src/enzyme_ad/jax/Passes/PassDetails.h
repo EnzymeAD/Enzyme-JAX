@@ -17,6 +17,7 @@
 #ifndef DIALECT_ENZYMEXLA_TRANSFORMS_PASSDETAILS_H
 #define DIALECT_ENZYMEXLA_TRANSFORMS_PASSDETAILS_H
 
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
