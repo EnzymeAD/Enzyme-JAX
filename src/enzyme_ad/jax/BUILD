@@ -313,6 +313,7 @@ cc_library(
         "@llvm-project//llvm:Passes",
         "@llvm-project//llvm:Scalar",
         "@llvm-project//llvm:InstCombine",
+        "@llvm-project//llvm:IPO",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         ":chlo-derivatives",
