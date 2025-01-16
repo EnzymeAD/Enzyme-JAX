@@ -1,4 +1,4 @@
-#include "src/enzyme_ad/jax/Dialects/CommDialect.h"
+#include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
 #include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 

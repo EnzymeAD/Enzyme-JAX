@@ -94,7 +94,7 @@ gentbl_cc_library(
 td_library(
     name = "CommDialectFiles",
     srcs = [
-        "Dialects/CommDialect.td",
+        "Dialects/Comm/CommDialect.td",
     ],
     deps = [
         "@llvm-project//mlir:OpBaseTdFiles"
@@ -106,19 +106,31 @@ gentbl_cc_library(
     name = "CommDialectIncGen",
     tbl_outs = [(
             ["-gen-dialect-decls", "-dialect=comm"],
-            "Dialects/CommDialect.h.inc",
+            "Dialects/Comm/CommDialect.h.inc",
         ), (
             ["-gen-dialect-defs", "-dialect=comm"],
-            "Dialects/CommDialect.cpp.inc",
+            "Dialects/Comm/CommDialect.cpp.inc",
         ),(
-            ["-gen-op-decls"],
-            "Dialects/CommOps.h.inc",
+            ["-gen-op-decls", "-dialect=comm"],
+            "Dialects/Comm/CommOps.h.inc",
         ), (
-            ["-gen-op-defs"],
-            "Dialects/CommOps.cpp.inc",
+            ["-gen-op-defs", "-dialect=comm"],
+            "Dialects/Comm/CommOps.cpp.inc",
+        ),(
+            ["-gen-attrdef-decls", "--attrdefs-dialect=comm"],
+            "Dialects/Comm/CommAttrs.h.inc",
+        ),(
+            ["-gen-attrdef-defs", "--attrdefs-dialect=comm"],
+            "Dialects/Comm/CommAttrs.cpp.inc",
+        ),(
+            ["-gen-typedef-decls", "--typedefs-dialect=comm"],
+            "Dialects/Comm/CommTypes.h.inc",
+        ), (
+            ["-gen-typedef-defs", "--typedefs-dialect=comm"],
+            "Dialects/Comm/CommTypes.cpp.inc",
         ),
     ],
-    td_file = "Dialects/CommDialect.td",
+    td_file = "Dialects/Comm/CommDialect.td",
     deps = [
         ":CommDialectFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
@@ -161,8 +173,8 @@ cc_library(
 
 cc_library(
     name = "Dialects",
-    srcs = glob(["Dialects/*.cpp", "Dialects/CommDialect.cpp.inc"]),
-    hdrs = glob(["Dialects/*.h"]),
+    srcs = glob(["Dialects/*.cpp", "Dialects/Comm/*.cpp"]),
+    hdrs = glob(["Dialects/*.h", "Dialects/Comm/*.h"]),
     deps = [
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -278,13 +290,11 @@ cc_library(
         [
             "Implementations/*.cpp",
             "Passes/*.cpp",
-            "Dialects/*.cpp",
         ],
     ),
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
-        "Dialects/*.h",
     ]),
     copts = [
         "-Werror=unused-variable",

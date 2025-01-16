@@ -47,7 +47,7 @@
 
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
-#include "Dialects/CommDialect.h"
+#include "Dialects/Comm/CommDialect.h"
 
 
 
