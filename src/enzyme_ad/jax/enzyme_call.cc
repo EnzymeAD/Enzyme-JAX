@@ -1046,7 +1046,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
   mlir::registerenzymePasses();
-  mlir::regsiterenzymeXLAPasses();
+  mlir::registerenzymexlaPasses();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
   mlir::stablehlo::registerPasses();
