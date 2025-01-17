@@ -2735,6 +2735,34 @@ struct BinaryOpTransposeSimplify : public OpRewritePattern<OpType> {
   }
 };
 
+template <typename OpType>
+struct TransposeUnaryTransposeSimplify
+    : public OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp outerTransposeOp,
+                                PatternRewriter &rewriter) const override {
+    auto unaryOp =
+        outerTransposeOp.getOperand().template getDefiningOp<OpType>();
+    if (!unaryOp || !isTransposeInvariantUnaryOp(unaryOp))
+      return failure();
+
+    auto innerTransposeOp =
+        unaryOp->getOperand(0).template getDefiningOp<stablehlo::TransposeOp>();
+    if (!innerTransposeOp)
+      return failure();
+
+    if (outerTransposeOp.getPermutation() != innerTransposeOp.getPermutation())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<OpType>(outerTransposeOp,
+                                        outerTransposeOp.getType(),
+                                        innerTransposeOp.getOperand());
+
+    return success();
+  }
+};
+
 struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
 
@@ -6226,7 +6254,7 @@ struct TransposeBroadcastInDimToBroadcastInDim final
   using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                               PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
     if (!transposeOp || !isOnlyUsedInOperation(transposeOp, op))
       return failure();
@@ -6248,9 +6276,7 @@ struct TransposeBroadcastInDimToBroadcastInDim final
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op,
-        op.getType(),
-        transposeOp.getOperand(),
+        op, op.getType(), transposeOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(newBroadcastDims));
 
     return success();
@@ -7210,7 +7236,19 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinaryOpTransposeSimplify<stablehlo::OrOp>,
                  BinaryOpTransposeSimplify<stablehlo::XorOp>,
                  BinaryOpTransposeSimplify<stablehlo::PowOp>,
-                 BinaryOpTransposeSimplify<stablehlo::RemOp>>(context);
+                 BinaryOpTransposeSimplify<stablehlo::RemOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::AbsOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::CeilOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::ConvertOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::CosineOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::ExpOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::LogOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::NegOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::RsqrtOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SignOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SineOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
