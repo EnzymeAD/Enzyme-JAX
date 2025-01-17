@@ -2744,7 +2744,7 @@ struct TransposeUnaryTransposeSimplify
                                 PatternRewriter &rewriter) const override {
     auto unaryOp =
         outerTransposeOp.getOperand().template getDefiningOp<OpType>();
-    if (!unaryOp || !isTransposeInvariantUnaryOp(unaryOp))
+    if (!unaryOp)
       return failure();
 
     auto innerTransposeOp =
@@ -6256,23 +6256,16 @@ struct TransposeBroadcastInDimToBroadcastInDim final
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
                                 PatternRewriter &rewriter) const override {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
-    if (!transposeOp || !isOnlyUsedInOperation(transposeOp, op))
+    if (!transposeOp)
       return failure();
 
     auto broadcastDims = op.getBroadcastDimensions();
     auto permutation = transposeOp.getPermutation();
 
-    // Create a new broadcast dimensions array by permuting the original
-    // broadcast dimensions according to the transpose permutation
-    SmallVector<int64_t> newBroadcastDims;
-    for (auto dim : broadcastDims) {
-      // For each broadcast dimension, find its position in the permutation
-      // and use that as our new broadcast dimension
-      auto it = std::find(permutation.begin(), permutation.end(), dim);
-      if (it == permutation.end())
-        return failure();
-
-      newBroadcastDims.push_back(std::distance(permutation.begin(), it));
+    // For each input dimension, find where it maps in final output
+    SmallVector<int64_t> newBroadcastDims(transposeOp.getOperand().getType().getRank(), -1);
+    for (auto [idx, oldDim] : llvm::enumerate(broadcastDims)) {
+      newBroadcastDims[permutation[idx]] = oldDim;
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
