@@ -2744,7 +2744,7 @@ struct TransposeUnaryTransposeSimplify
                                 PatternRewriter &rewriter) const override {
     auto unaryOp =
         outerTransposeOp.getOperand().template getDefiningOp<OpType>();
-    if (!unaryOp)
+    if (!unaryOp && !isOnlyUsedInOperation(unaryOp, outerTransposeOp))
       return failure();
 
     auto innerTransposeOp =
