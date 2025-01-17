@@ -6221,6 +6221,42 @@ struct BroadcastInDimOpCanon final
   }
 };
 
+struct TransposeBroadcastInDimToBroadcastInDim final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                               PatternRewriter &rewriter) const override {
+    auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp || !isOnlyUsedInOperation(transposeOp, op))
+      return failure();
+
+    auto broadcastDims = op.getBroadcastDimensions();
+    auto permutation = transposeOp.getPermutation();
+
+    // Create a new broadcast dimensions array by permuting the original
+    // broadcast dimensions according to the transpose permutation
+    SmallVector<int64_t> newBroadcastDims;
+    for (auto dim : broadcastDims) {
+      // For each broadcast dimension, find its position in the permutation
+      // and use that as our new broadcast dimension
+      auto it = std::find(permutation.begin(), permutation.end(), dim);
+      if (it == permutation.end())
+        return failure();
+
+      newBroadcastDims.push_back(std::distance(permutation.begin(), it));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op,
+        op.getType(),
+        transposeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+
+    return success();
+  }
+};
+
 struct ConcatenateOpCanon final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -7260,7 +7296,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+    patterns.add<CompareOpCanon, BroadcastInDimOpCanon,
+                 TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
                  DynamicBroadcastInDimOpNotActuallyDynamic,
                  ChainedDynamicBroadcastInDimCanonicalization,
                  DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
