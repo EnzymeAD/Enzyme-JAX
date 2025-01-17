@@ -2664,13 +2664,25 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
+bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
+  if (!operation || !parentOp)
+    return false;
+
+  for (Operation *user : operation->getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+
+  return true;
+}
+
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
   auto lhsOp = op.getLhs().template getDefiningOp<stablehlo::TransposeOp>();
   auto rhsOp = op.getRhs().template getDefiningOp<stablehlo::TransposeOp>();
   if ((lhsOp && rhsOp) && (lhsOp.getPermutation() == rhsOp.getPermutation()) &&
-      lhsOp->hasOneUse() && rhsOp->hasOneUse()) {
+      isOnlyUsedInOperation(lhsOp, op) && isOnlyUsedInOperation(rhsOp, op)) {
     auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
                                          rhsOp.getOperand());
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, newOp,
@@ -2678,10 +2690,10 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
     return success();
   }
 
-  if (lhsOp && lhsOp->hasOneUse()) {
+  if (lhsOp && isOnlyUsedInOperation(lhsOp, op)) {
     auto rhsConstOp =
         op.getRhs().template getDefiningOp<stablehlo::ConstantOp>();
-    if (rhsConstOp && rhsConstOp->hasOneUse()) {
+    if (rhsConstOp && isOnlyUsedInOperation(rhsConstOp, op)) {
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
@@ -2694,10 +2706,10 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
     }
   }
 
-  if (rhsOp && rhsOp->hasOneUse()) {
+  if (rhsOp && isOnlyUsedInOperation(rhsOp, op)) {
     auto lhsConstOp =
         op.getLhs().template getDefiningOp<stablehlo::ConstantOp>();
-    if (lhsConstOp && lhsConstOp->hasOneUse()) {
+    if (lhsConstOp && isOnlyUsedInOperation(lhsConstOp, op)) {
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
