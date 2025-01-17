@@ -6263,7 +6263,8 @@ struct TransposeBroadcastInDimToBroadcastInDim final
     auto permutation = transposeOp.getPermutation();
 
     // For each input dimension, find where it maps in final output
-    SmallVector<int64_t> newBroadcastDims(transposeOp.getOperand().getType().getRank(), -1);
+    SmallVector<int64_t> newBroadcastDims(
+        transposeOp.getOperand().getType().getRank(), -1);
     for (auto [idx, oldDim] : llvm::enumerate(broadcastDims)) {
       newBroadcastDims[permutation[idx]] = oldDim;
     }
