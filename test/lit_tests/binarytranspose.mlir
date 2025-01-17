@@ -186,3 +186,15 @@ func.func @t16(%arg0: tensor<3x4xf64>) -> tensor<3x4xf64> {
 // CHECK-NEXT:    %0 = stablehlo.add %cst, %arg0 : tensor<3x4xf64>
 // CHECK-NEXT:    return %0 : tensor<3x4xf64>
 // CHECK-NEXT:  }
+
+func.func @t17(%arg0: tensor<3x2xf64>) -> tensor<3x2xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
+    %1 = stablehlo.add %0, %0 : tensor<2x3xf64>
+    %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
+    return %2 : tensor<3x2xf64>
+}
+
+// CHECK:  func.func @t17(%arg0: tensor<3x2xf64>) -> tensor<3x2xf64> {
+// CHECK-NEXT:    %0 = stablehlo.add %arg0, %arg0 : tensor<3x2xf64>
+// CHECK-NEXT:    return %0 : tensor<3x2xf64>
+// CHECK-NEXT:  }

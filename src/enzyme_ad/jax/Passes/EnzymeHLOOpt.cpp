@@ -2664,13 +2664,25 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
+bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
+  if (!operation || !parentOp)
+    return false;
+
+  for (Operation *user : operation->getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+
+  return true;
+}
+
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
   auto lhsOp = op.getLhs().template getDefiningOp<stablehlo::TransposeOp>();
   auto rhsOp = op.getRhs().template getDefiningOp<stablehlo::TransposeOp>();
   if ((lhsOp && rhsOp) && (lhsOp.getPermutation() == rhsOp.getPermutation()) &&
-      lhsOp->hasOneUse() && rhsOp->hasOneUse()) {
+      isOnlyUsedInOperation(lhsOp, op) && isOnlyUsedInOperation(rhsOp, op)) {
     auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
                                          rhsOp.getOperand());
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, newOp,
@@ -2678,10 +2690,10 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
     return success();
   }
 
-  if (lhsOp && lhsOp->hasOneUse()) {
+  if (lhsOp && isOnlyUsedInOperation(lhsOp, op)) {
     auto rhsConstOp =
         op.getRhs().template getDefiningOp<stablehlo::ConstantOp>();
-    if (rhsConstOp && rhsConstOp->hasOneUse()) {
+    if (rhsConstOp && isOnlyUsedInOperation(rhsConstOp, op)) {
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
@@ -2694,10 +2706,10 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
     }
   }
 
-  if (rhsOp && rhsOp->hasOneUse()) {
+  if (rhsOp && isOnlyUsedInOperation(rhsOp, op)) {
     auto lhsConstOp =
         op.getLhs().template getDefiningOp<stablehlo::ConstantOp>();
-    if (lhsConstOp && lhsConstOp->hasOneUse()) {
+    if (lhsConstOp && isOnlyUsedInOperation(lhsConstOp, op)) {
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
@@ -2720,6 +2732,34 @@ struct BinaryOpTransposeSimplify : public OpRewritePattern<OpType> {
   LogicalResult matchAndRewrite(OpType op,
                                 PatternRewriter &rewriter) const override {
     return simplifyBinaryOpWithTranspose(op, rewriter);
+  }
+};
+
+template <typename OpType>
+struct TransposeUnaryTransposeSimplify
+    : public OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp outerTransposeOp,
+                                PatternRewriter &rewriter) const override {
+    auto unaryOp =
+        outerTransposeOp.getOperand().template getDefiningOp<OpType>();
+    if (!unaryOp && !isOnlyUsedInOperation(unaryOp, outerTransposeOp))
+      return failure();
+
+    auto innerTransposeOp =
+        unaryOp->getOperand(0).template getDefiningOp<stablehlo::TransposeOp>();
+    if (!innerTransposeOp)
+      return failure();
+
+    if (outerTransposeOp.getPermutation() != innerTransposeOp.getPermutation())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<OpType>(outerTransposeOp,
+                                        outerTransposeOp.getType(),
+                                        innerTransposeOp.getOperand());
+
+    return success();
   }
 };
 
@@ -6209,6 +6249,34 @@ struct BroadcastInDimOpCanon final
   }
 };
 
+struct TransposeBroadcastInDimToBroadcastInDim final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    auto broadcastDims = op.getBroadcastDimensions();
+    auto permutation = transposeOp.getPermutation();
+
+    // For each input dimension, find where it maps in final output
+    SmallVector<int64_t> newBroadcastDims(
+        transposeOp.getOperand().getType().getRank(), -1);
+    for (auto [idx, oldDim] : llvm::enumerate(broadcastDims)) {
+      newBroadcastDims[permutation[idx]] = oldDim;
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), transposeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+
+    return success();
+  }
+};
+
 struct ConcatenateOpCanon final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -7162,7 +7230,21 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  BinaryOpTransposeSimplify<stablehlo::OrOp>,
                  BinaryOpTransposeSimplify<stablehlo::XorOp>,
                  BinaryOpTransposeSimplify<stablehlo::PowOp>,
-                 BinaryOpTransposeSimplify<stablehlo::RemOp>>(context);
+                 BinaryOpTransposeSimplify<stablehlo::RemOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::AbsOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::CeilOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::ConvertOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::CosineOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::ExpOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::Expm1Op>,
+                 TransposeUnaryTransposeSimplify<stablehlo::LogOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::Log1pOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::NegOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::RsqrtOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SignOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SineOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>,
+                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
@@ -7248,7 +7330,8 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
+    patterns.add<CompareOpCanon, BroadcastInDimOpCanon,
+                 TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
                  DynamicBroadcastInDimOpNotActuallyDynamic,
                  ChainedDynamicBroadcastInDimCanonicalization,
                  DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
