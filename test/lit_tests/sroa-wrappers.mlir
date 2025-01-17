@@ -43,11 +43,11 @@ module {
 // CHECK-NEXT:    %0 = enzymexla.kernel_call @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258" blocks in(%c, %c, %c) threads in(%c, %c, %c) shmem = %c_0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i64>) -> tensor<i64>
 // CHECK-NEXT:    return %0 : tensor<i64>
 // CHECK-NEXT:  }
-// CHECK:  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>) {
+// CHECK:  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>
 // CHECK-NEXT:    %0 = llvm.mlir.constant(5 : i64) : i64
-// CHECK-NEXT:    %1 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:    %1 = llvm.load %arg0 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> i64
 // CHECK-NEXT:    %2 = llvm.mul %1, %0 : i64
-// CHECK-NEXT:    llvm.store %2, %arg0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:    llvm.store %2, %arg0 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : i64, !llvm.ptr<1>
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 
