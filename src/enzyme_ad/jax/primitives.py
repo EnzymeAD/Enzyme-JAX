@@ -112,6 +112,7 @@ zero_extent_tensor_canon<16>;
 reorder_elementwise_and_shape_op<16>;
 dynamic_gather_op_is_not_dynamic<16>;
 divide_sqrt_to_multiply_rsqrt<16>;
+transpose_broadcast_in_dim_to_broadcast_in_dim<16>;
 
 cse_broadcast_in_dim<16>;
 cse_slice<16>;
@@ -211,6 +212,21 @@ binary_op_transpose_simplify_and<1>;
 binary_op_transpose_simplify_or<1>;
 binary_op_transpose_simplify_xor<1>;
 binary_op_transpose_simplify_rem<1>;
+
+transpose_unary_transpose_abs<1>;
+transpose_unary_transpose_neg<1>;
+transpose_unary_transpose_sqrt<1>;
+transpose_unary_transpose_rsqrt<1>;
+transpose_unary_transpose_ceil<1>;
+transpose_unary_transpose_convert<1>;
+transpose_unary_transpose_cosine<1>;
+transpose_unary_transpose_exp<1>;
+transpose_unary_transpose_expm1<1>;
+transpose_unary_transpose_log<1>;
+transpose_unary_transpose_log1p<1>;
+transpose_unary_transpose_sign<1>;
+transpose_unary_transpose_sine<1>;
+transpose_unary_transpose_tanh<1>;
 
 slice_reshape_concat<1>;
 slice_reshape_elementwise<1>;
