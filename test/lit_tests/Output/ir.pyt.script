@@ -1,0 +1,1 @@
+set -o pipefail;{ : 'RUN: at line 1';   /Users/wmoses/opt/anaconda3/bin/python /Users/wmoses/git/Enzyme-JAX/test/lit_tests/ir.pyt | FileCheck /Users/wmoses/git/Enzyme-JAX/test/lit_tests/ir.pyt; }
