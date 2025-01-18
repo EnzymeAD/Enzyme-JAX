@@ -6963,6 +6963,71 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
+// Replace while op iteration variables which are not updated with their upcoming value
+struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<unsigned> operands;
+
+    Block *cond = &op.getCond().front(), *body = &op.getBody().front();
+    Operation *bodyTerm = body->getTerminator();
+
+    int deleted = 0;
+    for (auto &opOperand : op->getOpOperands()) {
+      Value inputValue = opOperand.get();
+
+      auto i = opOperand.getOperandNumber() - deleted;
+      Value bodyArg = body->getArgument(i);
+      Value condArg = cond->getArgument(i);
+
+      if (bodyArg == bodyTerm->getOperand(i)) {
+        // This variable is not updated during iterations
+        rewriter.replaceAllUsesWith(bodyArg, inputValue);
+        rewriter.replaceAllUsesWith(condArg, inputValue);
+        rewriter.modifyOpInPlace(bodyTerm,
+                                 [&] { bodyTerm->setOperands(i, 1, {}); });
+        rewriter.replaceAllUsesWith(op.getResult(opOperand.getOperandNumber()),
+                                    inputValue);
+
+        body->eraseArgument(i);
+        cond->eraseArgument(i);
+      } else {
+        operands.push_back(opOperand.getOperandNumber());
+      }
+    }
+
+    if (operands.size() == op->getNumOperands())
+      return failure();
+
+    SmallVector<Value> newOperands;
+    newOperands.reserve(operands.size());
+
+    for (auto opOperand : operands) {
+      newOperands.push_back(op->getOperand(opOperand));
+    }
+
+    auto newWhile =
+        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands);
+    newWhile.getCond().takeBody(op.getCond());
+    newWhile.getBody().takeBody(op.getBody());
+
+    // Replace uses for remaining results.
+    for (const auto &it : llvm::enumerate(operands))
+       {
+        Value oldRes = op->getResult(it.value());
+        Value newRes = newWhile->getResult(it.index());
+
+        rewriter.replaceAllUsesWith(oldRes, newRes);
+      }
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct DynamicGatherOpIsNotDynamic
     : public OpRewritePattern<stablehlo::DynamicGatherOp> {
   using OpRewritePattern<stablehlo::DynamicGatherOp>::OpRewritePattern;
@@ -7341,7 +7406,7 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                  GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
                  ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
                  ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 SelectOpUsedWithinIf, IfInline, IfToSelect,
+                 SelectOpUsedWithinIf, IfInline, IfToSelect, WhileSimplify,
                  ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
                  DynamicGatherOpIsNotDynamic, DivideSqrtToMultiplyRsqrt>(
         context);

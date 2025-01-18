@@ -709,6 +709,11 @@ def IfToSelect : EnzymeHLOPatternOp<
   let patterns = ["IfToSelect"];
 }
 
+def WhileSimplify : EnzymeHLOPatternOp<
+    "while_simplify"> {
+  let patterns = ["WhileSimplify"];
+}
+
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
     "select_op_used_within_if"> {
   let patterns = ["SelectOpUsedWithinIf"];
