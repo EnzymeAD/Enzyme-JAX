@@ -83,6 +83,7 @@ public:
 
       auto operand = fn.front().getArgument(operandIndex);
       bool readonly =
+          operand.use_empty() ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
 
@@ -108,6 +109,7 @@ public:
       assert(launchOp.getInputs()[operandIndex].getType() ==
              launchOp.getResultTypes()[idx]);
       bool readonly =
+          operand.use_empty() ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
 
@@ -144,6 +146,7 @@ public:
 
       auto operand = fn.front().getArgument(operandIndex);
       bool readonly =
+          operand.use_empty() ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
           fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
 
@@ -160,7 +163,106 @@ public:
   }
 };
 
+class ReadNoneKernelArg final
+    : public OpRewritePattern<enzymexla::KernelCallOp> {
+public:
+  using OpRewritePattern<enzymexla::KernelCallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::KernelCallOp launchOp,
+                                PatternRewriter &rewriter) const override {
+    SymbolTableCollection symbolTable;
+    auto mod = launchOp->getParentOfType<ModuleOp>();
+    symbolTable.getSymbolTable(mod);
+    auto fn = cast<FunctionOpInterface>(
+        symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
+
+    bool changed = false;
+
+    SmallVector<enzymexla::KernelCallOp> calls;
+    auto use_opt = symbolTable.getSymbolTable(mod).getSymbolUses(fn, mod);
+    if (!use_opt)
+      return failure();
+    for (auto u : *use_opt) {
+      auto launch2 = dyn_cast<enzymexla::KernelCallOp>(u.getUser());
+      if (!launch2)
+        return failure();
+      calls.push_back(launch2);
+      auto operand_aliases2 = launchOp.getOutputOperandAliases();
+      assert(operand_aliases2.size() == launchOp.getNumResults());
+    }
+
+    BitVector deadArgs(fn.front().getNumArguments(), false);
+    for (auto arg : fn.front().getArguments()) {
+      auto operandIndex = arg.getArgNumber();
+      bool readnone = arg.use_empty();
+      //    fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
+      if (!readnone)
+        continue;
+
+      for (auto call : calls) {
+        auto operand_aliases = call.getOutputOperandAliases();
+        for (auto alias_attr : operand_aliases) {
+          auto alias = cast<OutputOperandAliasAttr>(alias_attr);
+          auto aliasOperandIndex = alias.getOperandIndex();
+          if (aliasOperandIndex == operandIndex) {
+            return failure();
+          }
+        }
+      }
+      changed = true;
+      deadArgs[operandIndex] = true;
+    }
+
+    if (!changed)
+      return failure();
+
+    rewriter.modifyOpInPlace(fn, [&]() {
+      // fn.eraseArguments(deadArgs);
+      if (auto T = dyn_cast<LLVMFunctionType>(fn.getFunctionType())) {
+        SmallVector<Type> argStorage;
+        mlir::filterTypesOut(fn.getArgumentTypes(), deadArgs, argStorage);
+        auto fty2 =
+            LLVMFunctionType::get(T.getReturnType(), argStorage, T.getVarArg());
+        mlir::function_interface_impl::eraseFunctionArguments(fn, deadArgs,
+                                                              fty2);
+      } else {
+        fn.eraseArguments(deadArgs);
+      }
+    });
+
+    for (auto call : calls) {
+      BitVector nonLiveCallOperands(call.getNumOperands(), false);
+      for (int index : deadArgs.set_bits())
+        nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() +
+                                index);
+
+      SmallVector<Attribute> outputAliases;
+      auto operand_aliases = call.getOutputOperandAliases();
+
+      for (auto alias_attr : operand_aliases) {
+        auto alias = cast<OutputOperandAliasAttr>(alias_attr);
+        auto operandIndex = alias.getOperandIndex();
+        size_t nextIndex = operandIndex;
+        for (int index : deadArgs.set_bits()) {
+          if (index <= operandIndex)
+            nextIndex--;
+        }
+        outputAliases.push_back(OutputOperandAliasAttr::get(
+            call->getContext(), alias.getOutputTupleIndices(), nextIndex,
+            alias.getOperandTupleIndices()));
+      }
+
+      rewriter.modifyOpInPlace(call, [&]() {
+        call->eraseOperands(nonLiveCallOperands);
+        call.setOutputOperandAliasesAttr(
+            ArrayAttr::get(call->getContext(), outputAliases));
+      });
+    }
+    return success();
+  }
+};
+
 void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {
-  results.insert<ReadOnlyKernelArg>(context);
+  results.insert<ReadOnlyKernelArg, ReadNoneKernelArg>(context);
 }

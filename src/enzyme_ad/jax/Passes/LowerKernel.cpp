@@ -549,6 +549,16 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       LLVM::LLVMFuncOp funcload = builder.create<LLVM::LLVMFuncOp>(
           loc, "cuModuleGetFunction", funcload_ty);
 
+      LLVM::GlobalOp kernStr;
+      {
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8),
+            legalName.size() + 1);
+        kernStr = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+            builder.getStringAttr(legalName + '\0'));
+      }
+
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
       LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
