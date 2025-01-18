@@ -66,6 +66,40 @@ impl CostModel {
     }
 }
 
+// extraction
+type Candidate = Vec<usize>;
+
+enum CostModels {
+    Analytical,
+    Measured,
+}
+
+pub struct GlobalExtractor {
+    n_eclasses: usize,
+    candidate: Candidate,
+    cost_model: CostModel,
+}
+
+impl GlobalExtractor {
+    pub fn new(n_eclasses: usize, cost_model: CostModel) -> Self {
+        Self {
+            n_eclasses,
+            candidate: vec![1; n_eclasses], // maybe this is a bad default...
+            cost_model,
+        }
+    }
+
+    pub fn cost(candidate: Candidate) -> f32 {
+        let rec_expr = Self::candidate_to_recexpr(candidate);
+        // do some stuff with the rec_expr
+        0.0
+    }
+
+    fn candidate_to_recexpr(candidate: Candidate) -> RecExpr<Mdl> {
+        panic!("TODO")
+    }
+}
+
 /// Prepare the data for formulation ILP
 ///
 /// # Returns
@@ -135,14 +169,14 @@ pub fn prep_ilp_data(
             g_i.push(m);
             use crate::model::Mdl::*;
             fus_i.push(match node {
-                Input(..) => true,  
+                Input(..) => true,
                 CompareOp(..) => true,
-                BroadcastInDimOp(..) => true, 
+                BroadcastInDimOp(..) => true,
                 ConvertOp(..) => true,
                 ReshapeOp(..) => true,
                 GatherOp(..) => true,
                 ConcatenateOp(..) => true,
-                SliceOp(..) => true, 
+                SliceOp(..) => true,
                 TransposeOp(..) => true,
                 MulOp(..) => true,
                 AddOp(..) => true,
@@ -150,10 +184,10 @@ pub fn prep_ilp_data(
                 SubtractOp(..) => true,
                 MinOp(..) => true,
                 MinOp(..) => true,
-                NegOp(..) => true, 
-                TanhOp(..) => true, 
+                NegOp(..) => true,
+                TanhOp(..) => true,
                 ExpOp(..) => true,
-                IotaOp(..) => true, 
+                IotaOp(..) => true,
                 DynamicUpdateSliceOp(..) => true,
                 DynamicSliceOp(..) => true,
                 ScatterOp(..) => true,

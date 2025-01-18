@@ -22,10 +22,7 @@ pub mod ffi {
         i64,
         bf16,
         f32,
-<<<<<<< HEAD
         f64,
-=======
->>>>>>> 7a954d5 (End-to-end cost measurement)
     }
 
     #[derive(Debug)]
@@ -338,17 +335,9 @@ pub mod ffi {
             other_vector_args: Vec<Vector>,
             int_args: Vec<i64>,
             matrix_args: Vec<Matrix>,
-<<<<<<< HEAD
         ) -> Vec<u64>;
-=======
-        ) -> u64;
 
         fn get_graph_cost(graph: Vec<Node>) -> u64;
-    }
-
-    unsafe extern "C++" {
-        include!("EqualitySaturation.h");
->>>>>>> 7a954d5 (End-to-end cost measurement)
 
         fn get_shape(
             op: Ops,
