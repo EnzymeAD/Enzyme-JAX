@@ -1150,7 +1150,7 @@ uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
   default:
     assert(false);
   }
-  return OperationTimer::getCost(&cast<Operation>(root), repeats, repeats);
+  return OperationTimer::getCost(&cast<Operation>(root), repeats, repeats)->first;
 }
 
 std::vector<int32_t> castArrayRefToInt32(llvm::ArrayRef<int64_t> shape) {
