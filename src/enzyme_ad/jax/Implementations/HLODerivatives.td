@@ -968,7 +968,16 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
-def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
+                      (DynamicUpdateSlice
+                        (TypeOf $operand),
+                        (HLOConstantFP<"0"> $operand),
+                        (DiffeRet),
+                        $start_indices
+                      ),
+                      (AssertingInactiveArg)
+                    ]>;
+
 def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
