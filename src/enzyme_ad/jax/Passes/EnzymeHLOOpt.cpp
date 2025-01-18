@@ -6991,6 +6991,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
 
         body->eraseArgument(i);
         cond->eraseArgument(i);
+
+        deleted++;
       } else {
         operands.push_back(opOperand.getOperandNumber());
       }
