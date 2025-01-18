@@ -1,8 +1,11 @@
 JAX_COMMIT = "41993fdb24021473f6e2db8fdeeeb8b6d3f52630"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "5c632cca6325eadb728df0783c0c41be9eb6cd00"
+ENZYME_COMMIT = "c4f953f949c297c683fcb05cf844fe939fd2bcf2"
 ENZYME_SHA256 = ""
+# If the empty string this will automatically use the commit above
+# otherwise this should be a path to the folder containing the BUILD file for enzyme
+OVERRIDE_ENZYME_PATH = ""
 
 HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""

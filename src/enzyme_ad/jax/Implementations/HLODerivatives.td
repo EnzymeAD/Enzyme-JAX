@@ -968,7 +968,16 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
 
-def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0]>;
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
+                      (DynamicUpdateSlice
+                        (TypeOf $operand),
+                        (HLOConstantFP<"0"> $operand),
+                        (DiffeRet),
+                        $start_indices
+                      ),
+                      (AssertingInactiveArg)
+                    ]>;
+
 def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
@@ -992,28 +1001,6 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                   >;
 
 def : HLOInactiveOp<"DynamicIotaOp">;
-
-def : HLODerivative<"DynamicSliceOp", (Op $operand, $start_indices),
-                    [
-                      (DynamicUpdateSlice
-                        (TypeOf $operand),
-                        (HLOConstantFP<"0"> $operand),
-                        (DiffeRet),
-                        $start_indices
-                      ),
-                      (AssertingInactiveArg)
-                    ],
-                    (
-                      SelectIfActive $operand,
-                        (DynamicUpdateSlice
-                          (TypeOf $operand),
-                          (HLOConstantFP<"0"> $operand),
-                          (Shadow $operand),
-                          $start_indices
-                        ),
-                        (HLOConstantFP<"0"> $operand)
-                    )
-                    >;
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
