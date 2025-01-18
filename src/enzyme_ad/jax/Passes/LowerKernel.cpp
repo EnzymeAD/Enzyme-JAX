@@ -353,7 +353,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto gpumod = builder.create<gpu::GPUModuleOp>(loc, "gpumodname");
   builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
 
-  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, op.getName(), gpuTy);
+  std::string legalName = op.getName().str();
+  std::replace(legalName.begin(), legalName.end(), '#', '_');
+  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, legalName, gpuTy);
   {
     auto entry = &gpufunc.getBody().front();
     builder.setInsertionPointToEnd(entry);
