@@ -6981,7 +6981,7 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
       Value bodyArg = body->getArgument(i);
       Value condArg = cond->getArgument(i);
 
-      if (isa<stablehlo::ConstantOp>(inputValue.getDefiningOp()) &&
+      if (inputValue.getDefiningOp<stablehlo::ConstantOp>() &&
           bodyArg == bodyTerm->getOperand(i)) {
         // This variable is not updated during iterations
         rewriter.replaceAllUsesWith(bodyArg, inputValue);
