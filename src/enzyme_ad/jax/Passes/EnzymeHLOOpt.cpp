@@ -6961,7 +6961,8 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
-// Replace while op iteration variables which are not updated with their upcoming value
+// Replace while op iteration variables which are not updated with their
+// upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
