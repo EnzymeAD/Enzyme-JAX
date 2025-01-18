@@ -35,9 +35,9 @@ module {
 // REVERSE-NEXT:    %1:2 = "stablehlo.if"(%arg1) ({
 // REVERSE-NEXT:      %2 = arith.addf %0, %cst : tensor<10xf32>
 // REVERSE-NEXT:      %3 = arith.addf %2, %cst : tensor<10xf32>
-// REVERSE-NEXT:      stablehlo.return %3, %cst : tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:      stablehlo.return %cst, %3 : tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:    }, {
 // REVERSE-NEXT:      stablehlo.return %cst, %cst : tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:    }) : (tensor<i1>) -> (tensor<10xf32>, tensor<10xf32>)
-// REVERSE-NEXT:    return %1#0 : tensor<10xf32>
+// REVERSE-NEXT:    return %1#1 : tensor<10xf32>
 // REVERSE-NEXT:  }

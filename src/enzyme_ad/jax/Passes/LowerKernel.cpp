@@ -353,7 +353,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto gpumod = builder.create<gpu::GPUModuleOp>(loc, "gpumodname");
   builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
 
-  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, "kernel", gpuTy);
+  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, op.getName(), gpuTy);
   {
     auto entry = &gpufunc.getBody().front();
     builder.setInsertionPointToEnd(entry);
@@ -546,16 +546,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
       LLVM::LLVMFuncOp funcload = builder.create<LLVM::LLVMFuncOp>(
           loc, "cuModuleGetFunction", funcload_ty);
-
-      LLVM::GlobalOp kernStr;
-      {
-        std::string value = "kernel";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        kernStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
-            builder.getStringAttr(value + '\0'));
-      }
 
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
