@@ -1,4 +1,9 @@
-use crate::{ffi_utils::*, input::ffi, model::*, rewrites::*};
+use crate::{
+    ffi_utils::*,
+    input::{ffi, CppGraphConverter},
+    model::*,
+    rewrites::*,
+};
 use egg::*;
 // use cxx::UniquePtr;
 use serde::{Deserialize, Serialize};
@@ -74,28 +79,34 @@ enum CostModels {
     Measured,
 }
 
-pub struct GlobalExtractor {
+pub struct GlobalExtractor<'a> {
     n_eclasses: usize,
+    egraph: &'a EGraph<Mdl, TensorAnalysis>,
     candidate: Candidate,
     cost_model: CostModel,
 }
 
-impl GlobalExtractor {
-    pub fn new(n_eclasses: usize, cost_model: CostModel) -> Self {
+impl<'a> GlobalExtractor<'a> {
+    pub fn new(
+        n_eclasses: usize,
+        egraph: &'a EGraph<Mdl, TensorAnalysis>,
+        cost_model: CostModel,
+    ) -> Self {
         Self {
             n_eclasses,
-            candidate: vec![1; n_eclasses], // maybe this is a bad default...
+            egraph,
+            candidate: vec![1; n_eclasses], // Maybe this is a bad default...
             cost_model,
         }
     }
 
-    pub fn cost(candidate: Candidate) -> f32 {
-        let rec_expr = Self::candidate_to_recexpr(candidate);
-        // do some stuff with the rec_expr
-        0.0
+    pub fn cost(&self, candidate: Candidate) -> f32 {
+        let (rec_expr, to_egraph) = Self::candidate_to_recexpr(candidate);
+        let cost = CppGraphConverter::get_end_to_end_cost(self.egraph, &to_egraph, rec_expr);
+        cost as f32 // Return the computed cost
     }
 
-    fn candidate_to_recexpr(candidate: Candidate) -> RecExpr<Mdl> {
+    fn candidate_to_recexpr(candidate: Candidate) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
         panic!("TODO")
     }
 }

@@ -1042,7 +1042,6 @@ impl CppGraphConverter {
     }
 
     fn convert_to_node(
-        &self,
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
         rec_expr: RecExpr<Mdl>,
@@ -1131,12 +1130,11 @@ impl CppGraphConverter {
     }
 
     pub fn get_end_to_end_cost(
-        &self,
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
         rec_expr: RecExpr<Mdl>,
     ) -> u64 {
-        let nodes = self.convert_to_node(egraph, to_egraph, rec_expr);
+        let nodes = CppGraphConverter::convert_to_node(egraph, to_egraph, rec_expr);
         get_graph_cost(nodes)
     }
 
@@ -1276,7 +1274,7 @@ impl CppGraphConverter {
         // let (best, ext_secs) = extract_by_greedy(&egraph, root, &cost_model);
 
         // println!("{}", best);
-        self.convert_to_node(&egraph, &to_egraph, best)
+        CppGraphConverter::convert_to_node(&egraph, &to_egraph, best)
     }
 }
 
