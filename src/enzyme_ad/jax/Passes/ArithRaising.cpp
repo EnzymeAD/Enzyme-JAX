@@ -54,7 +54,7 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::AddOp addOp) {
-      if (!addOp.getType().isa<RankedTensorType>())
+      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
@@ -68,7 +68,7 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::ConjOp addOp) {
-      if (!addOp.getType().isa<RankedTensorType>())
+      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
