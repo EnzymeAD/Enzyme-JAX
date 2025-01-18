@@ -23,27 +23,6 @@ exports_files(
     visibility = [":__subpackages__"],
 )
 
-[
-    lit_test(
-        name = "%s.test" % src,
-        srcs = [src],
-        data = [
-            ":lit.cfg.py",
-            ":lit_site_cfg_py",
-            "//:enzymexlamlir-opt",
-            "@llvm-project//llvm:FileCheck",
-            "@llvm-project//llvm:count",
-            "@llvm-project//llvm:not",
-            "@stablehlo//:stablehlo-translate"
-        ] + glob(["**/*.h"]),
-    )
-    for src in glob(
-        [
-            "**/*.mlir",
-        ],
-    )
-]
-
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 
 string_flag(
