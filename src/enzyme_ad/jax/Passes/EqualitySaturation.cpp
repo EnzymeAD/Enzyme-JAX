@@ -485,8 +485,10 @@ private:
 llvm::DenseMap<Operation *, std::pair<uint64_t, uint64_t>, OperationMapInfo>
     OperationTimer::runtimeCache;
 MLIRContext *OperationTimer::context = nullptr;
-std::vector<Operation *> *OperationTimer::currentBlackboxIDToTensorInfo = nullptr;
-std::unordered_map<int, std::vector<Value>> *OperationTimer::currentBlackboxIDToCapturedValues = nullptr;
+std::vector<Operation *> *OperationTimer::currentBlackboxIDToTensorInfo =
+    nullptr;
+std::unordered_map<int, std::vector<Value>>
+    *OperationTimer::currentBlackboxIDToCapturedValues = nullptr;
 /**
  * Create a new mlir::RankedTensorType based on the type of an existing
  * mlir::Value and the provided shape.
@@ -1066,7 +1068,8 @@ mlir::Type newTensorType(OpBuilder &builder, tensat::Tensor tensor) {
   return RankedTensorType::get(dimsRef, mlirType);
 }
 
-// TODO: Avoid creating dummy inputs (we need them again for cost measurement, so duplicated)
+// TODO: Avoid creating dummy inputs (we need them again for cost measurement,
+// so duplicated)
 rust::Vec<uint64_t>
 tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
                  rust::Vec<tensat::Vector> other_vector_args,
@@ -1129,28 +1132,6 @@ tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
     return {cost, fus_cost};
   }
   assert(false);
-}
-
-uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
-  auto context = OperationTimer::getContext();
-  OpBuilder builder(context);
-  ModuleOp root = ModuleOp::create(builder.getUnknownLoc());
-  EqualitySaturationPass::reconstructStablehlo(
-      &root, OperationTimer::currentBlackboxIDToTensorInfo,
-      OperationTimer::currentBlackboxIDToCapturedValues, nodes, builder);
-  int repeats = 0;
-  switch (getPlatform()) {
-  case CPU:
-    repeats = 200;
-    break;
-  case GPU:
-    // TODO: Review this number
-    repeats = 30;
-    break;
-  default:
-    assert(false);
-  }
-  return OperationTimer::getCost(&cast<Operation>(root), repeats, repeats)->first;
 }
 
 std::vector<int32_t> castArrayRefToInt32(llvm::ArrayRef<int64_t> shape) {
@@ -1788,8 +1769,6 @@ void reconstructStablehlo(
   auto context = root->getContext();
   std::vector<Value> opVals;
 
-
-
   // Find funcOp to get the block.
   func::FuncOp funcOp;
 
@@ -1798,7 +1777,7 @@ void reconstructStablehlo(
       funcOp = cast<func::FuncOp>(op);
       break;
     }
-  } 
+  }
 
   auto &region = funcOp.getRegion();
   auto &block = funcOp.getRegion().front();
@@ -2130,9 +2109,9 @@ void reconstructStablehlo(
     }
     if (newOp) {
       if (newOp->getNumResults() > 0)
-          opVals.push_back(newOp->getResult(0));
+        opVals.push_back(newOp->getResult(0));
       else
-          opVals.push_back(nullptr);
+        opVals.push_back(nullptr);
     } else {
       assert(node.op == tensat::Ops::Vec || node.op == tensat::Ops::Num ||
              node.op == tensat::Ops::Var);
@@ -2551,6 +2530,29 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
                       builder, moduleOp);
 }
 
+uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
+  auto context = OperationTimer::getContext();
+  OpBuilder builder(context);
+  ModuleOp root = ModuleOp::create(builder.getUnknownLoc());
+  reconstructStablehlo(&root, OperationTimer::currentBlackboxIDToTensorInfo,
+                       OperationTimer::currentBlackboxIDToCapturedValues,
+                       nodes);
+  int repeats = 0;
+  switch (getPlatform()) {
+  case CPU:
+    repeats = 200;
+    break;
+  case GPU:
+    // TODO: Review this number
+    repeats = 30;
+    break;
+  default:
+    assert(false);
+  }
+  return OperationTimer::getCost(&cast<Operation>(root), repeats, repeats)
+      .first;
+}
+
 namespace {
 class EqualitySaturationPass
     : public PassWrapper<EqualitySaturationPass, OperationPass<ModuleOp>> {
@@ -2705,7 +2707,7 @@ public:
                  << segmentedModules.size() << " segments\n";
   }
 };
-
+} // end anonymous namespace
 
 namespace mlir {
 namespace enzyme {
