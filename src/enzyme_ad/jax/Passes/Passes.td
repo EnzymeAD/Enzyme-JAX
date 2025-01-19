@@ -267,6 +267,27 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"0",
       /*description=*/"Function handler to sync results"
     >,
+    Option<
+      /*C++ variable name=*/"cubinFormat",
+      /*CLI argument=*/"cubinFormat",
+      /*type=*/"std::string",
+      /*default=*/"\"bin\"",
+      /*description=*/"Binary format"
+    >,
+    Option<
+      /*C++ variable name=*/"cuOptLevel",
+      /*CLI argument=*/"cuOptLevel",
+      /*type=*/"int",
+      /*default=*/"2",
+      /*description=*/"Opt level for ptx"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinTriple",
+      /*CLI argument=*/"cubinTriple",
+      /*type=*/"std::string",
+      /*default=*/"\"nvptx64-nvidia-cuda\"",
+      /*description=*/"Target triple"
+    >,
     ];
 }
 
