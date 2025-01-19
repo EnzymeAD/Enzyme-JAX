@@ -1825,7 +1825,7 @@ public:
 
 static void removalBlockExplore(Block *block, IRMapping &mapping,
                                 OpBuilder &builder,
-                                llvm::SmallDenseSet<Value> &gradients,
+                                llvm::SetVector<Value> &gradients,
                                 llvm::MapVector<Value, CacheInfo> &caches) {
   for (auto it = block->begin(), e = block->end(); it != e;) {
     Operation *op = &*it;
@@ -1928,7 +1928,7 @@ struct IfOpEnzymeOpsRemover
     }
 
     // Gradients whose value is set in either branches.
-    llvm::SmallDenseSet<Value> gradients;
+    llvm::SetVector<Value> gradients;
 
     // We assume pushes are exclusive.
     llvm::MapVector<Value, CacheInfo> pushedCaches;
