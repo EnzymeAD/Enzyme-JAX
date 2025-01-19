@@ -31,11 +31,17 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
+      BAZEL_BUILD_FLAGS=()
+      
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ ! -f ".local/bin/bazel" ]; then
           curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
           mv bazelisk-darwin .local/bin/bazel
           chmod +x .local/bin/bazel
+        fi
+        if [ "{{matrix.arch}}" == "aarch64" ]; then
+        else
+          BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnniint8=false)
         fi
       elif [ "{{matrix.os}}" == "linux" ]; then
         mv bazel* .local/bin/bazel
@@ -50,9 +56,9 @@ steps:
       fi
       mkdir -p .baztmp
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test ${BAZEL_BUILD_FLAGS[@]} --test_output=errors //test/...
       rm -f bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build :wheel
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build ${BAZEL_BUILD_FLAGS[@]} :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
