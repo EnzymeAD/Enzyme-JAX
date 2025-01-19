@@ -45,12 +45,12 @@ jobs:
 
       - name: test
         run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --test_output=errors ...
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel test --define=xnn_enable_avxvnniint8=false --test_output=errors ...
           
       - name: Build Wheel
         run: |
           sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build :wheel
+          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define=xnn_enable_avxvnniint8=false :wheel
           cp bazel-bin/*.whl .
 
       - name: Upload Build
