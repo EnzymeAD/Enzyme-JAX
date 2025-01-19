@@ -17,6 +17,7 @@ class PatternRewriter;
 class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
+std::unique_ptr<Pass> createRemoveDuplicateFuncDefPass();
 std::unique_ptr<Pass> createArithRaisingPass();
 std::unique_ptr<Pass> createConsumingInterpreterPass();
 std::unique_ptr<Pass> createEnzymeHLOOptPass();
@@ -96,16 +97,17 @@ class MemRefDialect;
 
 namespace async {
 class AsyncDialect;
-} // namespace async
+} // end namespace async
 
 namespace func {
 class FuncDialect;
-}
+} // end namespace func
 
 class AffineDialect;
+
 namespace LLVM {
 class LLVMDialect;
-}
+} // end namespace LLVM
 
 #define GEN_PASS_REGISTRATION
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"

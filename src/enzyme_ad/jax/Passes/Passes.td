@@ -11,6 +11,14 @@
 
 include "mlir/Pass/PassBase.td"
 
+def RemoveDuplicateFuncDefPass : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
+  let summary = "Remove duplicate function definitions";
+  let constructor = "mlir::enzyme::createRemoveDuplicateFuncDefPass()";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect"
+  ]; 
+}
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
@@ -18,7 +26,7 @@ def ArithRaisingPass : Pass<"arith-raise"> {
     "mhlo::MhloDialect",
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
-    "enzyme::EnzymeDialect",
+    "enzyme::EnzymeDialect"
   ];
   let constructor = "mlir::enzyme::createArithRaisingPass()";
   let options = [
@@ -135,7 +143,7 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
     "mlir::DLTIDialect",
     "mlir::NVVM::NVVMDialect",
     "mlir::arith::ArithDialect",
-    "mlir::math::MathDialect",
+    "mlir::math::MathDialect"
   ];
 }
 
@@ -165,7 +173,7 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     "NVVM::NVVMDialect",
     "LLVM::LLVMDialect",
     "arith::ArithDialect",
-    "tensor::TensorDialect",
+    "tensor::TensorDialect"
   ];
 
   let options = [
