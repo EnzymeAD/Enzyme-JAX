@@ -1126,7 +1126,7 @@ def cpp_call(
     )
 
 
-_enzyme_primal_p = jax.core.Primitive("enzyme_primal")
+_enzyme_primal_p = jax.extend.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
 _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
@@ -1134,7 +1134,7 @@ jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
 xla_client.register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
 
-_enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
+_enzyme_fwd_p = jax.extend.core.Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
 _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
@@ -1240,7 +1240,7 @@ def dejaxify(x):
     return {0: jnp.float32, 1: jnp.float64}[x]
 
 
-_enzyme_aug_p = jax.core.Primitive("enzyme_aug")
+_enzyme_aug_p = jax.extend.core.Primitive("enzyme_aug")
 _enzyme_aug_p.multiple_results = True
 _enzyme_aug_p.def_impl(_enzyme_aug_impl)
 _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
@@ -1259,12 +1259,12 @@ xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_callback(), platform="tpu"
 )
 
-_enzyme_shadow_aug_p = jax.core.Primitive("enzyme_shadow_aug")
+_enzyme_shadow_aug_p = jax.extend.core.Primitive("enzyme_shadow_aug")
 _enzyme_shadow_aug_p.multiple_results = True
 _enzyme_shadow_aug_p.def_impl(_enzyme_shadow_aug_impl)
 _enzyme_shadow_aug_p.def_abstract_eval(_enzyme_shadow_aug_abstract_eval)
 
-_enzyme_rev_p = jax.core.Primitive("enzyme_rev")
+_enzyme_rev_p = jax.extend.core.Primitive("enzyme_rev")
 _enzyme_rev_p.multiple_results = True
 _enzyme_rev_p.def_impl(_enzyme_rev_impl)
 _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)
