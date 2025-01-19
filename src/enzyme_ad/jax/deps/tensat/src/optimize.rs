@@ -100,14 +100,39 @@ impl<'a> GlobalExtractor<'a> {
         }
     }
 
-    pub fn cost(&self, candidate: Candidate) -> f32 {
-        let (rec_expr, to_egraph) = Self::candidate_to_recexpr(candidate);
+    pub fn cost(&self, candidate: Candidate, root: Id) -> f32 {
+        let (rec_expr, to_egraph) = self.candidate_to_recexpr(candidate, root);
         let cost = CppGraphConverter::get_end_to_end_cost(self.egraph, &to_egraph, rec_expr);
         cost as f32 // Return the computed cost
     }
 
-    fn candidate_to_recexpr(candidate: Candidate) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
-        panic!("TODO")
+
+    /// Starting at the given root, convert the Candidate into a RecExpr, and also return a
+    /// mapping from the RecExpr Id to the EGraph Id
+    pub fn candidate_to_recexpr(&self, candidate: Candidate, root: Id) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
+        // TODO: untested
+        let mut node_picked: HashMap<Id, Mdl> = HashMap::new();
+        for (i, node_idx) in candidate.iter().enumerate() {
+            let eclass_id = Id::from(i);
+            let enodes = &self.egraph[eclass_id].nodes;
+            let enode = enodes[*node_idx].clone();
+            assert!(node_picked.insert(eclass_id, enode).is_none());
+        }
+
+        let mut egraph_to_recexpr: HashMap<Id, Id> = HashMap::new();
+        let mut recexpr_to_egraph: HashMap<Id, Id> = HashMap::new();
+        let mut expr: RecExpr<Mdl> = RecExpr::default();
+
+        construct_best_rec(
+            &mut node_picked,
+            root,
+            &mut egraph_to_recexpr,
+            &mut recexpr_to_egraph,
+            &self.egraph,
+            &mut expr
+        );
+
+        (expr, recexpr_to_egraph)
     }
 }
 
