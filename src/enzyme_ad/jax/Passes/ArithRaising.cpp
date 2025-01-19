@@ -1,14 +1,13 @@
-//===- EnzymeWrapPass.cpp - Replace calls with their derivatives ------------ //
+//===- ArithRaising.cpp - Raise to Arith dialect --------------------------- //
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===---------------------------------------------------------------------===//
 //
-// This file implements a pass to create wrapper functions which differentiate
-// ops.
-//===----------------------------------------------------------------------===//
+// This file implements a pass to raise operations to arith dialect.
+//===---------------------------------------------------------------------===//
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
@@ -31,7 +30,6 @@
 
 using namespace mlir;
 using namespace mlir::enzyme;
-using namespace enzyme;
 
 namespace {
 struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
