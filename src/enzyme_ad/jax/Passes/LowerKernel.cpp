@@ -315,7 +315,8 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                        size_t cuModuleGetFunctionPtr, bool compileLaunch,
                        bool run_init, enzymexla::KernelCallOp kernelCallOp,
                        bool debug, size_t cuResultHandlerPtr,
-                       size_t cuStreamSynchronizePtr) {
+                       size_t cuStreamSynchronizePtr, std::string cubinFormat,
+                       int cuOptLevel, std::string cubinTriple) {
 
   OpBuilder builder(op);
 
@@ -505,11 +506,11 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       PassManager pm(submod.getContext());
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
-      options.cubinTriple = "nvptx64-nvidia-cuda";
+      options.cubinTriple = cubinTriple;
       options.cubinChip = cubinChip;
       options.cubinFeatures = cubinFeatures;
-      options.cubinFormat = "fatbin";
-      options.optLevel = 2;
+      options.cubinFormat = cubinFormat;
+      options.optLevel = cuOptLevel;
       options.kernelUseBarePtrCallConv = false;
       options.hostUseBarePtrCallConv = false;
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
@@ -935,7 +936,8 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
           cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
-          cuResultHandlerPtr, cuStreamSynchronizePtr);
+          cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
+          cubinTriple);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
