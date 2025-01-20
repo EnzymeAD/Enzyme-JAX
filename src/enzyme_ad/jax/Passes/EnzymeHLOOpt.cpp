@@ -3083,13 +3083,15 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
                                 PatternRewriter &rewriter) const final {
 
     // 0 / x -> 0 [assume non nan here]
-    if (matchPattern(op.getLhs(), m_AnyZeroFloat())) {
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
     // x / 1 -> x
-    if (matchPattern(op.getRhs(), m_OneFloat())) {
+    if (matchPattern(op.getRhs(), m_OneFloat()) ||
+        matchPattern(op.getRhs(), m_One())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
