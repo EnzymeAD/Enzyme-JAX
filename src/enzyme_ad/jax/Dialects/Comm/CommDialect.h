@@ -7,8 +7,8 @@
 #include "mlir/include/mlir/IR/DialectImplementation.h"
 #include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h.inc"
 
-#include "mlir/include/mlir/IR/BuiltinOps.h"   // from @llvm-project
-#include "mlir/include/mlir/IR/BuiltinTypes.h" // from @llvm-project
+#include "mlir/include/mlir/IR/BuiltinOps.h"
+#include "mlir/include/mlir/IR/BuiltinTypes.h"
 #include "mlir/include/mlir/IR/Dialect.h"
 
 #define GET_TYPEDEF_CLASSES

@@ -40,7 +40,8 @@ class CommAttr<string name, string mnemomic, list<Trait> traits = []> : AttrDef<
 
 def CommSplitBranchDescriptor : CommAttr<"SplitBranchDescriptor", "branch_descriptor"> {
   let parameters= (ins ArrayRefParameter<"unsigned">:$device_ids);
-  let assemblyFormat = [{ $device_ids }];
+  let assemblyFormat = [{ `{` custom<SplitBranchDescriptor>($device_ids) `}` }];
+  // let assemblyFormat = [{ $device_ids }];
 }
 
 /*
