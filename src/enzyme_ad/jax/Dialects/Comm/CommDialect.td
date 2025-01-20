@@ -17,18 +17,23 @@ class CommOp<string name, list<Trait> traits = []> : Op<CommunicationDialect, na
 class CommAttr<string name, string mnemomic, list<Trait> traits = []> : AttrDef<CommunicationDialect, name, traits>{
   let mnemonic = mnemomic;
 }
-// class CommType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<CommunicationDialect, name, traits> {
-//   let mnemonic = type_mnemonic;
-// }
+class CommType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<CommunicationDialect, name, traits> {
+  let mnemonic = type_mnemonic;
+}
 
 /*
 * Dialect Types
 */
-// def DeviceIdType : CommType<"DeviceId", "device_id"> {
-//   let summary="Wrapper around int to specify a device from our device set";
-//   let parameters=(ins "unsigned":$id);
-//   let assemblyFormat=[{`d` $id }];
-// }
+def DeviceIdType : CommType<"DeviceId", "device_id"> {
+  let summary="Wrapper around int to specify a device from our device set";
+  let parameters=(ins "unsigned":$id);
+  let assemblyFormat=[{`d` $id }];
+}
+def MessageTokenType : CommType<"MessageToken", "token"> {
+  let summary = "Represents a consumable message token";
+  // let parameters = (ins "Type":$msg_type);
+
+}
 
 /*
 * Dialect Attributes
@@ -90,5 +95,19 @@ def CommSplit : CommOp<"split"> {
 
   let assemblyFormat = [{
     attr-dict `{` custom<SplitBranch>($branch_metadata, $branches) `}`
+  }];
+}
+
+// Message types. In the future we will likely want to have a common base class
+def CommSimpleMessage: CommOp<"simple_msg"> {
+  let summary = "A simple single-usage, one-way message token";
+  let arguments = (ins 
+    TypeAttr:$msg_type
+  );
+  let results = (outs
+    MessageTokenType:$token
+  );
+  let assemblyFormat = [{
+    attr-dict $msg_type
   }];
 }

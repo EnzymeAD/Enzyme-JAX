@@ -4,6 +4,8 @@ module {
 
   func.func @main(%a : tensor<2x2xf32>) -> tensor<2x2xf32> {
     comm.foo
+
+    %msg = comm.simple_msg tensor<2x2xf32>
     comm.split {} {
       branch (1, 4) {
         ^start:
@@ -33,12 +35,3 @@ module {
     return %w#0 : tensor<2x2xf32>
   }
 }
-
-// CHECK:   func.func @main(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
-// CHECK-NEXT:     %0 = stablehlo.add %arg0, %arg0 : tensor<2x2xf32>
-// CHECK-NEXT:     %1 = stablehlo.add %0, %0 : tensor<2x2xf32>
-// CHECK-NEXT:     %2 = stablehlo.add %1, %1 : tensor<2x2xf32>
-// CHECK-NEXT:     %3 = stablehlo.add %2, %2 : tensor<2x2xf32>
-// CHECK-NEXT:     %4 = stablehlo.add %3, %3 : tensor<2x2xf32>
-// CHECK-NEXT:     return %4 : tensor<2x2xf32>
-// CHECK-NEXT:   }

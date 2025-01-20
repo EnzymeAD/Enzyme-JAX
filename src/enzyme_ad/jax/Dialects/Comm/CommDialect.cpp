@@ -1,7 +1,5 @@
 #include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
 #include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.cpp.inc"
-
-// Attr imports
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -9,6 +7,11 @@ using namespace mlir;
 using namespace mlir::comm;
 
 void CommunicationDialect::initialize() {
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "src/enzyme_ad/jax/Dialects/Comm/CommTypes.cpp.inc"
+      >();
+
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialects/Comm/CommAttrs.cpp.inc"
@@ -31,8 +34,8 @@ void CommunicationDialect::initialize() {
  * In its current form this almost certainly did not need to be a custom parser-
  * wrote this thinking I would add more to it.
  */
-static ParseResult parseSplitBranchDescriptor(AsmParser &p,
-                                              llvm::SmallVector<unsigned> &devices) {
+static ParseResult
+parseSplitBranchDescriptor(AsmParser &p, llvm::SmallVector<unsigned> &devices) {
 
   llvm::SmallVector<unsigned> dev_set;
   do {
@@ -62,3 +65,6 @@ static void printSplitBranchDescriptor(AsmPrinter &p,
 
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommAttrs.cpp.inc"
+
+#define GET_TYPEDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialects/Comm/CommTypes.cpp.inc"
