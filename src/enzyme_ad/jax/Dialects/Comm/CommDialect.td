@@ -9,6 +9,7 @@ def CommunicationDialect : Dialect {
   let summary = "A prototype dialect for various communication ops";
   let description = [{}];
   let cppNamespace = "::mlir::comm";
+  let useDefaultAttributePrinterParser = 1;
 }
 
 // Dialect inheritence shortcuts
@@ -40,8 +41,13 @@ class CommAttr<string name, string mnemomic, list<Trait> traits = []> : AttrDef<
 
 def CommSplitBranchDescriptor : CommAttr<"SplitBranchDescriptor", "branch_descriptor"> {
   let parameters= (ins ArrayRefParameter<"unsigned">:$device_ids);
-  let assemblyFormat = [{ `{` custom<SplitBranchDescriptor>($device_ids) `}` }];
-  // let assemblyFormat = [{ $device_ids }];
+  let assemblyFormat = [{ `(` custom<SplitBranchDescriptor>($device_ids) `)` }];
+  let description = [{
+    Attribute for describing a split branch. Currently holds only the device ids corresponding to the branch.
+
+    Syntax:
+      (deviceid[, deviceid]*)
+  }];
 }
 
 /*

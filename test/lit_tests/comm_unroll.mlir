@@ -5,12 +5,12 @@ module {
   func.func @main(%a : tensor<2x2xf32>) -> tensor<2x2xf32> {
     comm.foo
     comm.split {} {
-      branch {1, 4} {
+      branch (1, 4) {
         ^start:
         comm.foo
         comm.join
       }
-      branch {2} {
+      branch (2) {
         ^start:
         comm.join
       }

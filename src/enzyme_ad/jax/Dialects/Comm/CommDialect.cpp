@@ -4,7 +4,6 @@
 // Attr imports
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/Debug.h" // for dbgs
 
 using namespace mlir;
 using namespace mlir::comm;
@@ -33,9 +32,7 @@ void CommunicationDialect::initialize() {
  * wrote this thinking I would add more to it.
  */
 static ParseResult parseSplitBranchDescriptor(AsmParser &p,
-                                              ArrayRef<unsigned> devices) {
-
-  llvm::dbgs() << "Starting branch descriptor custom parse\n";
+                                              llvm::SmallVector<unsigned> &devices) {
 
   llvm::SmallVector<unsigned> dev_set;
   do {
@@ -46,23 +43,21 @@ static ParseResult parseSplitBranchDescriptor(AsmParser &p,
     if (parse_id) {
       return failure();
     }
-    llvm::dbgs() << "Parsed " << id << "\n";
   } while (succeeded(p.parseOptionalComma()));
-  llvm::dbgs() << "Ending branch descriptor custom parse\n";
 
   devices = dev_set;
-  llvm::dbgs() << "Returning success\n";
   return success();
 }
 
 /// Print the case regions and values.
 static void printSplitBranchDescriptor(AsmPrinter &p,
                                        llvm::ArrayRef<unsigned> devices) {
-  // for (auto [value, region] : llvm::zip(cases.asArrayRef(), caseRegions)) {
-  //   p.printNewline();
-  //   p << "case " << value << ' ';
-  //   p.printRegion(*region, /*printEntryBlockArgs=*/false);
-  // }
+  for (int i = 0; i < devices.size(); i++) {
+    if (i > 0) {
+      p << ", ";
+    }
+    p << devices[i];
+  }
 }
 
 #define GET_ATTRDEF_CLASSES
