@@ -171,17 +171,14 @@ private:
 };
 } // namespace
 
-template <typename TargetOp>
+template <typename TargetOp, typename Arg, typename... Args>
 static void populateOpPatterns(MLIRContext *context,
-                               RewritePatternSet &patterns, StringRef f32Func,
-                               StringRef f64Func, StringRef f32ApproxFunc = "",
-                               StringRef f16Func = "") {
-  patterns.add<CallToOpRaising<TargetOp>>(context, f32Func);
-  patterns.add<CallToOpRaising<TargetOp>>(context, f64Func);
-  if (!f32ApproxFunc.empty())
-    patterns.add<CallToOpRaising<TargetOp>>(context, f32ApproxFunc);
-  if (!f16Func.empty())
-    patterns.add<CallToOpRaising<TargetOp>>(context, f16Func);
+                               RewritePatternSet &patterns, Arg &&arg,
+                               Args &&...args) {
+  patterns.add<CallToOpRaising<TargetOp>>(context, std::forward<Arg>(arg));
+  if constexpr (sizeof...(Args) != 0)
+    populateOpPatterns<TargetOp>(context, patterns,
+                                 std::forward<Args>(args)...);
 }
 
 namespace {
@@ -399,6 +396,9 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                   "__nv_fast_tanf");
   populateOpPatterns<math::TanhOp>(converter, patterns, "__nv_tanhf",
                                    "__nv_tanh");
+  populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
+                                    "__nv_powi");
+  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
