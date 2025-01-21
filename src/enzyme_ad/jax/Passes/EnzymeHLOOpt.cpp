@@ -10,6 +10,8 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -1446,6 +1448,147 @@ struct ShiftRightLogicalSimplify final
       return success();
     }
     return failure();
+  }
+};
+
+struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  bool isLoopResultDead(OpResult result) const {
+    // Not dead if the result is in use.
+    if (!result.use_empty())
+      return false;
+
+    // Or if the corresponding argument is being used in computing the
+    // condition.
+    auto whileOp = cast<mlir::stablehlo::WhileOp>(result.getOwner());
+    Value condArgument =
+        whileOp.getCond().getArgument(result.getResultNumber());
+    SetVector<Operation *> forwardSlice;
+    getForwardSlice(condArgument, &forwardSlice);
+    if (!llvm::all_of(forwardSlice, mlir::isPure))
+      return false;
+    if (forwardSlice.contains(whileOp.getCond().front().getTerminator()))
+      return false;
+
+    // Or in computing another result. We first do a fast-path check of having
+    // the argument not influencing the terminator operation, before going into
+    // finer-grain analysis.
+    //
+    // TODO: it is possible that this argument does influence another terminator
+    // operand, but that operand in turn corresponds to a dead value, but
+    // handling that would require more complex logic of detecting dead cycles
+    // of value chains.
+    forwardSlice.clear();
+    assert(llvm::hasSingleElement(whileOp.getBody()));
+    Value bodyArgument =
+        whileOp.getBody().getArgument(result.getResultNumber());
+    getForwardSlice(bodyArgument, &forwardSlice);
+    if (!llvm::all_of(forwardSlice, mlir::isPure))
+      return false;
+
+    Operation *bodyTerminator = whileOp.getBody().front().getTerminator();
+    if (!forwardSlice.contains(bodyTerminator))
+      return true;
+
+    for (OpOperand &terminatorOperand : bodyTerminator->getOpOperands()) {
+      if (terminatorOperand.getOperandNumber() == result.getResultNumber())
+        continue;
+
+      SetVector<Operation *> backwardSlice;
+      BackwardSliceOptions options;
+      options.omitBlockArguments = true;
+      getBackwardSlice(terminatorOperand.get(), &backwardSlice, options);
+      for (Operation *op : backwardSlice) {
+        if (llvm::is_contained(op->getOperands(), bodyArgument))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  void replaceTerminator(PatternRewriter &rewriter, Region &region,
+                         ArrayRef<int64_t> deadResults) const {
+    Operation *terminator = region.front().getTerminator();
+    SmallVector<Value> terminatorOperands;
+    for (auto &&[i, operand] : llvm::enumerate(terminator->getOperands())) {
+      if (!llvm::is_contained(deadResults, i))
+        terminatorOperands.push_back(operand);
+    }
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(terminator);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+        terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
+  }
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<int64_t> deadResults;
+    for (OpResult result : op.getResults()) {
+      if (!isLoopResultDead(result))
+        continue;
+
+      deadResults.push_back(result.getResultNumber());
+    }
+    if (deadResults.empty())
+      return failure();
+
+    SetVector<Operation *> condSlice, bodySlice;
+    for (int64_t i : deadResults) {
+      getForwardSlice(op.getCond().getArgument(i), &condSlice);
+      getForwardSlice(op.getBody().getArgument(i), &bodySlice);
+    }
+    condSlice.remove(op.getCond().front().getTerminator());
+    bodySlice.remove(op.getBody().front().getTerminator());
+    replaceTerminator(rewriter, op.getCond(), deadResults);
+    replaceTerminator(rewriter, op.getBody(), deadResults);
+
+    condSlice = mlir::topologicalSort(condSlice);
+    bodySlice = mlir::topologicalSort(bodySlice);
+    for (Operation *erasable : llvm::reverse(condSlice))
+      rewriter.eraseOp(erasable);
+    for (Operation *erasable : llvm::reverse(bodySlice))
+      rewriter.eraseOp(erasable);
+
+    SmallVector<Value> operands;
+    SmallVector<Type> resultTypes;
+    SmallVector<Location> condBlockArgLocs, bodyBlockArgsLocs;
+    for (auto &&[i, operand, resultType] :
+         llvm::enumerate(op->getOperands(), op.getResultTypes())) {
+      if (llvm::is_contained(deadResults, i))
+        continue;
+
+      operands.push_back(operand);
+      resultTypes.push_back(resultType);
+      condBlockArgLocs.push_back(op.getCond().getArgument(i).getLoc());
+      bodyBlockArgsLocs.push_back(op.getBody().getArgument(i).getLoc());
+    }
+
+    auto updated = rewriter.create<mlir::stablehlo::WhileOp>(
+        op->getLoc(), resultTypes, operands, op->getAttrs());
+    SmallVector<Value> resultReplacements;
+    for (int64_t old = 0, upd = 0, end = op->getNumResults(); old < end;
+         ++old) {
+      if (llvm::is_contained(deadResults, old)) {
+        resultReplacements.push_back(nullptr);
+        continue;
+      }
+      resultReplacements.push_back(updated->getResult(upd));
+      ++upd;
+    }
+
+    for (int64_t i : llvm::reverse(deadResults))
+      op.getCond().eraseArgument(i);
+    rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
+                                updated.getCond().begin());
+
+    for (int64_t i : llvm::reverse(deadResults))
+      op.getBody().eraseArgument(i);
+    rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
+                                updated.getBody().begin());
+
+    rewriter.replaceOp(op, resultReplacements);
+    return success();
   }
 };
 
@@ -7394,19 +7537,38 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     }
     patterns.add<NoNanAddSubSimplify>((no_nan || all_finite), context);
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon,
-                 TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
-                 DynamicBroadcastInDimOpNotActuallyDynamic,
-                 ChainedDynamicBroadcastInDimCanonicalization,
-                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
-                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
-                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
-                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 SelectOpUsedWithinIf, IfInline, IfToSelect, WhileSimplify,
-                 ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
-                 DynamicGatherOpIsNotDynamic, DivideSqrtToMultiplyRsqrt>(
-        context);
+    // clang-format off
+    patterns.add<
+        BroadcastInDimOpCanon,
+        ChainedDynamicBroadcastInDimCanonicalization,
+        CompareOpCanon,
+        ConjComplexNegate,
+        ConvertOpCanon,
+        DivideSqrtToMultiplyRsqrt,
+        DynamicBroadcastInDimAllDimsNonExpanding,
+        DynamicBroadcastInDimOpNotActuallyDynamic,
+        DynamicGatherOpIsNotDynamic,
+        DynamicReshapeOpCanon,
+        EmptyReduceOpCanon,
+        GatherOpCanon,
+        GetDimensionSizeOpCanon,
+        GetTupleElementOpCanon,
+        IfInline,
+        IfToSelect,
+        ImagOpCanon,
+        MergeConsecutiveReshapes,
+        NoopReduceOpCanon,
+        RealOpCanon,
+        ReorderElementwiseAndShapeOp,
+        ReshapeOpCanon,
+        SelectOpUsedWithinIf,
+        TransposeBroadcastInDimToBroadcastInDim,
+        TransposeIsReshape,
+        WhileDeadResults,
+        WhileSimplify,
+        ZeroExtentTensorCanon
+      >(context);
+    // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
