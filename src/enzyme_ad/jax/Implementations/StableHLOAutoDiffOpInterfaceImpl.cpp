@@ -1824,77 +1824,17 @@ public:
   }
 };
 
-static void removalBlockExplore(Block *block, IRMapping &mapping,
-                                OpBuilder &builder,
-                                llvm::SetVector<Value> &gradients,
-                                llvm::MapVector<Value, CacheInfo> &caches) {
-  for (auto it = block->begin(), e = block->end(); it != e;) {
-    Operation *op = &*it;
-
-    if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
-      auto grad = setOp.getGradient();
-      auto value = setOp.getValue();
-      mapping.map(grad, value);
-      gradients.insert(grad);
-    }
-
-    if (auto getOp = dyn_cast<enzyme::GetOp>(op)) {
-      auto grad = getOp.getGradient();
-      Value value = mapping.lookupOrNull(getOp.getGradient());
-      if (!value) {
-        value = builder.create<enzyme::GetOp>(
-            getOp->getLoc(), getOp.getResult().getType(), grad);
-        mapping.map(grad, value);
-      }
-      getOp.getResult().replaceAllUsesWith(value);
-    }
-
-    if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
-      CacheInfo info(pushOp.getCache());
-
-      Value pushedValue = info.pushedValue();
-
-      // Then we can push the value before the if, if it is defined before the
-      // if
-      if (pushedValue.getParentBlock() != block) {
-        builder.create<enzyme::PushOp>(pushOp->getLoc(), pushOp.getCache(),
-                                       pushedValue);
-
-        ++it; // Increment iterator to allow in place deletion
-        pushOp->erase();
-
-        // Move the pop before the other if
-        OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPoint(info.popOp->getParentOp());
-
-        auto newPop = builder.create<enzyme::PopOp>(
-            info.popOp->getLoc(), pushedValue.getType(), info.popOp.getCache());
-        info.popOp.getResult().replaceAllUsesWith(newPop);
-        info.popOp->erase();
-
-        continue;
-      }
-
-      if (caches.contains(pushedValue)) {
-        info = info.merge(caches.lookup(pushedValue));
-      }
-      caches[pushedValue] = info;
-    }
-
-    ++it;
-  }
-}
-
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
-  LogicalResult removeEnzymeOps(Operation *op) const {
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
     auto whileOp = cast<stablehlo::WhileOp>(op);
     stablehlo::WhileOp otherWhileOp; // where cache pops are
 
     Block *body = &whileOp.getBody().front();
     Block *cond = &whileOp.getCond().front();
-    if (removeOpsWithinBlock(body).failed())
+    if (removeOpsWithinBlock(body, rewriter).failed())
       return failure();
 
     // Gradients whose values need to be passed as iteration variables.
@@ -1920,7 +1860,7 @@ struct WhileOpEnzymeOpsRemover
 
         Value pushedValue = info.pushedValue();
         if (cachesMap.contains(pushedValue)) {
-          info = info.merge(cachesMap.lookup(pushedValue));
+          info = info.merge(cachesMap.lookup(pushedValue), rewriter);
         }
         cachesMap[pushedValue] = info;
 
@@ -1938,8 +1878,6 @@ struct WhileOpEnzymeOpsRemover
       caches.push_back(info);
     }
 
-    OpBuilder builder(whileOp);
-
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
@@ -1949,13 +1887,13 @@ struct WhileOpEnzymeOpsRemover
       if (!getOp || updatedGradients.contains(getOp.getGradient()))
         continue;
 
-      auto outerGet = builder.create<enzyme::GetOp>(
+      auto outerGet = rewriter.create<enzyme::GetOp>(
           getOp->getLoc(),
           cast<enzyme::GradientType>(getOp.getResult().getType()).getBasetype(),
           getOp.getGradient());
 
-      getOp.getResult().replaceAllUsesWith(outerGet.getResult());
-      getOp->erase();
+      rewriter.replaceAllUsesWith(getOp.getResult(), outerGet.getResult());
+      rewriter.eraseOp(getOp);
     }
 
     auto term = body->getTerminator();
@@ -1966,22 +1904,22 @@ struct WhileOpEnzymeOpsRemover
     SmallVector<Value> newOperands(whileOp.getOperands());
     for (auto grad : updatedGradients) {
       auto Ty = cast<enzyme::GradientType>(grad.getType()).getBasetype();
-      auto outerGet = builder.create<enzyme::GetOp>(grad.getLoc(), Ty, grad);
+      auto outerGet = rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad);
 
       newOperands.push_back(outerGet.getResult());
       auto newArg = body->addArgument(Ty, grad.getLoc());
       cond->addArgument(Ty, grad.getLoc());
 
       {
-        OpBuilder::InsertionGuard guard(builder);
+        OpBuilder::InsertionGuard guard(rewriter);
 
-        builder.setInsertionPointToStart(body);
-        builder.create<enzyme::SetOp>(grad.getLoc(), grad, newArg);
+        rewriter.setInsertionPointToStart(body);
+        rewriter.create<enzyme::SetOp>(grad.getLoc(), grad, newArg);
 
-        builder.setInsertionPoint(term);
+        rewriter.setInsertionPoint(term);
 
         auto outputVal =
-            builder.create<enzyme::GetOp>(grad.getLoc(), Ty, grad).getResult();
+            rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad).getResult();
         term->insertOperands(term->getNumOperands(), ValueRange(outputVal));
       }
     }
@@ -2008,28 +1946,28 @@ struct WhileOpEnzymeOpsRemover
       inductionVariable = body->getArgument(0);
     }
 
-    auto zero = makeI64Constant(whileOp->getLoc(), builder, 0);
+    auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
-    for (auto info : caches) {
+    for (auto &info : caches) {
       Value cache = info.initOp.getResult();
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
       if (info.pushedValue().getParentRegion() != whileOp.getBody()) {
-        auto newPush = builder.create<enzyme::PushOp>(cache.getLoc(), cache,
+        auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
                                                       info.pushedValue());
-        info.pushOp->erase();
+        rewriter.eraseOp(info.pushOp);
         info.pushOp = newPush;
 
         {
-          OpBuilder::InsertionGuard guard(builder);
-          builder.setInsertionPoint(info.popOp->getParentOp());
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPoint(info.popOp->getParentOp());
 
           auto popVal = info.popOp.getResult();
-          auto newPop = builder.create<enzyme::PopOp>(cache.getLoc(),
+          auto newPop = rewriter.create<enzyme::PopOp>(cache.getLoc(),
                                                       popVal.getType(), cache);
-          popVal.replaceAllUsesWith(newPop.getResult());
-          info.popOp->erase();
+          rewriter.replaceAllUsesWith(popVal, newPop.getResult());
+          rewriter.eraseOp(info.popOp);
           info.popOp = newPop;
         }
 
@@ -2041,20 +1979,20 @@ struct WhileOpEnzymeOpsRemover
 
         // TODO: support adding an induction variable if not present
 
-        /*Value zero = builder.create<arith::ConstantOp>(whileOp->getLoc(),*/
-        /*                                               builder.getIndexAttr(0));*/
+        /*Value zero = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),*/
+        /*                                               rewriter.getIndexAttr(0));*/
         /*newOperands.push_back(zero);*/
         /**/
         /*inductionVariable = body->addArgument(zero.getType(),
          * whileOp->getLoc());*/
         /* cond->addArgument(zero.getType(), whileOp->getLoc());*/
         /*{*/
-        /*  OpBuilder::InsertionGuard guard(builder);*/
-        /*  builder.setInsertionPoint(term);*/
+        /*  OpBuilder::InsertionGuard guard(rewriter);*/
+        /*  rewriter.setInsertionPoint(term);*/
         /**/
-        /*  auto one = builder.create<arith::ConstantOp>(whileOp->getLoc(),*/
-        /*                                               builder.getIndexAttr(1));*/
-        /*  auto newInductionVar = builder.create<arith::AddIOp>(*/
+        /*  auto one = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),*/
+        /*                                               rewriter.getIndexAttr(1));*/
+        /*  auto newInductionVar = rewriter.create<arith::AddIOp>(*/
         /*      whileOp->getLoc(), inductionVariable, one);*/
         /*  term->insertOperands(term->getNumOperands(),*/
         /*                       ValueRange(newInductionVar));*/
@@ -2067,7 +2005,7 @@ struct WhileOpEnzymeOpsRemover
                          .cast<ShapedType>();
 
       Value initValue = newType.cast<AutoDiffTypeInterface>().createNullValue(
-          builder, info.initOp->getLoc());
+          rewriter, info.initOp->getLoc());
 
       newOperands.push_back(initValue);
 
@@ -2075,8 +2013,8 @@ struct WhileOpEnzymeOpsRemover
       cond->addArgument(newType, info.pushOp->getLoc());
 
       {
-        OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPoint(info.pushOp);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.pushOp);
 
         Value newCacheValue;
         if (auto TT = dyn_cast<TensorType>(info.cachedType())) {
@@ -2088,15 +2026,15 @@ struct WhileOpEnzymeOpsRemover
           SmallVector<int64_t> updateShape;
           updateShape.push_back(1);
           updateShape.append(shape.begin(), shape.end());
-          Value reshapedUpdate = builder.create<stablehlo::ReshapeOp>(
+          Value reshapedUpdate = rewriter.create<stablehlo::ReshapeOp>(
               info.pushOp->getLoc(), TT.clone(updateShape),
               info.pushOp.getValue());
 
-          newCacheValue = builder.create<stablehlo::DynamicUpdateSliceOp>(
+          newCacheValue = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
               info.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
         } else {
           assert(false && "todo");
-          // newCacheValue = builder.create<tensor::InsertOp>(
+          // newCacheValue = rewriter.create<tensor::InsertOp>(
           //     info.pushOp->getLoc(), info.pushOp.getValue(), cacheValue,
           //     inductionVariable);
         }
@@ -2107,7 +2045,7 @@ struct WhileOpEnzymeOpsRemover
 
     auto numInitArgs = whileOp->getNumOperands();
     auto newWhile =
-        builder.create<stablehlo::WhileOp>(op->getLoc(), newOperands);
+        rewriter.create<stablehlo::WhileOp>(op->getLoc(), newOperands);
 
     newWhile.getCond().takeBody(whileOp.getCond());
     newWhile.getBody().takeBody(whileOp.getBody());
@@ -2115,15 +2053,15 @@ struct WhileOpEnzymeOpsRemover
     unsigned resultIdx = numInitArgs;
     for (auto grad : updatedGradients) {
       // set the updated gradient after the new for op.
-      OpBuilder::InsertionGuard guard(builder);
-      builder.create<enzyme::SetOp>(grad.getLoc(), grad,
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
                                     newWhile->getResult(resultIdx));
       ++resultIdx;
     }
 
     for (auto &&[res, newRes] :
          llvm::zip(whileOp->getResults(), newWhile->getResults())) {
-      res.replaceAllUsesWith(newRes);
+      rewriter.replaceAllUsesWith(res, newRes);
     }
 
     // 4. On the other while op (the one containing the pops), we add an
@@ -2134,50 +2072,50 @@ struct WhileOpEnzymeOpsRemover
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
         resultIdx++;
 
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPoint(otherWhileOp);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(otherWhileOp);
       SmallVector<Value> operands(otherWhileOp->getOperands().begin(),
                                   otherWhileOp->getOperands().end());
       operands.push_back(
-          makeI64Constant(otherWhileOp->getLoc(), builder, numIters - 1));
+          makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
 
       Block *otherBody = &otherWhileOp.getBody().front();
       Block *otherCond = &otherWhileOp.getCond().front();
       Value otherInductionVariable = otherBody->addArgument(
-          RankedTensorType::get({}, builder.getI64Type()),
+          RankedTensorType::get({}, rewriter.getI64Type()),
           otherWhileOp->getLoc());
       otherCond->addArgument(otherInductionVariable.getType(),
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
 
-      builder.setInsertionPoint(otherTerm);
+      rewriter.setInsertionPoint(otherTerm);
 
       otherInductionVariable =
-          builder
+          rewriter
               .create<stablehlo::SubtractOp>(
                   otherWhileOp->getLoc(), otherInductionVariable,
-                  makeI64Constant(otherWhileOp->getLoc(), builder, 1))
+                  makeI64Constant(otherWhileOp->getLoc(), rewriter, 1))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));
 
-      builder.setInsertionPoint(otherWhileOp);
+      rewriter.setInsertionPoint(otherWhileOp);
       auto newOtherWhileOp =
-          builder.create<stablehlo::WhileOp>(otherWhileOp->getLoc(), operands);
+          rewriter.create<stablehlo::WhileOp>(otherWhileOp->getLoc(), operands);
 
       for (auto &&[res, newRes] : llvm::zip(otherWhileOp->getResults(),
                                             newOtherWhileOp->getResults())) {
-        res.replaceAllUsesWith(newRes);
+        rewriter.replaceAllUsesWith(res, newRes);
       }
       newOtherWhileOp.getCond().takeBody(otherWhileOp.getCond());
       newOtherWhileOp.getBody().takeBody(otherWhileOp.getBody());
 
-      otherWhileOp->erase();
+      rewriter.eraseOp(otherWhileOp);
       otherWhileOp = newOtherWhileOp;
     }
 
     // 5. Finally, replace pops with slices.
-    for (auto info : caches) {
+    for (auto &info : caches) {
       if (info.pushedValue().getParentRegion() != newWhile.getBody())
         continue;
 
@@ -2187,35 +2125,35 @@ struct WhileOpEnzymeOpsRemover
           info.cachedType().cast<AutoDiffTypeInterface>().getShadowType(
               numIters);
       enzyme::InitOp newInit = ({
-        OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPoint(info.initOp);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.initOp);
 
-        builder.create<enzyme::InitOp>(
+        rewriter.create<enzyme::InitOp>(
             info.initOp->getLoc(),
             enzyme::CacheType::get(cache.getContext(), newType));
       });
       info.pushOp = ({
-        OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPointAfter(newWhile);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointAfter(newWhile);
         auto newPush =
-            builder.create<enzyme::PushOp>(cache.getLoc(), newInit.getResult(),
+            rewriter.create<enzyme::PushOp>(cache.getLoc(), newInit.getResult(),
                                            newWhile->getResult(resultIdx));
-        info.pushOp->erase();
+        rewriter.eraseOp(info.pushOp);
         newPush;
       });
 
       resultIdx++;
 
       {
-        OpBuilder::InsertionGuard guard(builder);
+        OpBuilder::InsertionGuard guard(rewriter);
 
-        builder.setInsertionPoint(otherWhileOp);
+        rewriter.setInsertionPoint(otherWhileOp);
 
-        auto popNewValue = builder.create<enzyme::PopOp>(
+        auto popNewValue = rewriter.create<enzyme::PopOp>(
             info.popOp->getLoc(), newType, newInit.getResult());
 
         Block *popBody = &otherWhileOp.getBody().front();
-        builder.setInsertionPoint(info.popOp);
+        rewriter.setInsertionPoint(info.popOp);
 
         Value newInductionVariable =
             popBody->getArgument(popBody->getNumArguments() - 1);
@@ -2230,31 +2168,93 @@ struct WhileOpEnzymeOpsRemover
           sliceSizes.push_back(1);
           sliceSizes.append(shape.begin(), shape.end());
 
-          popValue = builder.create<stablehlo::DynamicSliceOp>(
+          popValue = rewriter.create<stablehlo::DynamicSliceOp>(
               info.popOp->getLoc(), TT.clone(sliceSizes), popNewValue,
               startIndices, sliceSizes);
-          popValue = builder.create<stablehlo::ReshapeOp>(info.popOp->getLoc(),
+          popValue = rewriter.create<stablehlo::ReshapeOp>(info.popOp->getLoc(),
                                                           TT, popValue);
         } else {
           assert(false && "todo");
           // popValue = tensor.extract(%popNewValue)
         }
 
-        info.popOp.getResult().replaceAllUsesWith(popValue);
-        info.popOp->erase();
+        rewriter.replaceAllUsesWith(info.popOp, popValue);
+        rewriter.eraseOp(info.popOp);
       }
     }
 
-    whileOp->erase();
+    rewriter.eraseOp(whileOp);
 
     return success();
   }
 };
 
+static void removalBlockExplore(Block *block, IRMapping &mapping,
+                                PatternRewriter &rewriter,
+                                llvm::SetVector<Value> &gradients,
+                                llvm::MapVector<Value, CacheInfo> &caches) {
+  for (auto it = block->begin(), e = block->end(); it != e;) {
+    Operation *op = &*it;
+
+    if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+      auto grad = setOp.getGradient();
+      auto value = setOp.getValue();
+      mapping.map(grad, value);
+      gradients.insert(grad);
+    }
+
+    if (auto getOp = dyn_cast<enzyme::GetOp>(op)) {
+      auto grad = getOp.getGradient();
+      Value value = mapping.lookupOrNull(getOp.getGradient());
+      if (!value) {
+        value = rewriter.create<enzyme::GetOp>(
+            getOp->getLoc(), getOp.getResult().getType(), grad);
+        mapping.map(grad, value);
+      }
+      rewriter.replaceAllUsesWith(getOp.getResult(), value);
+    }
+
+    if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
+      CacheInfo info(pushOp.getCache());
+
+      Value pushedValue = info.pushedValue();
+
+      // Then we can push the value before the if, if it is defined before the
+      // if
+      if (pushedValue.getParentBlock() != block) {
+        rewriter.create<enzyme::PushOp>(pushOp->getLoc(), pushOp.getCache(),
+                                        pushedValue);
+
+        ++it; // Increment iterator to allow in place deletion
+        rewriter.eraseOp(pushOp);
+
+        // Move the pop before the other if
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.popOp->getParentOp());
+
+        auto newPop = rewriter.create<enzyme::PopOp>(
+            info.popOp->getLoc(), pushedValue.getType(), info.popOp.getCache());
+        rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
+        rewriter.eraseOp(info.popOp);
+
+        continue;
+      }
+
+      if (caches.contains(pushedValue)) {
+        info = info.merge(caches.lookup(pushedValue), rewriter);
+      }
+      caches[pushedValue] = info;
+    }
+
+    ++it;
+  }
+}
+
 struct IfOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<IfOpEnzymeOpsRemover,
                                                         stablehlo::IfOp> {
-  LogicalResult removeEnzymeOps(Operation *op) const {
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
     // Gradients:
     //
     //  For each set in a branch, we instead set after the if by using the
@@ -2289,8 +2289,8 @@ struct IfOpEnzymeOpsRemover
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
 
-    if (enzyme::removeOpsWithinBlock(trueBlock).failed() ||
-        enzyme::removeOpsWithinBlock(falseBlock).failed()) {
+    if (enzyme::removeOpsWithinBlock(trueBlock, rewriter).failed() ||
+        enzyme::removeOpsWithinBlock(falseBlock, rewriter).failed()) {
       return failure();
     }
 
@@ -2302,11 +2302,10 @@ struct IfOpEnzymeOpsRemover
 
     // Grad to value
     IRMapping trueMapping, falseMapping;
-    OpBuilder builder(ifOp);
 
-    removalBlockExplore(trueBlock, trueMapping, builder, gradients,
+    removalBlockExplore(trueBlock, trueMapping, rewriter, gradients,
                         pushedCaches);
-    removalBlockExplore(falseBlock, falseMapping, builder, gradients,
+    removalBlockExplore(falseBlock, falseMapping, rewriter, gradients,
                         pushedCaches);
 
     if (gradients.size() == 0 && pushedCaches.size() == 0)
@@ -2318,7 +2317,7 @@ struct IfOpEnzymeOpsRemover
     for (auto grad : gradients) {
       auto trueValue = trueMapping.lookupOrNull(grad);
       if (!trueValue) {
-        trueValue = builder.create<enzyme::GetOp>(
+        trueValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
             grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
       }
@@ -2327,7 +2326,7 @@ struct IfOpEnzymeOpsRemover
 
       auto falseValue = falseMapping.lookupOrNull(grad);
       if (!falseValue) {
-        falseValue = builder.create<enzyme::GetOp>(
+        falseValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
             grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
       }
@@ -2338,7 +2337,7 @@ struct IfOpEnzymeOpsRemover
     for (auto &[pushedValue, info] : pushedCaches) {
       Value dummy =
           pushedValue.getType().cast<AutoDiffTypeInterface>().createNullValue(
-              builder, pushedValue.getLoc());
+              rewriter, pushedValue.getLoc());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;
@@ -2351,38 +2350,40 @@ struct IfOpEnzymeOpsRemover
                                 ValueRange(falseValue));
     }
 
-    auto newIf = builder.create<stablehlo::IfOp>(
+    auto newIf = rewriter.create<stablehlo::IfOp>(
         ifOp->getLoc(), trueTerm->getOperandTypes(), ifOp.getPred());
     newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
     newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
 
     size_t idx = ifOp->getNumResults();
     for (auto grad : gradients) {
-      builder.create<enzyme::SetOp>(grad.getLoc(), grad, newIf->getResult(idx));
+      rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
+                                     newIf->getResult(idx));
       idx++;
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      builder.create<enzyme::PushOp>(info.pushOp->getLoc(),
-                                     info.initOp.getResult(),
-                                     newIf->getResult(idx));
-      info.pushOp->erase();
+      rewriter.create<enzyme::PushOp>(info.pushOp->getLoc(),
+                                      info.initOp.getResult(),
+                                      newIf->getResult(idx));
+      rewriter.eraseOp(info.pushOp);
 
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPoint(info.popOp->getParentOp());
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(info.popOp->getParentOp());
 
-      auto newPop = builder.create<enzyme::PopOp>(
+      auto newPop = rewriter.create<enzyme::PopOp>(
           info.popOp->getLoc(), info.popOp.getResult().getType(),
           info.popOp.getCache());
-      info.popOp.getResult().replaceAllUsesWith(newPop);
-      info.popOp->erase();
+      rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
+      rewriter.eraseOp(info.popOp);
 
       idx++;
     }
 
-    ifOp->replaceAllUsesWith(
+    rewriter.replaceAllUsesWith(
+        ifOp->getResults(),
         newIf->getResults().slice(0, ifOp->getNumResults()));
-    ifOp->erase();
+    rewriter.eraseOp(ifOp);
 
     return success();
   }
