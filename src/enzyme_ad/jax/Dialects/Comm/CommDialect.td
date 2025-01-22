@@ -9,7 +9,6 @@ def CommunicationDialect : Dialect {
   let summary = "A prototype dialect for various communication ops";
   let description = [{}];
   let cppNamespace = "::mlir::comm";
-  let useDefaultAttributePrinterParser = 1;
 }
 
 // Dialect inheritence shortcuts
@@ -36,26 +35,6 @@ def MessageTokenType : CommType<"MessageToken", "token"> {
 }
 
 /*
-* Dialect Attributes
-*/
-
-// def CommDeviceIdAttr : CommAttr<"DeviceIdAttr", "device_id_attr">{
-//   let parameters=(ins DeviceIdType:$id);
-//   let assemblyFormat = [{ $id }];
-// }
-
-def CommSplitBranchDescriptor : CommAttr<"SplitBranchDescriptor", "branch_descriptor"> {
-  let parameters= (ins ArrayRefParameter<"unsigned">:$device_ids);
-  let assemblyFormat = [{ `(` custom<SplitBranchDescriptor>($device_ids) `)` }];
-  let description = [{
-    Attribute for describing a split branch. Currently holds only the device ids corresponding to the branch.
-
-    Syntax:
-      (deviceid[, deviceid]*)
-  }];
-}
-
-/*
 * Dialect Ops
 */
 
@@ -79,22 +58,38 @@ def CommJoin : CommOp<"join", traits = [Terminator]> {
   }];
 }
 
-def CommSplit : CommOp<"split"> {
+def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   let summary = "The highest level split node in the communication dialect.";
   let description = [{
     Takes in a definition of communication items and a list of split branches for devices to take.
+    Encoded as a single-block no-terminator region that consists only of branches and communcation token declarations.
+    Example syntax:
+      comm.split {
+        %1 = comm.simple_msg msg_type
+        comm.branch [1, 4] {
+          // ... comm branch region
+        }
+        comm.branch [2] {
+          // ... comm branch region
+        }
+      }
   }];
 
-  let arguments = (ins
-    ArrayAttr:$branch_metadata // array of attributes of type CommSplitBranchDescriptor. Parallel array with $branches.
-  );
-  let regions = (region 
-    VariadicRegion<AnyRegion>:$branches // regions for each branch. Parallel array with $branch_metadata
-  );  
+  let arguments = (ins ); // no inputs yet, encoded in the region
+  let regions = (region SizedRegion<1>:$declarations);
   let results = (outs );
 
   let assemblyFormat = [{
-    attr-dict `{` custom<SplitBranch>($branch_metadata, $branches) `}`
+     $declarations attr-dict
+  }];
+}
+
+def CommBranch : CommOp<"branch"> {
+  let summary = "Represents one branch that can be taken by a split node";
+  let arguments = (ins DenseI32ArrayAttr:$device_ids);
+  let regions = (region AnyRegion:$region);
+  let assemblyFormat = [{
+    attr-dict $device_ids $region
   }];
 }
 
