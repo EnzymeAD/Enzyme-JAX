@@ -17,12 +17,18 @@ class PatternRewriter;
 class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
+std::unique_ptr<Pass> createRemoveDuplicateFuncDefPass();
 std::unique_ptr<Pass> createArithRaisingPass();
 std::unique_ptr<Pass> createConsumingInterpreterPass();
 std::unique_ptr<Pass> createEnzymeHLOOptPass();
 std::unique_ptr<Pass> createEnzymeHLOUnrollPass();
 std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
+std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
+std::unique_ptr<Pass> createSROAWrappersPass();
+
+void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
+                                         RewritePatternSet &patterns);
 } // namespace enzyme
 
 // namespace enzymexla {
@@ -34,6 +40,8 @@ namespace mlir {
 // Forward declaration from Dialect.h
 template <typename ConcreteDialect>
 void registerDialect(DialectRegistry &registry);
+
+class DLTIDialect;
 
 namespace mhlo {
 class MhloDialect;
@@ -89,29 +97,21 @@ class MemRefDialect;
 
 namespace async {
 class AsyncDialect;
-} // namespace async
+} // end namespace async
 
 namespace func {
 class FuncDialect;
-}
+} // end namespace func
 
 class AffineDialect;
+
 namespace LLVM {
 class LLVMDialect;
-}
+} // end namespace LLVM
 
 #define GEN_PASS_REGISTRATION
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
 } // end namespace mlir
 
-static void regsiterenzymeXLAPasses() {
-  using namespace mlir;
-  registerArithRaisingPass();
-  registerPrintPass();
-  registerEnzymeHLOOptPass();
-  registerEnzymeHLOUnrollPass();
-  registerLowerKernelPass();
-  registerConsumingInterpreterPass();
-}
 #endif // ENZYMEXLA_PASSES_H

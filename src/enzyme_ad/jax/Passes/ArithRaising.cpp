@@ -1,14 +1,13 @@
-//===- EnzymeWrapPass.cpp - Replace calls with their derivatives ------------ //
+//===- ArithRaising.cpp - Raise to Arith dialect --------------------------- //
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===---------------------------------------------------------------------===//
 //
-// This file implements a pass to create wrapper functions which differentiate
-// ops.
-//===----------------------------------------------------------------------===//
+// This file implements a pass to raise operations to arith dialect.
+//===---------------------------------------------------------------------===//
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
@@ -31,7 +30,6 @@
 
 using namespace mlir;
 using namespace mlir::enzyme;
-using namespace enzyme;
 
 namespace {
 struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
@@ -40,6 +38,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
     auto op = getOperation();
 
     op->walk([=](arith::AddFOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -52,6 +52,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::AddOp addOp) {
+      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -64,6 +66,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](complex::ConjOp addOp) {
+      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp =
@@ -72,6 +76,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](arith::AddIOp addOp) {
+      if (!addOp.getType().isa<RankedTensorType>())
+        return;
       OpBuilder builder(addOp);
       Value newAddOp;
       if (use_stablehlo)
@@ -84,6 +90,8 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
       addOp.erase();
     });
     op->walk([=](arith::ConstantOp constOp) {
+      if (!constOp.getType().isa<RankedTensorType>())
+        return;
       auto CT = constOp.getType();
       if (isa<TensorType>(CT)) {
         OpBuilder builder(constOp);

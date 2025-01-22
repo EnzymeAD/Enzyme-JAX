@@ -11,6 +11,14 @@
 
 include "mlir/Pass/PassBase.td"
 
+def RemoveDuplicateFuncDefPass : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
+  let summary = "Remove duplicate function definitions";
+  let constructor = "mlir::enzyme::createRemoveDuplicateFuncDefPass()";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect"
+  ]; 
+}
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
@@ -18,7 +26,7 @@ def ArithRaisingPass : Pass<"arith-raise"> {
     "mhlo::MhloDialect",
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
-    "enzyme::EnzymeDialect",
+    "enzyme::EnzymeDialect"
   ];
   let constructor = "mlir::enzyme::createArithRaisingPass()";
   let options = [
@@ -126,6 +134,28 @@ def PrintPass : Pass<"print"> {
     ];
 }
 
+def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
+  let summary = "";
+  let dependentDialects = [];
+  let constructor = "mlir::enzyme::createSROAWrappersPass()";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::DLTIDialect",
+    "mlir::NVVM::NVVMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect"
+  ];
+}
+
+def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
+  let summary = "Raise libdevice function calls to arith/math operations";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "math::MathDialect",
+  ];
+  let constructor = "mlir::enzyme::createLibDeviceFuncsRaisingPass()";
+}
+
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
@@ -143,7 +173,7 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     "NVVM::NVVMDialect",
     "LLVM::LLVMDialect",
     "arith::ArithDialect",
-    "tensor::TensorDialect",
+    "tensor::TensorDialect"
   ];
 
   let options = [
@@ -223,6 +253,48 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Run initialization of cuda module"
+    >,
+    Option<
+      /*C++ variable name=*/"debug",
+      /*CLI argument=*/"debug",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Compile in debug prints"
+    >,
+    Option<
+      /*C++ variable name=*/"cuResultHandlerPtr",
+      /*CLI argument=*/"cuResultHandlerPtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to call with result of curesult"
+    >,
+    Option<
+      /*C++ variable name=*/"cuStreamSynchronizePtr",
+      /*CLI argument=*/"cuStreamSynchronizePtr",
+      /*type=*/"size_t",
+      /*default=*/"0",
+      /*description=*/"Function handler to sync results"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinFormat",
+      /*CLI argument=*/"cubinFormat",
+      /*type=*/"std::string",
+      /*default=*/"\"bin\"",
+      /*description=*/"Binary format"
+    >,
+    Option<
+      /*C++ variable name=*/"cuOptLevel",
+      /*CLI argument=*/"cuOptLevel",
+      /*type=*/"int",
+      /*default=*/"2",
+      /*description=*/"Opt level for ptx"
+    >,
+    Option<
+      /*C++ variable name=*/"cubinTriple",
+      /*CLI argument=*/"cubinTriple",
+      /*type=*/"std::string",
+      /*default=*/"\"nvptx64-nvidia-cuda\"",
+      /*description=*/"Target triple"
     >,
     ];
 }

@@ -113,6 +113,7 @@ reorder_elementwise_and_shape_op<16>;
 dynamic_gather_op_is_not_dynamic<16>;
 concat_gather<16>;
 divide_sqrt_to_multiply_rsqrt<16>;
+transpose_broadcast_in_dim_to_broadcast_in_dim<16>;
 
 cse_broadcast_in_dim<16>;
 cse_slice<16>;
@@ -173,6 +174,10 @@ slice_pad<1>;
 dot_reshape_dot<1>;
 concat_const_prop<1>;
 dynamic_update_slice_const_prop<1>;
+log_const_prop<1>;
+log_plus_one_const_prop<1>;
+chlo_inf_const_prop<1>;
+gamma_const_prop<1>;
 concat_fuse<1>;
 pad_reshape_pad<1>;
 pad_pad<1>;
@@ -182,6 +187,7 @@ scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
+select_op_used_within_if<1>;
 replace_neg_add_with_subtract<16>;
 
 bin_broadcast_splat_add<1>;
@@ -207,6 +213,21 @@ binary_op_transpose_simplify_and<1>;
 binary_op_transpose_simplify_or<1>;
 binary_op_transpose_simplify_xor<1>;
 binary_op_transpose_simplify_rem<1>;
+
+transpose_unary_transpose_abs<1>;
+transpose_unary_transpose_neg<1>;
+transpose_unary_transpose_sqrt<1>;
+transpose_unary_transpose_rsqrt<1>;
+transpose_unary_transpose_ceil<1>;
+transpose_unary_transpose_convert<1>;
+transpose_unary_transpose_cosine<1>;
+transpose_unary_transpose_exp<1>;
+transpose_unary_transpose_expm1<1>;
+transpose_unary_transpose_log<1>;
+transpose_unary_transpose_log1p<1>;
+transpose_unary_transpose_sign<1>;
+transpose_unary_transpose_sine<1>;
+transpose_unary_transpose_tanh<1>;
 
 slice_reshape_concat<1>;
 slice_reshape_elementwise<1>;
@@ -255,6 +276,10 @@ slice_dot_general<1>;
 
 dot_reshape_pad<1>;
 pad_dot_general<1>(0);
+
+if_inline<1>;
+if_to_select<1>;
+while_simplify<1>;
 
 dot_reshape_pad<1>;
 pad_dot_general<1>(1);
@@ -1106,7 +1131,7 @@ def cpp_call(
     )
 
 
-_enzyme_primal_p = jax.core.Primitive("enzyme_primal")
+_enzyme_primal_p = jax.extend.core.Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
 _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
@@ -1114,7 +1139,7 @@ jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
 xla_client.register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
 
-_enzyme_fwd_p = jax.core.Primitive("enzyme_fwd")
+_enzyme_fwd_p = jax.extend.core.Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
 _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
@@ -1220,7 +1245,7 @@ def dejaxify(x):
     return {0: jnp.float32, 1: jnp.float64}[x]
 
 
-_enzyme_aug_p = jax.core.Primitive("enzyme_aug")
+_enzyme_aug_p = jax.extend.core.Primitive("enzyme_aug")
 _enzyme_aug_p.multiple_results = True
 _enzyme_aug_p.def_impl(_enzyme_aug_impl)
 _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
@@ -1239,12 +1264,12 @@ xla_client.register_custom_call_target(
     "jaxzyme.aug", enzyme_call.get_callback(), platform="tpu"
 )
 
-_enzyme_shadow_aug_p = jax.core.Primitive("enzyme_shadow_aug")
+_enzyme_shadow_aug_p = jax.extend.core.Primitive("enzyme_shadow_aug")
 _enzyme_shadow_aug_p.multiple_results = True
 _enzyme_shadow_aug_p.def_impl(_enzyme_shadow_aug_impl)
 _enzyme_shadow_aug_p.def_abstract_eval(_enzyme_shadow_aug_abstract_eval)
 
-_enzyme_rev_p = jax.core.Primitive("enzyme_rev")
+_enzyme_rev_p = jax.extend.core.Primitive("enzyme_rev")
 _enzyme_rev_p.multiple_results = True
 _enzyme_rev_p.def_impl(_enzyme_rev_impl)
 _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)

@@ -225,6 +225,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
+    llvm::errs() << "modOp: " << *modOp << "\n";
     llvm::errs() << "could not convert to LLVM IR\n";
     return {};
   }
@@ -312,7 +313,10 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                        std::string cubinFeatures, size_t cuLaunchKernelPtr,
                        size_t cuModuleLoadDataPtr,
                        size_t cuModuleGetFunctionPtr, bool compileLaunch,
-                       bool run_init) {
+                       bool run_init, enzymexla::KernelCallOp kernelCallOp,
+                       bool debug, size_t cuResultHandlerPtr,
+                       size_t cuStreamSynchronizePtr, std::string cubinFormat,
+                       int cuOptLevel, std::string cubinTriple) {
 
   OpBuilder builder(op);
 
@@ -341,14 +345,18 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
-  auto submod = builder.create<ModuleOp>(loc, "offload");
+  static size_t id = 0;
+  id++;
+  auto submod = builder.create<ModuleOp>(loc, "offload" + std::to_string(id));
   submod->setAttr("gpu.container_module", builder.getUnitAttr());
   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
 
   auto gpumod = builder.create<gpu::GPUModuleOp>(loc, "gpumodname");
   builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
 
-  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, "kernel", gpuTy);
+  std::string legalName = op.getName().str();
+  std::replace(legalName.begin(), legalName.end(), '#', '_');
+  auto gpufunc = builder.create<gpu::GPUFuncOp>(loc, legalName, gpuTy);
   {
     auto entry = &gpufunc.getBody().front();
     builder.setInsertionPointToEnd(entry);
@@ -419,7 +427,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       if (auto op2 = cop.resolveCallable())
         tocopy.push_back(op2);
     });
-    op->walk([&](LLVM::AddressOfOp cop) {
+    cur->walk([&](LLVM::AddressOfOp cop) {
       if (auto op2 = cop.getGlobal(symbolTable))
         tocopy.push_back(op2);
       else if (auto op2 = cop.getFunction(symbolTable))
@@ -498,16 +506,19 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       PassManager pm(submod.getContext());
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
-      options.cubinTriple = "nvptx64-nvidia-cuda";
+      options.cubinTriple = cubinTriple;
       options.cubinChip = cubinChip;
       options.cubinFeatures = cubinFeatures;
-      options.cubinFormat = "fatbin";
-      options.optLevel = 2;
+      options.cubinFormat = cubinFormat;
+      options.optLevel = cuOptLevel;
       options.kernelUseBarePtrCallConv = false;
       options.hostUseBarePtrCallConv = false;
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
 
-      pm.run(submod);
+      auto subres = pm.run(submod);
+      if (!subres.succeeded()) {
+        return {};
+      }
 
       OpBuilder builder(submod);
 
@@ -527,8 +538,12 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                             idx,   i32, ptrty, ptrty, ptrty};
 
       auto launch_ty = LLVM::LLVMFunctionType::get(i32, cutys);
+      mlir::Type curesulttys[] = {i32};
+      auto curesult_handler_ty =
+          LLVM::LLVMFunctionType::get(voidty, curesulttys);
       LLVM::LLVMFuncOp launch =
           builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
+      auto cusync_ty = LLVM::LLVMFunctionType::get(i32, {ptrty});
 
       mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
       auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
@@ -537,12 +552,12 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       LLVM::GlobalOp kernStr;
       {
-        std::string value = "kernel";
         auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+            mlir::IntegerType::get(builder.getContext(), 8),
+            legalName.size() + 1);
         kernStr = builder.create<LLVM::GlobalOp>(
             loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
-            builder.getStringAttr(value + '\0'));
+            builder.getStringAttr(legalName + '\0'));
       }
 
       builder.setInsertionPointToStart(&submod.getBodyRegion().front());
@@ -551,17 +566,63 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
           loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
           LLVM::Linkage::External);
 
-      LLVM::GlobalOp printStrFunc;
-      {
-        std::string value = "found pointer func = %p\n";
+      LLVM::LLVMFuncOp printfunc = nullptr;
+      LLVM::LLVMFuncOp putfunc = nullptr;
+
+      if (debug) {
+        printfunc = builder.create<LLVM::LLVMFuncOp>(
+            loc, "printf",
+            LLVM::LLVMFunctionType::get(ptrty, {ptrty, ptrty}, false),
+            LLVM::Linkage::External);
+        printfunc.setVisibility(SymbolTable::Visibility::Private);
+        putfunc = builder.create<LLVM::LLVMFuncOp>(
+            loc, "puts", LLVM::LLVMFunctionType::get(voidty, {ptrty}, false),
+            LLVM::Linkage::External);
+        putfunc.setVisibility(SymbolTable::Visibility::Private);
+      }
+
+      LLVM::GlobalOp loadModuleStr = nullptr;
+      if (debug) {
+        std::string value = "load Module result = %d\n";
         auto type = LLVM::LLVMArrayType::get(
             mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        printStrFunc = builder.create<LLVM::GlobalOp>(
+        loadModuleStr = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
+            builder.getStringAttr(value + '\0'));
+      }
+      LLVM::GlobalOp loadFuncStr = nullptr;
+      if (debug) {
+        std::string value = "load Func result = %d\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        loadFuncStr = builder.create<LLVM::GlobalOp>(
             loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
             builder.getStringAttr(value + '\0'));
       }
+      LLVM::GlobalOp launchKernelStr = nullptr;
+      if (debug) {
+        std::string value = "launch Kernel result = %d\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        launchKernelStr = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+            "strlaunch", builder.getStringAttr(value + '\0'));
+      }
+      LLVM::GlobalOp modOpStr = nullptr;
+      if (debug) {
+        std::string opstr;
+        llvm::raw_string_ostream ss(opstr);
 
-      LLVM::GlobalOp binary;
+        ss << kernelCallOp;
+        std::string value = "modstr=" + modstr + "\n" + opstr + "\n\n";
+        auto type = LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+        modOpStr = builder.create<LLVM::GlobalOp>(
+            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
+            "strmlirmod", builder.getStringAttr(value + '\0'));
+      }
+
+      LLVM::GlobalOp binary = nullptr;
       submod.walk([&](gpu::BinaryOp op) {
         gpu::ObjectAttr object = getSelectedObject(op);
         auto value = object.getObject().getValue();
@@ -583,6 +644,11 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             builder.getContext(), mlir::LLVM::UnnamedAddr::None));
         op.erase();
       });
+      if (!binary) {
+        llvm::errs() << "could not find binary object in submod:\n"
+                     << *submod << "\n";
+        assert(binary);
+      }
 
       {
         auto blk = new Block();
@@ -598,15 +664,36 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> modargs = {modptr->getResult(0),
                                             addr_modbin->getResult(0)};
 
+        mlir::Value loadModRes = nullptr;
         if (cuModuleLoadDataPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleLoadDataPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           modargs.insert(modargs.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, modload_ty, modargs);
+          loadModRes = builder.create<LLVM::CallOp>(loc, modload_ty, modargs)
+                           ->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, modload, modargs);
+          loadModRes =
+              builder.create<LLVM::CallOp>(loc, modload, modargs)->getResult(0);
+        }
+
+        if (debug) {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, loadModuleStr)
+                  ->getResult(0),
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadModRes)
+                  ->getResult(0)};
+          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+        }
+        if (cuResultHandlerPtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+          auto addr_glob =
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                  ->getResult(0);
+          mlir::Value args[2] = {addr_glob, loadModRes};
+          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
         }
 
         auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
@@ -617,15 +704,36 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         SmallVector<mlir::Value> funcargs = {funcptr->getResult(0),
                                              mod->getResult(0),
                                              addr_kernstr->getResult(0)};
+        mlir::Value loadFuncRes = nullptr;
         if (cuModuleGetFunctionPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuModuleGetFunctionPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           funcargs.insert(funcargs.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs);
+          loadFuncRes =
+              builder.create<LLVM::CallOp>(loc, funcload_ty, funcargs)
+                  ->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, funcload, funcargs);
+          loadFuncRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
+                            ->getResult(0);
+        }
+
+        if (debug) {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, loadFuncStr)->getResult(0),
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadFuncRes)
+                  ->getResult(0)};
+          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+        }
+        if (cuResultHandlerPtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+          auto addr_glob =
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                  ->getResult(0);
+          mlir::Value args[2] = {addr_glob, loadFuncRes};
+          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
         }
 
         auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
@@ -656,15 +764,65 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
             params,
             builder.create<LLVM::ZeroOp>(loc, ptrty)};
 
+        Value kernRes;
         if (cuLaunchKernelPtr) {
           auto addr_glob_int = builder.create<LLVM::ConstantOp>(
               loc, i64, builder.getI64IntegerAttr(cuLaunchKernelPtr));
           auto addr_glob =
               builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
           args.insert(args.begin(), addr_glob);
-          builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
+          kernRes =
+              builder.create<LLVM::CallOp>(loc, launch_ty, args)->getResult(0);
         } else {
-          builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
+          kernRes =
+              builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
+        }
+        if (debug) {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, launchKernelStr)
+                  ->getResult(0),
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)
+                  ->getResult(0)};
+          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+        }
+        if (debug) {
+          Value printargs1[] = {
+              builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
+          builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
+        }
+        if (cuResultHandlerPtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+          auto addr_glob =
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                  ->getResult(0);
+          mlir::Value args[2] = {addr_glob, kernRes};
+          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+        }
+
+        if (cuStreamSynchronizePtr) {
+          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+              loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
+          auto addr_glob =
+              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
+          mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
+          auto syncRes =
+              builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
+
+          if (debug) {
+            Value printargs1[] = {
+                builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
+            builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
+          }
+          if (cuResultHandlerPtr) {
+            auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+                loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+            auto addr_glob =
+                builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                    ->getResult(0);
+            mlir::Value args[2] = {addr_glob, syncRes};
+            builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+          }
         }
 
         op.erase();
@@ -675,6 +833,7 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
         return {};
 
       ptr = CompileHostModule(ss.str(), submod, run_init, &cuLaunchKernelPtr);
+      kernels[ss.str()] = ptr;
 
       submod.erase();
     }
@@ -744,6 +903,12 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
+      if (fn.getArguments().size() != op.getInputs().size()) {
+        op->emitError() << "Kernel_call had " << op.getInputs().size()
+                        << " whereas called kernel requires "
+                        << fn.getArguments().size() << "\n";
+        return;
+      }
 
       Value vals[] = {op.getGridx(),  op.getGridy(),  op.getGridz(),
                       op.getBlockx(), op.getBlocky(), op.getBlockz(),
@@ -770,7 +935,9 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
           cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr, compileLaunch, run_init);
+          cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
+          cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
+          cubinTriple);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
