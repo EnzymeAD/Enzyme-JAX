@@ -1,4 +1,4 @@
-//===- EnzymeWrapPass.cpp - Replace calls with their derivatives ------------ //
+//===- EnzymeHLOUnroll.cpp - Unroll stablehlo.while loops -----------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,8 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements a pass to create wrapper functions which differentiate
-// ops.
+// This file implements a pass to unroll stablehlo.while ops with known number
+// of iterations.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/Builders.h"
@@ -51,9 +52,7 @@ struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
     auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
     auto loopBodyBlock = &op.getBody().front();
 
-    auto iters =
-        (info.getConstantLimit().value() - info.getConstantStart().value()) /
-        info.getConstantStep().value();
+    auto iters = info.getConstantNumIters();
 
     SmallVector<Value> results(op.getOperands().begin(),
                                op.getOperands().end());
