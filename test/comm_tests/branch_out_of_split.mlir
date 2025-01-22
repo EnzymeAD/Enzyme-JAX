@@ -10,8 +10,7 @@ module {
       comm.branch [1, 4] {
         ^start:
         comm.foo
-        comm.split {
-          %msg2 = comm.simple_msg f32
+        comm.split { 
           comm.branch [1] {
             comm.join
           }
@@ -22,11 +21,12 @@ module {
         }
         comm.join
       }
-      comm.branch [2] {
-        ^start:
-        comm.join
-      }
     }
+    comm.branch [2] {
+      ^start:
+      comm.join
+    }
+    
     %start = stablehlo.constant dense<0> : tensor<i32>
     
     %lim = stablehlo.constant dense<5> : tensor<i32>

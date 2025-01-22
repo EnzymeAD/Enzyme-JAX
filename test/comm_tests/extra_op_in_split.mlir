@@ -10,8 +10,7 @@ module {
       comm.branch [1, 4] {
         ^start:
         comm.foo
-        comm.split {
-          %msg2 = comm.simple_msg f32
+        comm.split { 
           comm.branch [1] {
             comm.join
           }
@@ -19,6 +18,7 @@ module {
             comm.foo
             comm.join
           }
+          comm.foo
         }
         comm.join
       }

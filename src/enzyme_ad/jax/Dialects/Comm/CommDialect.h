@@ -11,6 +11,14 @@
 #include "mlir/include/mlir/IR/BuiltinTypes.h"
 #include "mlir/include/mlir/IR/Dialect.h"
 
+namespace mlir::comm {
+template <typename ConcreteType>
+class SplitMemberOp : public OpTrait::TraitBase<ConcreteType, SplitMemberOp> {
+public:
+  static LogicalResult verifyTrait(Operation *op);
+};
+} // namespace mlir::comm
+
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommTypes.h.inc"
 
@@ -19,5 +27,13 @@
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommOps.h.inc"
+
+template <typename ConcreteType>
+mlir::LogicalResult mlir::comm::SplitMemberOp<ConcreteType>::verifyTrait(Operation *op) {
+  if (!isa<CommSplit>(op->getParentOp())) {
+    return op->emitOpError("must be located as immediate child of split op");
+  }
+  return success();
+}
 
 #endif

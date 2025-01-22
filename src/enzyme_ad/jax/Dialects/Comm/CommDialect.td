@@ -35,6 +35,23 @@ def MessageTokenType : CommType<"MessageToken", "token"> {
 }
 
 /*
+* Dialect traits 
+*/
+def CommSplitMemberOpTrait :  NativeOpTrait<"SplitMemberOp", 
+  /*traits=*/[],
+  /*extraOpDeclaration = */[{
+    mlir::comm::CommSplit getParentSplit();
+  }],
+  /*extraOpDefinition = */[{
+    mlir::comm::CommSplit $cppClass::getParentSplit(){
+      // Verifier checks that this is indeed of the correct type
+      return dyn_cast<mlir::comm::CommSplit>(getOperation()->getParentOp());
+    }
+  }]
+>{
+  let cppNamespace = "::mlir::comm";
+}
+/*
 * Dialect Ops
 */
 
@@ -82,9 +99,21 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   let assemblyFormat = [{
      $declarations attr-dict
   }];
+
+  let hasVerifier = 1;
+
+  // Add some convenience getters to hide the mess around having a declarations region
+  let extraClassDeclaration = [{
+    auto getMessages() {
+      return getDeclarations().getOps<::mlir::comm::CommSimpleMessage>();
+    }
+    auto getBranches() {
+      return getDeclarations().getOps<::mlir::comm::CommBranch>();
+    }
+  }];
 }
 
-def CommBranch : CommOp<"branch"> {
+def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait]> {
   let summary = "Represents one branch that can be taken by a split node";
   let arguments = (ins DenseI32ArrayAttr:$device_ids);
   let regions = (region AnyRegion:$region);
@@ -94,7 +123,7 @@ def CommBranch : CommOp<"branch"> {
 }
 
 // Message types. In the future we will likely want to have a common base class
-def CommSimpleMessage: CommOp<"simple_msg"> {
+def CommSimpleMessage: CommOp<"simple_msg", traits = [CommSplitMemberOpTrait]> {
   let summary = "A simple single-usage, one-way message token";
   let arguments = (ins 
     TypeAttr:$msg_type
