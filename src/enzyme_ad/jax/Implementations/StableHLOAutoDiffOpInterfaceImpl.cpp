@@ -1931,8 +1931,6 @@ struct WhileOpEnzymeOpsRemover
 
     // TODO: support non-constant loops by using a dynamic dimension
     if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      // NOTE: We return success here to continue the operation
-      op->emitError() << "could not compute bounds for while op\n";
       return failure();
     }
 
