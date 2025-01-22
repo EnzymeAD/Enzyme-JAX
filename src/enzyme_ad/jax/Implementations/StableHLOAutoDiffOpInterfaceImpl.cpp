@@ -1,5 +1,4 @@
-//===- StableHLOAutoDiffOpInterfaceImpl.cpp - Interface external model
-//--------===//
+//===- StableHLOAutoDiffOpInterfaceImpl.cpp - Interface external model ----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -1955,7 +1954,7 @@ struct WhileOpEnzymeOpsRemover
       // push/pop before the for loops.
       if (info.pushedValue().getParentRegion() != whileOp.getBody()) {
         auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
-                                                      info.pushedValue());
+                                                       info.pushedValue());
         rewriter.eraseOp(info.pushOp);
         info.pushOp = newPush;
 
@@ -1965,7 +1964,7 @@ struct WhileOpEnzymeOpsRemover
 
           auto popVal = info.popOp.getResult();
           auto newPop = rewriter.create<enzyme::PopOp>(cache.getLoc(),
-                                                      popVal.getType(), cache);
+                                                       popVal.getType(), cache);
           rewriter.replaceAllUsesWith(popVal, newPop.getResult());
           rewriter.eraseOp(info.popOp);
           info.popOp = newPop;
@@ -2055,7 +2054,7 @@ struct WhileOpEnzymeOpsRemover
       // set the updated gradient after the new for op.
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
-                                    newWhile->getResult(resultIdx));
+                                     newWhile->getResult(resultIdx));
       ++resultIdx;
     }
 
@@ -2137,7 +2136,7 @@ struct WhileOpEnzymeOpsRemover
         rewriter.setInsertionPointAfter(newWhile);
         auto newPush =
             rewriter.create<enzyme::PushOp>(cache.getLoc(), newInit.getResult(),
-                                           newWhile->getResult(resultIdx));
+                                            newWhile->getResult(resultIdx));
         rewriter.eraseOp(info.pushOp);
         newPush;
       });
@@ -2172,7 +2171,7 @@ struct WhileOpEnzymeOpsRemover
               info.popOp->getLoc(), TT.clone(sliceSizes), popNewValue,
               startIndices, sliceSizes);
           popValue = rewriter.create<stablehlo::ReshapeOp>(info.popOp->getLoc(),
-                                                          TT, popValue);
+                                                           TT, popValue);
         } else {
           assert(false && "todo");
           // popValue = tensor.extract(%popNewValue)
