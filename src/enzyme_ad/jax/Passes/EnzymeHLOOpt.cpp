@@ -7177,44 +7177,72 @@ struct NoNanAddSubSimplify final
     : public OpRewritePattern<stablehlo::SubtractOp> {
   using OpRewritePattern<stablehlo::SubtractOp>::OpRewritePattern;
 
+  NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
+  // Apply the pattern only if the output types are integers or if the pattern
+  // is allowed on floating point math.
+  bool canApplyPattern(bool allowOnFloatingPointMath, Type addOutTy,
+                       Type subOutTy) const {
+    addOutTy = getElementTypeOrSelf(addOutTy);
+    subOutTy = getElementTypeOrSelf(subOutTy);
+    if (addOutTy.isInteger() && subOutTy.isInteger())
+      return true;
+    return allowOnFloatingPointMath;
+  }
+
   LogicalResult matchAndRewrite(stablehlo::SubtractOp op,
                                 PatternRewriter &rewriter) const final {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
+    auto subOutTy = op.getResult().getType();
 
-    auto lhsOp = lhs.getDefiningOp<stablehlo::AddOp>();
-
-    if (!lhsOp) {
-      auto rhsOp = rhs.getDefiningOp<stablehlo::AddOp>();
-
-      if (!rhsOp)
+    // Check if LHS is defined by an AddOp
+    if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
+      auto addOutTy = lhsAddOp.getResult().getType();
+      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
         return failure();
 
-      if (rhsOp.getLhs() == lhs) {
-        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getRhs());
+      // Case: c = a + b; d = c - b -> d = a
+      if (lhsAddOp.getRhs() == rhs) {
+        rewriter.replaceOp(op, lhsAddOp.getLhs());
         return success();
       }
 
-      if (rhsOp.getRhs() == lhs) {
-        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsOp.getLhs());
+      // Case: c = a + b; d = c - a -> d = b
+      if (lhsAddOp.getLhs() == rhs) {
+        rewriter.replaceOp(op, lhsAddOp.getRhs());
+        return success();
+      }
+    }
+
+    // Check if RHS is defined by an AddOp
+    if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
+      auto addOutTy = rhsAddOp.getResult().getType();
+      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+        return failure();
+
+      // Case: c = a + b; d = b - c -> d = -a
+      if (rhsAddOp.getLhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsAddOp.getRhs());
         return success();
       }
 
-      return failure();
+      // Case: c = a + b; d = a - c -> d = -b
+      if (rhsAddOp.getRhs() == lhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, rhsAddOp.getLhs());
+        return success();
+      }
     }
 
-    if (lhsOp.getRhs() == rhs) {
-      rewriter.replaceOp(op, lhsOp.getLhs());
-      return success();
-    }
-
-    if (lhsOp.getLhs() == rhs) {
-      rewriter.replaceOp(op, lhsOp.getRhs());
-      return success();
-    }
-
+    // No simplification pattern matched
     return failure();
   }
+
+private:
+  bool allowOnFloatingPointMath = false;
 };
 
 ///////////////  End Imported from stablehlo
@@ -7397,8 +7425,9 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
     if (all_finite)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite) {
-      patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
+      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
     }
+    patterns.add<NoNanAddSubSimplify>((no_nan || all_finite), context);
 
     patterns.add<CompareOpCanon, BroadcastInDimOpCanon,
                  TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
