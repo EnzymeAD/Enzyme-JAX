@@ -1833,8 +1833,7 @@ struct WhileOpEnzymeOpsRemover
 
     Block *body = &whileOp.getBody().front();
     Block *cond = &whileOp.getCond().front();
-    if (removeOpsWithinBlock(body, rewriter).failed())
-      return failure();
+    (void)removeOpsWithinBlock(body, rewriter);
 
     // Gradients whose values need to be passed as iteration variables.
     llvm::SmallDenseSet<Value> updatedGradients;
@@ -2286,10 +2285,8 @@ struct IfOpEnzymeOpsRemover
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
 
-    if (enzyme::removeOpsWithinBlock(trueBlock, rewriter).failed() ||
-        enzyme::removeOpsWithinBlock(falseBlock, rewriter).failed()) {
-      return failure();
-    }
+    (void)enzyme::removeOpsWithinBlock(trueBlock, rewriter);
+    (void)enzyme::removeOpsWithinBlock(falseBlock, rewriter);
 
     // Gradients whose value is set in either branches.
     llvm::SetVector<Value> gradients;
