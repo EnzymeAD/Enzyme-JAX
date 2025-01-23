@@ -464,6 +464,7 @@ pybind_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:LLVMIRTransforms",
         "@llvm-project//mlir:LinalgTransformOps",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
