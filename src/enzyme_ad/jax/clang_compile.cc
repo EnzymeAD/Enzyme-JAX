@@ -576,7 +576,6 @@ struct tensor<T, n0, N...>
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
             .str());
   }
-  PB.parsePassPipeline(MPM, "default<O3>");
   MPM.run(*mod, MAM);
 
   auto F = mod->getFunction("prevent_stores");
