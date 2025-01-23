@@ -57,7 +57,7 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
          llvm::zip(m->getRegions(), mToTranslate->getRegions())) {
       for (auto &oldBlock : oldRegion.getBlocks()) {
         assert(oldBlock.getNumArguments() == 0);
-        auto newBlock = b.createBlock(&newRegion, newRegion.end());
+        b.createBlock(&newRegion, newRegion.end());
         for (auto &op : oldBlock) {
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
           // FIXME in reality, this check should be whether the entirety
