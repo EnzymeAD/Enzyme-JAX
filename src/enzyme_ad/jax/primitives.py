@@ -25,7 +25,12 @@ LANG_MHLO = enzyme_call.Language.MHLO
 
 from enum import Enum
 
-Primitive = jax.extend.core.Primitive if hasattr(jax.extend.core, 'Primitive') else jax.core.Primitive
+Primitive = (
+    jax.extend.core.Primitive
+    if hasattr(jax.extend.core, "Primitive")
+    else jax.core.Primitive
+)
+
 
 class PipelineConfig:
     # Whether to use the new xla runtime
