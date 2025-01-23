@@ -136,7 +136,10 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg", "@pypi_gcsfs//:pkg"],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+        "//conditions:default": [],
+    }),
     timeout='eternal',
     tags = ["exclusive"]
 )
