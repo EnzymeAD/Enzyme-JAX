@@ -27,7 +27,7 @@ from enum import Enum
 
 Primitive = (
     jax.extend.core.Primitive
-    if hasattr(jax.extend.core, "Primitive")
+    if hasattr(jax, "extend")
     else jax.core.Primitive
 )
 
