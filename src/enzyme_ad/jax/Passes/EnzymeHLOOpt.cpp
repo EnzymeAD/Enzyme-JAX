@@ -2296,12 +2296,12 @@ struct DynamicUpdateSliceConstProp final
       return failure();
 
     if (operandConstant.isSplat() && updateConstant.isSplat() &&
-        (isa<FloatType>(op.getType().getElementType()) &&
-             operandConstant.getSplatValue<llvm::APFloat>() ==
-                 updateConstant.getSplatValue<llvm::APFloat>() ||
-         isa<IntegerType>(op.getType().getElementType()) &&
-             operandConstant.getSplatValue<llvm::APInt>() ==
-                 updateConstant.getSplatValue<llvm::APInt>())) {
+        ((isa<FloatType>(op.getType().getElementType()) &&
+          operandConstant.getSplatValue<llvm::APFloat>() ==
+              updateConstant.getSplatValue<llvm::APFloat>()) ||
+         (isa<IntegerType>(op.getType().getElementType()) &&
+          operandConstant.getSplatValue<llvm::APInt>() ==
+              updateConstant.getSplatValue<llvm::APInt>()))) {
       rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
       return success();
     }
@@ -2349,7 +2349,7 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
     out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
   }
   // Replace with new constant op containing the computed result
-  auto tmp = rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+  rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
       op, op->getResultTypes()[0], out);
 
   return success();
