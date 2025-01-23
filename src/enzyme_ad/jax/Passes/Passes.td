@@ -20,6 +20,13 @@ def CommRemoveFoo : Pass<"remove-comm-foo"> {
   let constructor = "mlir::comm::createCommRemoveFooPass()";
 }
 
+def CommExplodeSplits : Pass<"explode-comm-splits"> {
+  let summary = "Converts a (nested) split into a non-nested split with one branch per device";
+  let dependentDialects = [
+    "comm::CommunicationDialect"
+  ];
+  let constructor = "mlir::comm::createCommExplodeSplitsPass()";
+}
 
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";

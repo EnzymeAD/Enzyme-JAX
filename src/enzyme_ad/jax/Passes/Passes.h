@@ -12,6 +12,9 @@
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
+#include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
+
+
 namespace mlir {
 class PatternRewriter;
 class RewritePatternSet;
@@ -24,6 +27,7 @@ std::unique_ptr<Pass> createPrintPass();
 } // namespace enzyme
 namespace comm {
 std::unique_ptr<Pass> createCommRemoveFooPass();
+std::unique_ptr<Pass> createCommExplodeSplitsPass();
 }
 } // namespace mlir
 
@@ -89,5 +93,6 @@ static void regsiterenzymeXLAPasses() {
   registerEnzymeHLOOptPass();
   registerEnzymeHLOUnrollPass();
   registerCommRemoveFooPass();
+  registerCommExplodeSplitsPass();
 }
 #endif // ENZYMEXLA_PASSES_H

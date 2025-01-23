@@ -13,6 +13,8 @@ module {
         comm.split {
           %msg2 = comm.simple_msg f32
           comm.branch [1] {
+            %lim = stablehlo.constant dense<5> : tensor<i32>
+            %step = stablehlo.constant dense<1> : tensor<i32>
             comm.join
           }
           comm.branch [4] {
