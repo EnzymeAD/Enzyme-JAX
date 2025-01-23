@@ -1321,70 +1321,21 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   auto type = inp.getType();
   auto elemType = type.getElementType();
 
-  if (elemType.isBF16()) {
-    auto floatValues =
-        ArrayRef((char *)inp.getData(), 2 * inp.getNumElements());
-    return DenseFPElementsAttr::getFromRawBuffer(type, floatValues);
+  int64_t bitWidth = -1;
+  if (auto inType = dyn_cast<IntegerType>(elemType)) {
+    // For bitwidth = 1: Packed into 8bit.
+    bitWidth = inType.getWidth();
+    if (bitWidth == 1)
+      bitWidth = 8;
   }
 
-  if (elemType.isF32()) {
-    auto floatValues = ArrayRef((float *)inp.getData(), inp.getNumElements());
-    return DenseFPElementsAttr::get(type, floatValues);
-  }
+  if (auto floatType = dyn_cast<FloatType>(elemType))
+    bitWidth = floatType.getWidth();
+  assert(bitWidth != -1 && "expect integer or float");
+  bitWidth = bitWidth / 8;
 
-  if (elemType.isF64()) {
-    auto floatValues = ArrayRef((double *)inp.getData(), inp.getNumElements());
-    return DenseFPElementsAttr::get(type, floatValues);
-  }
-
-  if (elemType.isSignlessInteger(1)) {
-    auto floatValues = ArrayRef((bool *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isSignlessInteger(8)) {
-    auto floatValues = ArrayRef((int8_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isSignlessInteger(16)) {
-    auto floatValues = ArrayRef((int16_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isSignlessInteger(32)) {
-    auto floatValues = ArrayRef((int32_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isSignlessInteger(64)) {
-    auto floatValues = ArrayRef((int64_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isUnsignedInteger(1)) {
-    auto floatValues = ArrayRef((bool *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isUnsignedInteger(8)) {
-    auto floatValues = ArrayRef((uint8_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isUnsignedInteger(16)) {
-    auto floatValues =
-        ArrayRef((uint16_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isUnsignedInteger(32)) {
-    auto floatValues =
-        ArrayRef((uint32_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-  if (elemType.isUnsignedInteger(64)) {
-    auto floatValues =
-        ArrayRef((uint64_t *)inp.getData(), inp.getNumElements());
-    return DenseIntElementsAttr::get(type, floatValues);
-  }
-
-  llvm::errs() << "Unknown stablehlo type to parse data from\n: " << elemType
-               << "\n";
-  assert(0);
-  return {};
+  auto floatValues = ArrayRef(inp.getData(), inp.getNumElements() * bitWidth);
+  return DenseElementsAttr::getFromRawBuffer(type, floatValues);
 }
 
 /*
@@ -3552,7 +3503,6 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
     }
-
     return failure();
   }
 };
