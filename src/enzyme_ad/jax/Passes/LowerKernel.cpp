@@ -323,8 +323,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Type intys[] = {ptrty, ptrty, ptrty};
   FunctionType calleeType = builder.getFunctionType(intys, {});
-  mlir::Type intys2[] = {ptrty, ptrty};
-  FunctionType printType = builder.getFunctionType(intys2, {});
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -442,7 +440,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
 
-  mlir::Value cufunc = entryBlock.getArgument(0);
   mlir::Value stream = entryBlock.getArgument(1);
   mlir::Value buffers = entryBlock.getArgument(2);
 
@@ -501,8 +498,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     if (found != kernels.end()) {
       ptr = found->second;
     } else {
-      // mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
-
       PassManager pm(submod.getContext());
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
@@ -882,8 +877,6 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
   }
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
-
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
