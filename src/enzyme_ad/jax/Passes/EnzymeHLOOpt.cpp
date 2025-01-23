@@ -7018,13 +7018,12 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
     newWhile.getBody().takeBody(op.getBody());
 
     // Replace uses for remaining results.
-    for (const auto &it : llvm::enumerate(operands))
-       {
-        Value oldRes = op->getResult(it.value());
-        Value newRes = newWhile->getResult(it.index());
+    for (const auto &it : llvm::enumerate(operands)) {
+      Value oldRes = op->getResult(it.value());
+      Value newRes = newWhile->getResult(it.index());
 
-        rewriter.replaceAllUsesWith(oldRes, newRes);
-      }
+      rewriter.replaceAllUsesWith(oldRes, newRes);
+    }
 
     rewriter.eraseOp(op);
 
