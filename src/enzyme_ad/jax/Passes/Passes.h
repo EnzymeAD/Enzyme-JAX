@@ -16,6 +16,21 @@ namespace mlir {
 class PatternRewriter;
 class RewritePatternSet;
 class DominanceInfo;
+std::unique_ptr<Pass> createLLVMToAffineAccessPass();
+std::unique_ptr<Pass> createPromoteScfWhilePass();
+std::unique_ptr<Pass> createGPUAffineOptPass();
+std::unique_ptr<Pass> createGPULaunchToParallelPass();
+std::unique_ptr<Pass> createGPUParallelToLaunchPass();
+std::unique_ptr<Pass> createConvertLLVMToArithPass();
+std::unique_ptr<Pass> createConvertLLVMToControlFlowPass();
+std::unique_ptr<Pass> createEnzymeLiftControlFlowToSCFPass();
+
+namespace arith {
+void populateLLVMToArithConversionPatterns(RewritePatternSet &patterns);
+} // namespace arith
+namespace cf {
+void populateLLVMToControlFlowConversionPatterns(RewritePatternSet &patterns);
+} // namespace cf
 namespace enzyme {
 std::unique_ptr<Pass> createRemoveDuplicateFuncDefPass();
 std::unique_ptr<Pass> createArithRaisingPass();
@@ -26,6 +41,7 @@ std::unique_ptr<Pass> createPrintPass();
 std::unique_ptr<Pass> createLowerKernelPass();
 std::unique_ptr<Pass> createLibDeviceFuncsRaisingPass();
 std::unique_ptr<Pass> createSROAWrappersPass();
+
 
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
@@ -67,6 +83,10 @@ namespace nvgpu {
 class NVGPUDialect;
 } // namespace nvgpu
 
+namespace ub {
+class UBDialect;
+} // namespace ub
+
 namespace NVVM {
 class NVVMDialect;
 } // namespace NVVM
@@ -90,6 +110,10 @@ class GPUDialect;
 namespace scf {
 class SCFDialect;
 } // end namespace scf
+
+namespace affine {
+class AffineDialect;
+} // end namespace affine
 
 namespace memref {
 class MemRefDialect;
