@@ -1320,11 +1320,14 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   auto elemType = type.getElementType();
 
   int64_t bitWidth = -1;
+  bool isI1 = false;
   if (auto inType = dyn_cast<IntegerType>(elemType)) {
     // For bitwidth = 1: Packed into 8bit.
     bitWidth = inType.getWidth();
-    if (bitWidth == 1)
+    if (bitWidth == 1) {
       bitWidth = 8;
+      isI1 = true;
+    }
   }
 
   if (auto floatType = dyn_cast<FloatType>(elemType))
@@ -1332,7 +1335,10 @@ DenseElementsAttr fromTensor(stablehlo::Tensor inp) {
   assert(bitWidth != -1 && "expect integer or float");
   bitWidth = bitWidth / 8;
 
-  auto floatValues = ArrayRef(inp.getData(), inp.getNumElements() * bitWidth);
+  auto size = inp.getNumElements() * bitWidth;
+  if (isI1)
+    size = llvm::alignTo<8>(size);
+  auto floatValues = ArrayRef(inp.getData(), size);
   return DenseElementsAttr::getFromRawBuffer(type, floatValues);
 }
 
