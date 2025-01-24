@@ -18,7 +18,7 @@ struct CuFuncWrapper {
   void *func;
 };
 
-void noop(void *) {};
+void noop(void *){};
 
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
