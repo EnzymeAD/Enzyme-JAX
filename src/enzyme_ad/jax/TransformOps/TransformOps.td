@@ -797,10 +797,6 @@ def ApplyShiftRightLogicalSimplifyPatterns : EnzymeHLOPatternOp<
     "shift_right_logical_simplify"> {
   let patterns = ["ShiftRightLogicalSimplify"];
 }
-def WhileDeadResultPatterns : EnzymeHLOPatternOp<
-    "while_deadresult"> {
-  let patterns = ["WhileDeadResults"];
-}
 def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
