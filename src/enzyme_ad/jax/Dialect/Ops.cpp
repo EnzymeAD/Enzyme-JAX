@@ -182,6 +182,7 @@ public:
         return failure();
       calls.push_back(launch2);
       auto operand_aliases2 = launchOp.getOutputOperandAliases();
+      (void)operand_aliases2;
       assert(operand_aliases2.size() == launchOp.getNumResults());
     }
 
