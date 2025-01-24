@@ -67,7 +67,7 @@ func.func @t4(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
 // NONAN-NEXT:    return %[[ARG0]] : tensor<3xf64>
 
 // NAN-LABEL:  @t4(
-// NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1]]: tensor<3xf64>) -> tensor<3xf64> {
+// NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1:.+]]: tensor<3xf64>) -> tensor<3xf64> {
 // NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG1]], %[[ARG0]] : tensor<3xf64>
 // NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ADD]], %[[ARG1]] : tensor<3xf64>
 // NAN-NEXT:    return %[[SUB]] : tensor<3xf64>
