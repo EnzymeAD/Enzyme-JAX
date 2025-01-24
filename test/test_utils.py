@@ -351,9 +351,9 @@ def pipelines():
     )
 
     return [
-        ("JaX  ", None, CurBackends),
-        ("JaXPipe", JaXPipeline(), CurBackends),
-        ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
+        # ("JaX  ", None, CurBackends),
+        # ("JaXPipe", JaXPipeline(), CurBackends),
+        # ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
         (
             "EqSat",
             JaXPipeline(
@@ -362,7 +362,7 @@ def pipelines():
             ),
             CurBackends,
         ),
-        ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
         # (
         #     "HLOOpt",
         #     JaXPipeline(

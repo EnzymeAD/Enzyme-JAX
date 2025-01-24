@@ -185,6 +185,27 @@ bool isBlackboxed(Operation *op) {
   }
 }
 
+func::FuncOp funcOpInModule(ModuleOp mod) {
+  bool found = false;
+  func::FuncOp funcOp;
+
+  for (Operation &op : mod.getBody()->getOperations()) {
+    if (isa<func::FuncOp>(op)) {
+      if (found) {
+        throw std::invalid_argument("found more than one FuncOp");
+      }
+      funcOp = dyn_cast<func::FuncOp>(op);
+      found = true;
+    }
+  }
+
+  if (!found) {
+    std::invalid_argument("no FuncOp in module");
+  }
+
+  return funcOp;
+}
+
 class OperationTimer {
 public:
   static std::vector<Operation *> *currentBlackboxIDToTensorInfo;
@@ -197,11 +218,7 @@ public:
    * - if GPU, we use XLA's analytical cost model to get the expected execution
    * time in nanoseconds.
    */
-  static std::pair<uint64_t, uint64_t> getCost(Operation *op, unsigned warmup,
-                                               unsigned repetitions) {
-    // TODO: refactor this/separate out into two functions? so that
-    // warmup/repetitions don't need to be passed for GPU.
-
+  static std::pair<uint64_t, uint64_t> getCost(Operation *op) {
     if (!logsInitialized) {
       InitializeLogs();
       logsInitialized = true;
@@ -209,10 +226,12 @@ public:
 
     std::string opName = op->getName().getStringRef().str();
 
+    /*
     // TODO: Have a whitelist instead?
     if (op->getDialect()->getNamespace() != "stablehlo" ||
         zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
       return {0, 0};
+    */
 
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
@@ -221,66 +240,29 @@ public:
     auto context = OperationTimer::getContext();
     int64_t cost = -1, fus_cost = -1;
 
+    std::cout << "Before clone" << std::endl;
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
     auto opForMeasurement = op->clone();
+    std::cout << "after clone" << std::endl;
 
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
 
+    std::cout << "aftre wrapper" << std::endl;
+
+    auto empirical_cost = getEmpiricalCost(wrapperModule);
+
+    std::cout << "after empirical" << std::endl;
+
     switch (getPlatform()) {
     case CPU: {
-      xla::PjRtClient *client = MakeCPUClient(0, 1, 1);
-      auto executable = prepareExecutable(client, wrapperModule);
-
-      unsigned numArgs = op->getNumOperands();
-      unsigned numResults = op->getNumResults();
-      uint8_t futures = 0;
-
-      xla::PjRtBuffer *args[numArgs];
-      uint8_t isArgDonatable[numArgs];
-
-      int numRuns = warmup + repetitions;
-
-      for (int i = 0; i < numArgs; i++) {
-        args[i] = getRandomInput(client, op->getOperand(i).getType());
-        isArgDonatable[i] = false;
-      }
-
-      std::vector<uint64_t> durations;
-
-      uint64_t sum_duration = 0;
-
-      for (unsigned i = 0; i < warmup + repetitions; i++) {
-        xla::PjRtBuffer *res[numResults];
-
-        auto duration = XLAExecute(executable, numArgs, args, isArgDonatable,
-                                   numResults, res, &futures, nullptr);
-        durations.push_back(duration);
-
-        for (int i = 0; i < numResults; i++) {
-          PjRtBufferFree(res[i]);
-        }
-
-        sum_duration += durations[i];
-
-        // Abort early if took a while (10 secs)
-        const int ABORT_THRESHOLD_US = 10 * 1000 * 1000;
-        if (sum_duration > ABORT_THRESHOLD_US) {
-          break;
-        }
-      }
-      // TODO: This means there's no point in warmup anymore, since we're now
-      // taking individual measurements. Maybe we get rid of the parameter or do
-      // something more sophisticated
-      cost = *std::min_element(durations.begin(), durations.end());
-      fus_cost = cost;
-      assert(!futures);
-
-      // Cleanup
-      FreeClient(executable->client());
-      ExecutableFree(executable);
-      break;
+      /*
+        cost = empirical_cost;
+        fus_cost = empirical_cost;
+        break;
+      */
+      throw std::invalid_argument("gpu only");
     }
     case GPU: {
       std::unique_ptr<xla::HloModule> hloModule =
@@ -312,6 +294,9 @@ public:
         cost = absl::ToInt64Nanoseconds(runtime.exec_time);
         fus_cost = absl::ToInt64Nanoseconds(runtime.compute_time);
       }
+
+      std::cout << "Empirical: " << empirical_cost << ", modelled: " << cost
+                << std::endl;
       break;
     }
     }
@@ -354,7 +339,7 @@ private:
 
   /**
    * Wrap operation into a module, where its operands are mapped to inputs of
-   * main. Doesn't mutate op (instead it creates a copy).
+   * main.
    */
   static ModuleOp createModuleFromOperation(MLIRContext *context,
                                             Operation *op) {
@@ -479,6 +464,93 @@ private:
                         .value();
     // assume ordinal 0
     return std::move(platform->DescriptionForDevice(0).value());
+  }
+
+  /**
+   * Measure cost of operation empirically.
+   */
+  static uint64_t getEmpiricalCost(ModuleOp &wrapperModule) {
+    xla::PjRtClient *client = nullptr;
+    int warmup, repetitions;
+
+    switch (getPlatform()) {
+    case CPU:
+      warmup = 100;
+      repetitions = 100;
+      client = MakeCPUClient(0, 1, 1);
+      break;
+    case GPU:
+      // Review this number
+      warmup = 30;
+      repetitions = 30;
+      // https://github.com/EnzymeAD/Reactant.jl/blob/65060404e19cd5a56a51e4fb2b252380477632b0/src/XLA.jl#L56
+      const char *error = "";
+      // TODO: is this correct?
+      client = MakeGPUClient(0, 1, nullptr, 0, "gpu", &error);
+      if (std::string(error) != "") {
+        auto error_string =
+            "Error while creating GPU client: " + std::string(error);
+        throw std::invalid_argument(error_string);
+      }
+      break;
+    }
+
+    auto funcOp = funcOpInModule(wrapperModule);
+    auto funcType = funcOp.getFunctionType();
+
+    std::cout << "Type: " << std::endl;
+    funcType.dump();
+
+    auto executable = prepareExecutable(client, wrapperModule);
+
+    unsigned numArgs = funcType.getNumInputs();
+    unsigned numResults = funcType.getNumResults();
+    uint8_t futures = 0;
+
+    xla::PjRtBuffer *args[numArgs];
+    uint8_t isArgDonatable[numArgs];
+
+    int numRuns = warmup + repetitions;
+
+    for (int i = 0; i < numArgs; i++) {
+      args[i] = getRandomInput(client, funcType.getInput(i));
+      isArgDonatable[i] = false;
+    }
+
+    std::vector<uint64_t> durations;
+
+    uint64_t sum_duration = 0;
+
+    for (unsigned i = 0; i < warmup + repetitions; i++) {
+      xla::PjRtBuffer *res[numResults];
+
+      auto duration = XLAExecute(executable, numArgs, args, isArgDonatable,
+                                 numResults, res, &futures, nullptr);
+      durations.push_back(duration);
+
+      for (int i = 0; i < numResults; i++) {
+        PjRtBufferFree(res[i]);
+      }
+
+      sum_duration += durations[i];
+
+      // Abort early if took a while (10 secs)
+      const int ABORT_THRESHOLD_US = 10 * 1000 * 1000;
+      if (sum_duration > ABORT_THRESHOLD_US) {
+        break;
+      }
+    }
+    // TODO: This means there's no point in warmup anymore, since we're now
+    // taking individual measurements. Maybe we get rid of the parameter or do
+    // something more sophisticated
+    auto cost = *std::min_element(durations.begin(), durations.end());
+    assert(!futures);
+
+    // Cleanup
+    FreeClient(executable->client());
+    ExecutableFree(executable);
+
+    return cost;
   }
 };
 
@@ -1113,21 +1185,8 @@ tensat::get_cost(tensat::Ops op, rust::Vec<tensat::Tensor> enode_args,
       createStableHloOp(builder, op, operands, other_vecs, int_args_as_vec,
                         matrix_args_as_vec, context);
 
-  int repeats = 0;
-  switch (getPlatform()) {
-  case CPU:
-    repeats = 200;
-    break;
-  case GPU:
-    // TODO: Review this number
-    repeats = 30;
-    break;
-  default:
-    assert(false);
-  }
-
   if (mlirOp) {
-    auto [cost, fus_cost] = OperationTimer::getCost(mlirOp, repeats, repeats);
+    auto [cost, fus_cost] = OperationTimer::getCost(mlirOp);
     mlirOp->erase();
     return {cost, fus_cost};
   }
@@ -2537,20 +2596,7 @@ uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
   reconstructStablehlo(&root, OperationTimer::currentBlackboxIDToTensorInfo,
                        OperationTimer::currentBlackboxIDToCapturedValues,
                        nodes);
-  int repeats = 0;
-  switch (getPlatform()) {
-  case CPU:
-    repeats = 200;
-    break;
-  case GPU:
-    // TODO: Review this number
-    repeats = 30;
-    break;
-  default:
-    assert(false);
-  }
-  return OperationTimer::getCost(&cast<Operation>(root), repeats, repeats)
-      .first;
+  return OperationTimer::getCost(root).first;
 }
 
 namespace {
@@ -2566,26 +2612,14 @@ public:
     auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
+
+    auto cost = OperationTimer::getCost(module).first;
+
+    return;
+
     OpBuilder builder(context);
 
-    bool foundFuncOp = false;
-    func::FuncOp funcOp;
-
-    for (Operation &op : module.getBody()->getOperations()) {
-      if (isa<func::FuncOp>(op)) {
-        if (foundFuncOp) {
-          throw std::invalid_argument("found more than one funcOp");
-        }
-        funcOp = dyn_cast<func::FuncOp>(op);
-        foundFuncOp = true;
-      }
-    }
-
-    if (!foundFuncOp) {
-      llvm::errs() << "No FuncOp found in the module.\n";
-      return;
-    }
-
+    auto funcOp = funcOpInModule(module);
     auto &entryBlock = funcOp.getBody().front();
 
     for (auto &op : entryBlock) {
