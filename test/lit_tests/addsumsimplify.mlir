@@ -1,5 +1,7 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{no_nan=true})" %s | FileCheck %s --check-prefix=NONAN
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=no_nan_add_sub_simplify(1)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefix=NONAN
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{no_nan=false})" %s | FileCheck %s --check-prefix=NAN
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=no_nan_add_sub_simplify(0)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefix=NAN
 
 
 func.func @t1(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {

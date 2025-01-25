@@ -29,8 +29,8 @@ void ApplyPadDotGeneralPatterns::populatePatterns(RewritePatternSet &patterns) {
                    PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyNoNanAddSubSimplify::populatePatterns(RewritePatternSet &patterns) {
-  addIotaSimplify(patterns, getParameter(), *getContext(),
-                  PatternBenefit(getBenefit().value_or(1)));
+  addNoNanAddSubSimplify(patterns, getParameter(), *getContext(),
+                         PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
