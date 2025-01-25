@@ -32,17 +32,21 @@
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
+#include "xla/service/backend.h"
 #include "xla/service/gpu/gpu_latency_hiding_scheduler.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/service/gpu/model/gpu_performance_model.h"
 #include "xla/service/platform_util.h"
+#include "xla/stream_executor/cuda/cuda_platform_id.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
 #include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 
 #include "cxxbridge/deps/tensat/src/input.rs.h"
 #include "rust/cxx.h"
 
+#include "../AnalyticalCostModel.h"
 #include "Passes.h"
 
 #include <chrono>
@@ -265,35 +269,7 @@ public:
       throw std::invalid_argument("gpu only");
     }
     case GPU: {
-      std::unique_ptr<xla::HloModule> hloModule =
-          wrapperModuleToHloModule(wrapperModule);
-
-      auto deviceDescription = getDeviceDescription();
-
-      xla::HloCostAnalysis::ShapeSizeFunction shapeSizeFunction =
-          [](const xla::Shape &shape) {
-            return xla::gpu::GetSizeOfShape(shape, 4);
-          };
-      xla::gpu::GpuHloCostAnalysis costAnalysis(
-          xla::gpu::GpuHloCostAnalysis::Options{
-              shapeSizeFunction, {}, {}, true},
-          *deviceDescription);
-
-      assert(hloModule->computation_count() == 1);
-      for (auto c : hloModule->computations()) {
-        c->Accept(&costAnalysis);
-        // The op we are measuring should always be the return value, which is
-        // at the root.
-        auto op = c->root_instruction();
-
-        auto runtime =
-            xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
-                op, *deviceDescription, &costAnalysis,
-                xla::gpu::GpuPerformanceModelOptions::ForModule(
-                    op->GetModule()));
-        cost = absl::ToInt64Nanoseconds(runtime.exec_time);
-        fus_cost = absl::ToInt64Nanoseconds(runtime.compute_time);
-      }
+      cost = AnalyticalCostModel::getAnalyticalCost(wrapperModule);
 
       std::cout << "Empirical: " << empirical_cost << ", modelled: " << cost
                 << std::endl;
@@ -428,42 +404,6 @@ private:
                                       shape.size(), shape.data(), device);
 
     return buffer;
-  }
-
-  /**
-   * Create XLA internal HloModule for the analytical cost model
-   */
-  static std::unique_ptr<xla::HloModule>
-  wrapperModuleToHloModule(ModuleOp &wrapperModule) {
-    auto context = wrapperModule.getContext();
-    PassManager pm(context);
-    pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
-    pm.run(wrapperModule);
-
-    MlirToHloConversionOptions options;
-    options.propagate_layouts = true;
-    options.return_tuple = false;
-
-    auto hloModule = ConvertMlirHloToHloModule(wrapperModule, options);
-    if (!hloModule.ok()) {
-      llvm::errs() << "Couldn't create hloModule: "
-                   << hloModule.status().message();
-      return nullptr;
-    } else {
-      return std::move(hloModule.value());
-    }
-  }
-
-  /**
-   * Get DeviceDescription for current device.
-   */
-  static std::unique_ptr<stream_executor::DeviceDescription>
-  getDeviceDescription() {
-    auto platform = xla::PlatformUtil::GetPlatform(
-                        (getPlatform() == EqsatPlatform::CPU ? "cpu" : "cuda"))
-                        .value();
-    // assume ordinal 0
-    return std::move(platform->DescriptionForDevice(0).value());
   }
 
   /**

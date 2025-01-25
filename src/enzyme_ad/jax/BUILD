@@ -226,6 +226,76 @@ gentbl_cc_library(
 )
 
 cc_library(
+    name = "RunXlaGpuPassesHdr",
+    hdrs = ["RunXlaGpuPasses.h"],
+    deps = [
+    "@xla//xla/hlo/ir:hlo",
+    ],
+    alwayslink = True,
+    linkstatic = True,
+)
+
+cc_library(
+    name = "RunXlaGpuPassesStub",
+    srcs = ["RunXlaGpuPassesStub.cpp"],
+    deps = [":RunXlaGpuPassesHdr"],
+    alwayslink = True,
+    linkstatic = True,
+)
+
+cc_library(
+    name = "RunXlaGpuPasses",
+    srcs = ["RunXlaGpuPasses.cpp"],
+    deps = [
+       ":RunXlaGpuPassesHdr",
+
+        "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/translate/stablehlo_to_hlo:translate",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+
+        "@xla//xla/service:backend",
+        "@xla//xla/service/gpu/model:gpu_performance_model",
+        "@xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
+        "@xla//xla/service/gpu/model:gpu_hlo_cost_analysis",
+        "@xla//xla/service/gpu:gpu_latency_hiding_scheduler",
+        "@xla//xla/service/gpu:nvptx_compiler",
+        "@xla//xla/stream_executor:device_description",
+    ]
+)
+
+
+cc_library(
+    name = "AnalyticalCostModel",
+    srcs = ["AnalyticalCostModel.cpp"],
+    hdrs = ["AnalyticalCostModel.h"],
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+
+        "@stablehlo//:reference_ops",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_passes",
+        "@xla//xla/mlir_hlo",
+
+        "@xla//xla/stream_executor:stream_executor_impl",
+        "@xla//xla/translate/stablehlo_to_hlo:translate",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+
+        "@xla//xla/service:backend",
+        "@xla//xla/service/gpu/model:gpu_performance_model",
+        "@xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
+        "@xla//xla/service/gpu/model:gpu_hlo_cost_analysis",
+        "@xla//xla/service/gpu:gpu_latency_hiding_scheduler",
+        "@xla//xla/stream_executor:device_description",
+    ] + select({
+    "@bazel_tools//src/conditions:darwin": [":RunXlaGpuPassesStub"],
+    "//conditions:default": [":RunXlaGpuPasses"]}),
+    alwayslink = True,
+    linkstatic = True,
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob(
         [
@@ -246,6 +316,7 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":AnalyticalCostModel",
         ":EnzymeXLAPassesIncGen",
         ":EnzyeHLOPatternsIncGen",
         ":mhlo-derivatives",
