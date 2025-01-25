@@ -65,45 +65,61 @@ struct PropagateConstantBoundsPass
       Region *reg = callee.getCallableRegion();
       // thread idx
       reg->walk([&](NVVM::ThreadIdXOp idxOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getGridx().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getBlockx().getDefiningOp(),
                                       idxOp.getOperation());
       });
       reg->walk([&](NVVM::ThreadIdYOp idyOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getGridy().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getBlocky().getDefiningOp(),
                                       idyOp.getOperation());
       });
       reg->walk([&](NVVM::ThreadIdZOp idzOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getGridz().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getBlockz().getDefiningOp(),
                                       idzOp.getOperation());
       });
       // thread range
       reg->walk([&](NVVM::BlockDimXOp blockIdxOp) {
         replaceWithConstantIfConstant(builder,
-                                      callOp.getGridx().getDefiningOp(),
+                                      callOp.getBlockx().getDefiningOp(),
                                       blockIdxOp.getOperation());
       });
       reg->walk([&](NVVM::BlockDimYOp blockIdyOp) {
         replaceWithConstantIfConstant(builder,
-                                      callOp.getGridy().getDefiningOp(),
+                                      callOp.getBlocky().getDefiningOp(),
                                       blockIdyOp.getOperation());
       });
       reg->walk([&](NVVM::BlockDimZOp blockIdzOp) {
         replaceWithConstantIfConstant(builder,
-                                      callOp.getGridz().getDefiningOp(),
+                                      callOp.getBlockz().getDefiningOp(),
                                       blockIdzOp.getOperation());
       });
       // block index
       reg->walk([&](NVVM::BlockIdXOp blkIdxOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getBlockx().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getGridx().getDefiningOp(),
                                       blkIdxOp.getOperation());
       });
       reg->walk([&](NVVM::BlockIdYOp blkIdyOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getBlocky().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getGridy().getDefiningOp(),
                                       blkIdyOp.getOperation());
       });
       reg->walk([&](NVVM::BlockIdZOp blkIdzOp) {
-        attachConstantRangeIfConstant(ctx, callOp.getBlockz().getDefiningOp(),
+        attachConstantRangeIfConstant(ctx, callOp.getGridz().getDefiningOp(),
                                       blkIdzOp.getOperation());
+      });
+      // block range
+      reg->walk([&](NVVM::GridDimXOp gridIdxOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridx().getDefiningOp(),
+                                      gridIdxOp.getOperation());
+      });
+      reg->walk([&](NVVM::GridDimYOp gridIdyOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridy().getDefiningOp(),
+                                      gridIdyOp.getOperation());
+      });
+      reg->walk([&](NVVM::GridDimZOp gridIdzOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridz().getDefiningOp(),
+                                      gridIdzOp.getOperation());
       });
     });
   }
