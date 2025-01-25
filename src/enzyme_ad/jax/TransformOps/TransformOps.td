@@ -343,9 +343,21 @@ def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
     "no_nan_self_sub_simplify"> {
   let patterns = ["NoNanSelfSubSimplify"];
 }
-def ApplyNoNanAddSubSimplify : EnzymeHLOPatternOp<
+
+// benefit 65k + max_constant_expansion flag
+def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_add_sub_simplify"> {
-  let patterns = ["NoNanAddSubSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def ApplyConcatPushBinopAddPatterns : EnzymeHLOPatternOp<
