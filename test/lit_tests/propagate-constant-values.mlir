@@ -6,11 +6,11 @@ llvm.func @foo(%arg0: i32) -> i32 {
 
 // CHECK-LABEL: ptx_kernelcc
 llvm.func ptx_kernelcc @"##foo#3846"() {
-    // CHECK: nvvm.read.ptx.sreg.tid.x range <i32, 0, 2> : i32
+    // CHECK: nvvm.read.ptx.sreg.tid.x range <i32, 0, 1> : i32
     %0 = nvvm.read.ptx.sreg.tid.x : i32
-    // CHECK-NEXT: nvvm.read.ptx.sreg.ctaid.x range <i32, 0, 1> : i32
+    // CHECK-NEXT: nvvm.read.ptx.sreg.ctaid.x range <i32, 0, 2> : i32
     %1 = nvvm.read.ptx.sreg.ctaid.x : i32
-    // CHECK-NEXT: %[[CST:.+]] = llvm.mlir.constant(2 : i32) : i32
+    // CHECK-NEXT: %[[CST:.+]] = llvm.mlir.constant(1 : i32) : i32
     %2 = nvvm.read.ptx.sreg.ntid.x : i32
     // CHECK: %{{.+}} = llvm.call @foo(%[[CST]]) : (i32) -> i32
     llvm.call @foo(%2) : (i32) -> i32
