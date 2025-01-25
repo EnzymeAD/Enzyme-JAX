@@ -52,6 +52,8 @@ uint64_t AnalyticalCostModel::getAnalyticalCost(ModuleOp &wrapperModule) {
 
   assert(hloModule->computation_count() == 1);
 
+  std::cout << hloModule->ToString() << std::endl;
+
   uint64_t cost = -1;
 
   for (auto c : hloModule->computations()) {
