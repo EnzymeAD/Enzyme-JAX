@@ -2757,7 +2757,7 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -2838,7 +2838,7 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3015,7 +3015,7 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3072,7 +3072,7 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3118,7 +3118,7 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3183,7 +3183,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
           }
         }
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3552,7 +3552,7 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -3594,7 +3594,7 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else {
+    } else if (op.getType().getElementType().isa<IntegerType>()) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
