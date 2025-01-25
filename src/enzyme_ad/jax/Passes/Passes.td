@@ -24,7 +24,7 @@ def PropagateConstantBoundsPass : Pass<"propagate-constant-bounds", "ModuleOp"> 
   let constructor = "mlir::enzyme::createPropagateConstantBoundsPass()";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
-    "mlir::NVVM::NVVMDialect",
+    "mlir::NVVM::NVVMDialect"
   ]; 
 }
 
