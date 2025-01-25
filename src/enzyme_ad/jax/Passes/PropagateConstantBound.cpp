@@ -61,7 +61,7 @@ struct PropagateConstantBoundsPass
       auto symbolName = callOp.getFn();
       auto callee = symTable.lookup<LLVM::LLVMFuncOp>(symbolName);
       if (!callee)
-        return WalkResult::advance();
+        return;
       Region *reg = callee.getCallableRegion();
       // thread idx
       reg->walk([&](NVVM::ThreadIdXOp idxOp) {
