@@ -17,6 +17,7 @@ class PatternRewriter;
 class RewritePatternSet;
 class DominanceInfo;
 namespace enzyme {
+std::unique_ptr<Pass> createPropagateConstantBoundsPass();
 std::unique_ptr<Pass> createRemoveDuplicateFuncDefPass();
 std::unique_ptr<Pass> createArithRaisingPass();
 std::unique_ptr<Pass> createConsumingInterpreterPass();

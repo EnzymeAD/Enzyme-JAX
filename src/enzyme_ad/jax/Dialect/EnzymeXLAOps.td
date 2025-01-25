@@ -53,13 +53,6 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
     OptionalAttr<AnyAttr>:$result_layouts,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases
-    //OptionalAttr<StableHLO_ArrayOfLayoutAttr>:$operand_layouts,
-    //OptionalAttr<StableHLO_ArrayOfLayoutAttr>:$result_layouts,
-    //DefaultValuedOptionalAttr<
-    //    TypedArrayAttrBase<
-    //        StableHLO_OutputOperandAlias,
-    //        "Aliasing attribute for outputs and operands of CustomCall">,
-    //    "{}">:$output_operand_aliases
   );
 
   let results = (outs Variadic<AnyType>);

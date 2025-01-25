@@ -19,6 +19,15 @@ def RemoveDuplicateFuncDefPass : Pass<"remove-duplicate-func-def", "mlir::Module
   ]; 
 }
 
+def PropagateConstantBoundsPass : Pass<"propagate-constant-bounds", "ModuleOp"> {
+  let summary = "Propagate constant bounds";
+  let constructor = "mlir::enzyme::createPropagateConstantBoundsPass()";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::NVVM::NVVMDialect",
+  ]; 
+}
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
@@ -135,8 +144,7 @@ def PrintPass : Pass<"print"> {
 }
 
 def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
-  let summary = "";
-  let dependentDialects = [];
+  let summary = "Run LLVM SROA (Scalar Replacement of Aggregates)";
   let constructor = "mlir::enzyme::createSROAWrappersPass()";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
