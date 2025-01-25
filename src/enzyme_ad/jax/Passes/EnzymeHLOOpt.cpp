@@ -7219,6 +7219,14 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
   patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
+                                             bool allowOnFloatingPointMath,
+                                             MLIRContext &context,
+                                             PatternBenefit benefit) {
+  patterns.insert<NoNanAddSubSimplify>(allowOnFloatingPointMath, &context,
+                                       benefit);
+}
+
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                                 int64_t maxConstantExpansion,
                                                 MLIRContext &context,
