@@ -57,7 +57,7 @@ struct PropagateConstantBoundsPass
     OpBuilder builder(ctx);
     SymbolTable symTable(moduleOp);
 
-    auto walkResult = moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
+    moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
       auto symbolName = callOp.getFn();
       auto callee = symTable.lookup<LLVM::LLVMFuncOp>(symbolName);
       if (!callee)
