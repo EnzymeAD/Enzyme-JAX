@@ -26,9 +26,35 @@ using namespace mlir::enzyme;
 namespace {
 struct PropagateConstantBoundsPass
     : public PropagateConstantBoundsPassBase<PropagateConstantBoundsPass> {
+
+  static void attachConstantRangeIfConstant(MLIRContext *ctx,
+                                            Operation *maybeCst,
+                                            Operation *target) {
+    APInt intValue;
+    if (matchPattern(maybeCst, m_ConstantInt(&intValue)))
+      target->setAttr("range", LLVM::ConstantRangeAttr::get(
+                                   ctx, 32, 0, intValue.getSExtValue()));
+  }
+
+  static void replaceWithConstantIfConstant(OpBuilder &builder,
+                                            Operation *maybeCst,
+                                            Operation *target) {
+    APInt intValue;
+    auto loc = target->getLoc();
+    if (matchPattern(maybeCst, m_ConstantInt(&intValue))) {
+      builder.setInsertionPoint(target);
+      auto newCst = builder.create<LLVM::ConstantOp>(
+          loc, builder.getI32Type(),
+          builder.getIntegerAttr(builder.getI32Type(),
+                                 intValue.getSExtValue()));
+      target->getResult(0).replaceAllUsesWith(newCst.getResult());
+    }
+  }
+
   void runOnOperation() override {
     auto moduleOp = getOperation();
     auto *ctx = moduleOp->getContext();
+    OpBuilder builder(ctx);
     SymbolTable symTable(moduleOp);
 
     // nvvm.read.ptx.sreg.tid.x
@@ -40,47 +66,45 @@ struct PropagateConstantBoundsPass
       Region *reg = callee.getCallableRegion();
       // thread idx
       reg->walk([&](NVVM::ThreadIdXOp idxOp) {
-        auto cst = callOp.getGridx().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          idxOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                      ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getGridx().getDefiningOp(),
+                                      idxOp.getOperation());
       });
       reg->walk([&](NVVM::ThreadIdYOp idyOp) {
-        auto cst = callOp.getGridy().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          idyOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                      ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getGridy().getDefiningOp(),
+                                      idyOp.getOperation());
       });
       reg->walk([&](NVVM::ThreadIdZOp idzOp) {
-        auto cst = callOp.getGridz().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          idzOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                      ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getGridz().getDefiningOp(),
+                                      idzOp.getOperation());
+      });
+      // thread range
+      reg->walk([&](NVVM::BlockDimXOp blockIdxOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridx().getDefiningOp(),
+                                      blockIdxOp.getOperation());
+      });
+      reg->walk([&](NVVM::BlockDimYOp blockIdyOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridy().getDefiningOp(),
+                                      blockIdyOp.getOperation());
+      });
+      reg->walk([&](NVVM::BlockDimZOp blockIdzOp) {
+        replaceWithConstantIfConstant(builder,
+                                      callOp.getGridz().getDefiningOp(),
+                                      blockIdzOp.getOperation());
       });
       // block index
       reg->walk([&](NVVM::BlockIdXOp blkIdxOp) {
-        auto cst = callOp.getBlockx().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          blkIdxOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                         ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getBlockx().getDefiningOp(),
+                                      blkIdxOp.getOperation());
       });
       reg->walk([&](NVVM::BlockIdYOp blkIdyOp) {
-        auto cst = callOp.getBlocky().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          blkIdyOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                         ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getBlocky().getDefiningOp(),
+                                      blkIdyOp.getOperation());
       });
       reg->walk([&](NVVM::BlockIdZOp blkIdzOp) {
-        auto cst = callOp.getBlockz().getDefiningOp();
-        APInt intValue;
-        if (matchPattern(cst, m_ConstantInt(&intValue)))
-          blkIdzOp->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                         ctx, 32, 0, intValue.getSExtValue()));
+        attachConstantRangeIfConstant(ctx, callOp.getBlockz().getDefiningOp(),
+                                      blkIdzOp.getOperation());
       });
     });
   }
