@@ -54,21 +54,22 @@ uint64_t AnalyticalCostModel::getAnalyticalCost(ModuleOp &wrapperModule) {
 
   std::cout << hloModule->ToString() << std::endl;
 
-  uint64_t cost = -1;
+  uint64_t cost = 0;
 
-  for (auto c : hloModule->computations()) {
-    c->Accept(&costAnalysis);
-    // The op we are measuring should always be the return value, which is
-    // at the root.
-    auto op = c->root_instruction();
+  auto computation = hloModule->entry_computation();
+  computation->Accept(&costAnalysis);
 
+  auto options =
+      xla::gpu::GpuPerformanceModelOptions::ForModule(hloModule.get());
+
+  // Sum up the costs for all the ops (assume additivity post-fusion and
+  // optimisation)
+  for (auto op : computation->instructions()) {
+    std::cout << "measuring " << op->ToString() << std::endl;
     auto runtime = xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
-        op, *deviceDescription, &costAnalysis,
-        xla::gpu::GpuPerformanceModelOptions::ForModule(op->GetModule()));
-    if (cost != -1) {
-      throw std::invalid_argument("found two computations");
-    }
-    cost = absl::ToInt64Nanoseconds(runtime.exec_time);
+        op, *deviceDescription, &costAnalysis, options);
+
+    cost += absl::ToInt64Nanoseconds(runtime.exec_time);
   }
 
   return cost;
