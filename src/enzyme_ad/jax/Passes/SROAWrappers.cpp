@@ -28,7 +28,6 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "llvm/Transforms/IPO/FunctionAttrs.h"
@@ -41,10 +40,19 @@
 
 #define DEBUG_TYPE "sroa-wrappers"
 
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_SROAWRAPPERSPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir::enzyme;
 
 namespace {
-struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
+struct SROAWrappersPass
+    : public mlir::enzyme::impl::SROAWrappersPassBase<SROAWrappersPass> {
+
   void runOnOperation() override {
     mlir::ModuleOp m = getOperation();
 
@@ -151,11 +159,3 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createSROAWrappersPass() {
-  return std::make_unique<SROAWrappersPass>();
-}
-} // namespace enzyme
-} // namespace mlir

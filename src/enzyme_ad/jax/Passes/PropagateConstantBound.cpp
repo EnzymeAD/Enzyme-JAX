@@ -6,7 +6,6 @@
 //
 //===---------------------------------------------------------------------===//
 
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -20,12 +19,20 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Visitors.h"
 
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_PROPAGATECONSTANTBOUNDSPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
 struct PropagateConstantBoundsPass
-    : public PropagateConstantBoundsPassBase<PropagateConstantBoundsPass> {
+    : public enzyme::impl::PropagateConstantBoundsPassBase<
+          PropagateConstantBoundsPass> {
 
   static void attachConstantRangeIfConstant(MLIRContext *ctx,
                                             Operation *maybeCst,
@@ -125,11 +132,3 @@ struct PropagateConstantBoundsPass
   }
 };
 } // end namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createPropagateConstantBoundsPass() {
-  return std::make_unique<PropagateConstantBoundsPass>();
-}
-} // namespace enzyme
-} // namespace mlir

@@ -10,19 +10,25 @@
 //===---------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
-#define DEBUG_TYPE "enzyme"
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_REMOVEDUPLICATEFUNCDEFPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
 struct RemoveDuplicateFuncDefPass
-    : public RemoveDuplicateFuncDefPassBase<RemoveDuplicateFuncDefPass> {
+    : public enzyme::impl::RemoveDuplicateFuncDefPassBase<
+          RemoveDuplicateFuncDefPass> {
+  using RemoveDuplicateFuncDefPassBase::RemoveDuplicateFuncDefPassBase;
 
   static bool areEquivalent(LLVM::LLVMFuncOp funcOp1,
                             LLVM::LLVMFuncOp funcOp2) {
@@ -119,11 +125,3 @@ struct RemoveDuplicateFuncDefPass
   }
 };
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createRemoveDuplicateFuncDefPass() {
-  return std::make_unique<RemoveDuplicateFuncDefPass>();
-}
-} // namespace enzyme
-} // namespace mlir

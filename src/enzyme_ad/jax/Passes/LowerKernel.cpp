@@ -10,7 +10,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -22,7 +21,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -79,6 +77,13 @@
 #include "mlir/Target/LLVMIR/Export.h"
 
 #define DEBUG_TYPE "lower-kernel"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_LOWERKERNELPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -839,7 +844,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
 namespace {
 
-struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
+struct LowerKernelPass
+    : public mlir::enzyme::impl::LowerKernelPassBase<LowerKernelPass> {
+  using LowerKernelPassBase::LowerKernelPassBase;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
@@ -960,11 +967,3 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createLowerKernelPass() {
-  return std::make_unique<LowerKernelPass>();
-}
-} // namespace enzyme
-} // namespace mlir

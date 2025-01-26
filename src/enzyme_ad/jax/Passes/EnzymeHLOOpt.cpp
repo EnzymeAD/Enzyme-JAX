@@ -20,7 +20,6 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -31,11 +30,15 @@
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
-#define DEBUG_TYPE "enzyme"
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_ENZYMEHLOOPTPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
-using namespace enzyme;
 
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
@@ -7250,7 +7253,9 @@ void mlir::transform::addConcatenateOpCanon(RewritePatternSet &patterns,
 }
 
 namespace {
-struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
+struct EnzymeHLOOptPass
+    : public enzyme::impl::EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
+  using EnzymeHLOOptPassBase::EnzymeHLOOptPassBase;
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
@@ -7423,11 +7428,3 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createEnzymeHLOOptPass() {
-  return std::make_unique<EnzymeHLOOptPass>();
-}
-} // namespace enzyme
-} // namespace mlir

@@ -13,7 +13,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
@@ -30,7 +29,12 @@
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 
-#define DEBUG_TYPE "enzyme"
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_ENZYMEHLOUNROLLPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -77,7 +81,8 @@ struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
 };
 
 struct EnzymeHLOUnrollPass
-    : public EnzymeHLOUnrollPassBase<EnzymeHLOUnrollPass> {
+    : public enzyme::impl::EnzymeHLOUnrollPassBase<EnzymeHLOUnrollPass> {
+  using EnzymeHLOUnrollPassBase::EnzymeHLOUnrollPassBase;
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
@@ -92,11 +97,3 @@ struct EnzymeHLOUnrollPass
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createEnzymeHLOUnrollPass() {
-  return std::make_unique<EnzymeHLOUnrollPass>();
-}
-} // namespace enzyme
-} // namespace mlir

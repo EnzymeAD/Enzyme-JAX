@@ -11,10 +11,16 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_LIBDEVICEFUNCSRAISINGPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -446,10 +452,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 }
 
 namespace {
-class LibDeviceFuncsRaisingPass
-    : public LibDeviceFuncsRaisingPassBase<LibDeviceFuncsRaisingPass> {
-public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LibDeviceFuncsRaisingPass)
+struct LibDeviceFuncsRaisingPass
+    : public enzyme::impl::LibDeviceFuncsRaisingPassBase<
+          LibDeviceFuncsRaisingPass> {
+  using LibDeviceFuncsRaisingPassBase::LibDeviceFuncsRaisingPassBase;
 
   void runOnOperation() override {
     RewritePatternSet patterns(getOperation()->getContext());
@@ -462,7 +468,3 @@ public:
   }
 };
 } // namespace
-
-std::unique_ptr<Pass> mlir::enzyme::createLibDeviceFuncsRaisingPass() {
-  return std::make_unique<LibDeviceFuncsRaisingPass>();
-}
