@@ -10,22 +10,24 @@
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
 #include "mlir/Pass/Pass.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
+
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_CONSUMINGINTERPRETERPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
-class ConsumingInterpreterPass
-    : public ConsumingInterpreterPassBase<ConsumingInterpreterPass> {
-public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConsumingInterpreterPass)
 
-  StringRef getArgument() const override {
-    return "enzyme-consuming-transform-interpreter";
-  }
-
+struct ConsumingInterpreterPass
+    : public enzyme::impl::ConsumingInterpreterPassBase<
+          ConsumingInterpreterPass> {
   void runOnOperation() override {
     Operation *op = getOperation();
     Operation *entryPoint =
@@ -52,8 +54,5 @@ public:
       return signalPassFailure();
   }
 };
-} // namespace
 
-std::unique_ptr<Pass> mlir::enzyme::createConsumingInterpreterPass() {
-  return std::make_unique<ConsumingInterpreterPass>();
-}
+} // namespace

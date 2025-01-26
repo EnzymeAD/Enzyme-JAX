@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
   prepareRegistry(registry);
 
   mlir::registerenzymePasses();
-  mlir::registerenzymexlaPasses();
+  mlir::enzyme::registerenzymexlaPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
