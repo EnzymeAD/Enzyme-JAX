@@ -307,4 +307,92 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     ];
 }
 
+// def GPUParallelToLaunchPass : Pass<"gpu-parallel-to-launch", "ModuleOp"> {
+//   let summary = "";
+//   let dependentDialects = [
+//     "func::FuncDialect",
+//     "affine::AffineDialect",
+//   ];
+//   let constructor = "mlir::createGPUParallelToLaunchPass()";
+// }
+//
+// def GPULaunchToParallelPass : Pass<"gpu-launch-to-parallel", "ModuleOp"> {
+//   let summary = "";
+//   let dependentDialects = [
+//     "func::FuncDialect",
+//     "affine::AffineDialect",
+//   ];
+//   let constructor = "mlir::createGPULaunchToParallelPass()";
+// }
+
+def PromoteScfWhilePass : Pass<"promote-scf-while"> {
+  let summary = "";
+  let dependentDialects = [
+    "func::FuncDialect",
+    "affine::AffineDialect",
+  ];
+  let constructor = "mlir::createPromoteScfWhilePass()";
+}
+
+def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
+  let summary = "";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "affine::AffineDialect",
+    "vector::VectorDialect",
+  ];
+  let constructor = "mlir::createLLVMToAffineAccessPass()";
+}
+
+//===----------------------------------------------------------------------===//
+// LLVMToArith
+//===----------------------------------------------------------------------===//
+
+def ConvertLLVMToArithPass : Pass<"convert-llvm-to-arith"> {
+  let summary = "Convert LLVM arith operations to the Arith dialect";
+  let dependentDialects = ["arith::ArithDialect"];
+  let constructor = "mlir::createConvertLLVMToArithPass()";
+}
+
+//===----------------------------------------------------------------------===//
+// LLVMToControlFlow
+//===----------------------------------------------------------------------===//
+
+def ConvertLLVMToControlFlowPass : Pass<"convert-llvm-to-cf"> {
+  let summary = "Convert LLVM cf operations to the ControlFlow dialect";
+  let dependentDialects = ["cf::ControlFlowDialect"];
+  let constructor = "mlir::createConvertLLVMToControlFlowPass()";
+}
+
+//===----------------------------------------------------------------------===//
+// ControlFlowToSCF
+//===----------------------------------------------------------------------===//
+
+def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
+  let summary = "Lift ControlFlow dialect to SCF dialect";
+  let description = [{
+    Lifts ControlFlow operations to SCF dialect operations.
+
+    This pass is prefixed with "lift" instead of "convert" as it is not always
+    guaranteed to replace all ControlFlow ops.
+    If a region contains only a single kind of return-like operation, all
+    ControlFlow operations will be replaced successfully.
+    Otherwise a single ControlFlow switch branching to one block per return-like
+    operation kind remains.
+
+    This pass may need to create unreachable terminators in case of infinite
+    loops, which is only supported for 'func.func' for now. If you potentially
+    have infinite loops inside CFG regions not belonging to 'func.func',
+    consider using `transformCFGToSCF` function directly with corresponding
+    `CFGToSCFInterface::createUnreachableTerminator` implementation.
+  }];
+
+  let dependentDialects = ["scf::SCFDialect",
+                           "arith::ArithDialect",
+                           "ub::UBDialect",
+                           // TODO: This is only necessary until we have a
+                           //       ub.unreachable op.
+                           "func::FuncDialect"];
+}
+
 #endif

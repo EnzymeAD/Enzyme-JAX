@@ -93,6 +93,8 @@ int main(int argc, char **argv) {
   // Register the standard passes we want.
   mlir::registerCSEPass();
   mlir::registerConvertAffineToStandardPass();
+  mlir::registerLiftControlFlowToSCFPass();
+  mlir::registerLiftControlFlowToSCFPassPass();
   mlir::registerSCCPPass();
   mlir::registerInlinerPass();
   mlir::registerCanonicalizerPass();
