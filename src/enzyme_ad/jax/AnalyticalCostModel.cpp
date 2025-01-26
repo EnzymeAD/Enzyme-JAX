@@ -69,6 +69,7 @@ uint64_t AnalyticalCostModel::getAnalyticalCost(ModuleOp &wrapperModule) {
     auto runtime = xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
         op, *deviceDescription, &costAnalysis, options);
 
+    std::cout << runtime.ToString() << std::endl;
     cost += absl::ToInt64Nanoseconds(runtime.exec_time);
   }
 
