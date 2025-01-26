@@ -271,8 +271,8 @@ public:
     case GPU: {
       cost = AnalyticalCostModel::getAnalyticalCost(wrapperModule);
 
-      std::cout << "Empirical: " << empirical_cost << ", modelled: " << cost
-                << std::endl;
+      std::cout << "Empirical: " << empirical_cost * 1000
+                << ", modelled: " << cost << std::endl;
       break;
     }
     }
