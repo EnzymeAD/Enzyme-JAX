@@ -30,6 +30,8 @@
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/Support/Casting.h>
 
 #define DEBUG_TYPE "enzyme"
 
@@ -7088,9 +7090,12 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using GatherParams = std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>;
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
+    if (!llvm::any_of(op->getOperands(), [](Value o){return isa_and_present<stablehlo::GatherOp>(o.getDefiningOp());}))
+      return failure();
     SmallVector<GatherParams> gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
     SmallVector<Value> newConcat;
+    bool transformOccurs = false;
     auto process_part = [&](unsigned long i, bool current_gather) {
       auto n = sliceSizesAttrs.size();
       if (n > 1) {
@@ -7109,7 +7114,11 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
             gatherOp.getIndicesAreSorted());
         newConcat.push_back(new_gather);
         n = current_gather ? 0 : 1;
+        transformOccurs = true;
       }
+      else 
+        n = current_gather ? n : n + 1;
+      
       for (auto j = i - n + 1; j <= i; j++)
         newConcat.push_back(op->getOperand(j));
 
@@ -7139,7 +7148,7 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
     }
     process_part(op->getNumOperands() - 1, true);
 
-    if (newConcat.size() == op.getNumOperands())
+    if (!transformOccurs)
       return failure();
 
     auto new_op = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
