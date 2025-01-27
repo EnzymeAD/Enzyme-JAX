@@ -215,6 +215,7 @@ public:
   static std::vector<Operation *> *currentBlackboxIDToTensorInfo;
   static std::unordered_map<int, std::vector<Value>>
       *currentBlackboxIDToCapturedValues;
+  static func::FuncOp optimizationTarget;
   /**
    * Get cost of operation. This depends on the platform:
    * - if CPU, then we measure the execution time in microseconds by running it
@@ -261,12 +262,9 @@ public:
 
     switch (getPlatform()) {
     case CPU: {
-      /*
-        cost = empirical_cost;
-        fus_cost = empirical_cost;
-        break;
-      */
-      throw std::invalid_argument("gpu only");
+      cost = empirical_cost;
+      fus_cost = empirical_cost;
+      break;
     }
     case GPU: {
       cost = AnalyticalCostModel::getAnalyticalCost(wrapperModule);
@@ -501,6 +499,8 @@ std::vector<Operation *> *OperationTimer::currentBlackboxIDToTensorInfo =
     nullptr;
 std::unordered_map<int, std::vector<Value>>
     *OperationTimer::currentBlackboxIDToCapturedValues = nullptr;
+
+func::FuncOp OperationTimer::optimizationTarget = nullptr;
 /**
  * Create a new mlir::RankedTensorType based on the type of an existing
  * mlir::Value and the provided shape.
@@ -1770,18 +1770,26 @@ void reconstructStablehlo(
 
   // Find funcOp to get the block.
   func::FuncOp funcOp;
+  bool foundFunc = false;
 
   for (auto &op : root->getBody()->getOperations()) {
     if (isa<func::FuncOp>(op)) {
       funcOp = cast<func::FuncOp>(op);
+      if (foundFunc) throw std::runtime_error("found multiple funcOps in the module");
+      foundFunc = true;
       break;
     }
   }
 
+  if (!foundFunc) throw std::runtime_error("no funcOp in module");
+
   auto &region = funcOp.getRegion();
   auto &block = funcOp.getRegion().front();
 
-  OpBuilder builder(&block, block.begin());
+  // Getting rid of this temporarily (was added to fix blackjax)
+  // OpBuilder builder(&block, block.begin());
+  OpBuilder builder(context);
+  std::vector<Operation*> opsToAdd;
 
   // We don't clear the block here straight away, because this will
   // invalidate the old captured values in blackbox, and so the substitution
@@ -2107,6 +2115,7 @@ void reconstructStablehlo(
       throw std::invalid_argument("unimplemented op");
     }
     if (newOp) {
+      opsToAdd.push_back(newOp);
       if (newOp->getNumResults() > 0)
         opVals.push_back(newOp->getResult(0));
       else
@@ -2120,6 +2129,10 @@ void reconstructStablehlo(
       // some llvm no-op, but that would not be much better.
       opVals.push_back(nullptr);
     }
+  }
+  block.clear();
+  for (auto op : opsToAdd) {
+    block.push_back(op);
   }
 }
 
@@ -2533,9 +2546,13 @@ uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
   auto context = OperationTimer::getContext();
   OpBuilder builder(context);
   ModuleOp root = ModuleOp::create(builder.getUnknownLoc());
+  func::FuncOp func = builder.create<func::FuncOp>(builder.getUnknownLoc(), "main", OperationTimer::optimizationTarget.getFunctionType());
+  root.push_back(func);
+  llvm::errs() << "calling reconstruct\n";
   reconstructStablehlo(&root, OperationTimer::currentBlackboxIDToTensorInfo,
                        OperationTimer::currentBlackboxIDToCapturedValues,
                        nodes);
+  llvm::errs() << "reconstruction done\n";
   return OperationTimer::getCost(root).first;
 }
 
@@ -2555,11 +2572,10 @@ public:
 
     auto cost = OperationTimer::getCost(module).first;
 
-    return;
-
     OpBuilder builder(context);
 
     auto funcOp = funcOpInModule(module);
+    OperationTimer::optimizationTarget = funcOp;
     auto &entryBlock = funcOp.getBody().front();
 
     for (auto &op : entryBlock) {
@@ -2653,19 +2669,15 @@ public:
           &blackboxIDToCapturedValues;
 
       auto &segmentedModule = segmentedModules[i];
-      // llvm::errs() << "Creating egraph for segment " << i + 1 << " of "
-      //              << segmentedModules.size() << "\n";
+      // llvm::errs() << "Creating egraph for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
       // segmentedModule.module.dump();
       auto graph =
           createEgraph(&blackboxIDToTensorInfo, &blackboxIDToCapturedValues,
                        builder, segmentedModule.module);
       // graph->print_rec_expr();
-      // llvm::errs() << "Optimizing segment " << i + 1 << " of "
-      //              << segmentedModules.size() << "\n";
+      // llvm::errs() << "Optimizing segment " << i + 1 << " of " << segmentedModules.size() << "\n";
       auto optimized = graph->optimize();
-      // llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << "
-      // of "
-      //              << segmentedModules.size() << "\n";
+      // llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
       reconstructStablehlo(&segmentedModule.module, &blackboxIDToTensorInfo,
                            &blackboxIDToCapturedValues, optimized);
 
