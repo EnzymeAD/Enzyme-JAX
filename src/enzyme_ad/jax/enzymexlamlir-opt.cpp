@@ -101,6 +101,7 @@ int main(int argc, char **argv) {
   mlir::registerConvertSCFToOpenMPPass();
   mlir::affine::registerAffinePasses();
   mlir::registerReconcileUnrealizedCasts();
+  mlir::enzyme::registerConvertLLVMToControlFlowPass();
 
   registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
     LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);

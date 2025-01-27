@@ -25,6 +25,11 @@ void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
 
 } // namespace enzyme
+
+namespace cf {
+void populateLLVMToControlFlowConversionPatterns(RewritePatternSet &patterns);
+} // namespace cf
+
 } // end namespace mlir
 
 #endif // ENZYMEXLA_PASSES_H
