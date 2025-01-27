@@ -143,6 +143,22 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
     "mlir::arith::ArithDialect",
     "mlir::math::MathDialect"
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"dump_prellvm",
+      /*CLI argument=*/"dump_prellvm",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to dump LLVM before optimizations"
+    >,
+    Option<
+      /*C++ variable name=*/"dump_postllvm",
+      /*CLI argument=*/"dump_postllvm",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to dump LLVM after optimizations"
+    >
+    ];
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {

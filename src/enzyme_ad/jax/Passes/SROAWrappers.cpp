@@ -52,6 +52,7 @@ using namespace mlir::enzyme;
 namespace {
 struct SROAWrappersPass
     : public mlir::enzyme::impl::SROAWrappersPassBase<SROAWrappersPass> {
+  using SROAWrappersPassBase::SROAWrappersPassBase;
 
   void runOnOperation() override {
     mlir::ModuleOp m = getOperation();
@@ -95,6 +96,8 @@ struct SROAWrappersPass
     llvm::LLVMContext llvmCtx;
     auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
 
+    if (dump_prellvm)
+      llvm::errs() << *llvmModule << "\n";
     {
       using namespace llvm;
       PipelineTuningOptions PTO;
@@ -129,6 +132,8 @@ struct SROAWrappersPass
       MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
     }
+    if (dump_postllvm)
+      llvm::errs() << *llvmModule << "\n";
     auto translatedFromLLVMIR = mlir::translateLLVMIRToModule(
         std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/ true,
         /*dropDICompositeTypeElements*/ false, /*loadAllDialects*/ false);
