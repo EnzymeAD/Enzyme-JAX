@@ -320,10 +320,31 @@ using SubIOpLowering =
 //    arith::TruncFOp, LLVM::ConstrainedFPTruncIntr, true,
 //    arith::AttrConverterConstrainedFPFromLLVM>;
 using TruncIOpLowering =
-    VectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
+    InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
-    VectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
-using XOrIOpLowering = VectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
+    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
+using XOrIOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
+using CmpIOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::CmpIOp, LLVM::ICmpOp>;
+using CmpFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
+                                    AttrConvertFastMathFromLLVM>;
+
+struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
+  using OpRewritePattern<LLVM::ConstantOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ConstantOp op,
+                                PatternRewriter &rewriter) const override {
+    if (isa<mlir::IntegerType, mlir::FloatType>(op.getResult().getType())) {
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+          op, op->getResultTypes(), op->getOperands(), op->getAttrs());
+      return success();
+    }
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -421,15 +442,14 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 
+  patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
+
   patterns
       .add<AddFOpLowering, AddIOpLowering, AndIOpLowering,
            // AddUIExtendedOpLowering,
-           BitcastOpLowering,
-           // ConstantOpLowering,
-           // CmpFOpLowering,
-           // CmpIOpLowering,
-           DivFOpLowering, DivSIOpLowering, DivUIOpLowering, ExtFOpLowering,
-           ExtSIOpLowering, ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
+           BitcastOpLowering, ConstantOpLowering, DivFOpLowering,
+           DivSIOpLowering, DivUIOpLowering, ExtFOpLowering, ExtSIOpLowering,
+           ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
            MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
