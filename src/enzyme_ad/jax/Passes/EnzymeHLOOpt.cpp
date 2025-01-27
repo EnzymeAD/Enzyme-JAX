@@ -30,8 +30,7 @@
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-#include <llvm/ADT/STLExtras.h>
-#include <llvm/Support/Casting.h>
+#include <optional>
 
 #define DEBUG_TYPE "enzyme"
 
@@ -7082,21 +7081,22 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
-
-
 struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
 
   using GatherParams = std::tuple<Attribute, Value, ArrayRef<int64_t>, bool>;
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!llvm::any_of(op->getOperands(), [](Value o){return isa_and_present<stablehlo::GatherOp>(o.getDefiningOp());}))
+    if (!llvm::any_of(op->getOperands(), [](Value o) {
+          return isa_and_present<stablehlo::GatherOp>(o.getDefiningOp());
+        }))
       return failure();
-    SmallVector<GatherParams> gatherParameters;
+    std::optional<GatherParams> gatherParameters;
     SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
     SmallVector<Value> newConcat;
     bool transformOccurs = false;
-    auto process_part = [&](unsigned long i, bool current_gather) {
+    auto process_operand_slice = [&](unsigned long i,
+                                     bool current_gather = false) {
       auto n = sliceSizesAttrs.size();
       if (n > 1) {
         SmallVector<Value> constantOps;
@@ -7113,17 +7113,17 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
             gatherOp.getDimensionNumbers(), gatherOp.getSliceSizes(),
             gatherOp.getIndicesAreSorted());
         newConcat.push_back(new_gather);
-        n = current_gather ? 0 : 1;
+        n = 0;
         transformOccurs = true;
       }
-      else 
-        n = current_gather ? n : n + 1;
-      
+      // if current operation is a gather, we continue this slice; else we add
+      // the current operation to new concatenation
+      n = current_gather ? n : n + 1;
       for (auto j = i - n + 1; j <= i; j++)
         newConcat.push_back(op->getOperand(j));
 
       sliceSizesAttrs.clear();
-      gatherParameters.clear();
+      gatherParameters = std::nullopt;
     };
 
     for (auto [i, ope] : llvm::enumerate(op->getOperands())) {
@@ -7137,21 +7137,22 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
                           operation.getOperand(), operation.getSliceSizes(),
                           operation.getIndicesAreSorted()};
 
-        if (!llvm::all_of(gatherParameters,
-                          [t](GatherParams e) { return e == t; })) {
-          process_part(i, true);
-        }
-        gatherParameters.push_back(t);
+        if (!gatherParameters)
+          gatherParameters = t;
+        else if (gatherParameters != t)
+          process_operand_slice(i, true);
+
         sliceSizesAttrs.push_back(sliceSizesAttr);
       } else
-        process_part(i, false);
+        process_operand_slice(i, false);
     }
-    process_part(op->getNumOperands() - 1, true);
+    //collect the last slice or operand
+    process_operand_slice(op->getNumOperands() - 1, true);
 
     if (!transformOccurs)
       return failure();
 
-    auto new_op = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         op, op->getResultTypes(), newConcat, op.getDimension());
 
     return success();
@@ -7159,8 +7160,7 @@ struct ConcatGather : public OpRewritePattern<stablehlo::ConcatenateOp> {
 };
 
 /// Check if a `t` is a tensor with zero extents.
-static std::optional<RankedTensorType>
-isZeroExtent(Type t) {
+static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = t.dyn_cast<RankedTensorType>();
   if (type && type.hasStaticShape() && type.getNumElements() == 0)
     return type;
@@ -7481,19 +7481,19 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<NoNan, NoNanSelfSubSimplify, NoNanAddSubSimplify>(context);
     }
 
-    patterns.add<CompareOpCanon, BroadcastInDimOpCanon,
-                 TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
-                 DynamicBroadcastInDimOpNotActuallyDynamic,
-                 ChainedDynamicBroadcastInDimCanonicalization,
-                 DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-                 EmptyReduceOpCanon, DynamicReshapeOpCanon,
-                 GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
-                 ConjComplexNegate, GetDimensionSizeOpCanon, GatherOpCanon,
-                 ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-                 SelectOpUsedWithinIf, IfInline, IfToSelect, WhileSimplify,
-                 ZeroExtentTensorCanon, ReorderElementwiseAndShapeOp,
-                 DynamicGatherOpIsNotDynamic, ConcatGather, DivideSqrtToMultiplyRsqrt>(
-        context);
+    patterns
+        .add<CompareOpCanon, BroadcastInDimOpCanon,
+             TransposeBroadcastInDimToBroadcastInDim, ConvertOpCanon,
+             DynamicBroadcastInDimOpNotActuallyDynamic,
+             ChainedDynamicBroadcastInDimCanonicalization,
+             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
+             RealOpCanon, ImagOpCanon, ConjComplexNegate,
+             GetDimensionSizeOpCanon, GatherOpCanon, ReshapeOpCanon,
+             MergeConsecutiveReshapes, TransposeIsReshape, SelectOpUsedWithinIf,
+             IfInline, IfToSelect, WhileSimplify, ZeroExtentTensorCanon,
+             ReorderElementwiseAndShapeOp, DynamicGatherOpIsNotDynamic,
+             ConcatGather, DivideSqrtToMultiplyRsqrt>(context);
 
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));

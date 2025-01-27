@@ -35,9 +35,9 @@ module {
 // CHECK-NEXT:     return %0 : tensor<16xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:  func.func @two_part_concat(%arg0: tensor<6x6xf64>) -> tensor<24xf64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<[[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]> : tensor<10x2xi64>
+// CHECK-NEXT:    %c = stablehlo.constant dense<\[\[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [0, 1], [1, 2], [2, 3], [3, 4], [4, 5\]\]> : tensor<10x2xi64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<1.000000e+01> : tensor<3xf64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<[[1, 0], [2, 1], [3, 2], [4, 3], [5, 4], [0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]> : tensor<11x2xi64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<\[\[1, 0], [2, 1], [3, 2], [4, 3], [5, 4], [0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5\]\]> : tensor<11x2xi64>
 // CHECK-NEXT:    %0 = "stablehlo.gather"(%arg0, %c_0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<6x6xf64>, tensor<11x2xi64>) -> tensor<11xf64>
 // CHECK-NEXT:    %1 = "stablehlo.gather"(%arg0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<6x6xf64>, tensor<10x2xi64>) -> tensor<10xf64>
 // CHECK-NEXT:    %2 = stablehlo.concatenate %0, %cst, %1, dim = 0 : (tensor<11xf64>, tensor<3xf64>, tensor<10xf64>) -> tensor<24xf64>
