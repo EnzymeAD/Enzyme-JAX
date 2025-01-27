@@ -295,4 +295,13 @@ def LowerKernelPass : Pass<"lower-kernel"> {
     ];
 }
 
+//===----------------------------------------------------------------------===//
+// LLVMToControlFlow
+//===----------------------------------------------------------------------===//
+
+def ConvertLLVMToControlFlowPass : Pass<"convert-llvm-to-cf"> {
+  let summary = "Convert LLVM cf operations to the ControlFlow dialect";
+  let dependentDialects = ["cf::ControlFlowDialect"];
+}
+
 #endif
