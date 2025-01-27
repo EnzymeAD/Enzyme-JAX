@@ -822,6 +822,11 @@ def DynamicGatherOpIsNotDynamicPatterns : EnzymeHLOPatternOp<
   let patterns = ["DynamicGatherOpIsNotDynamic"];
 }
 
+def ConcatGather : EnzymeHLOPatternOp<
+    "concat_gather"> {
+  let patterns = ["ConcatGather"];
+  }
+
 def DivideSqrtToMultiplyRsqrtPatterns : EnzymeHLOPatternOp<
     "divide_sqrt_to_multiply_rsqrt"> {
   let patterns = ["DivideSqrtToMultiplyRsqrt"];
