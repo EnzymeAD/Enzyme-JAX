@@ -97,7 +97,7 @@ struct SROAWrappersPass
     auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
 
     if (dump_prellvm)
-      llvm::errs() << *llvmModule << "\n";
+      llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
     {
       using namespace llvm;
       PipelineTuningOptions PTO;
@@ -133,7 +133,7 @@ struct SROAWrappersPass
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)
-      llvm::errs() << *llvmModule << "\n";
+      llvm::errs() << "sroa post_llvm\n" << *llvmModule << "\n";
     auto translatedFromLLVMIR = mlir::translateLLVMIRToModule(
         std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/ true,
         /*dropDICompositeTypeElements*/ false, /*loadAllDialects*/ false);
