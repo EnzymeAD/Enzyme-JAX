@@ -7487,6 +7487,9 @@ struct CommonCompareExpressionRewrite
         if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
           continue;
 
+        if (user->getBlock() != op->getBlock())
+          continue;
+
         if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
           if (user->isBeforeInBlock(op)) {
             auto negatedCondition = rewriter.create<stablehlo::NotOp>(
