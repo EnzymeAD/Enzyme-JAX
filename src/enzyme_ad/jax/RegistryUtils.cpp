@@ -97,7 +97,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
                   mlir::scf::SCFDialect, mlir::vector::VectorDialect,
                   mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
                   mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect,
-		  mlir::omp::OpenMPDialect>();
+                  mlir::omp::OpenMPDialect>();
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertComplexToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
