@@ -831,9 +831,19 @@ def DivideSqrtToMultiplyRsqrtPatterns : EnzymeHLOPatternOp<
   let patterns = ["DivideSqrtToMultiplyRsqrt"];
 }
 
-def CompareSelectSimplifyPatters : EnzymeHLOPatternOp<
+def CompareSelectSimplifyPatterns : EnzymeHLOPatternOp<
     "compare_select_simplify"> {
   let patterns = ["CompareSelectSimplify"];
+}
+
+def NotSelectSimplifyPatterns : EnzymeHLOPatternOp<
+    "not_select_simplify"> {
+  let patterns = ["NotSelectSimplify"];
+}
+
+def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
+    "common_compare_expression_rewrite"> {
+  let patterns = ["CommonCompareExpressionRewrite"];
 }
 
 // TODO: better naming for parameters requires a static interface for

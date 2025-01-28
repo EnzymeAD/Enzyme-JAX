@@ -21,6 +21,6 @@ module {
 
 // SAME:  func.func @main(%arg0: tensor<2x2xf32>) -> (tensor<2x2xi1>, tensor<2x2xi1>) {
 // SAME-NEXT:    %[[i0:.+]] = stablehlo.compare  EQ, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
-// SAME-NEXT:    %[[i1:.+]] = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
+// SAME-NEXT:    %[[i1:.+]] = stablehlo.not  %[[i0]] : tensor<2x2xi1>
 // SAME-NEXT:    return %[[i0]], %[[i1]] : tensor<2x2xi1>, tensor<2x2xi1>
 // SAME-NEXT:  }
