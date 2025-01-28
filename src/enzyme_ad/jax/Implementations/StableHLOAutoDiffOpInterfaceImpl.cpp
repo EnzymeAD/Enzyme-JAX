@@ -1928,8 +1928,9 @@ struct WhileOpEnzymeOpsRemover
     WhileLoopInfo info(whileOp);
 
     // TODO: support non-constant loops by using a dynamic dimension
+    // ...   should we fail ? i.e. return failure();
     if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return failure();
+      return success();
     }
 
     auto numIters = info.getConstantNumIters();
@@ -1970,28 +1971,28 @@ struct WhileOpEnzymeOpsRemover
       }
 
       if (!inductionVariable) {
-        return failure();
+        return success();
 
         // TODO: support adding an induction variable if not present
 
-        /*Value zero = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),*/
-        /*                                               rewriter.getIndexAttr(0));*/
-        /*newOperands.push_back(zero);*/
-        /**/
-        /*inductionVariable = body->addArgument(zero.getType(),
-         * whileOp->getLoc());*/
-        /* cond->addArgument(zero.getType(), whileOp->getLoc());*/
-        /*{*/
-        /*  OpBuilder::InsertionGuard guard(rewriter);*/
-        /*  rewriter.setInsertionPoint(term);*/
-        /**/
-        /*  auto one = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),*/
-        /*                                               rewriter.getIndexAttr(1));*/
-        /*  auto newInductionVar = rewriter.create<arith::AddIOp>(*/
-        /*      whileOp->getLoc(), inductionVariable, one);*/
-        /*  term->insertOperands(term->getNumOperands(),*/
-        /*                       ValueRange(newInductionVar));*/
-        /*}*/
+        // Value zero = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
+        //                                                rewriter.getIndexAttr(0));
+        // newOperands.push_back(zero);
+
+        // inductionVariable = body->addArgument(zero.getType(),
+        // whileOp->getLoc());
+        //  cond->addArgument(zero.getType(), whileOp->getLoc());
+        // {
+        //   OpBuilder::InsertionGuard guard(rewriter);
+        //   rewriter.setInsertionPoint(term);
+
+        //   auto one = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
+        //                                                rewriter.getIndexAttr(1));
+        //   auto newInductionVar = rewriter.create<arith::AddIOp>(
+        //       whileOp->getLoc(), inductionVariable, one);
+        //   term->insertOperands(term->getNumOperands(),
+        //                        ValueRange(newInductionVar));
+        // }
       }
 
       auto newType = info.cachedType()
