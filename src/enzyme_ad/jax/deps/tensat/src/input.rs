@@ -1280,6 +1280,7 @@ impl CppGraphConverter {
         //     &runner.egraph,
         //     cost_model,
         // );
+
         println!(
             "end-to-end cost: {}",
             CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),

@@ -215,6 +215,9 @@ public:
   static std::vector<Operation *> *currentBlackboxIDToTensorInfo;
   static std::unordered_map<int, std::vector<Value>>
       *currentBlackboxIDToCapturedValues;
+  // Dirty hack to get the function type of the module for global cost
+  // measurement. A more principled way would be to keep track of this and pass
+  // it in from Rust. TODO fix
   static func::FuncOp optimizationTarget;
   /**
    * Get cost of operation. This depends on the platform:
@@ -1775,13 +1778,15 @@ void reconstructStablehlo(
   for (auto &op : root->getBody()->getOperations()) {
     if (isa<func::FuncOp>(op)) {
       funcOp = cast<func::FuncOp>(op);
-      if (foundFunc) throw std::runtime_error("found multiple funcOps in the module");
+      if (foundFunc)
+        throw std::runtime_error("found multiple funcOps in the module");
       foundFunc = true;
       break;
     }
   }
 
-  if (!foundFunc) throw std::runtime_error("no funcOp in module");
+  if (!foundFunc)
+    throw std::runtime_error("no funcOp in module");
 
   auto &region = funcOp.getRegion();
   auto &block = funcOp.getRegion().front();
@@ -1789,7 +1794,7 @@ void reconstructStablehlo(
   // Getting rid of this temporarily (was added to fix blackjax)
   // OpBuilder builder(&block, block.begin());
   OpBuilder builder(context);
-  std::vector<Operation*> opsToAdd;
+  std::vector<Operation *> opsToAdd;
 
   // We don't clear the block here straight away, because this will
   // invalidate the old captured values in blackbox, and so the substitution
@@ -2144,6 +2149,7 @@ bool isUsedOutsideSegment(Value result, Block &entryBlock,
     while (op->getBlock() != &entryBlock) {
       op = op->getBlock()->getParentOp();
     }
+
     // Check if the user operation is not in the current segment
     if (std::find(currentOps.begin(), currentOps.end(), op) ==
         currentOps.end()) {
@@ -2222,7 +2228,17 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
 
   for (auto it = entryBlock.begin(); it != entryBlock.end(); ++it) {
     Operation &op = *it;
+
     currentOps.push_back(&op);
+
+    if (isa<func::ReturnOp>(op)) {
+      // This segment must be the last segment, so we shouldn't see any other
+      // outputs
+      assert(segment.outputs.empty());
+      for (auto value : op.getOperands()) {
+        segment.outputs.push_back(value);
+      }
+    }
 
     op.walk([&](Operation *innerOp) {
       for (auto value : innerOp->getOperands()) {
@@ -2251,6 +2267,8 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
       for (Operation *op : currentOps) {
         for (Value result : op->getResults()) {
           if (isUsedOutsideSegment(result, entryBlock, currentOps)) {
+            assert(std::find(segment.outputs.begin(), segment.outputs.end(),
+                             result) == segment.outputs.end());
             segment.outputs.push_back(result);
           }
         }
@@ -2311,7 +2329,9 @@ std::vector<SegmentedModule> segmentGraph(func::FuncOp funcOp, bool segmentOff,
       returns.push_back(originalToCloned.lookup(output));
     }
 
-    if (!returns.empty()) {
+    if (!returns.empty() && i < segmentationPoints.size() - 1) {
+      // For the last segment, the return already exists so we don't need to
+      // create a new one
       auto returnOp =
           builder.create<func::ReturnOp>(builder.getUnknownLoc(), returns);
       newBlock->push_back(returnOp);
@@ -2543,11 +2563,16 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
 }
 
 uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
-  auto context = OperationTimer::getContext();
+  auto context = OperationTimer::optimizationTarget.getContext();
   OpBuilder builder(context);
   ModuleOp root = ModuleOp::create(builder.getUnknownLoc());
-  func::FuncOp func = builder.create<func::FuncOp>(builder.getUnknownLoc(), "main", OperationTimer::optimizationTarget.getFunctionType());
+
+  func::FuncOp func = builder.create<func::FuncOp>(
+      builder.getUnknownLoc(), "main",
+      OperationTimer::optimizationTarget.getFunctionType());
+  func.addEntryBlock();
   root.push_back(func);
+
   llvm::errs() << "calling reconstruct\n";
   reconstructStablehlo(&root, OperationTimer::currentBlackboxIDToTensorInfo,
                        OperationTimer::currentBlackboxIDToCapturedValues,
@@ -2575,7 +2600,6 @@ public:
     OpBuilder builder(context);
 
     auto funcOp = funcOpInModule(module);
-    OperationTimer::optimizationTarget = funcOp;
     auto &entryBlock = funcOp.getBody().front();
 
     for (auto &op : entryBlock) {
@@ -2669,15 +2693,20 @@ public:
           &blackboxIDToCapturedValues;
 
       auto &segmentedModule = segmentedModules[i];
-      // llvm::errs() << "Creating egraph for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
-      // segmentedModule.module.dump();
+      auto segmentFunc = funcOpInModule(segmentedModule.module);
+      OperationTimer::optimizationTarget = segmentFunc;
+
+      // llvm::errs() << "Creating egraph for segment " << i + 1 << " of " <<
+      // segmentedModules.size() << "\n"; segmentedModule.module.dump();
       auto graph =
           createEgraph(&blackboxIDToTensorInfo, &blackboxIDToCapturedValues,
                        builder, segmentedModule.module);
       // graph->print_rec_expr();
-      // llvm::errs() << "Optimizing segment " << i + 1 << " of " << segmentedModules.size() << "\n";
+      // llvm::errs() << "Optimizing segment " << i + 1 << " of " <<
+      // segmentedModules.size() << "\n";
       auto optimized = graph->optimize();
-      // llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << " of " << segmentedModules.size() << "\n";
+      // llvm::errs() << "reconstructing stablehlo for segment " << i + 1 << "
+      // of " << segmentedModules.size() << "\n";
       reconstructStablehlo(&segmentedModule.module, &blackboxIDToTensorInfo,
                            &blackboxIDToCapturedValues, optimized);
 
