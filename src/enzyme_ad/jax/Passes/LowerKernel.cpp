@@ -75,6 +75,8 @@
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
+
 #include "mlir/Target/LLVMIR/Export.h"
 
 #define DEBUG_TYPE "lower-kernel"
@@ -977,7 +979,6 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
   builder.setInsertionPointToStart(&par.getRegion().front());
   auto executeRegion =
       builder.create<scf::ExecuteRegionOp>(loc, ArrayRef<mlir::Type>());
-  builder.create<scf::YieldOp>(loc);
   {
 
     op.getFunctionBody().cloneInto(&executeRegion.getRegion(), map);
@@ -1002,19 +1003,19 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
 
       // block idx
      executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
       });
      executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
       });
      executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
@@ -1022,19 +1023,19 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
 
       // thread idx
      executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
       });
      executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
       });
      executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
-      OpBuilder rewriter(op);
+      OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
@@ -1058,6 +1059,7 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
       ptr = found->second;
     } else {
       PassManager pm(submod.getContext());
+      pm.addPass(createConvertSCFToOpenMPPass());
       buildLowerToCPUPassPipeline(pm);
 
       auto subres = pm.run(submod);

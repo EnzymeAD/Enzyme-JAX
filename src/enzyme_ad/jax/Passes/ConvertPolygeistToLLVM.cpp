@@ -1151,12 +1151,9 @@ struct ConvertPolygeistToLLVMPass
       };
 
       LLVMConversionTarget target(getContext());
-      target.addDynamicallyLegalOp<omp::ParallelOp, omp::WsloopOp>(
-          [&](Operation *op) { return converter.isLegal(&op->getRegion(0)); });
+      configureOpenMPToLLVMConversionLegality(target, converter);
       target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
                           scf::ExecuteRegionOp, func::FuncOp>();
-      target.addLegalOp<omp::TerminatorOp, omp::TaskyieldOp, omp::FlushOp,
-                        omp::YieldOp, omp::BarrierOp, omp::TaskwaitOp>();
       target.addDynamicallyLegalDialect<LLVM::LLVMDialect>(
           areAllTypesConverted);
       target.addDynamicallyLegalOp<LLVM::GlobalOp>(
