@@ -489,7 +489,7 @@ def ApplyTransposeUnaryTransposeTanhPatterns : EnzymeHLOPatternOp<
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "transpose_broadcast_in_dim_to_broadcast_in_dim"> {
-  let patterns = ["TransposeBroadcastInDimToBroadcastInDim"];
+  let patterns = ["TransposeBroadcastInDimToBroadcastInDim", "BroadcastInDimTransposeToBroadcastInDim"];
 }
 
 def AddPadPadToConcatPatterns : EnzymeHLOPatternOp<

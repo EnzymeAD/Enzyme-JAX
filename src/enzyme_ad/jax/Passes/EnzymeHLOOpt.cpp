@@ -6382,6 +6382,40 @@ struct TransposeBroadcastInDimToBroadcastInDim final
   }
 };
 
+struct BroadcastInDimTransposeToBroadcastInDim final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto broadcastOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!broadcastOp)
+      return failure();
+
+    auto broadcastDims = broadcastOp.getBroadcastDimensions();
+    auto permutation = op.getPermutation();
+
+    // Compute the inverse permutation
+    SmallVector<int64_t> inversePermutation(permutation.size());
+    for (auto [idx, perm] : llvm::enumerate(permutation)) {
+      inversePermutation[perm] = idx;
+    }
+
+    // Adjust the broadcast dimensions using the inverse permutation
+    SmallVector<int64_t> newBroadcastDims;
+    for (auto oldDim : broadcastDims) {
+      newBroadcastDims.push_back(inversePermutation[oldDim]);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), broadcastOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+
+    return success();
+  }
+};
+
 struct ConcatenateOpCanon final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -7568,6 +7602,7 @@ struct EnzymeHLOOptPass
         ReshapeOpCanon,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
+        BroadcastInDimTransposeToBroadcastInDim,
         TransposeIsReshape,
         WhileDeadResults,
         WhileSimplify,
