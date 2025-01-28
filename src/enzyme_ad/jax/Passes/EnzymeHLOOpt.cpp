@@ -7365,9 +7365,9 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
     auto complhs = compOp.getLhs();
     auto comprhs = compOp.getRhs();
 
-    // NOTE: For the equality case, this is a valid transformation but at that point we
-    //       don't have a unique gradient which doesn't match our current convention for the
-    //       gradient of MaxOp/MinOp.
+    // NOTE: For the equality case, this is a valid transformation but at that
+    // point we don't have a unique gradient which doesn't match our current
+    // convention for the gradient of MaxOp/MinOp.
     if (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT) {
       // select(a > b, a, b)
       if (complhs == selectlhs && comprhs == selectrhs) {
