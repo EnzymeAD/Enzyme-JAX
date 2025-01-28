@@ -831,6 +831,11 @@ def DivideSqrtToMultiplyRsqrtPatterns : EnzymeHLOPatternOp<
   let patterns = ["DivideSqrtToMultiplyRsqrt"];
 }
 
+def CompareSelectSimplifyPatters : EnzymeHLOPatternOp<
+    "compare_select_simplify"> {
+  let patterns = ["CompareSelectSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
