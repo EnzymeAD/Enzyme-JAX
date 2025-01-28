@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -172,6 +173,11 @@ void buildLowerToNVVMPassPipeline(
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
 }
 
+void buildLowerToCPUPassPipeline(
+    OpPassManager &pm) {
+  pm.addPass(createConvertPolygeistToLLVM());
+}
+
 } // namespace
 
 struct CallInfo {
@@ -184,7 +190,7 @@ llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool run_init, size_t *cuLaunchPtr) {
+                           bool run_init, size_t *cuLaunchPtr, bool compileInit = true) {
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -257,10 +263,13 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     *cuLaunchPtr = (size_t)LaunchSym->getValue();
   }
 
-  auto NVSym = JIT->lookup(LibA.get(), "nv_func_init");
-  if (!NVSym) {
-    llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
-    return {};
+  llvm::Expected<llvm::orc::ExecutorAddr> NVSym(llvm::orc::ExecutorAddr{});
+  if (compileInit) {
+    NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+    if (!NVSym) {
+      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+      return {};
+    }
   }
 
   auto nvptr = (void *)NVSym->getValue();
@@ -309,7 +318,7 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   return mlir::dyn_cast<gpu::ObjectAttr>(objects[index]);
 }
 
-CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
+CallInfo CompileCUDAKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                        FunctionOpInterface op, bool jit, size_t gridx,
                        size_t gridy, size_t gridz, size_t blockx, size_t blocky,
                        size_t blockz, size_t shmem, std::string toolkitPath,
@@ -842,6 +851,229 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   return ptr;
 };
 
+CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
+                       FunctionOpInterface op, bool jit, size_t gridx,
+                       size_t gridy, size_t gridz, size_t blockx, size_t blocky,
+                       size_t blockz, size_t shmem, enzymexla::KernelCallOp, bool debug) {
+
+  OpBuilder builder(op);
+
+  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
+  mlir::Type intys[] = {ptrty, ptrty, ptrty};
+  FunctionType calleeType = builder.getFunctionType(intys, {});
+
+  FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
+  if (!gpuTy0) {
+    if (auto lty = dyn_cast<LLVM::LLVMFunctionType>(op.getFunctionType())) {
+      gpuTy0 = builder.getFunctionType(lty.getParams(), {});
+    } else {
+      op.emitError(
+          "Require target operand to have functiontype or llvmfunctiontype");
+      return {};
+    }
+  }
+  SmallVector<Type, 1> newParams;
+  for (Type p : gpuTy0.getInputs()) {
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(p)) {
+      p = AT.getElementType();
+    }
+    newParams.push_back(p);
+  }
+  FunctionType gpuTy = builder.getFunctionType(newParams, {});
+
+  static size_t id = 0;
+  id++;
+  auto submod = builder.create<ModuleOp>(loc, "cpuoffload" + std::to_string(id));
+
+  std::string legalName = op.getName().str();
+  std::replace(legalName.begin(), legalName.end(), '#', '_');
+  
+  SmallVector<Operation *> tocopy;
+  op->walk([&](CallOpInterface cop) {
+    if (auto op2 = cop.resolveCallable())
+      tocopy.push_back(op2);
+  });
+  op->walk([&](LLVM::AddressOfOp cop) {
+    if (auto op2 = cop.getGlobal(symbolTable))
+      tocopy.push_back(op2);
+    else if (auto op2 = cop.getFunction(symbolTable))
+      tocopy.push_back(op2);
+  });
+  SmallPtrSet<Operation *, 1> done;
+
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+  while (tocopy.size()) {
+    auto cur = tocopy.pop_back_val();
+    if (done.count(cur))
+      continue;
+    done.insert(cur);
+    builder.clone(*cur);
+    cur->walk([&](CallOpInterface cop) {
+      if (auto op2 = cop.resolveCallable())
+        tocopy.push_back(op2);
+    });
+    cur->walk([&](LLVM::AddressOfOp cop) {
+      if (auto op2 = cop.getGlobal(symbolTable))
+        tocopy.push_back(op2);
+      else if (auto op2 = cop.getFunction(symbolTable))
+        tocopy.push_back(op2);
+    });
+  }
+
+  builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
+
+  auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
+
+  auto &entryBlock = *func.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  mlir::Value buffers = entryBlock.getArgument(1);
+
+  auto idx = builder.getIntegerType(64);
+  auto i32 = builder.getIntegerType(32);
+  
+  SmallVector<mlir::Value> inits;
+  SmallVector<mlir::Value> finals;
+  SmallVector<mlir::Value> incs;
+  for (auto val : {gridx, gridy, gridz, blockx, blocky, blockz}) {
+    inits.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+    incs.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+    finals.push_back(builder.create<arith::ConstantIndexOp>(loc, val));
+  }
+  
+  SmallVector<mlir::Value> arguments;
+  for (auto arg : op.getArguments()) {
+    LLVM::GEPArg args[1] = {arg.getArgNumber()};
+    auto gep =
+        builder.create<LLVM::GEPOp>(loc, ptrty, ptrty, buffers, args, true);
+    auto argTy = arg.getType();
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
+      argTy = AT.getElementType();
+    }
+    auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
+    arguments.push_back(ld);
+  }
+    
+  IRMapping map;
+    for (auto &&[oldarg, newarg] :
+         zip(op.getArguments(), arguments)) {
+      Value newval = newarg;
+
+      if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
+        auto ud =
+            builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
+        int64_t c0[1] = {0};
+        newval = builder.create<LLVM::InsertValueOp>(
+            newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+      }
+
+      map.map(oldarg, newval);
+    }
+
+  auto par = builder.create<scf::ParallelOp>(loc, inits, finals, incs);
+
+  builder.create<mlir::func::ReturnOp>(loc);
+
+  builder.setInsertionPointToStart(&par.getRegion().front());
+  auto executeRegion =
+      builder.create<scf::ExecuteRegionOp>(loc, ArrayRef<mlir::Type>());
+  builder.create<scf::YieldOp>(loc);
+  {
+
+    op.getFunctionBody().cloneInto(&executeRegion.getRegion(), map);
+
+    executeRegion->walk([](LLVM::ReturnOp op) {
+      OpBuilder rewriter(op);
+      rewriter.create<scf::YieldOp>(op.getLoc());
+      op.erase();
+    });
+
+    executeRegion->walk([](func::ReturnOp op) {
+      OpBuilder rewriter(op);
+      rewriter.create<scf::YieldOp>(op.getLoc());
+      op.erase();
+    });
+
+    executeRegion->walk([](LLVM::UnreachableOp op) {
+      OpBuilder rewriter(op);
+      rewriter.create<scf::YieldOp>(op.getLoc());
+      op.erase();
+    });
+
+      // block idx
+     executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+     executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+     executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+
+      // thread idx
+     executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+     executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+     executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
+      OpBuilder rewriter(op);
+      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
+      idxOp.replaceAllUsesWith(rep.getResult());
+      op.erase();
+      });
+  }
+
+  std::string modstr;
+  llvm::raw_string_ostream ss(modstr);
+
+  ss << submod;
+
+  if (!jit)
+    return {};
+
+  CallInfo ptr;
+  {
+    llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
+
+    auto found = kernels.find(ss.str());
+    if (found != kernels.end()) {
+      ptr = found->second;
+    } else {
+      PassManager pm(submod.getContext());
+      buildLowerToCPUPassPipeline(pm);
+
+      auto subres = pm.run(submod);
+      if (!subres.succeeded()) {
+        return {};
+      }
+      llvm::errs() << " lowered submod: " << submod << "\n";
+      ptr = CompileHostModule(ss.str(), submod, false, 0, false);
+      kernels[ss.str()] = ptr;
+      submod.erase();
+    }
+  }
+
+  return ptr;
+};
+
 namespace {
 
 struct LowerKernelPass
@@ -850,6 +1082,7 @@ struct LowerKernelPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
+    if (backend == "cuda") {
     mlir::gpu::GPUToNVVMPipelineOptions options;
     options.indexBitWidth = 64;
     options.cubinTriple = "nvptx64-nvidia-cuda";
@@ -862,6 +1095,10 @@ struct LowerKernelPass
     std::string toolkitPath = "";
     SmallVector<std::string> linkFiles;
     buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+    } else if (backend == "cpu") {
+    buildLowerToCPUPassPipeline(pm);
+    registry.insert<mlir::omp::OpenMPDialect>();
+    }
     pm.getDependentDialects(registry);
 
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -930,7 +1167,9 @@ struct LowerKernelPass
       }
 
       // Compiled kernel goes here once ready
-      CallInfo cdata = CompileKernel(
+      CallInfo cdata;
+      if (backend == "cuda")
+	 cdata = CompileCUDAKernel(
           symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
           data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
           indexBitWidth.getValue(), cubinChip.getValue(),
@@ -938,6 +1177,13 @@ struct LowerKernelPass
           cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
           cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
           cubinTriple);
+      else if (backend == "cpu")
+	 cdata = CompileCPUKernel(
+          symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
+          data[5], data[6], data[7], op, debug);
+      else {
+	  op->emitError() << "Cannot lower kernel to unknown backend \"" << backend << "\"";
+      }
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
