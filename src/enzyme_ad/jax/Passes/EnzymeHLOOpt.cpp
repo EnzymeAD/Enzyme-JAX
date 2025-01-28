@@ -7435,6 +7435,78 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
   }
 };
 
+// select(!op, lhs, rhs) --> select(op, rhs, lhs)
+struct NotSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const final {
+    auto notOp = op.getPred().getDefiningOp<stablehlo::NotOp>();
+    if (!notOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        op, notOp.getOperand(), op.getOnFalse(), op.getOnTrue());
+    return success();
+  }
+};
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GT;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GE;
+  }
+}
+
+struct CommonCompareExpressionRewrite
+    : public OpRewritePattern<stablehlo::CompareOp> {
+  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto negDir = negatedComparisonDirection(op.getComparisonDirection());
+
+    for (int i = 0; i < op.getNumOperands(); ++i) {
+      auto opOperand = op.getOperand(i);
+      for (auto user : opOperand.getUsers()) {
+        auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
+        if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
+          continue;
+
+        if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
+          if (user->isBeforeInBlock(op)) {
+            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+                op.getLoc(), userCompareOp.getResult());
+            rewriter.replaceOp(op, negatedCondition);
+            return success();
+          } else {
+            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+                userCompareOp.getLoc(), op.getResult());
+            rewriter.replaceOp(user, negatedCondition);
+            return success();
+          }
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7660,7 +7732,9 @@ struct EnzymeHLOOptPass
         WhileDeadResults,
         WhileSimplify,
         ZeroExtentTensorCanon,
-        CompareSelectSimplify
+        CompareSelectSimplify,
+        NotSelectSimplify,
+        CommonCompareExpressionRewrite
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
