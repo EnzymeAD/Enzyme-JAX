@@ -20,8 +20,20 @@ def RemoveDuplicateFuncDefPass
 def PropagateConstantBoundsPass
     : Pass<"propagate-constant-bounds", "ModuleOp"> {
   let summary = "Propagate constant bounds";
-  let dependentDialects =
-      ["mlir::LLVM::LLVMDialect", "mlir::NVVM::NVVMDialect"];
+  let description = [{
+    Propagate constant bounds information:
+    1. thread index 
+    2. Block dimension 
+    3. Block index.
+    Additionally, set all the following attributes for all kernel pointers:
+    1. align 128
+    2. no alias 
+    3. dereferenceable = tensor.size() * sizeof(element_type)
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::NVVM::NVVMDialect"
+  ];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {
