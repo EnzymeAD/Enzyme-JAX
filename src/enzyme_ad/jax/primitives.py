@@ -217,6 +217,8 @@ binary_op_transpose_simplify_or<1>;
 binary_op_transpose_simplify_xor<1>;
 binary_op_transpose_simplify_rem<1>;
 compare_select_simplify;
+common_compare_expression_rewrite;
+not_select_simplify;
 
 transpose_unary_transpose_abs<1>;
 transpose_unary_transpose_neg<1>;
