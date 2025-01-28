@@ -7365,8 +7365,10 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
     auto complhs = compOp.getLhs();
     auto comprhs = compOp.getRhs();
 
-    if ((compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT) ||
-        (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GE)) {
+    if ((compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::GT) ||
+        (compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::GE)) {
       // select(a > b || a >= b, a, b)
       if (complhs == selectlhs && comprhs == selectrhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
@@ -7379,8 +7381,10 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
       }
     }
 
-    if ((compOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT) ||
-        (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::LE)) {
+    if ((compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::LT) ||
+        (compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::LE)) {
       // select(a < b || a <= b, a, b)
       if (complhs == selectlhs && comprhs == selectrhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
