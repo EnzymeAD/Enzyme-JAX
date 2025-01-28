@@ -7348,6 +7348,55 @@ private:
   bool allowOnFloatingPointMath = false;
 };
 
+// a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
+// a < b ? a : b or a <= b ? a : b ---> minimum(a, b)
+struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const final {
+    auto compOp = op.getPred().getDefiningOp<stablehlo::CompareOp>();
+    if (!compOp)
+      return failure();
+
+    auto selectlhs = op.getOnTrue();
+    auto selectrhs = op.getOnFalse();
+
+    auto complhs = compOp.getLhs();
+    auto comprhs = compOp.getRhs();
+
+    if ((compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT) ||
+        (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GE)) {
+      // select(a > b || a >= b, a, b)
+      if (complhs == selectlhs && comprhs == selectrhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+      // select(a > b || a >= b, b, a)
+      if (complhs == selectrhs && comprhs == selectlhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+    }
+
+    if ((compOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT) ||
+        (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::LE)) {
+      // select(a < b || a <= b, a, b)
+      if (complhs == selectlhs && comprhs == selectrhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+      // select(a < b || a <= b, b, a)
+      if (complhs == selectrhs && comprhs == selectlhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7571,7 +7620,8 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         WhileDeadResults,
         WhileSimplify,
-        ZeroExtentTensorCanon
+        ZeroExtentTensorCanon,
+        CompareSelectSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
