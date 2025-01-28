@@ -7348,8 +7348,8 @@ private:
   bool allowOnFloatingPointMath = false;
 };
 
-// a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
-// a < b ? a : b or a <= b ? a : b ---> minimum(a, b)
+// a > b ? a : b ---> maximum(a, b)
+// a < b ? a : b ---> minimum(a, b)
 struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
   using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
 
@@ -7365,32 +7365,29 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
     auto complhs = compOp.getLhs();
     auto comprhs = compOp.getRhs();
 
-    if ((compOp.getComparisonDirection() ==
-         stablehlo::ComparisonDirection::GT) ||
-        (compOp.getComparisonDirection() ==
-         stablehlo::ComparisonDirection::GE)) {
-      // select(a > b || a >= b, a, b)
+    // NOTE: For the equality case, this is a valid transformation but at that point we
+    //       don't have a unique gradient which doesn't match our current convention for the
+    //       gradient of MaxOp/MinOp.
+    if (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT) {
+      // select(a > b, a, b)
       if (complhs == selectlhs && comprhs == selectrhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
         return success();
       }
-      // select(a > b || a >= b, b, a)
+      // select(a > b, b, a)
       if (complhs == selectrhs && comprhs == selectlhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
         return success();
       }
     }
 
-    if ((compOp.getComparisonDirection() ==
-         stablehlo::ComparisonDirection::LT) ||
-        (compOp.getComparisonDirection() ==
-         stablehlo::ComparisonDirection::LE)) {
-      // select(a < b || a <= b, a, b)
+    if (compOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT) {
+      // select(a < b, a, b)
       if (complhs == selectlhs && comprhs == selectrhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
         return success();
       }
-      // select(a < b || a <= b, b, a)
+      // select(a < b, b, a)
       if (complhs == selectrhs && comprhs == selectlhs) {
         rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
         return success();
