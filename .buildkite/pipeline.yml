@@ -56,9 +56,9 @@ steps:
       fi
       mkdir -p .baztmp
       HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test ${BAZEL_BUILD_FLAGS[@]} --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp test \${BAZEL_BUILD_FLAGS[@]} --test_output=errors //test/...
       rm -f bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build ${BAZEL_BUILD_FLAGS[@]} :wheel
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/.baztmp build \${BAZEL_BUILD_FLAGS[@]} :wheel
       cp bazel-bin/*.whl .
     artifact_paths:
       - "*.whl"
