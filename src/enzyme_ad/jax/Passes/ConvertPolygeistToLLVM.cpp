@@ -30,9 +30,9 @@
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
@@ -135,7 +135,8 @@ struct Memref2PointerOpLowering
     Value baseOffset = targetMemRef.offset(rewriter, loc);
     Value ptr = targetMemRef.alignedPtr(rewriter, loc);
     Value idxs[] = {baseOffset};
-    ptr = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(), ptr, idxs);
+    ptr = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
+                                       ptr, idxs);
     ptr = rewriter.create<LLVM::BitcastOp>(
         loc, LLVM::LLVMPointerType::get(op.getContext(), space0), ptr);
     if (space0 != LPT.getAddressSpace())
@@ -433,9 +434,9 @@ public:
     Value null = rewriter.create<LLVM::ZeroOp>(loc, convertedType);
     assert(0 && "todo alloc lower");
     Value elementSize;
-   // = rewriter.create<enzymexla::TypeSizeOp>(
-   //     loc, rewriter.getIndexType(),
-   //     mlir::TypeAttr::get(originalType.getElementType()));
+    // = rewriter.create<enzymexla::TypeSizeOp>(
+    //     loc, rewriter.getIndexType(),
+    //     mlir::TypeAttr::get(originalType.getElementType()));
     Value size = rewriter.create<LLVM::MulOp>(loc, totalSize, elementSize);
 
     if (auto F = module.lookupSymbol<mlir::func::FuncOp>("malloc")) {
@@ -541,8 +542,9 @@ public:
     bool thread_local_ = false;
     unsigned addr = originalType.getMemorySpaceAsInt();
     auto newGlobal = rewriter.replaceOpWithNewOp<LLVM::GlobalOp>(
-        globalOp, convertedType, globalOp.getConstant(), linkage, globalOp.getSymName(),
-	initialValue, alignment, addr, dso_local, thread_local_);
+        globalOp, convertedType, globalOp.getConstant(), linkage,
+        globalOp.getSymName(), initialValue, alignment, addr, dso_local,
+        thread_local_);
     if (!globalOp.isExternal() && globalOp.isUninitialized()) {
       Block *block =
           rewriter.createBlock(&newGlobal.getInitializerRegion(),
@@ -845,7 +847,6 @@ convertFunctionType(FuncOpType funcOp, const TypeConverter &typeConverter) {
   return std::make_pair(convertedType, signatureConversion);
 }
 
-
 /// Pattern for function declarations and definitions.
 struct FuncOpLowering : public ConvertOpToLLVMPattern<func::FuncOp> {
 public:
@@ -973,7 +974,6 @@ struct ReconcileUnrealizedPointerCasts
   }
 };
 
-
 struct AllocaScopeOpLowering
     : public ConvertOpToLLVMPattern<memref::AllocaScopeOp> {
   using ConvertOpToLLVMPattern<memref::AllocaScopeOp>::ConvertOpToLLVMPattern;
@@ -1056,7 +1056,8 @@ populateCStyleFuncLoweringPatterns(RewritePatternSet &patterns,
 namespace {
 
 struct ConvertPolygeistToLLVMPass
-    : public mlir::enzyme::impl::ConvertPolygeistToLLVMBase<ConvertPolygeistToLLVMPass> {
+    : public mlir::enzyme::impl::ConvertPolygeistToLLVMBase<
+          ConvertPolygeistToLLVMPass> {
   using ConvertPolygeistToLLVMBase::ConvertPolygeistToLLVMBase;
 
   void convertModule(ModuleOp m, bool gpuModule) {
@@ -1099,92 +1100,92 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
-      RewritePatternSet patterns(&getContext());
+    RewritePatternSet patterns(&getContext());
 
-      populatePolygeistToLLVMConversionPatterns(converter, patterns);
-      populateSCFToControlFlowConversionPatterns(patterns);
-      // populateForBreakToWhilePatterns(patterns);
-      cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
-      if (useCStyleMemRef) {
-        populateCStyleMemRefLoweringPatterns(patterns, converter);
-        populateCStyleFuncLoweringPatterns(patterns, converter);
-      } else {
-        populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
-        populateFuncToLLVMConversionPatterns(converter, patterns);
-      }
-      populateMathToLLVMConversionPatterns(converter, patterns);
-      populateOpenMPToLLVMConversionPatterns(converter, patterns);
-      arith::populateArithToLLVMConversionPatterns(converter, patterns);
+    populatePolygeistToLLVMConversionPatterns(converter, patterns);
+    populateSCFToControlFlowConversionPatterns(patterns);
+    // populateForBreakToWhilePatterns(patterns);
+    cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
+    if (useCStyleMemRef) {
+      populateCStyleMemRefLoweringPatterns(patterns, converter);
+      populateCStyleFuncLoweringPatterns(patterns, converter);
+    } else {
+      populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
+      populateFuncToLLVMConversionPatterns(converter, patterns);
+    }
+    populateMathToLLVMConversionPatterns(converter, patterns);
+    populateOpenMPToLLVMConversionPatterns(converter, patterns);
+    arith::populateArithToLLVMConversionPatterns(converter, patterns);
 
-      bool kernelBarePtrCallConv = false;
-      // Our custom versions of the gpu patterns
-      if (useCStyleMemRef) {
-        // patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
-        //     converter, gpu::getDefaultGpuBinaryAnnotation(), gpuTarget);
-        // patterns.add<ConvertAllocOpToGpuRuntimeCallPattern>(converter);
-      }
+    bool kernelBarePtrCallConv = false;
+    // Our custom versions of the gpu patterns
+    if (useCStyleMemRef) {
+      // patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
+      //     converter, gpu::getDefaultGpuBinaryAnnotation(), gpuTarget);
+      // patterns.add<ConvertAllocOpToGpuRuntimeCallPattern>(converter);
+    }
 
-      patterns.add<LLVMOpLowering, GlobalOpTypeConversion,
-                   ReturnOpTypeConversion>(converter);
-      patterns.add<URLLVMOpLowering>(converter);
+    patterns
+        .add<LLVMOpLowering, GlobalOpTypeConversion, ReturnOpTypeConversion>(
+            converter);
+    patterns.add<URLLVMOpLowering>(converter);
 
-      // Legality callback for operations that checks whether their operand and
-      // results types are converted.
-      auto areAllTypesConverted = [&](Operation *op) -> std::optional<bool> {
-        // Check if TyepAttrs got converted
-        for (auto &attr : op->getAttrs())
-          if (auto tyAttr = dyn_cast<TypeAttr>(attr.getValue()))
-            if (converter.convertType(tyAttr.getValue()) != tyAttr.getValue())
-              return std::nullopt;
-
-        SmallVector<Type> convertedResultTypes;
-        if (failed(converter.convertTypes(op->getResultTypes(),
-                                          convertedResultTypes)))
-          return std::nullopt;
-        SmallVector<Type> convertedOperandTypes;
-        if (failed(converter.convertTypes(op->getOperandTypes(),
-                                          convertedOperandTypes)))
-          return std::nullopt;
-
-        return convertedResultTypes == op->getResultTypes() &&
-               convertedOperandTypes == op->getOperandTypes();
-      };
-
-      LLVMConversionTarget target(getContext());
-      configureOpenMPToLLVMConversionLegality(target, converter);
-      target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
-                          scf::ExecuteRegionOp, func::FuncOp>();
-      target.addDynamicallyLegalDialect<LLVM::LLVMDialect>(
-          areAllTypesConverted);
-      target.addDynamicallyLegalOp<LLVM::GlobalOp>(
-          [&](LLVM::GlobalOp op) -> std::optional<bool> {
-            if (converter.convertType(op.getGlobalType()) == op.getGlobalType())
-              return true;
+    // Legality callback for operations that checks whether their operand and
+    // results types are converted.
+    auto areAllTypesConverted = [&](Operation *op) -> std::optional<bool> {
+      // Check if TyepAttrs got converted
+      for (auto &attr : op->getAttrs())
+        if (auto tyAttr = dyn_cast<TypeAttr>(attr.getValue()))
+          if (converter.convertType(tyAttr.getValue()) != tyAttr.getValue())
             return std::nullopt;
-          });
-      target.addDynamicallyLegalOp<LLVM::ReturnOp>(
-          [&](LLVM::ReturnOp op) -> std::optional<bool> {
-            // Outside global ops, defer to the normal type-based check. Note
-            // that the infrastructure will not do it automatically because
-            // per-op checks override dialect-level checks unconditionally.
-            if (!isa<LLVM::GlobalOp>(op->getParentOp()))
-              return areAllTypesConverted(op);
 
-            SmallVector<Type> convertedOperandTypes;
-            if (failed(converter.convertTypes(op->getOperandTypes(),
-                                              convertedOperandTypes)))
-              return std::nullopt;
-            return convertedOperandTypes == op->getOperandTypes();
-          });
-      /*
-      target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
-          [&](Operation *op) { return op->getOperand(0).getType() !=
-      op->getResult(0).getType(); });
-          */
+      SmallVector<Type> convertedResultTypes;
+      if (failed(converter.convertTypes(op->getResultTypes(),
+                                        convertedResultTypes)))
+        return std::nullopt;
+      SmallVector<Type> convertedOperandTypes;
+      if (failed(converter.convertTypes(op->getOperandTypes(),
+                                        convertedOperandTypes)))
+        return std::nullopt;
 
-       // target.addIllegalOp<UnrealizedConversionCastOp>();
-      if (failed(applyPartialConversion(m, target, std::move(patterns))))
-        signalPassFailure();
+      return convertedResultTypes == op->getResultTypes() &&
+             convertedOperandTypes == op->getOperandTypes();
+    };
+
+    LLVMConversionTarget target(getContext());
+    configureOpenMPToLLVMConversionLegality(target, converter);
+    target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
+                        scf::ExecuteRegionOp, func::FuncOp>();
+    target.addDynamicallyLegalDialect<LLVM::LLVMDialect>(areAllTypesConverted);
+    target.addDynamicallyLegalOp<LLVM::GlobalOp>(
+        [&](LLVM::GlobalOp op) -> std::optional<bool> {
+          if (converter.convertType(op.getGlobalType()) == op.getGlobalType())
+            return true;
+          return std::nullopt;
+        });
+    target.addDynamicallyLegalOp<LLVM::ReturnOp>(
+        [&](LLVM::ReturnOp op) -> std::optional<bool> {
+          // Outside global ops, defer to the normal type-based check. Note
+          // that the infrastructure will not do it automatically because
+          // per-op checks override dialect-level checks unconditionally.
+          if (!isa<LLVM::GlobalOp>(op->getParentOp()))
+            return areAllTypesConverted(op);
+
+          SmallVector<Type> convertedOperandTypes;
+          if (failed(converter.convertTypes(op->getOperandTypes(),
+                                            convertedOperandTypes)))
+            return std::nullopt;
+          return convertedOperandTypes == op->getOperandTypes();
+        });
+    /*
+    target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
+        [&](Operation *op) { return op->getOperand(0).getType() !=
+    op->getResult(0).getType(); });
+        */
+
+    // target.addIllegalOp<UnrealizedConversionCastOp>();
+    if (failed(applyPartialConversion(m, target, std::move(patterns))))
+      signalPassFailure();
     {
       RewritePatternSet patterns(&getContext());
       patterns.insert<ReconcileUnrealizedPointerCasts>(&getContext());

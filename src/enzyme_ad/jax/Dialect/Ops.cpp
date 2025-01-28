@@ -362,7 +362,6 @@ public:
   }
 };
 
-
 /// Simplify pointer2memref(memref2pointer(x)) to cast(x)
 template <typename T>
 class CopySimplification final : public OpRewritePattern<T> {
@@ -587,13 +586,12 @@ public:
 void Memref2PointerOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<
-      //Memref2Pointer2MemrefCast, Memref2PointerIndex, Memref2PointerBitCast,
+      // Memref2Pointer2MemrefCast, Memref2PointerIndex, Memref2PointerBitCast,
       Memref2Pointer2MemrefCast, Memref2PointerBitCast,
 
       SetSimplification<LLVM::MemsetOp>, CopySimplification<LLVM::MemcpyOp>,
       CopySimplification<LLVM::MemmoveOp>>(context);
 }
-
 
 OpFoldResult Memref2PointerOp::fold(FoldAdaptor adaptor) {
 #if 0
@@ -785,7 +783,6 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewrite(
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
 
-
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
@@ -794,7 +791,6 @@ void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  MetaPointer2Memref<affine::AffineLoadOp>,
                  MetaPointer2Memref<affine::AffineStoreOp>>(context);
 }
-
 
 OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   /// Simplify pointer2memref(cast(x)) to pointer2memref(x)
@@ -829,4 +825,3 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   }
   return nullptr;
 }
-

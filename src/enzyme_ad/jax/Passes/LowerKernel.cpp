@@ -15,9 +15,9 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -175,8 +175,7 @@ void buildLowerToNVVMPassPipeline(
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
 }
 
-void buildLowerToCPUPassPipeline(
-    OpPassManager &pm) {
+void buildLowerToCPUPassPipeline(OpPassManager &pm) {
   pm.addPass(createConvertPolygeistToLLVM());
 }
 
@@ -192,7 +191,8 @@ llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool run_init, size_t *cuLaunchPtr, bool compileInit = true) {
+                           bool run_init, size_t *cuLaunchPtr,
+                           bool compileInit = true) {
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -320,19 +320,17 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   return mlir::dyn_cast<gpu::ObjectAttr>(objects[index]);
 }
 
-CallInfo CompileCUDAKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
-                       FunctionOpInterface op, bool jit, size_t gridx,
-                       size_t gridy, size_t gridz, size_t blockx, size_t blocky,
-                       size_t blockz, size_t shmem, std::string toolkitPath,
-                       llvm::SmallVectorImpl<std::string> &linkFiles,
-                       int indexBitWidth, std::string cubinChip,
-                       std::string cubinFeatures, size_t cuLaunchKernelPtr,
-                       size_t cuModuleLoadDataPtr,
-                       size_t cuModuleGetFunctionPtr, bool compileLaunch,
-                       bool run_init, enzymexla::KernelCallOp kernelCallOp,
-                       bool debug, size_t cuResultHandlerPtr,
-                       size_t cuStreamSynchronizePtr, std::string cubinFormat,
-                       int cuOptLevel, std::string cubinTriple) {
+CallInfo CompileCUDAKernel(
+    SymbolTableCollection &symbolTable, mlir::Location loc,
+    FunctionOpInterface op, bool jit, size_t gridx, size_t gridy, size_t gridz,
+    size_t blockx, size_t blocky, size_t blockz, size_t shmem,
+    std::string toolkitPath, llvm::SmallVectorImpl<std::string> &linkFiles,
+    int indexBitWidth, std::string cubinChip, std::string cubinFeatures,
+    size_t cuLaunchKernelPtr, size_t cuModuleLoadDataPtr,
+    size_t cuModuleGetFunctionPtr, bool compileLaunch, bool run_init,
+    enzymexla::KernelCallOp kernelCallOp, bool debug, size_t cuResultHandlerPtr,
+    size_t cuStreamSynchronizePtr, std::string cubinFormat, int cuOptLevel,
+    std::string cubinTriple) {
 
   OpBuilder builder(op);
 
@@ -853,10 +851,11 @@ CallInfo CompileCUDAKernel(SymbolTableCollection &symbolTable, mlir::Location lo
   return ptr;
 };
 
-CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
-                       FunctionOpInterface op, bool jit, size_t gridx,
-                       size_t gridy, size_t gridz, size_t blockx, size_t blocky,
-                       size_t blockz, size_t shmem, enzymexla::KernelCallOp, bool debug) {
+CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
+                          mlir::Location loc, FunctionOpInterface op, bool jit,
+                          size_t gridx, size_t gridy, size_t gridz,
+                          size_t blockx, size_t blocky, size_t blockz,
+                          size_t shmem, enzymexla::KernelCallOp, bool debug) {
 
   OpBuilder builder(op);
 
@@ -885,11 +884,12 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
 
   static size_t id = 0;
   id++;
-  auto submod = builder.create<ModuleOp>(loc, "cpuoffload" + std::to_string(id));
+  auto submod =
+      builder.create<ModuleOp>(loc, "cpuoffload" + std::to_string(id));
 
   std::string legalName = op.getName().str();
   std::replace(legalName.begin(), legalName.end(), '#', '_');
-  
+
   SmallVector<Operation *> tocopy;
   op->walk([&](CallOpInterface cop) {
     if (auto op2 = cop.resolveCallable())
@@ -933,7 +933,7 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
 
   auto idx = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
-  
+
   SmallVector<mlir::Value> inits;
   SmallVector<mlir::Value> finals;
   SmallVector<mlir::Value> incs;
@@ -942,7 +942,7 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
     incs.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
     finals.push_back(builder.create<arith::ConstantIndexOp>(loc, val));
   }
-  
+
   SmallVector<mlir::Value> arguments;
   for (auto arg : op.getArguments()) {
     LLVM::GEPArg args[1] = {arg.getArgNumber()};
@@ -955,22 +955,21 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
     auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
     arguments.push_back(ld);
   }
-    
+
   IRMapping map;
-    for (auto &&[oldarg, newarg] :
-         zip(op.getArguments(), arguments)) {
-      Value newval = newarg;
+  for (auto &&[oldarg, newarg] : zip(op.getArguments(), arguments)) {
+    Value newval = newarg;
 
-      if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
-        auto ud =
-            builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
-        int64_t c0[1] = {0};
-        newval = builder.create<LLVM::InsertValueOp>(
-            newarg.getLoc(), oldarg.getType(), ud, newval, c0);
-      }
-
-      map.map(oldarg, newval);
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
+      auto ud =
+          builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
+      int64_t c0[1] = {0};
+      newval = builder.create<LLVM::InsertValueOp>(
+          newarg.getLoc(), oldarg.getType(), ud, newval, c0);
     }
+
+    map.map(oldarg, newval);
+  }
 
   auto par = builder.create<scf::ParallelOp>(loc, inits, finals, incs);
 
@@ -1001,45 +1000,51 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc
       op.erase();
     });
 
-      // block idx
-     executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
+    // block idx
+    executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
-     executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
+    });
+    executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
-     executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
+    });
+    executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
+    });
 
-      // thread idx
-     executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
+    // thread idx
+    executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
-     executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
+    });
+    executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
-     executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
+    });
+    executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
       OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
+      auto rep = rewriter.create<arith::IndexCastOp>(
+          op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
       idxOp.replaceAllUsesWith(rep.getResult());
       op.erase();
-      });
+    });
   }
 
   std::string modstr;
@@ -1085,21 +1090,21 @@ struct LowerKernelPass
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
     if (backend == "cuda") {
-    mlir::gpu::GPUToNVVMPipelineOptions options;
-    options.indexBitWidth = 64;
-    options.cubinTriple = "nvptx64-nvidia-cuda";
-    options.cubinChip = "sm_50";
-    options.cubinFeatures = "+ptx60";
-    options.cubinFormat = "fatbin";
-    options.optLevel = 2;
-    options.kernelUseBarePtrCallConv = false;
-    options.hostUseBarePtrCallConv = false;
-    std::string toolkitPath = "";
-    SmallVector<std::string> linkFiles;
-    buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+      mlir::gpu::GPUToNVVMPipelineOptions options;
+      options.indexBitWidth = 64;
+      options.cubinTriple = "nvptx64-nvidia-cuda";
+      options.cubinChip = "sm_50";
+      options.cubinFeatures = "+ptx60";
+      options.cubinFormat = "fatbin";
+      options.optLevel = 2;
+      options.kernelUseBarePtrCallConv = false;
+      options.hostUseBarePtrCallConv = false;
+      std::string toolkitPath = "";
+      SmallVector<std::string> linkFiles;
+      buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
     } else if (backend == "cpu") {
-    buildLowerToCPUPassPipeline(pm);
-    registry.insert<mlir::omp::OpenMPDialect>();
+      buildLowerToCPUPassPipeline(pm);
+      registry.insert<mlir::omp::OpenMPDialect>();
     }
     pm.getDependentDialects(registry);
 
@@ -1171,20 +1176,21 @@ struct LowerKernelPass
       // Compiled kernel goes here once ready
       CallInfo cdata;
       if (backend == "cuda")
-	 cdata = CompileCUDAKernel(
-          symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
-          data[5], data[6], data[7], toolkitPath.getValue(), linkFilesArray,
-          indexBitWidth.getValue(), cubinChip.getValue(),
-          cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
-          cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
-          cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
-          cubinTriple);
+        cdata = CompileCUDAKernel(
+            symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3],
+            data[4], data[5], data[6], data[7], toolkitPath.getValue(),
+            linkFilesArray, indexBitWidth.getValue(), cubinChip.getValue(),
+            cubinFeatures.getValue(), cuLaunchKernelPtr, cuModuleLoadDataPtr,
+            cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
+            cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
+            cubinTriple);
       else if (backend == "cpu")
-	 cdata = CompileCPUKernel(
-          symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3], data[4],
-          data[5], data[6], data[7], op, debug);
+        cdata = CompileCPUKernel(symbolTable, op.getLoc(), fn, jit, data[1],
+                                 data[2], data[3], data[4], data[5], data[6],
+                                 data[7], op, debug);
       else {
-	  op->emitError() << "Cannot lower kernel to unknown backend \"" << backend << "\"";
+        op->emitError() << "Cannot lower kernel to unknown backend \""
+                        << backend << "\"";
       }
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
