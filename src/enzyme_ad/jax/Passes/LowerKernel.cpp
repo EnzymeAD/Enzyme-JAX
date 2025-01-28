@@ -10,7 +10,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -22,7 +21,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -79,6 +77,13 @@
 #include "mlir/Target/LLVMIR/Export.h"
 
 #define DEBUG_TYPE "lower-kernel"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_LOWERKERNELPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -323,8 +328,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Type intys[] = {ptrty, ptrty, ptrty};
   FunctionType calleeType = builder.getFunctionType(intys, {});
-  mlir::Type intys2[] = {ptrty, ptrty};
-  FunctionType printType = builder.getFunctionType(intys2, {});
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -442,7 +445,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
 
-  mlir::Value cufunc = entryBlock.getArgument(0);
   mlir::Value stream = entryBlock.getArgument(1);
   mlir::Value buffers = entryBlock.getArgument(2);
 
@@ -501,8 +503,6 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     if (found != kernels.end()) {
       ptr = found->second;
     } else {
-      // mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
-
       PassManager pm(submod.getContext());
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
@@ -844,7 +844,9 @@ CallInfo CompileKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
 namespace {
 
-struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
+struct LowerKernelPass
+    : public mlir::enzyme::impl::LowerKernelPassBase<LowerKernelPass> {
+  using LowerKernelPassBase::LowerKernelPassBase;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
@@ -882,8 +884,6 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
   }
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
-
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
@@ -967,11 +967,3 @@ struct LowerKernelPass : public LowerKernelPassBase<LowerKernelPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createLowerKernelPass() {
-  return std::make_unique<LowerKernelPass>();
-}
-} // namespace enzyme
-} // namespace mlir

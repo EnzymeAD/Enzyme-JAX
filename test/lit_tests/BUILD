@@ -1,5 +1,4 @@
-load("@llvm-project//llvm:lit_test.bzl", "lit_test", "package_path")
-load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
+load("@llvm-project//llvm:lit_test.bzl", "lit_test")
 
 [
     lit_test(

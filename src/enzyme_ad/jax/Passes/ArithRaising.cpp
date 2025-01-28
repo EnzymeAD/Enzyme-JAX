@@ -17,7 +17,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
@@ -26,13 +25,20 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
-#define DEBUG_TYPE "enzyme"
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_ARITHRAISINGPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
-struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
+struct ArithRaisingPass
+    : public enzyme::impl::ArithRaisingPassBase<ArithRaisingPass> {
+  using ArithRaisingPassBase::ArithRaisingPassBase;
 
   void runOnOperation() override {
     auto op = getOperation();
@@ -124,11 +130,3 @@ struct ArithRaisingPass : public ArithRaisingPassBase<ArithRaisingPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createArithRaisingPass() {
-  return std::make_unique<ArithRaisingPass>();
-}
-} // namespace enzyme
-} // namespace mlir

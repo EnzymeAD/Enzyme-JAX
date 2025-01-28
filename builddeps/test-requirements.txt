@@ -13,7 +13,7 @@ jax-cuda12-plugin[with_cuda]; sys_platform == 'linux'
 
 neuralgcm
 
-gcsfs
+gcsfs; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 
 https://github.com/wsmoses/keras/archive/f9d90db8797661ac9710e3acdcc1850ba94ab2fc.tar.gz; sys_platform == 'linux'

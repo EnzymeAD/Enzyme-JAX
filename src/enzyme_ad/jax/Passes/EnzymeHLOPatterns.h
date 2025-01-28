@@ -19,6 +19,9 @@ class RewritePatternSet;
 namespace mlir::transform {
 void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
                       MLIRContext &context, PatternBenefit benefit);
+void addNoNanAddSubSimplify(RewritePatternSet &patterns,
+                            bool allowOnFloatingPointMath, MLIRContext &context,
+                            PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,

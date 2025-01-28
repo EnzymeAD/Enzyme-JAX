@@ -11,10 +11,16 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_LIBDEVICEFUNCSRAISINGPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -171,17 +177,14 @@ private:
 };
 } // namespace
 
-template <typename TargetOp>
+template <typename TargetOp, typename Arg, typename... Args>
 static void populateOpPatterns(MLIRContext *context,
-                               RewritePatternSet &patterns, StringRef f32Func,
-                               StringRef f64Func, StringRef f32ApproxFunc = "",
-                               StringRef f16Func = "") {
-  patterns.add<CallToOpRaising<TargetOp>>(context, f32Func);
-  patterns.add<CallToOpRaising<TargetOp>>(context, f64Func);
-  if (!f32ApproxFunc.empty())
-    patterns.add<CallToOpRaising<TargetOp>>(context, f32ApproxFunc);
-  if (!f16Func.empty())
-    patterns.add<CallToOpRaising<TargetOp>>(context, f16Func);
+                               RewritePatternSet &patterns, Arg &&arg,
+                               Args &&...args) {
+  patterns.add<CallToOpRaising<TargetOp>>(context, std::forward<Arg>(arg));
+  if constexpr (sizeof...(Args) != 0)
+    populateOpPatterns<TargetOp>(context, patterns,
+                                 std::forward<Args>(args)...);
 }
 
 namespace {
@@ -323,10 +326,31 @@ using SubIOpLowering =
 //    arith::TruncFOp, LLVM::ConstrainedFPTruncIntr, true,
 //    arith::AttrConverterConstrainedFPFromLLVM>;
 using TruncIOpLowering =
-    VectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
+    InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
-    VectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
-using XOrIOpLowering = VectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
+    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
+using XOrIOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
+using CmpIOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::CmpIOp, LLVM::ICmpOp>;
+using CmpFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
+                                    AttrConvertFastMathFromLLVM>;
+
+struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
+  using OpRewritePattern<LLVM::ConstantOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ConstantOp op,
+                                PatternRewriter &rewriter) const override {
+    if (isa<mlir::IntegerType, mlir::FloatType>(op.getResult().getType())) {
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+          op, op->getResultTypes(), op->getOperands(), op->getAttrs());
+      return success();
+    }
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -399,6 +423,9 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                   "__nv_fast_tanf");
   populateOpPatterns<math::TanhOp>(converter, patterns, "__nv_tanhf",
                                    "__nv_tanh");
+  populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
+                                    "__nv_powi");
+  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
@@ -421,15 +448,14 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 
+  patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
+
   patterns
       .add<AddFOpLowering, AddIOpLowering, AndIOpLowering,
            // AddUIExtendedOpLowering,
-           BitcastOpLowering,
-           // ConstantOpLowering,
-           // CmpFOpLowering,
-           // CmpIOpLowering,
-           DivFOpLowering, DivSIOpLowering, DivUIOpLowering, ExtFOpLowering,
-           ExtSIOpLowering, ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
+           BitcastOpLowering, ConstantOpLowering, DivFOpLowering,
+           DivSIOpLowering, DivUIOpLowering, ExtFOpLowering, ExtSIOpLowering,
+           ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
            MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
@@ -446,10 +472,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 }
 
 namespace {
-class LibDeviceFuncsRaisingPass
-    : public LibDeviceFuncsRaisingPassBase<LibDeviceFuncsRaisingPass> {
-public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LibDeviceFuncsRaisingPass)
+struct LibDeviceFuncsRaisingPass
+    : public enzyme::impl::LibDeviceFuncsRaisingPassBase<
+          LibDeviceFuncsRaisingPass> {
+  using LibDeviceFuncsRaisingPassBase::LibDeviceFuncsRaisingPassBase;
 
   void runOnOperation() override {
     RewritePatternSet patterns(getOperation()->getContext());
@@ -462,7 +488,3 @@ public:
   }
 };
 } // namespace
-
-std::unique_ptr<Pass> mlir::enzyme::createLibDeviceFuncsRaisingPass() {
-  return std::make_unique<LibDeviceFuncsRaisingPass>();
-}

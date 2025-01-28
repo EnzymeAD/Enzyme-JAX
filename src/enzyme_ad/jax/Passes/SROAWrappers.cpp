@@ -28,7 +28,6 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "llvm/Transforms/IPO/FunctionAttrs.h"
@@ -41,10 +40,20 @@
 
 #define DEBUG_TYPE "sroa-wrappers"
 
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_SROAWRAPPERSPASS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir::enzyme;
 
 namespace {
-struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
+struct SROAWrappersPass
+    : public mlir::enzyme::impl::SROAWrappersPassBase<SROAWrappersPass> {
+  using SROAWrappersPassBase::SROAWrappersPassBase;
+
   void runOnOperation() override {
     mlir::ModuleOp m = getOperation();
 
@@ -57,7 +66,7 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
          llvm::zip(m->getRegions(), mToTranslate->getRegions())) {
       for (auto &oldBlock : oldRegion.getBlocks()) {
         assert(oldBlock.getNumArguments() == 0);
-        auto newBlock = b.createBlock(&newRegion, newRegion.end());
+        b.createBlock(&newRegion, newRegion.end());
         for (auto &op : oldBlock) {
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
           // FIXME in reality, this check should be whether the entirety
@@ -87,6 +96,8 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
     llvm::LLVMContext llvmCtx;
     auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
 
+    if (dump_prellvm)
+      llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
     {
       using namespace llvm;
       PipelineTuningOptions PTO;
@@ -121,6 +132,8 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
       MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
     }
+    if (dump_postllvm)
+      llvm::errs() << "sroa post_llvm\n" << *llvmModule << "\n";
     auto translatedFromLLVMIR = mlir::translateLLVMIRToModule(
         std::move(llvmModule), m->getContext(), /*emitExpensiveWarnings*/ true,
         /*dropDICompositeTypeElements*/ false, /*loadAllDialects*/ false);
@@ -151,11 +164,3 @@ struct SROAWrappersPass : public SROAWrappersPassBase<SROAWrappersPass> {
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace enzyme {
-std::unique_ptr<Pass> createSROAWrappersPass() {
-  return std::make_unique<SROAWrappersPass>();
-}
-} // namespace enzyme
-} // namespace mlir

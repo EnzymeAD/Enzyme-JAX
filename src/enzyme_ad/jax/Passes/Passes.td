@@ -13,9 +13,16 @@ include "mlir/Pass/PassBase.td"
 
 def RemoveDuplicateFuncDefPass : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
   let summary = "Remove duplicate function definitions";
-  let constructor = "mlir::enzyme::createRemoveDuplicateFuncDefPass()";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect"
+  ]; 
+}
+
+def PropagateConstantBoundsPass : Pass<"propagate-constant-bounds", "ModuleOp"> {
+  let summary = "Propagate constant bounds";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::NVVM::NVVMDialect"
   ]; 
 }
 
@@ -28,7 +35,6 @@ def ArithRaisingPass : Pass<"arith-raise"> {
     "chlo::ChloDialect",
     "enzyme::EnzymeDialect"
   ];
-  let constructor = "mlir::enzyme::createArithRaisingPass()";
   let options = [
     Option<
       /*C++ variable name=*/"use_stablehlo",
@@ -42,7 +48,6 @@ def ArithRaisingPass : Pass<"arith-raise"> {
 
 def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
   let summary = "Run the transform interpreter and remove the script";
-  let constructor = "mlir::enzyme::createConsumingInterpreterPass()";
   let description = [{
     This pass isolates the transform script in a separate module, making it
     possible to apply the script to the anchor operation of the pass.
@@ -55,7 +60,6 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
     "stablehlo::StablehloDialect",
     "tensor::TensorDialect"
   ];
-  let constructor = "mlir::enzyme::createEnzymeHLOOptPass()";
   let options = [
     Option<
       /*C++ variable name=*/"all_finite",
@@ -115,14 +119,10 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
     "stablehlo::StablehloDialect",
     "tensor::TensorDialect"
   ];
-  let constructor = "mlir::enzyme::createEnzymeHLOUnrollPass()";
 }
 
 def PrintPass : Pass<"print"> {
   let summary = "Print the module";
-  let dependentDialects = [
-  ];
-  let constructor = "mlir::enzyme::createPrintPass()";
   let options = [
     Option<
       /*C++ variable name=*/"use_stdout",
@@ -135,9 +135,7 @@ def PrintPass : Pass<"print"> {
 }
 
 def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
-  let summary = "";
-  let dependentDialects = [];
-  let constructor = "mlir::enzyme::createSROAWrappersPass()";
+  let summary = "Run LLVM SROA (Scalar Replacement of Aggregates)";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
     "mlir::DLTIDialect",
@@ -145,6 +143,22 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
     "mlir::arith::ArithDialect",
     "mlir::math::MathDialect"
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"dump_prellvm",
+      /*CLI argument=*/"dump_prellvm",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to dump LLVM before optimizations"
+    >,
+    Option<
+      /*C++ variable name=*/"dump_postllvm",
+      /*CLI argument=*/"dump_postllvm",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to dump LLVM after optimizations"
+    >
+    ];
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
@@ -153,14 +167,12 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
     "arith::ArithDialect",
     "math::MathDialect",
   ];
-  let constructor = "mlir::enzyme::createLibDeviceFuncsRaisingPass()";
 }
 
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
   ];
-  let constructor = "mlir::enzyme::createLowerKernelPass()";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "gpu::GPUDialect",
@@ -297,6 +309,46 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*description=*/"Target triple"
     >,
     ];
+}
+
+//===----------------------------------------------------------------------===//
+// LLVMToControlFlow
+//===----------------------------------------------------------------------===//
+
+def ConvertLLVMToControlFlowPass : Pass<"convert-llvm-to-cf"> {
+  let summary = "Convert LLVM cf operations to the ControlFlow dialect";
+  let dependentDialects = ["cf::ControlFlowDialect"];
+}
+
+//===----------------------------------------------------------------------===//
+// ControlFlowToSCF
+//===----------------------------------------------------------------------===//
+
+def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
+  let summary = "Lift ControlFlow dialect to SCF dialect";
+  let description = [{
+    Lifts ControlFlow operations to SCF dialect operations.
+
+    This pass is prefixed with "lift" instead of "convert" as it is not always
+    guaranteed to replace all ControlFlow ops.
+    If a region contains only a single kind of return-like operation, all
+    ControlFlow operations will be replaced successfully.
+    Otherwise a single ControlFlow switch branching to one block per return-like
+    operation kind remains.
+
+    This pass may need to create unreachable terminators in case of infinite
+    loops, which is only supported for 'func.func' for now. If you potentially
+    have infinite loops inside CFG regions not belonging to 'func.func',
+    consider using `transformCFGToSCF` function directly with corresponding
+    `CFGToSCFInterface::createUnreachableTerminator` implementation.
+  }];
+
+  let dependentDialects = ["scf::SCFDialect",
+                           "arith::ArithDialect",
+                           "ub::UBDialect",
+                           // TODO: This is only necessary until we have a
+                           //       ub.unreachable op.
+                           "func::FuncDialect"];
 }
 
 #endif

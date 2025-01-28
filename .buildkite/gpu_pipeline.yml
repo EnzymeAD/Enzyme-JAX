@@ -38,10 +38,19 @@ steps:
       mkdir -p .baztmp
 
       echo "--- :python: Test"
-
+      BAZEL_BUILD_FLAGS=()
+      GCC_VERSION=$(gcc --version | head -1 | awk '{ print $3 }' | cut -d. -f1)
+      if [[ "${GCC_VERSION}" -le 12 ]]; then
+        # Someone wants to compile some code which requires flags not understood by GCC 12.
+        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnniint8=false)
+      fi
+      if [[ "${GCC_VERSION}" -le 11 ]]; then
+        # Someone wants to compile some code which requires flags not understood by GCC 11.
+        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avx512fp16=false)
+      fi
       HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
-      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp build --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avxvnni=false --test_output=errors //:wheel
-      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avxvnni=false --test_output=errors //test/...
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp build ${BAZEL_BUILD_FLAGS[@]} --test_output=errors //:wheel
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp test ${BAZEL_BUILD_FLAGS[@]} --test_output=errors //test/...
 
     artifact_paths:
       - "bazel-out/*/testlogs/test/llama/test.log"

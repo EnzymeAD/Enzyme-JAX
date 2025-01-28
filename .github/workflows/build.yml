@@ -54,7 +54,7 @@ jobs:
           cp bazel-bin/*.whl .
 
       - name: Upload Build
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Wheel-${{ matrix.os }}
           path: "*.whl"

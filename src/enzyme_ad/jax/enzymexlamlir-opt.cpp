@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
   prepareRegistry(registry);
 
   mlir::registerenzymePasses();
-  mlir::registerenzymexlaPasses();
+  mlir::enzyme::registerenzymexlaPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
@@ -101,6 +101,8 @@ int main(int argc, char **argv) {
   mlir::registerConvertSCFToOpenMPPass();
   mlir::affine::registerAffinePasses();
   mlir::registerReconcileUnrealizedCasts();
+  mlir::enzyme::registerConvertLLVMToControlFlowPass();
+  mlir::enzyme::registerEnzymeLiftControlFlowToSCFPass();
 
   registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
     LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);

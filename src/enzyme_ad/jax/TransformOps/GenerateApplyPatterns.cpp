@@ -142,8 +142,12 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     OperationState state(loc, potentialOpName);
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
-    if (parameter != -1)
-      state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
+    if (parameter != -1) {
+      if (opName == "no_nan_add_sub_simplify")
+        state.addAttribute("parameter", builder.getBoolAttr(parameter));
+      else
+        state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
+    }
     builder.create(state);
   }
   return success();

@@ -77,9 +77,7 @@ public:
     size_t outputs = launchOp.getNumResults();
     for (auto alias_attr : operand_aliases) {
       auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-      auto outputTupleIndices = alias.getOutputTupleIndices();
       auto operandIndex = alias.getOperandIndex();
-      auto operandTupleIndices = alias.getOperandTupleIndices();
 
       auto operand = fn.front().getArgument(operandIndex);
       bool readonly =
@@ -101,9 +99,7 @@ public:
     for (auto en : llvm::enumerate(operand_aliases)) {
       auto idx = en.index();
       auto alias = cast<OutputOperandAliasAttr>(en.value());
-      auto outputTupleIndices = alias.getOutputTupleIndices();
       auto operandIndex = alias.getOperandIndex();
-      auto operandTupleIndices = alias.getOperandTupleIndices();
 
       auto operand = fn.front().getArgument(operandIndex);
       assert(launchOp.getInputs()[operandIndex].getType() ==
@@ -140,9 +136,7 @@ public:
     out_idx = 0;
     for (auto alias_attr : operand_aliases) {
       auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-      auto outputTupleIndices = alias.getOutputTupleIndices();
       auto operandIndex = alias.getOperandIndex();
-      auto operandTupleIndices = alias.getOperandTupleIndices();
 
       auto operand = fn.front().getArgument(operandIndex);
       bool readonly =
@@ -188,6 +182,7 @@ public:
         return failure();
       calls.push_back(launch2);
       auto operand_aliases2 = launchOp.getOutputOperandAliases();
+      (void)operand_aliases2;
       assert(operand_aliases2.size() == launchOp.getNumResults());
     }
 

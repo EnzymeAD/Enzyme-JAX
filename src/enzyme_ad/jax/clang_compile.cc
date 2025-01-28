@@ -571,7 +571,11 @@ struct tensor<T, n0, N...>
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-  PB.parsePassPipeline(MPM, "default<O3>");
+  if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
+    throw pybind11::value_error(
+        (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
+            .str());
+  }
   MPM.run(*mod, MAM);
 
   auto F = mod->getFunction("prevent_stores");
