@@ -32,15 +32,14 @@ steps:
       chmod +x .local/bin/md5
 
       BAZEL_BUILD_FLAGS=()
-      
+
       if [ "{{matrix.os}}" == "macos" ]; then
         if [ ! -f ".local/bin/bazel" ]; then
           curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
           mv bazelisk-darwin .local/bin/bazel
           chmod +x .local/bin/bazel
         fi
-        if [ "{{matrix.arch}}" == "aarch64" ]; then
-        else
+        if [ "{{matrix.arch}}" != "aarch64" ]; then
           BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnniint8=false)
         fi
       elif [ "{{matrix.os}}" == "linux" ]; then
