@@ -254,7 +254,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     return {};
   }
 
-  if (cuLaunchPtr[0] == 0) {
+  if (cuLaunchPtr && cuLaunchPtr[0] == 0) {
     // Look up the JIT'd code entry point.
     auto LaunchSym = JIT->lookup(LibA.get(), "cuLaunchKernel");
     if (!LaunchSym) {
