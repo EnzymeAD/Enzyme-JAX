@@ -320,6 +320,7 @@ cc_library(
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:MemorySlotInterfaces",
+	"@llvm-project//mlir:Analysis",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithUtils",
