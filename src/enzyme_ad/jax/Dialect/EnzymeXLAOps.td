@@ -66,4 +66,36 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
 
 }
 
+def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
+  ViewLikeOpInterface, Pure
+]> {
+  let summary = "Extract and LLVM pointer from a MemRef";
+
+  let arguments = (ins AnyMemRef : $source);
+  let results = (outs AnyType:$result);
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+  
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
+}
+
+def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
+  ViewLikeOpInterface, Pure
+]> {
+  let summary = "Upgrade a pointer to a memref";
+
+  let arguments = (ins AnyType:$source);
+  let results = (outs AnyMemRef : $result);
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+  
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
+}
+
 #endif // ENZYMEXLA_OPS
