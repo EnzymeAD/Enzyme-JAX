@@ -58,6 +58,28 @@ struct PropagateConstantBoundsPass
     }
   }
 
+  static int32_t getSizeInBytes(Type ty) {
+    int32_t bitWidth = 0;
+    if (auto inType = dyn_cast<IntegerType>(ty)) {
+      bitWidth = inType.getWidth();
+      if (bitWidth == 1)
+        return 1;
+    }
+    if (auto floatType = dyn_cast<FloatType>(ty))
+      bitWidth = floatType.getWidth();
+    assert(bitWidth != 0);
+    return bitWidth / 8;
+  }
+
+  static int32_t getMemRefSizeInBytes(Value operand) {
+    auto ty = operand.getType();
+    int32_t numberOfElems = 0;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(ty)) {
+      numberOfElems = tensorTy.getNumElements();
+    }
+    return numberOfElems * getSizeInBytes(getElementTypeOrSelf(ty));
+  }
+
   void runOnOperation() override {
     auto moduleOp = getOperation();
     auto *ctx = moduleOp->getContext();
@@ -128,6 +150,28 @@ struct PropagateConstantBoundsPass
                                       callOp.getGridz().getDefiningOp(),
                                       gridIdzOp.getOperation());
       });
+    });
+
+    auto result = moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
+      auto symbolName = callOp.getFn();
+      auto callee = symTable.lookup<FunctionOpInterface>(symbolName);
+      if (!callee)
+        return WalkResult::advance();
+      MLIRContext *ctx = callee->getContext();
+      for (auto [index, valTy] : llvm::enumerate(callee.getArgumentTypes())) {
+        if (auto ptr = dyn_cast<LLVM::LLVMPointerType>(valTy)) {
+          callee.setArgAttr(index, LLVM::LLVMDialect::getNoAliasAttrName(),
+                            UnitAttr::get(ctx));
+          callee.setArgAttr(index, LLVM::LLVMDialect::getAlignAttrName(),
+                            IntegerAttr::get(IntegerType::get(ctx, 32), 128));
+          callee.setArgAttr(index,
+                            LLVM::LLVMDialect::getDereferenceableAttrName(),
+                            IntegerAttr::get(IntegerType::get(ctx, 32),
+                                             getMemRefSizeInBytes(
+                                                 callOp.getInputs()[index])));
+        }
+      }
+      return WalkResult::advance();
     });
   }
 };
