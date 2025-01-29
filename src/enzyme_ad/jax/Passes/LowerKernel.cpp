@@ -1076,7 +1076,6 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
       if (!subres.succeeded()) {
         return {};
       }
-      llvm::errs() << " lowered submod: " << submod << "\n";
       ptr = CompileHostModule(ss.str(), submod, false, 0, false);
       kernels[ss.str()] = ptr;
       submod.erase();
