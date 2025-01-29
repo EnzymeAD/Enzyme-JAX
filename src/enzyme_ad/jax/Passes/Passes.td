@@ -12,7 +12,7 @@
 include "mlir/Pass/PassBase.td"
 
 
-def CommRemoveFoo : Pass<"remove-comm-foo"> {
+def CommRemoveFoo : Pass<"comm-remove-foo"> {
   let summary = "Removes all comm foo operations";
   let dependentDialects = [
     "comm::CommunicationDialect"
@@ -20,13 +20,22 @@ def CommRemoveFoo : Pass<"remove-comm-foo"> {
   let constructor = "mlir::comm::createCommRemoveFooPass()";
 }
 
-def CommExplodeSplits : Pass<"explode-comm-splits"> {
+def CommExplodeSplits : Pass<"comm-explode-splits"> {
   let summary = "Converts a (nested) split into a non-nested split with one branch per device";
   let dependentDialects = [
     "comm::CommunicationDialect"
   ];
   let constructor = "mlir::comm::createCommExplodeSplitsPass()";
 }
+
+def CommDeplex : Pass<"comm-deplex"> {
+  let summary = "Removes multiplex messages by replacing each use of the output token with one of the input tokens";
+  let dependentDialects = [
+    "comm::CommunicationDialect"
+  ];
+  let constructor = "mlir::comm::createCommDeplexPass()";
+}
+
 
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";

@@ -28,6 +28,7 @@ std::unique_ptr<Pass> createPrintPass();
 namespace comm {
 std::unique_ptr<Pass> createCommRemoveFooPass();
 std::unique_ptr<Pass> createCommExplodeSplitsPass();
+std::unique_ptr<Pass> createCommDeplexPass();
 }
 } // namespace mlir
 
@@ -94,5 +95,6 @@ static void regsiterenzymeXLAPasses() {
   registerEnzymeHLOUnrollPass();
   registerCommRemoveFooPass();
   registerCommExplodeSplitsPass();
+  registerCommDeplexPass();
 }
 #endif // ENZYMEXLA_PASSES_H
