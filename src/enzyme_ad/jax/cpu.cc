@@ -10,6 +10,6 @@ void forwarding_custom_call(void *out, const void **in, const CallInfo *opaque,
 }
 
 extern "C" void RegisterEnzymeXLACPUHandler() {
-  CustomCallTargetRegistry::Global()->Register("enzymexla_compile_cpu",
-                                               &forwarding_custom_call, "Host");
+  xla::CustomCallTargetRegistry::Global()->Register(
+      "enzymexla_compile_cpu", &forwarding_custom_call, "Host");
 }
