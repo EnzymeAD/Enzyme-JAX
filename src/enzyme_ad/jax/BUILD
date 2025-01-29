@@ -336,6 +336,7 @@ cc_library(
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:SCFToOpenMP",
         "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:ViewLikeInterface",
         "@llvm-project//mlir:ControlFlowToSCF",
