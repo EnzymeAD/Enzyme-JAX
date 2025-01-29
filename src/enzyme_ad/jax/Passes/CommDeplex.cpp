@@ -18,7 +18,7 @@ struct CommDeplex : public CommDeplexBase<CommDeplex> {
    * latency, potential for removing communcations/computations outright, etc.
    */
   static void chooseMultiplexMapping(CommMultiplexMessage plex) {
-    plex.getOutToken().replaceAllUsesWith(plex.getInTokens().front());
+    plex.getToken().replaceAllUsesWith(plex.getInTokens().front());
   }
 
 

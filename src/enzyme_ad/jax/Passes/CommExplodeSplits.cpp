@@ -48,7 +48,7 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
     CommMultiplexMessage plex = builder.create<CommMultiplexMessage>(msg.getLoc(), out_tok_type, out_data_type, in_tokens);
 
     for(auto use : receiving_uses){
-      use->assign(plex.getOutToken());
+      use->assign(plex.getToken());
     }
     return plex;
   }

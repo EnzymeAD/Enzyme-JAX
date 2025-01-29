@@ -36,6 +36,17 @@ def CommDeplex : Pass<"comm-deplex"> {
   let constructor = "mlir::comm::createCommDeplexPass()";
 }
 
+def CommRemoveDeadMessages : Pass<"comm-remove-dead-messages"> {
+  let summary = [{
+  Removes messages and senders with no receivers.
+  This does NOT perform a full analog to DCE- this will leave in useless communications if they
+  have any dependent recieve operation, regardless of whether the result of the receive is a dead value.
+  }];
+  let dependentDialects = [
+    "comm::CommunicationDialect"
+  ];
+  let constructor = "mlir::comm::createCommRemoveDeadMessagesPass()";
+}
 
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";

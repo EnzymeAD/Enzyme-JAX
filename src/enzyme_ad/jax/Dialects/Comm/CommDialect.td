@@ -60,7 +60,10 @@ def CommMessage : OpInterface<"CommMessage"> {
     }], "mlir::Type", "getInputType">,
     InterfaceMethod<[{
       Returns what type will result from recieving this message
-    }], "mlir::Type", "getOutputType">
+    }], "mlir::Type", "getOutputType">,
+    InterfaceMethod<[{
+      Returns the token handle to this message
+    }], "mlir::TypedValue<mlir::comm::MessageTokenType>", "getToken">
   ];
 }
 
@@ -181,7 +184,7 @@ def CommMultiplexMessage: CommMessageBase<"multiplex_msg"> {
   let summary = "A phi node-like message that allows the compiler to choose from any of the input messages";
   let arguments = (ins TypeAttr:$data_type, Variadic<MessageTokenType>:$in_tokens);
   let results = (outs
-    MessageTokenType:$out_token
+    MessageTokenType:$token
   );
   let assemblyFormat = [{
     attr-dict $data_type $in_tokens
