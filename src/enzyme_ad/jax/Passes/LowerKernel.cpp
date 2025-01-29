@@ -75,6 +75,7 @@
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
 
 #include "mlir/Target/LLVMIR/Export.h"
@@ -855,7 +856,8 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
                           mlir::Location loc, FunctionOpInterface op, bool jit,
                           size_t gridx, size_t gridy, size_t gridz,
                           size_t blockx, size_t blocky, size_t blockz,
-                          size_t shmem, enzymexla::KernelCallOp, bool debug) {
+                          size_t shmem, enzymexla::KernelCallOp, bool debug,
+                          bool openmp) {
 
   OpBuilder builder(op);
 
@@ -1064,7 +1066,10 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
       ptr = found->second;
     } else {
       PassManager pm(submod.getContext());
-      pm.addPass(createConvertSCFToOpenMPPass());
+      if (openmp)
+        pm.addPass(createConvertSCFToOpenMPPass());
+      else
+        pm.addPass(createConvertSCFToCFPass());
       buildLowerToCPUPassPipeline(pm);
 
       auto subres = pm.run(submod);
@@ -1104,7 +1109,8 @@ struct LowerKernelPass
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
     } else if (backend == "cpu") {
       buildLowerToCPUPassPipeline(pm);
-      registry.insert<mlir::omp::OpenMPDialect>();
+      if (openmp)
+        registry.insert<mlir::omp::OpenMPDialect>();
     }
     pm.getDependentDialects(registry);
 
@@ -1187,7 +1193,7 @@ struct LowerKernelPass
       else if (backend == "cpu")
         cdata = CompileCPUKernel(symbolTable, op.getLoc(), fn, jit, data[1],
                                  data[2], data[3], data[4], data[5], data[6],
-                                 data[7], op, debug);
+                                 data[7], op, debug, openmp);
       else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
@@ -1197,22 +1203,38 @@ struct LowerKernelPass
 
       OpBuilder rewriter(op);
 
+      auto backendstr = rewriter.getStringAttr(backendinfo);
       SmallVector<NamedAttribute> names;
-      names.push_back(NamedAttribute(rewriter.getStringAttr("attr"),
-                                     rewriter.getStringAttr(backendinfo)));
+      names.push_back(
+          NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
-      auto replacement = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(), op.getResultTypes(), op.getInputs(),
-          rewriter.getStringAttr("enzymexla_compile_gpu"),
-          /* has_side_effect*/ rewriter.getBoolAttr(false),
-          /*backend_config*/ dattr,
-          /* api_version*/
-          CustomCallApiVersionAttr::get(
-              rewriter.getContext(),
-              mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-          /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-          output_operand_aliases);
+      Operation *replacement;
+      if (backend == "cuda")
+        replacement = rewriter.create<stablehlo::CustomCallOp>(
+            op.getLoc(), op.getResultTypes(), op.getInputs(),
+            rewriter.getStringAttr("enzymexla_compile_gpu"),
+            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /*backend_config*/ dattr,
+            /* api_version*/
+            CustomCallApiVersionAttr::get(
+                rewriter.getContext(),
+                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
+            output_operand_aliases);
+      else if (backend == "cpu")
+        replacement = rewriter.create<stablehlo::CustomCallOp>(
+            op.getLoc(), op.getResultTypes(), op.getInputs(),
+            rewriter.getStringAttr("enzymexla_compile_cpu"),
+            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /*backend_config*/ backendstr,
+            /* api_version*/
+            CustomCallApiVersionAttr::get(
+                rewriter.getContext(),
+                mlir::stablehlo::CustomCallApiVersion::
+                    API_VERSION_STATUS_RETURNING_UNIFIED),
+            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
+            output_operand_aliases);
 
       op.replaceAllUsesWith(replacement);
       op.erase();
