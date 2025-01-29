@@ -1008,21 +1008,21 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
     executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
       OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
     executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
       OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
 
     // thread idx
@@ -1031,21 +1031,21 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
     executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
       OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
     executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
       OpBuilder rewriter(idxOp);
       auto rep = rewriter.create<arith::IndexCastOp>(
           op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
       idxOp.replaceAllUsesWith(rep.getResult());
-      op.erase();
+      idxOp.erase();
     });
   }
 

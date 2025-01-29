@@ -12,5 +12,5 @@ void CallOpaque(void* out, void** in
 
 extern "C" void RegisterEnzymeXLACPUHandler() {
   CustomCallTargetRegistry::Global()->Register("enzymexla_compile_cpu",
-                                               *forwarding_custom_call, "CPU");
+                                               *forwarding_custom_call, "Host");
 }
