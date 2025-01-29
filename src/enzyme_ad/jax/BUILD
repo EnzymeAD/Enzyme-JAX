@@ -20,6 +20,15 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "cpu",
+    srcs = ["cpu.cc"],
+    deps = [
+        "@xla//xla/service:custom_call_target_registry",
+    ],
+)
+
+
 pybind_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],

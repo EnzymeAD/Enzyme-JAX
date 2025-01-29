@@ -371,6 +371,13 @@ def LowerKernelPass : Pass<"lower-kernel"> {
       /*default=*/"\"cuda\"",
       /*description=*/"HW backend"
     >,
+    Option<
+      /*C++ variable name=*/"openmp",
+      /*CLI argument=*/"openmp",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"whether to use openmp for lowering"
+    >,
     ];
 }
 

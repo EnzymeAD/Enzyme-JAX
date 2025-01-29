@@ -14,7 +14,6 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
-//#include "mlir/../../lib/Conversion/MemRefToLLVM/MemRefToLLVM.cpp"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -50,7 +49,6 @@
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
-//#include "enzymexla/Passes/Passes.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -60,8 +58,6 @@
 #include <limits>
 #include <map>
 #include <numeric>
-
-//#include "RuntimeWrapperUtils.h"
 
 #define DEBUG_TYPE "convert-enzymexla-to-llvm"
 #define DBGS() ::llvm::dbgs() << "[" DEBUG_TYPE ":" << PATTERN << "] "

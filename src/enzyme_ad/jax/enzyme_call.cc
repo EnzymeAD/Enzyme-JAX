@@ -1018,6 +1018,7 @@ void Callback(void *out, void **ins) {
 }
 
 extern "C" void RegisterEnzymeXLAGPUHandler();
+extern "C" void RegisterEnzymeXLACPUHandler();
 
 PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
@@ -1244,6 +1245,9 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
         });
+
+  m.def("register_enzymexla_cpu_handler",
+        []() { RegisterEnzymeXLACPUHandler(); });
 
   m.def("register_enzymexla_gpu_handler",
         []() { RegisterEnzymeXLAGPUHandler(); });
