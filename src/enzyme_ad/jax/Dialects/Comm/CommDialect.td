@@ -9,6 +9,7 @@ def CommunicationDialect : Dialect {
   let summary = "A prototype dialect for various communication ops";
   let description = [{}];
   let cppNamespace = "::mlir::comm";
+  let useDefaultTypePrinterParser = 1;
 }
 
 // Dialect inheritence shortcuts
@@ -30,12 +31,11 @@ def DeviceIdType : CommType<"DeviceId", "device_id"> {
 }
 def MessageTokenType : CommType<"MessageToken", "token"> {
   let summary = "Represents a consumable message token";
-  // let parameters = (ins "Type":$msg_type);
-
+  let mnemonic = "msg_token";
 }
 
 /*
-* Dialect traits 
+* Dialect traits and interfaces
 */
 def CommSplitMemberOpTrait :  NativeOpTrait<"SplitMemberOp", 
   /*traits=*/[],
@@ -51,6 +51,19 @@ def CommSplitMemberOpTrait :  NativeOpTrait<"SplitMemberOp",
 >{
   let cppNamespace = "::mlir::comm";
 }
+
+def CommMessage : OpInterface<"CommMessage"> {
+  let cppNamespace = "::mlir::comm";
+  let methods = [
+    InterfaceMethod<[{
+      Returns what type this message takes as inputs
+    }], "mlir::Type", "getInputType">,
+    InterfaceMethod<[{
+      Returns what type will result from recieving this message
+    }], "mlir::Type", "getOutputType">
+  ];
+}
+
 /*
 * Dialect Ops
 */
@@ -105,7 +118,7 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   // Add some convenience getters to hide the mess around having a declarations region
   let extraClassDeclaration = [{
     auto getMessages() {
-      return getDeclarations().getOps<::mlir::comm::CommSimpleMessage>();
+      return getDeclarations().getOps<::mlir::comm::CommMessage>();
     }
     auto getBranches() {
       return getDeclarations().getOps<::mlir::comm::CommBranch>();
@@ -122,16 +135,56 @@ def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait]> {
   }];
 }
 
+def CommSend: CommOp<"send"> {
+  let summary = "An op to fulfill (part of) a messages input.";
+  let arguments = (ins MessageTokenType:$token, AnyType:$data);
+  let results = (outs );
+  let assemblyFormat = [{
+    attr-dict $token $data `:` type($data)
+  }];
+  let extraClassDeclaration = [{
+    CommSimpleMessage getMessage();
+  }];
+  let hasVerifier = 1;
+}
+
+def CommRecv: CommOp<"recv"> {
+  let summary = "An op that blocks and returns the messages output";
+  let arguments = (ins MessageTokenType:$token);
+  let results = (outs AnyType:$data);
+  let assemblyFormat = [{
+    attr-dict $token `:` type($data)
+  }];
+}
+
+/*
+* Different types of message ops
+*/
+// Base class for messages
+class CommMessageBase<string name, list<Trait> extra_traits = []>: CommOp<name, traits = extra_traits # [DeclareOpInterfaceMethods<CommMessage>, CommSplitMemberOpTrait]>;
+
 // Message types. In the future we will likely want to have a common base class
-def CommSimpleMessage: CommOp<"simple_msg", traits = [CommSplitMemberOpTrait]> {
+def CommSimpleMessage: CommMessageBase<"simple_msg"> {
   let summary = "A simple single-usage, one-way message token";
   let arguments = (ins 
-    TypeAttr:$msg_type
+    TypeAttr:$data_type
   );
   let results = (outs
     MessageTokenType:$token
   );
   let assemblyFormat = [{
-    attr-dict $msg_type
+    attr-dict $data_type
   }];
+}
+
+def CommMultiplexMessage: CommMessageBase<"multiplex_msg"> {
+  let summary = "A phi node-like message that allows the compiler to choose from any of the input messages";
+  let arguments = (ins TypeAttr:$data_type, Variadic<MessageTokenType>:$in_tokens);
+  let results = (outs
+    MessageTokenType:$out_token
+  );
+  let assemblyFormat = [{
+    attr-dict $data_type $in_tokens
+  }];
+  let hasVerifier = 1;
 }

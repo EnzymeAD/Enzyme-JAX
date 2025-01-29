@@ -22,6 +22,8 @@ public:
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommTypes.h.inc"
 
+#include "src/enzyme_ad/jax/Dialects/Comm/CommInterfaces.h.inc"
+
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommAttrs.h.inc"
 

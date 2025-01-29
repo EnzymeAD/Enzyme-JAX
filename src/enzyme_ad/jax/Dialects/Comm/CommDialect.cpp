@@ -22,7 +22,6 @@ void CommunicationDialect::initialize() {
       >();
 }
 
-
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialects/Comm/CommAttrs.cpp.inc"
 

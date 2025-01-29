@@ -117,17 +117,23 @@ gentbl_cc_library(
             ["-gen-op-defs", "-dialect=comm"],
             "Dialects/Comm/CommOps.cpp.inc",
         ),(
-            ["-gen-attrdef-decls", "--attrdefs-dialect=comm"],
+            ["-gen-attrdef-decls", "-attrdefs-dialect=comm"],
             "Dialects/Comm/CommAttrs.h.inc",
         ),(
-            ["-gen-attrdef-defs", "--attrdefs-dialect=comm"],
+            ["-gen-attrdef-defs", "-attrdefs-dialect=comm"],
             "Dialects/Comm/CommAttrs.cpp.inc",
         ),(
-            ["-gen-typedef-decls", "--typedefs-dialect=comm"],
+            ["-gen-typedef-decls", "-typedefs-dialect=comm"],
             "Dialects/Comm/CommTypes.h.inc",
         ), (
-            ["-gen-typedef-defs", "--typedefs-dialect=comm"],
+            ["-gen-typedef-defs", "-typedefs-dialect=comm"],
             "Dialects/Comm/CommTypes.cpp.inc",
+        ),(
+            ["-gen-op-interface-decls"],
+            "Dialects/Comm/CommInterfaces.h.inc",
+        ), (
+            ["-gen-op-interface-defs"],
+            "Dialects/Comm/CommInterfaces.cpp.inc",
         ),
     ],
     td_file = "Dialects/Comm/CommDialect.td",
