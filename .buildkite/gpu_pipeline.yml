@@ -40,15 +40,15 @@ steps:
       echo "--- :python: Test"
       BAZEL_BUILD_FLAGS=()
       GCC_VERSION=\$(gcc --version | head -1 | awk '{ print \$3 }' | cut -d. -f1)
+
+      echo "GCC VERSION: \${GCC_VERSION}"
+
       if [[ "\${GCC_VERSION}" -le 12 ]]; then
         # Someone wants to compile some code which requires flags not understood by GCC 12.
         BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnniint8=false)
       fi
       if [[ "\${GCC_VERSION}" -le 11 ]]; then
         # Someone wants to compile some code which requires flags not understood by GCC 11.
-        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnni=false)
-        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avx256vnnigfni=false)
-        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avx512amx=false)
         BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avx512fp16=false)
       fi
       HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
