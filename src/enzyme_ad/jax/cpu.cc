@@ -8,7 +8,6 @@ void forwarding_custom_call(void *out, const void **in, const CallInfo *opaque,
                             size_t opaque_len, void *status) {
   opaque->run(in);
 }
-void CallOpaque(void* out, void** in
 
 extern "C" void RegisterEnzymeXLACPUHandler() {
   CustomCallTargetRegistry::Global()->Register("enzymexla_compile_cpu",
