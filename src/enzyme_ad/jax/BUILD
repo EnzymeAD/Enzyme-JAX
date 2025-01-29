@@ -360,6 +360,7 @@ cc_library(
         "@llvm-project//mlir:FuncToLLVM",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:FuncTransforms",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:NVVMDialect",
         "@llvm-project//mlir:IndexToLLVM",
