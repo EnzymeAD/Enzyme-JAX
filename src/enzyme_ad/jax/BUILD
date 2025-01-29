@@ -121,6 +121,63 @@ gentbl_cc_library(
     tblgen = "//:enzymexlamlir-tblgen",
 )
 
+td_library(
+    name = "RaisingTransformOpsTdFiles",
+    srcs = [
+        "TransformOps/RaisingTransformOps.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:TransformDialectTdFiles",
+    ]
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformOpsIncGen",
+    tbl_outs = [(
+            ["-gen-op-decls"],
+            "TransformOps/RaisingTransformOps.h.inc",
+        ), (
+            ["-gen-op-defs"],
+            "TransformOps/RaisingTransformOps.cpp.inc",
+        ),
+    ],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformOpsImplIncGen",
+    tbl_outs = [(
+        ["-gen-populate-raising-patterns-interface-impl"],
+        "TransformOps/RaisingTransformOpsImpl.cpp.inc"
+    )],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformPatternsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-raising-patterns-func-decls"],
+            "TransformOps/RaisingTransformPatterns.h.inc",
+        ), (
+            ["-gen-populate-raising-patterns-func-defs"],
+            "TransformOps/RaisingTransformPatterns.cpp.inc",
+        )],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
 cc_library(
     name = "TransformOps",
     srcs = glob(["TransformOps/*.cpp"]),
@@ -132,6 +189,9 @@ cc_library(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
+        ":RaisingTransformOpsIncGen",
+        ":RaisingTransformOpsImplIncGen",
+        ":RaisingTransformPatternsIncGen",
         ":TransformOpsIncGen",
         ":TransformOpsImplIncGen",
         ":XLADerivatives",
@@ -273,7 +333,7 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
-    name = "EnzyeHLOPatternsIncGen",
+    name = "EnzymeHLOPatternsIncGen",
     tbl_outs = [
         (
             ["-gen-populate-patterns-func-decls"],
@@ -312,7 +372,7 @@ cc_library(
     deps = [
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
-        ":EnzyeHLOPatternsIncGen",
+        ":EnzymeHLOPatternsIncGen",
         "@llvm-project//mlir:DLTIDialect",
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//llvm:Core",
