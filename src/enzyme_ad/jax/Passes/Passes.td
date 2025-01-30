@@ -387,4 +387,14 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
   ];
 }
 
+def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
+  let summary = "";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "affine::AffineDialect",
+    "vector::VectorDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 #endif
