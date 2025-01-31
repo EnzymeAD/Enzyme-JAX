@@ -8,6 +8,8 @@
 
 #include "src/enzyme_ad/jax/TransformOps/RaisingTransformOps.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
@@ -135,6 +137,97 @@ struct RemoveIVs : public OpRewritePattern<scf::ForOp> {
     forOp->getParentOp()->dump();
     rewriter.eraseOp(forOp);
 
+    return success();
+  }
+};
+
+static inline void clearBlock(mlir::Block *block,
+                              mlir::RewriterBase &rewriter) {
+  for (auto &op : llvm::make_early_inc_range(llvm::reverse(*block))) {
+    assert(op.use_empty() && "expected 'op' to have no uses");
+    rewriter.eraseOp(&op);
+  }
+}
+
+static mlir::Value createConstantInt(RewriterBase &rewriter, Location loc,
+                                     Type ty, int64_t v) {
+  if (ty.isIndex())
+    return rewriter.create<arith::ConstantIndexOp>(loc, v);
+  else
+    return rewriter.create<arith::ConstantIntOp>(loc, v, ty);
+}
+
+static std::optional<int64_t> getConstant(Operation *op) {
+  if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<arith::ConstantIndexOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<LLVM::ConstantOp>(op)) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return intAttr.getValue().getSExtValue();
+  }
+  return {};
+}
+
+static std::optional<int64_t> getConstant(Value v) {
+  Operation *op = v.getDefiningOp();
+  if (op)
+    return getConstant(op);
+  return {};
+}
+
+/// Returns `true` if the loop has a form expected by interchange patterns.
+static bool isNormalized(scf::ForOp op) {
+  auto lb = getConstant(op.getLowerBound());
+  auto step = getConstant(op.getStep());
+  if (!lb || !step)
+    return false;
+  return *lb == 0 && *step == 1;
+}
+
+#define DEBUG_TYPE "normalize-loop"
+#define DBGS llvm::dbgs
+
+struct NormalizeLoop : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp op,
+                                PatternRewriter &rewriter) const override {
+    using namespace arith;
+    if (isNormalized(op) ||
+        !isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp())) {
+      LLVM_DEBUG(DBGS() << "[normalize-loop] loop already normalized\n");
+      return failure();
+    }
+
+    rewriter.setInsertionPoint(op);
+    Value zero = createConstantInt(rewriter, op.getLoc(),
+                                   op.getInductionVar().getType(), 0);
+    Value one = createConstantInt(rewriter, op.getLoc(),
+                                  op.getInductionVar().getType(), 1);
+
+    Value difference = rewriter.create<SubIOp>(op.getLoc(), op.getUpperBound(),
+                                               op.getLowerBound());
+    Value tripCount = rewriter.create<AddIOp>(
+        op.getLoc(),
+        rewriter.create<DivUIOp>(
+            op.getLoc(), rewriter.create<SubIOp>(op.getLoc(), difference, one),
+            op.getStep()),
+        one);
+    // rewriter.create<CeilDivSIOp>(op.getLoc(), difference, op.getStep());
+    auto newForOp = rewriter.create<scf::ForOp>(op.getLoc(), zero, tripCount,
+                                                one, op.getInits());
+    clearBlock(newForOp.getBody(), rewriter);
+    rewriter.setInsertionPointToStart(newForOp.getBody());
+    Value scaled = rewriter.create<MulIOp>(
+        op.getLoc(), newForOp.getInductionVar(), op.getStep());
+    Value iv = rewriter.create<AddIOp>(op.getLoc(), op.getLowerBound(), scaled);
+    SmallVector<Value> newArgs(newForOp.getRegion().args_begin(),
+                               newForOp.getRegion().args_end());
+    newArgs[0] = iv;
+    rewriter.inlineBlockBefore(op.getBody(), newForOp.getBody(),
+                               newForOp.getBody()->end(), newArgs);
+    rewriter.replaceOp(op, newForOp->getResults());
     return success();
   }
 };
