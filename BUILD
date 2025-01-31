@@ -66,6 +66,7 @@ cc_binary(
         "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",
         "@stablehlo//stablehlo/tests:check_ops",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
         "@llvm-project//mlir:ComplexToLLVM",
