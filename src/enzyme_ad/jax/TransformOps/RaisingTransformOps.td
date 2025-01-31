@@ -17,3 +17,8 @@ def ApplyRemoveIVsPatterns : RaisingPatternOp<
     "remove_ivs"> {
   let patterns = ["RemoveIVs"];
 }
+
+def ApplyNormalizeLoopPatterns : RaisingPatternOp<
+    "normalize_loop"> {
+  let patterns = ["NormalizeLoop"];
+}
