@@ -49,6 +49,8 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
 
+#include "shardy/dialect/sdy/ir/dialect.h"
+
 namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
@@ -83,6 +85,8 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
+
+  registry.insert<mlir::sdy::SdyDialect>();
 
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 
