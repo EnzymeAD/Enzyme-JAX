@@ -68,7 +68,6 @@ struct SROAWrappersPass
         assert(oldBlock.getNumArguments() == 0);
         b.createBlock(&newRegion, newRegion.end());
         for (auto &op : oldBlock) {
-          assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
           // FIXME in reality, this check should be whether the entirety
           // (all nested ops with all (transitively) used symbol as well) of
           // the op is translatable to llvm ir.
