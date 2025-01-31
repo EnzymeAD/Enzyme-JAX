@@ -483,7 +483,11 @@ private:
     // TODO: This means there's no point in warmup anymore, since we're now
     // taking individual measurements. Maybe we get rid of the parameter or do
     // something more sophisticated
-    auto cost = *std::min_element(durations.begin(), durations.end());
+    //
+    // auto cost = *std::min_element(durations.begin(), durations.end());
+
+    // Try median?
+    auto cost = durations[durations.size() / 2];
     assert(!futures);
 
     // Cleanup
