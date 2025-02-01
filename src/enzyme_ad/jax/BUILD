@@ -179,9 +179,9 @@ gentbl_cc_library(
 )
 
 cc_library(
-    name = "TransformOps",
-    srcs = glob(["TransformOps/*.cpp"]),
-    hdrs = glob(["TransformOps/*.h"]),
+    name = "RaisingTransformOps",
+    srcs = ["TransformOps/RaisingTransformOps.cpp"],
+    hdrs = ["TransformOps/RaisingTransformOps.h"],
     deps = [
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -192,6 +192,23 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformPatternsIncGen",
+    ],
+)
+
+cc_library(
+    name = "TransformOps",
+    srcs = [
+        "TransformOps/TransformOps.cpp",
+        "TransformOps/GenerateApplyPatterns.cpp",
+    ],
+    hdrs = ["TransformOps/TransformOps.h"],
+    deps = [
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LinalgTransformOps",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
         ":TransformOpsIncGen",
         ":TransformOpsImplIncGen",
         ":XLADerivatives",
@@ -373,6 +390,7 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":EnzymeHLOPatternsIncGen",
+        ":RaisingTransformOps",
         "@llvm-project//mlir:DLTIDialect",
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//llvm:Core",

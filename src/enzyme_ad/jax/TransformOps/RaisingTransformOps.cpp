@@ -17,7 +17,6 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
-#include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/TransformOps/RaisingTransformOps.cpp.inc"
