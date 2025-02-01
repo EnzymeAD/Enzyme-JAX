@@ -2935,13 +2935,13 @@ template <typename T> struct BinOpConstSimplify : public OpRewritePattern<T> {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
-    auto lhsConst = lhs.template getDefiningOp<stablehlo::ConstantOp>();
-    auto rhsConst = rhs.template getDefiningOp<stablehlo::ConstantOp>();
+    auto lhsConst = matchPattern(lhs, m_Constant());
+    auto rhsConst = matchPattern(rhs, m_Constant());
 
     if (!lhsConst && !rhsConst)
       return failure();
 
-    auto constOp = lhsConst ? lhsConst : rhsConst;
+    auto constVal = lhsConst ? lhs : rhs;
     auto otherOp = lhsConst ? rhs.template getDefiningOp<T>()
                             : lhs.template getDefiningOp<T>();
 
@@ -2951,21 +2951,19 @@ template <typename T> struct BinOpConstSimplify : public OpRewritePattern<T> {
     auto otherLhs = otherOp.getRhs();
     auto otherRhs = otherOp.getLhs();
 
-    if (!otherLhs.template getDefiningOp<stablehlo::ConstantOp>() &&
-        !otherRhs.template getDefiningOp<stablehlo::ConstantOp>())
+    auto otherLhsConst = matchPattern(otherLhs, m_Constant());
+    auto otherRhsConst = matchPattern(otherRhs, m_Constant());
+
+    if (!otherLhsConst && !otherRhsConst)
       return failure();
 
     // Both op and other have a constant operand
     // group constants to a new op.
-    auto otherConst =
-        otherLhs.template getDefiningOp<stablehlo::ConstantOp>()
-            ? otherLhs.template getDefiningOp<stablehlo::ConstantOp>()
-            : otherRhs.template getDefiningOp<stablehlo::ConstantOp>();
-    auto otherOperand =
-        otherConst.getResult() == otherLhs ? otherRhs : otherLhs;
+    auto otherConstVal = otherLhsConst ? otherLhs : otherRhs;
+    auto otherOperand = otherLhsConst ? otherRhs : otherLhs;
 
-    auto constantAdd = rewriter.create<T>(op.getLoc(), op.getResult().getType(),
-                                          constOp, otherConst);
+    auto constantAdd = rewriter.create<T>(
+        otherOp.getLoc(), op.getResult().getType(), constVal, otherConstVal);
     rewriter.replaceOpWithNewOp<T>(op, otherOperand, constantAdd);
 
     return success();
