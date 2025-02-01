@@ -552,6 +552,13 @@ def ApplyBinopPadPadMaxPatterns : EnzymeHLOPatternOp<
     "binop_pad_pad_max"> {
   let patterns = ["BinopPadPad<stablehlo::MaxOp>"];
 }
+def ApplyBinopConstSimplify : EnzymeHLOPatternOp<
+    "binop_const_simplify"> {
+  let patterns = [
+    "BinOpConstSimplify<stablehlo::AddOp>",
+    "BinOpConstSimplify<stablehlo::MulOp>"
+  ];
+}
 def ApplyUnaryPadPushConvertPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_convert"> {
   let patterns = ["UnaryPadPush<stablehlo::ConvertOp>"];
