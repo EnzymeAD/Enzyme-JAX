@@ -2922,6 +2922,56 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+// ((add x cst0) cst1) -> (add x1 (add cst0 cst1))
+template <typename T> struct BinOpConstSimplify : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    // Only apply to integers
+    if (!isa<IntegerType>(op.getType().getElementType()))
+      return failure();
+
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsConst = lhs.template getDefiningOp<stablehlo::ConstantOp>();
+    auto rhsConst = rhs.template getDefiningOp<stablehlo::ConstantOp>();
+
+    if (!lhsConst && !rhsConst)
+      return failure();
+
+    auto constOp = lhsConst ? lhsConst : rhsConst;
+    auto otherOp = lhsConst ? rhs.template getDefiningOp<T>()
+                            : lhs.template getDefiningOp<T>();
+
+    if (!otherOp)
+      return failure();
+
+    auto otherLhs = otherOp.getRhs();
+    auto otherRhs = otherOp.getLhs();
+
+    if (!otherLhs.template getDefiningOp<stablehlo::ConstantOp>() &&
+        !otherRhs.template getDefiningOp<stablehlo::ConstantOp>())
+      return failure();
+
+    // Both op and other have a constant operand
+    // group constants to a new op.
+    auto otherConst =
+        otherLhs.template getDefiningOp<stablehlo::ConstantOp>()
+            ? otherLhs.template getDefiningOp<stablehlo::ConstantOp>()
+            : otherRhs.template getDefiningOp<stablehlo::ConstantOp>();
+    auto otherOperand =
+        otherConst.getResult() == otherLhs ? otherRhs : otherLhs;
+
+    auto constantAdd = rewriter.create<T>(op.getLoc(), op.getResult().getType(),
+                                          constOp, otherConst);
+    rewriter.replaceOpWithNewOp<T>(op, otherOperand, constantAdd);
+
+    return success();
+  }
+};
+
 struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -7591,7 +7641,9 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>>(context);
+        BinBroadcastSplat<stablehlo::MulOp>,
+        BinOpConstSimplify<stablehlo::AddOp>,
+        BinOpConstSimplify<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
