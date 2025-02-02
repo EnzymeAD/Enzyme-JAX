@@ -213,7 +213,7 @@ RunBackend(xla::cpu::CpuCompiler *self, std::unique_ptr<xla::HloModule> module,
     //                                                         options.registry));
   } else {
     TF_ASSIGN_OR_RETURN(cpu_executable,
-                        self->CompileLegacyCpuExecutable(std::move(module)));
+                        self->CompileCpuExecutable(std::move(module)));
   }
 
   return std::unique_ptr<xla::Executable>(std::move(cpu_executable));
