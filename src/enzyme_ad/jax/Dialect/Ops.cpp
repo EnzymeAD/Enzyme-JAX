@@ -82,7 +82,7 @@ public:
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    symbolTable.getSymbolTable(launchOp->getParentOfType<ModuleOp>());
+    symbolTable.getSymbolTable(((Operation*)launchOp)->getParentOfType<ModuleOp>());
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
 
@@ -167,6 +167,7 @@ public:
   }
 };
 
+template<>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<enzymexla::KernelCallOp>(
         launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
@@ -177,9 +178,10 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(PatternRewr
         outputAliases);
 }
 
+template<>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(PatternRewriter &rewriter, enzymexla::JITCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
-  return rewriter.create<enzymexla::KernelCallOp>(
-        launchOp.getLoc(), resTys,
+  return rewriter.create<enzymexla::JITCallOp>(
+        launchOp.getLoc(), resTys, launchOp.getFn(),
         launchOp.getInputs(), launchOp.getBackendConfigAttr(),
         launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
         outputAliases);
@@ -194,7 +196,7 @@ public:
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    auto mod = launchOp->getParentOfType<ModuleOp>();
+    auto mod = ((Operation*)launchOp)->getParentOfType<ModuleOp>();
     symbolTable.getSymbolTable(mod);
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
@@ -206,7 +208,7 @@ public:
     if (!use_opt)
       return failure();
     for (auto u : *use_opt) {
-      auto launch2 = dyn_cast<T>(u.getUser());
+      auto launch2 = dyn_cast<OpTy>(u.getUser());
       if (!launch2)
         return failure();
       calls.push_back(launch2);

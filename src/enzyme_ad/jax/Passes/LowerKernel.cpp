@@ -195,8 +195,7 @@ extern llvm::orc::SymbolMap MappedSymbols;
 bool initJIT();
 
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool run_init, size_t *cuLaunchPtr,
-                           bool compileInit = true);
+                           bool run_init, bool compileInit = true);
 
 gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   ArrayRef<Attribute> objects = op.getObjectsAttr().getValue();
@@ -752,7 +751,7 @@ CallInfo CompileCUDAKernel(
       if (!compileLaunch)
         return {};
 
-      ptr = CompileHostModule(ss.str(), submod, run_init, &cuLaunchKernelPtr);
+      ptr = CompileHostModule(ss.str(), submod, run_init);
       kernels[ss.str()] = ptr;
 
       submod.erase();
@@ -766,14 +765,12 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable,
                           mlir::Location loc, FunctionOpInterface op, bool jit,
                           size_t gridx, size_t gridy, size_t gridz,
                           size_t blockx, size_t blocky, size_t blockz,
-                          size_t shmem, enzymexla::KernelCallOp kcall, bool debug,
-                          bool openmp) {
+                          size_t shmem, enzymexla::KernelCallOp kcall, bool debug) {
 
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Type intys[] = {ptrty, ptrty, ptrty};
-  FunctionType calleeType = builder.getFunctionType(intys, {});
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -794,15 +791,13 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable,
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
-  auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
-
+  static int id = 0;
+  auto callName = (op.getName() + "$" + "par" + std::to_string(id)).str();
+  id++;
+  auto func = builder.create<func::FuncOp>(loc, callName, gpuTy0);
+  func.setVisibility(SymbolTable::Visibility::Private);
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
-
-  mlir::Value buffers = entryBlock.getArgument(1);
-
-  auto idx = builder.getIntegerType(64);
-  auto i32 = builder.getIntegerType(32);
 
   SmallVector<mlir::Value> inits;
   SmallVector<mlir::Value> finals;
@@ -813,33 +808,8 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable,
     finals.push_back(builder.create<arith::ConstantIndexOp>(loc, val));
   }
 
-  SmallVector<mlir::Value> arguments;
-  for (auto arg : op.getArguments()) {
-    LLVM::GEPArg args[1] = {arg.getArgNumber()};
-    auto gep =
-        builder.create<LLVM::GEPOp>(loc, ptrty, ptrty, buffers, args, true);
-    auto argTy = arg.getType();
-    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
-      argTy = AT.getElementType();
-    }
-    auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
-    arguments.push_back(ld);
-  }
-
   IRMapping map;
-  for (auto &&[oldarg, newarg] : zip(op.getArguments(), arguments)) {
-    Value newval = newarg;
-
-    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
-      auto ud =
-          builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
-      int64_t c0[1] = {0};
-      newval = builder.create<LLVM::InsertValueOp>(
-          newarg.getLoc(), oldarg.getType(), ud, newval, c0);
-    }
-
-    map.map(oldarg, newval);
-  }
+  map.map(op.getArguments(), entryBlock.getArguments());
 
   auto par = builder.create<scf::ParallelOp>(loc, inits, finals, incs);
 
@@ -917,22 +887,10 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable,
     });
   }
 
-  PassManager pm(func.getContext());
-  if (openmp)
-    pm.addPass(createConvertSCFToOpenMPPass());
-  else
-    pm.addPass(createConvertSCFToCFPass());
-
-  auto subres = pm.run(func);
-  if (!subres.succeeded()) {
-    return false;
-  }
-
-
   OpBuilder rewriter(kcall);
-  auto replacement = rewriter.create<enzymexla::JITCallOp>(kcall.getLoc(), kcall.getResultTypes(), kcall.getInputs(), func, kcall.getBackendConfig(), kcall.getOperandLayouts(), kcall.getResultLayouts(), kcall.getOutputPperandAliases());
-  kcall.replace(replacement);
-  op.erase();
+  auto replacement = rewriter.create<enzymexla::JITCallOp>(kcall.getLoc(), kcall.getResultTypes(), mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName), kcall.getInputs(), kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
+  kcall.replaceAllUsesWith(replacement);
+  kcall.erase();
   return true;
 };
 
@@ -959,8 +917,6 @@ struct LowerKernelPass
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
     } else if (backend == "cpu") {
       buildLowerToCPUPassPipeline(pm);
-      if (openmp)
-        registry.insert<mlir::omp::OpenMPDialect>();
     }
     pm.getDependentDialects(registry);
 
@@ -1063,9 +1019,9 @@ struct LowerKernelPass
         op.replaceAllUsesWith(replacement);
         op.erase();
       } else if (backend == "cpu") {
-        cdata = CompileCPUKernel(symbolTable, op.getLoc(), fn, jit, data[1],
+        CompileCPUKernel(symbolTable, op.getLoc(), fn, jit, data[1],
                                  data[2], data[3], data[4], data[5], data[6],
-                                 data[7], op, debug, openmp);
+                                 data[7], op, debug);
       }
       else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
