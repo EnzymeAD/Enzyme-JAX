@@ -331,6 +331,134 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
+def LowerJITPass : Pass<"lower-jit"> {
+  let summary = "Lower jit call to custom call";
+  let dependentDialects = [];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect", "gpu::GPUDialect", "func::FuncDialect",
+    "math::MathDialect", "memref::MemRefDialect", "scf::SCFDialect",
+    "vector::VectorDialect", "nvgpu::NVGPUDialect", "NVVM::NVVMDialect",
+    "LLVM::LLVMDialect", "arith::ArithDialect", "tensor::TensorDialect"
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"jit",
+        /*CLI argument=*/"jit",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to jit the kernel">,
+    Option<
+        /*C++ variable name=*/"compileLaunch",
+        /*CLI argument=*/"compileLaunch",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to jit the host code">,
+    Option<
+        /*C++ variable name=*/"toolkitPath",
+        /*CLI argument=*/"toolkitPath",
+        /*type=*/"std::string",
+        /*default=*/"",
+        /*description=*/"The location of the cuda toolkit">,
+    Option<
+        /*C++ variable name=*/"linkFiles",
+        /*CLI argument=*/"linkFiles",
+        /*type=*/"std::string",
+        /*default=*/"",
+        /*description=*/"Semicolon separated list of files to link">,
+    Option<
+        /*C++ variable name=*/"cubinChip",
+        /*CLI argument=*/"cubinChip",
+        /*type=*/"std::string",
+        /*default=*/"\"sm_50\"",
+        /*description=*/"cubinChip">,
+    Option<
+        /*C++ variable name=*/"cubinFeatures",
+        /*CLI argument=*/"cubinFeatures",
+        /*type=*/"std::string",
+        /*default=*/"\"+ptx60\"",
+        /*description=*/"cubinChip">,
+    Option<
+        /*C++ variable name=*/"indexBitWidth",
+        /*CLI argument=*/"indexBitWidth",
+        /*type=*/"int",
+        /*default=*/"64",
+        /*description=*/"indexBitWidth">,
+    Option<
+        /*C++ variable name=*/"cuLaunchKernelPtr",
+        /*CLI argument=*/"cuLaunchKernelPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"cuLaunchKernelPtr">,
+    Option<
+        /*C++ variable name=*/"cuModuleLoadDataPtr",
+        /*CLI argument=*/"cuModuleLoadDataPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"cuModuleLoadDataPtr">,
+    Option<
+        /*C++ variable name=*/"cuModuleGetFunctionPtr",
+        /*CLI argument=*/"cuModuleGetFunctionPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"cuModuleGetFunctionPtr">,
+    Option<
+        /*C++ variable name=*/"run_init",
+        /*CLI argument=*/"run_init",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Run initialization of cuda module">,
+    Option<
+        /*C++ variable name=*/"debug",
+        /*CLI argument=*/"debug",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Compile in debug prints">,
+    Option<
+        /*C++ variable name=*/"cuResultHandlerPtr",
+        /*CLI argument=*/"cuResultHandlerPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Function handler to call with result of curesult">,
+    Option<
+        /*C++ variable name=*/"cuStreamSynchronizePtr",
+        /*CLI argument=*/"cuStreamSynchronizePtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Function handler to sync results">,
+    Option<
+        /*C++ variable name=*/"cubinFormat",
+        /*CLI argument=*/"cubinFormat",
+        /*type=*/"std::string",
+        /*default=*/"\"bin\"",
+        /*description=*/"Binary format">,
+    Option<
+        /*C++ variable name=*/"cuOptLevel",
+        /*CLI argument=*/"cuOptLevel",
+        /*type=*/"int",
+        /*default=*/"2",
+        /*description=*/"Opt level for ptx">,
+    Option<
+        /*C++ variable name=*/"cubinTriple",
+        /*CLI argument=*/"cubinTriple",
+        /*type=*/"std::string",
+        /*default=*/"\"nvptx64-nvidia-cuda\"",
+        /*description=*/"Target triple">,
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"openmp",
+        /*CLI argument=*/"openmp",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"whether to use openmp for lowering">,
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // LLVMToControlFlow
 //===----------------------------------------------------------------------===//

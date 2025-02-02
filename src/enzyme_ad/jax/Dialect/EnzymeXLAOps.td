@@ -63,7 +63,30 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   }];
 
   let hasCanonicalizer = 1;
+}
 
+def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+  let summary = "JIT Call operation";
+  let description = [{
+  }];
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$fn, 
+    Variadic<AnyType>:$inputs,
+    DefaultValuedStrAttr<StrAttr, "">:$backend_config,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<AnyAttr>:$result_layouts,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases
+  );
+
+  let results = (outs Variadic<AnyType>);
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+  let hasCanonicalizer = 1;
 }
 
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [

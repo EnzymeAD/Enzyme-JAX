@@ -189,121 +189,14 @@ struct CallInfo {
 
 llvm::StringMap<CallInfo> kernels;
 llvm::sys::SmartRWMutex<true> kernel_mutex;
-std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
-llvm::orc::SymbolMap MappedSymbols;
+extern std::unique_ptr<llvm::orc::LLJIT> JIT;
+extern llvm::orc::SymbolMap MappedSymbols;
 
-bool initJIT() {
-  if (!JIT) {
-    auto tJIT =
-        llvm::orc::LLJITBuilder()
-            .setLinkProcessSymbolsByDefault(true)
-            .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
-                    -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-                  auto obj = std::make_unique<
-                      llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
-                    return std::make_unique<llvm::SectionMemoryManager>();
-                  });
-                  if (getenv("ENABLE_GDBLISTENER")) {
-                    auto list =
-                        llvm::JITEventListener::createGDBRegistrationListener();
-                    obj->registerJITEventListener(*list);
-                  }
-                  return obj;
-                })
-            .create();
-    if (!tJIT) {
-      llvm::errs() << " jit creating error: " << tJIT.takeError() << "\n";
-      return false;
-    }
-    JIT = std::move(tJIT.get());
-    assert(JIT);
-    auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
-
-    llvm::orc::DynamicLibrarySearchGenerator::SymbolPredicate Pred;
-
-    auto ProcessSymsGenerator =
-        llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            GlobalPrefix, Pred);
-
-    if (!ProcessSymsGenerator) {
-      llvm::errs() << " failure creating symbol generator: "
-                   << ProcessSymsGenerator.takeError() << "\n";
-      return false;
-    }
-
-    JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
-  }
-  return true;
-}
-
-extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
-  initJIT();
-  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
-}
+bool initJIT();
 
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
                            bool run_init, size_t *cuLaunchPtr,
-                           bool compileInit = true) {
-  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
-  auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
-  if (!llvmModule) {
-    llvm::errs() << "modOp: " << *modOp << "\n";
-    llvm::errs() << "could not convert to LLVM IR\n";
-    return {};
-  }
-  if (!initJIT())
-    return {};
-
-  llvmModule->setDataLayout(JIT->getDataLayout());
-  llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
-
-  auto LibA =
-      JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
-  if (auto Err = JIT->addIRModule(
-          LibA.get(),
-          llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
-    llvm::errs() << " addIRModuleError " << Err << "\n";
-    return {};
-  }
-  if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
-    llvm::errs() << " Symbol define Error " << Err << "\n";
-    return {};
-  }
-
-  if (cuLaunchPtr && cuLaunchPtr[0] == 0) {
-    // Look up the JIT'd code entry point.
-    auto LaunchSym = JIT->lookup(LibA.get(), "cuLaunchKernel");
-    if (!LaunchSym) {
-      llvm::errs() << " lookupError[cuLaunchKernel] " << LaunchSym.takeError()
-                   << "\n";
-      return {};
-    }
-    *cuLaunchPtr = (size_t)LaunchSym->getValue();
-  }
-
-  llvm::Expected<llvm::orc::ExecutorAddr> NVSym(llvm::orc::ExecutorAddr{});
-  if (compileInit) {
-    NVSym = JIT->lookup(LibA.get(), "nv_func_init");
-    if (!NVSym) {
-      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
-      return {};
-    }
-  }
-
-  auto nvptr = (void *)NVSym->getValue();
-
-  auto Entry = JIT->lookup(LibA.get(), "entry");
-  if (!Entry) {
-    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
-    return {};
-  }
-
-  auto ptr = (void *)Entry->getValue();
-
-  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
-}
+                           bool compileInit = true);
 
 gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   ArrayRef<Attribute> objects = op.getObjectsAttr().getValue();
@@ -869,11 +762,11 @@ CallInfo CompileCUDAKernel(
   return ptr;
 };
 
-CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
+bool CompileCPUKernel(SymbolTableCollection &symbolTable,
                           mlir::Location loc, FunctionOpInterface op, bool jit,
                           size_t gridx, size_t gridy, size_t gridz,
                           size_t blockx, size_t blocky, size_t blockz,
-                          size_t shmem, enzymexla::KernelCallOp, bool debug,
+                          size_t shmem, enzymexla::KernelCallOp kcall, bool debug,
                           bool openmp) {
 
   OpBuilder builder(op);
@@ -889,7 +782,7 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
     } else {
       op.emitError(
           "Require target operand to have functiontype or llvmfunctiontype");
-      return {};
+      return false;
     }
   }
   SmallVector<Type, 1> newParams;
@@ -900,48 +793,6 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
     newParams.push_back(p);
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
-
-  static size_t id = 0;
-  id++;
-  auto submod =
-      builder.create<ModuleOp>(loc, "cpuoffload" + std::to_string(id));
-
-  std::string legalName = op.getName().str();
-  std::replace(legalName.begin(), legalName.end(), '#', '_');
-
-  SmallVector<Operation *> tocopy;
-  op->walk([&](CallOpInterface cop) {
-    if (auto op2 = cop.resolveCallable())
-      tocopy.push_back(op2);
-  });
-  op->walk([&](LLVM::AddressOfOp cop) {
-    if (auto op2 = cop.getGlobal(symbolTable))
-      tocopy.push_back(op2);
-    else if (auto op2 = cop.getFunction(symbolTable))
-      tocopy.push_back(op2);
-  });
-  SmallPtrSet<Operation *, 1> done;
-
-  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
-  while (tocopy.size()) {
-    auto cur = tocopy.pop_back_val();
-    if (done.count(cur))
-      continue;
-    done.insert(cur);
-    builder.clone(*cur);
-    cur->walk([&](CallOpInterface cop) {
-      if (auto op2 = cop.resolveCallable())
-        tocopy.push_back(op2);
-    });
-    cur->walk([&](LLVM::AddressOfOp cop) {
-      if (auto op2 = cop.getGlobal(symbolTable))
-        tocopy.push_back(op2);
-      else if (auto op2 = cop.getFunction(symbolTable))
-        tocopy.push_back(op2);
-    });
-  }
-
-  builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
@@ -1066,40 +917,23 @@ CallInfo CompileCPUKernel(SymbolTableCollection &symbolTable,
     });
   }
 
-  std::string modstr;
-  llvm::raw_string_ostream ss(modstr);
+  PassManager pm(func.getContext());
+  if (openmp)
+    pm.addPass(createConvertSCFToOpenMPPass());
+  else
+    pm.addPass(createConvertSCFToCFPass());
 
-  ss << submod;
-
-  if (!jit)
-    return {};
-
-  CallInfo ptr;
-  {
-    llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
-
-    auto found = kernels.find(ss.str());
-    if (found != kernels.end()) {
-      ptr = found->second;
-    } else {
-      PassManager pm(submod.getContext());
-      if (openmp)
-        pm.addPass(createConvertSCFToOpenMPPass());
-      else
-        pm.addPass(createConvertSCFToCFPass());
-      buildLowerToCPUPassPipeline(pm);
-
-      auto subres = pm.run(submod);
-      if (!subres.succeeded()) {
-        return {};
-      }
-      ptr = CompileHostModule(ss.str(), submod, false, 0, false);
-      kernels[ss.str()] = ptr;
-      submod.erase();
-    }
+  auto subres = pm.run(func);
+  if (!subres.succeeded()) {
+    return false;
   }
 
-  return ptr;
+
+  OpBuilder rewriter(kcall);
+  auto replacement = rewriter.create<enzymexla::JITCallOp>(kcall.getLoc(), kcall.getResultTypes(), kcall.getInputs(), func, kcall.getBackendConfig(), kcall.getOperandLayouts(), kcall.getResultLayouts(), kcall.getOutputPperandAliases());
+  kcall.replace(replacement);
+  op.erase();
+  return true;
 };
 
 namespace {
@@ -1196,9 +1030,8 @@ struct LowerKernelPass
       }
 
       // Compiled kernel goes here once ready
-      CallInfo cdata;
-      if (backend == "cuda")
-        cdata = CompileCUDAKernel(
+      if (backend == "cuda") {
+        CallInfo cdata = CompileCUDAKernel(
             symbolTable, op.getLoc(), fn, jit, data[1], data[2], data[3],
             data[4], data[5], data[6], data[7], toolkitPath.getValue(),
             linkFilesArray, indexBitWidth.getValue(), cubinChip.getValue(),
@@ -1206,54 +1039,38 @@ struct LowerKernelPass
             cuModuleGetFunctionPtr, compileLaunch, run_init, op, debug,
             cuResultHandlerPtr, cuStreamSynchronizePtr, cubinFormat, cuOptLevel,
             cubinTriple);
-      else if (backend == "cpu")
+              std::string backendinfo((char *)&cdata, sizeof(CallInfo));
+
+        OpBuilder rewriter(op);
+
+        auto backendstr = rewriter.getStringAttr(backendinfo);
+        SmallVector<NamedAttribute> names;
+        names.push_back(
+            NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
+        auto dattr = DictionaryAttr::get(op.getContext(), names);
+        auto replacement = rewriter.create<stablehlo::CustomCallOp>(
+              op.getLoc(), op.getResultTypes(), op.getInputs(),
+              rewriter.getStringAttr("enzymexla_compile_gpu"),
+              /* has_side_effect*/ rewriter.getBoolAttr(false),
+              /*backend_config*/ dattr,
+              /* api_version*/
+              CustomCallApiVersionAttr::get(
+                  rewriter.getContext(),
+                  mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+              /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
+              output_operand_aliases);
+
+        op.replaceAllUsesWith(replacement);
+        op.erase();
+      } else if (backend == "cpu") {
         cdata = CompileCPUKernel(symbolTable, op.getLoc(), fn, jit, data[1],
                                  data[2], data[3], data[4], data[5], data[6],
                                  data[7], op, debug, openmp);
+      }
       else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
       }
-
-      std::string backendinfo((char *)&cdata, sizeof(CallInfo));
-
-      OpBuilder rewriter(op);
-
-      auto backendstr = rewriter.getStringAttr(backendinfo);
-      SmallVector<NamedAttribute> names;
-      names.push_back(
-          NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
-      auto dattr = DictionaryAttr::get(op.getContext(), names);
-
-      Operation *replacement;
-      if (backend == "cuda")
-        replacement = rewriter.create<stablehlo::CustomCallOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
-            /*backend_config*/ dattr,
-            /* api_version*/
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
-      else if (backend == "cpu")
-        replacement = rewriter.create<stablehlo::CustomCallOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
-            /*backend_config*/ backendstr,
-            /* api_version*/
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::
-                    API_VERSION_STATUS_RETURNING_UNIFIED),
-            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
-
-      op.replaceAllUsesWith(replacement);
-      op.erase();
     });
   }
 };
