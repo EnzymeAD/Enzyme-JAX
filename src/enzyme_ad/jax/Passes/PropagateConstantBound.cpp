@@ -34,15 +34,32 @@ struct PropagateConstantBoundsPass
     : public enzyme::impl::PropagateConstantBoundsPassBase<
           PropagateConstantBoundsPass> {
 
+  // If we know that this range is constant, we attach the LLVM range attribute
+  // to the target. If the target already has a range, we update it by taking
+  // the maximum between the current value and the old value to be conservative.
   static void attachConstantRangeIfConstant(MLIRContext *ctx,
                                             Operation *maybeCst,
                                             Operation *target) {
     APInt intValue;
-    if (matchPattern(maybeCst, m_ConstantInt(&intValue)))
-      target->setAttr("range", LLVM::ConstantRangeAttr::get(
-                                   ctx, 32, 0, intValue.getSExtValue()));
+    if (matchPattern(maybeCst, m_ConstantInt(&intValue))) {
+      std::string constantRangeAttrName = "range";
+      Attribute maybeRange = target->getAttr(constantRangeAttrName);
+      if (!maybeRange) {
+        target->setAttr(
+            constantRangeAttrName,
+            LLVM::ConstantRangeAttr::get(ctx, 32, 0, intValue.getSExtValue()));
+      } else {
+        LLVM::ConstantRangeAttr range =
+            dyn_cast<LLVM::ConstantRangeAttr>(maybeRange);
+        int64_t high = range.getUpper().getSExtValue();
+        high = std::max(high, intValue.getSExtValue());
+        target->setAttr(constantRangeAttrName,
+                        LLVM::ConstantRangeAttr::get(ctx, 32, 0, high));
+      }
+    }
   }
 
+  // Replace the target with a constant if the target is a constant value.
   static void replaceWithConstantIfConstant(OpBuilder &builder,
                                             Operation *maybeCst,
                                             Operation *target) {
@@ -56,6 +73,37 @@ struct PropagateConstantBoundsPass
                                  intValue.getSExtValue()));
       target->getResult(0).replaceAllUsesWith(newCst.getResult());
     }
+  }
+
+  static int32_t getSizeInBytes(Type ty) {
+    int32_t bitWidth = 0;
+    if (auto inType = dyn_cast<IntegerType>(ty)) {
+      bitWidth = inType.getWidth();
+      if (bitWidth == 1)
+        return 1;
+    }
+    if (auto floatType = dyn_cast<FloatType>(ty))
+      bitWidth = floatType.getWidth();
+    assert(bitWidth != 0);
+    return bitWidth / 8;
+  }
+
+  static int32_t getMemRefSizeInBytes(Value operand) {
+    auto ty = operand.getType();
+    int32_t numberOfElems = 0;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(ty)) {
+      numberOfElems = tensorTy.getNumElements();
+    }
+    return numberOfElems * getSizeInBytes(getElementTypeOrSelf(ty));
+  }
+
+  FailureOr<Attribute> getAttributeWithName(ArrayRef<NamedAttribute> attrs,
+                                            StringRef name) {
+    for (const NamedAttribute &attr : attrs) {
+      if (attr.getName() == name)
+        return attr.getValue();
+    }
+    return failure();
   }
 
   void runOnOperation() override {
@@ -128,6 +176,57 @@ struct PropagateConstantBoundsPass
                                       callOp.getGridz().getDefiningOp(),
                                       gridIdzOp.getOperation());
       });
+    });
+
+    auto result = moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
+      auto symbolName = callOp.getFn();
+      auto callee = symTable.lookup<FunctionOpInterface>(symbolName);
+      if (!callee)
+        return WalkResult::advance();
+      MLIRContext *ctx = callee->getContext();
+      for (auto [index, valTy] : llvm::enumerate(callee.getArgumentTypes())) {
+        ArrayRef<NamedAttribute> operandAttrs = callee.getArgAttrs(index);
+        if (auto ptr = dyn_cast<LLVM::LLVMPointerType>(valTy)) {
+
+          FailureOr<Attribute> noAliasAttr = getAttributeWithName(
+              operandAttrs, LLVM::LLVMDialect::getNoAliasAttrName());
+          FailureOr<Attribute> alignAttr = getAttributeWithName(
+              operandAttrs, LLVM::LLVMDialect::getAlignAttrName());
+          FailureOr<Attribute> dereferenceableAttr = getAttributeWithName(
+              operandAttrs, LLVM::LLVMDialect::getDereferenceableAttrName());
+
+          if (failed(noAliasAttr)) {
+            callee.setArgAttr(index, LLVM::LLVMDialect::getNoAliasAttrName(),
+                              UnitAttr::get(ctx));
+          }
+
+          if (failed(alignAttr)) {
+            callee.setArgAttr(index, LLVM::LLVMDialect::getAlignAttrName(),
+                              IntegerAttr::get(IntegerType::get(ctx, 32), 128));
+          }
+
+          if (failed(dereferenceableAttr)) {
+            callee.setArgAttr(index,
+                              LLVM::LLVMDialect::getDereferenceableAttrName(),
+                              IntegerAttr::get(IntegerType::get(ctx, 32),
+                                               getMemRefSizeInBytes(
+                                                   callOp.getInputs()[index])));
+          } else {
+            // Conservatively update the dereferenceable attribute if the
+            // current value is less than we already have.
+            IntegerAttr intAttr = cast<IntegerAttr>(*dereferenceableAttr);
+            int64_t oldVal = intAttr.getInt();
+            int64_t currentVal =
+                getMemRefSizeInBytes(callOp.getInputs()[index]);
+            if (currentVal < oldVal) {
+              callee.setArgAttr(
+                  index, LLVM::LLVMDialect::getDereferenceableAttrName(),
+                  IntegerAttr::get(IntegerType::get(ctx, 32), currentVal));
+            }
+          }
+        }
+      }
+      return WalkResult::advance();
     });
   }
 };
