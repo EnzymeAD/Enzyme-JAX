@@ -190,10 +190,9 @@ struct CallInfo {
 llvm::StringMap<CallInfo> kernels;
 llvm::sys::SmartRWMutex<true> kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
+llvm::orc::SymbolMap MappedSymbols;
 
-CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool run_init, size_t *cuLaunchPtr,
-                           bool compileInit = true) {
+bool initJIT() {
   if (!JIT) {
     auto tJIT =
         llvm::orc::LLJITBuilder()
@@ -215,7 +214,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
             .create();
     if (!tJIT) {
       llvm::errs() << " jit creating error: " << tJIT.takeError() << "\n";
-      return {};
+      return false;
     }
     JIT = std::move(tJIT.get());
     assert(JIT);
@@ -230,12 +229,23 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     if (!ProcessSymsGenerator) {
       llvm::errs() << " failure creating symbol generator: "
                    << ProcessSymsGenerator.takeError() << "\n";
-      return {};
+      return false;
     }
 
     JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
   }
+  return true;
+}
 
+extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+  initJIT();
+  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
+}
+
+CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
+                           bool run_init, size_t *cuLaunchPtr,
+                           bool compileInit = true) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
@@ -243,6 +253,9 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     llvm::errs() << "could not convert to LLVM IR\n";
     return {};
   }
+  if (!initJIT())
+    return {};
+
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
 
@@ -252,6 +265,10 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
           LibA.get(),
           llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
     llvm::errs() << " addIRModuleError " << Err << "\n";
+    return {};
+  }
+  if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
+    llvm::errs() << " Symbol define Error " << Err << "\n";
     return {};
   }
 
