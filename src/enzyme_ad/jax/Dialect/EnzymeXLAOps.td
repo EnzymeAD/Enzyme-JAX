@@ -89,6 +89,13 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let hasCanonicalizer = 1;
 }
 
+def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
+  let summary = "Get current execution stream within a jit_call operation";
+  let description = [{
+  }];
+  let results = (outs AnyType:$result);
+}
+
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
   ViewLikeOpInterface, Pure
 ]> {
