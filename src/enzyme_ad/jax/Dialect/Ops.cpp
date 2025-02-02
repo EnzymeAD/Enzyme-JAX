@@ -57,14 +57,29 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+LogicalResult
+JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // TODO: Verify that the result type is same as the type of the referenced
+  // func.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
-class ReadOnlyKernelArg final
-    : public OpRewritePattern<enzymexla::KernelCallOp> {
+template<typename OpTy>
+class ReadOnlyArg final
+    : public OpRewritePattern<OpTy> {
 public:
-  using OpRewritePattern<enzymexla::KernelCallOp>::OpRewritePattern;
+  using OpRewritePattern<OpTy>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::KernelCallOp launchOp,
+  OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const;
+  LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(launchOp->getParentOfType<ModuleOp>());
@@ -123,13 +138,8 @@ public:
       out_idx++;
     }
 
-    auto newOp = rewriter.create<enzymexla::KernelCallOp>(
-        launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
-        launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
-        launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
-        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-        ArrayAttr::get(launchOp->getContext(), outputAliases));
+
+    auto newOp = create(rewriter, launchOp, resTys, ArrayAttr::get(launchOp->getContext(), outputAliases));
 
     assert(outputAliases.size() == newOp.getNumResults());
     SmallVector<Value> replacements;
@@ -157,12 +167,31 @@ public:
   }
 };
 
-class ReadNoneKernelArg final
-    : public OpRewritePattern<enzymexla::KernelCallOp> {
-public:
-  using OpRewritePattern<enzymexla::KernelCallOp>::OpRewritePattern;
+enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+  return rewriter.create<enzymexla::KernelCallOp>(
+        launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
+        launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
+        launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
+        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
+        outputAliases);
+}
 
-  LogicalResult matchAndRewrite(enzymexla::KernelCallOp launchOp,
+enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(PatternRewriter &rewriter, enzymexla::JITCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+  return rewriter.create<enzymexla::KernelCallOp>(
+        launchOp.getLoc(), resTys,
+        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
+        outputAliases);
+}
+
+template<typename OpTy>
+class ReadNoneArg final
+    : public OpRewritePattern<OpTy> {
+public:
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
     auto mod = launchOp->getParentOfType<ModuleOp>();
@@ -172,12 +201,12 @@ public:
 
     bool changed = false;
 
-    SmallVector<enzymexla::KernelCallOp> calls;
+    SmallVector<OpTy> calls;
     auto use_opt = symbolTable.getSymbolTable(mod).getSymbolUses(fn, mod);
     if (!use_opt)
       return failure();
     for (auto u : *use_opt) {
-      auto launch2 = dyn_cast<enzymexla::KernelCallOp>(u.getUser());
+      auto launch2 = dyn_cast<T>(u.getUser());
       if (!launch2)
         return failure();
       calls.push_back(launch2);
@@ -259,7 +288,12 @@ public:
 
 void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {
-  results.insert<ReadOnlyKernelArg, ReadNoneKernelArg>(context);
+  results.insert<ReadOnlyArg<KernelCallOp>, ReadNoneArg<KernelCallOp>>(context);
+}
+
+void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                               MLIRContext *context) {
+  results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
 /// Simplify pointer2memref(memref2pointer(x)) to cast(x)
