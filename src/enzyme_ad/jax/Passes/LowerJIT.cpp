@@ -80,11 +80,11 @@
 
 #include "mlir/Target/LLVMIR/Export.h"
 
-#define DEBUG_TYPE "lower-call"
+#define DEBUG_TYPE "lower-jit"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_LOWERCALLPASS
+#define GEN_PASS_DEF_LOWERJITPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -184,7 +184,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
 
   auto LibA =
-      JIT->createJITDylib("enzymecudadl_" + std::to_string(kernels.size()));
+      JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
   if (auto Err = JIT->addIRModule(
           LibA.get(),
           llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
@@ -194,17 +194,6 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
     llvm::errs() << " Symbol define Error " << Err << "\n";
     return {};
-  }
-
-  if (cuLaunchPtr && cuLaunchPtr[0] == 0) {
-    // Look up the JIT'd code entry point.
-    auto LaunchSym = JIT->lookup(LibA.get(), "cuLaunchKernel");
-    if (!LaunchSym) {
-      llvm::errs() << " lookupError[cuLaunchKernel] " << LaunchSym.takeError()
-                   << "\n";
-      return {};
-    }
-    *cuLaunchPtr = (size_t)LaunchSym->getValue();
   }
 
   llvm::Expected<llvm::orc::ExecutorAddr> NVSym(llvm::orc::ExecutorAddr{});
@@ -231,7 +220,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
 
 CallInfo CompileCall(SymbolTableCollection &symbolTable,
                           mlir::Location loc, FunctionOpInterface op, bool jit,
-                          enzymexla::JITCallOp) {
+                          enzymexla::JITCallOp, bool openmp) {
 
   OpBuilder builder(op);
 
@@ -340,19 +329,19 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
 
   op.getFunctionBody().cloneInto(&func.getBody(), map);
 
-  auto second = entryBlock->getNextNode();
-  entryBlock->getOperations().splice(entryBlock->getOperations().end(),
+  auto second = entryBlock.getNextNode();
+  entryBlock.getOperations().splice(entryBlock.getOperations().end(),
                                 second->getOperations());
 
   second->erase();
 
-  func.getBody()->walk([](LLVM::ReturnOp op) {
+  func.getBody().walk([](LLVM::ReturnOp op) {
     OpBuilder rewriter(op);
     rewriter.create<mlir::func::ReturnOp>(op.getLoc());
     op.erase();
   });
 
-  func.getBody()->walk([](LLVM::UnreachableOp op) {
+  func.getBody().walk([](LLVM::UnreachableOp op) {
     OpBuilder rewriter(op);
     rewriter.create<mlir::func::ReturnOp>(op.getLoc());
     op.erase();
@@ -368,21 +357,26 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
 
   CallInfo ptr;
   {
-    llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
+    llvm::sys::SmartScopedWriter<true> jit_lock(jit_kernel_mutex);
 
-    auto found = kernels.find(ss.str());
-    if (found != kernels.end()) {
+    auto found = jitkernels.find(ss.str());
+    if (found != jitkernels.end()) {
       ptr = found->second;
     } else {
       PassManager pm(submod.getContext());
+      if (openmp)
+        pm.addPass(createConvertSCFToOpenMPPass());
+      else
+        pm.addPass(createConvertSCFToCFPass());
+
       buildLowerToCPUPassPipeline(pm);
 
       auto subres = pm.run(submod);
       if (!subres.succeeded()) {
         return {};
       }
-      ptr = CompileHostModule(ss.str(), submod, false, 0, false);
-      kernels[ss.str()] = ptr;
+      ptr = CompileHostModule(ss.str(), submod, false, false);
+      jitkernels[ss.str()] = ptr;
       submod.erase();
     }
   }
@@ -394,7 +388,7 @@ namespace {
 
 struct LowerJITPass
     : public mlir::enzyme::impl::LowerJITPassBase<LowerJITPass> {
-  using LowerKernelPassBase::LowerKernelPassBase;
+  using LowerJITPassBase::LowerJITPassBase;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
@@ -412,8 +406,6 @@ struct LowerJITPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
-    llvm::SmallVector<std::string> linkFilesArray =
-        parseLinkFilesString(linkFiles.getValue());
     getOperation()->walk([&](JITCallOp op) {
       mlir::ArrayAttr operand_layouts =
           op.getOperandLayouts()
@@ -435,7 +427,7 @@ struct LowerJITPass
         return;
       }
 
-      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, op);
+      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
