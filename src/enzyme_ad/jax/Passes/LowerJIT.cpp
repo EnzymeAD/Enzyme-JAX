@@ -809,6 +809,11 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
           return {};
         }
       } else {
+         submod->walk([](gpu::GPUModuleOp gmod) {
+            auto str = gmod.getName();
+            if (str.size() > 200)
+              gmod.setName(str.substr(0, 200));
+         });
          mlir::gpu::GPUToNVVMPipelineOptions options;
          options.indexBitWidth = indexBitWidth;
          options.cubinTriple = cubinTriple;
