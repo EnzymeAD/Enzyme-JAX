@@ -2,6 +2,7 @@
 
 struct CallInfo {
   void (*run)(const void **);
+  void *(*init)();
 };
 
 void forwarding_custom_call(void *out, const void **in, const CallInfo *opaque,
