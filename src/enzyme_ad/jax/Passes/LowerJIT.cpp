@@ -820,9 +820,9 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       std::string legalName;
       submod->walk([&](gpu::LaunchFuncOp gmod) {
         if (legalName.size())
-          assert(legalName == gmod.getKernelFunctionName());
+          assert(legalName == gmod.getKernelName());
         else
-          legalName = gmod.getKernelFunctionName();
+          legalName = gmod.getKernelName().str();
         auto str = gmod.getKernelModuleName().getValue();
         if (str.size() > 200)
           gmod.setKernelAttr(SymbolRefAttr::get(
