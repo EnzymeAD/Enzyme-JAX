@@ -819,10 +819,12 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
-      submod->walk([](gpu::LaunchKernelOp gmod) {
-        auto str = gmod.getKernelModuleName();
+      submod->walk([](gpu::LaunchFuncOp gmod) {
+        auto str = gmod.getKernelModuleName().getValue();
         if (str.size() > 200)
-          gmod.setKernelModuleName(str.substr(0, 200));
+          gmod.setKernelAttr(SymbolRefAttr::get(
+              StringAttr::get(gmod.getContext(), str.substr(0, 200)),
+              gmod.getKernel().getNestedReferences()));
       });
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
@@ -866,7 +868,8 @@ struct LowerJITPass
   void getDependentDialects(DialectRegistry &registry) const override {
     OpPassManager pm;
     buildLowerToCPUPassPipeline(pm);
-    if (backend == "cuda") {
+    // if (backend == "cuda")
+    {
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = 64;
       options.cubinTriple = "nvptx64-nvidia-cuda";
@@ -879,6 +882,18 @@ struct LowerJITPass
       std::string toolkitPath = "";
       SmallVector<std::string> linkFiles;
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+      /*
+      mlir::gpu::GPUToNVVMPipelineOptions options;
+      options.indexBitWidth = indexBitWidth;
+      options.cubinTriple = cubinTriple;
+      options.cubinChip = cubinChip;
+      options.cubinFeatures = cubinFeatures;
+      options.cubinFormat = cubinFormat;
+      options.optLevel = cuOptLevel;
+      options.kernelUseBarePtrCallConv = false;
+      options.hostUseBarePtrCallConv = false;
+      buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+      */
     }
     pm.getDependentDialects(registry);
     if (openmp)
