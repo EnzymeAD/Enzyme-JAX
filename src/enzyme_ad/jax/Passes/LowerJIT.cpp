@@ -819,6 +819,11 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
+      submod->walk([](gpu::LaunchKernelOp gmod) {
+        auto str = gmod.getKernelModuleName();
+        if (str.size() > 200)
+          gmod.setKernelModuleName(str.substr(0, 200));
+      });
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
       options.cubinTriple = cubinTriple;
