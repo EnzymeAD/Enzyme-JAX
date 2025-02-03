@@ -653,9 +653,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   auto submod = builder.create<ModuleOp>(loc);
 
-  std::string legalName = op.getName().str();
-  std::replace(legalName.begin(), legalName.end(), '#', '_');
-
   int numGPUModule = 0;
 
   SmallVector<Operation *> tocopy;
@@ -819,7 +816,13 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
-      submod->walk([](gpu::LaunchFuncOp gmod) {
+
+      std::string legalName;
+      submod->walk([&](gpu::LaunchFuncOp gmod) {
+        if (legalName.size())
+          assert(legalName == gmod.getKernelFunctionName());
+        else
+          legalName = gmod.getKernelFunctionName();
         auto str = gmod.getKernelModuleName().getValue();
         if (str.size() > 200)
           gmod.setKernelAttr(SymbolRefAttr::get(
