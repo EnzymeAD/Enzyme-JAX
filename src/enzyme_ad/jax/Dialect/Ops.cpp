@@ -57,8 +57,7 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-LogicalResult
-JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
   auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
@@ -72,17 +71,18 @@ JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
-template<typename OpTy>
-class ReadOnlyArg final
-    : public OpRewritePattern<OpTy> {
+template <typename OpTy>
+class ReadOnlyArg final : public OpRewritePattern<OpTy> {
 public:
   using OpRewritePattern<OpTy>::OpRewritePattern;
 
-  OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const;
+  OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys,
+              ArrayAttr outputAliases) const;
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    symbolTable.getSymbolTable(((Operation*)launchOp)->getParentOfType<ModuleOp>());
+    symbolTable.getSymbolTable(
+        ((Operation *)launchOp)->getParentOfType<ModuleOp>());
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
 
@@ -138,8 +138,8 @@ public:
       out_idx++;
     }
 
-
-    auto newOp = create(rewriter, launchOp, resTys, ArrayAttr::get(launchOp->getContext(), outputAliases));
+    auto newOp = create(rewriter, launchOp, resTys,
+                        ArrayAttr::get(launchOp->getContext(), outputAliases));
 
     assert(outputAliases.size() == newOp.getNumResults());
     SmallVector<Value> replacements;
@@ -167,36 +167,38 @@ public:
   }
 };
 
-template<>
-enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+template <>
+enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
+    PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<enzymexla::KernelCallOp>(
-        launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
-        launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
-        launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
-        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-        outputAliases);
+      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
+      launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
+      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
+      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+      launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
+      outputAliases);
 }
 
-template<>
-enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(PatternRewriter &rewriter, enzymexla::JITCallOp launchOp, ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+template <>
+enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
+    PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<enzymexla::JITCallOp>(
-        launchOp.getLoc(), resTys, launchOp.getFn(),
-        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-        outputAliases);
+      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
+      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+      /*resultLayouts*/ nullptr, outputAliases);
 }
 
-template<typename OpTy>
-class ReadNoneArg final
-    : public OpRewritePattern<OpTy> {
+template <typename OpTy>
+class ReadNoneArg final : public OpRewritePattern<OpTy> {
 public:
   using OpRewritePattern<OpTy>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    auto mod = ((Operation*)launchOp)->getParentOfType<ModuleOp>();
+    auto mod = ((Operation *)launchOp)->getParentOfType<ModuleOp>();
     symbolTable.getSymbolTable(mod);
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
@@ -294,7 +296,7 @@ void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
 }
 
 void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                               MLIRContext *context) {
+                                            MLIRContext *context) {
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 

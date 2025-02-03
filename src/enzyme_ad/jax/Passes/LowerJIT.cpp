@@ -143,10 +143,10 @@ void buildGpuPassPipeline(OpPassManager &pm,
 //===----------------------------------------------------------------------===//
 // Host Post-GPU pipeline
 //===----------------------------------------------------------------------===//
-void buildHostPostPipeline(OpPassManager &pm,
-                           const mlir::gpu::GPUToNVVMPipelineOptions &options,
-                           std::string toolkitPath,
-                           const llvm::SmallVectorImpl<std::string> &linkFiles) {
+void buildHostPostPipeline(
+    OpPassManager &pm, const mlir::gpu::GPUToNVVMPipelineOptions &options,
+    std::string toolkitPath,
+    const llvm::SmallVectorImpl<std::string> &linkFiles) {
   GpuToLLVMConversionPassOptions opt;
   opt.hostBarePtrCallConv = options.hostUseBarePtrCallConv;
   opt.kernelBarePtrCallConv = options.kernelUseBarePtrCallConv;
@@ -165,7 +165,8 @@ void buildHostPostPipeline(OpPassManager &pm,
 
 void buildLowerToNVVMPassPipeline(
     OpPassManager &pm, const GPUToNVVMPipelineOptions &options,
-    std::string toolkitPath, const llvm::SmallVectorImpl<std::string> &linkFiles) {
+    std::string toolkitPath,
+    const llvm::SmallVectorImpl<std::string> &linkFiles) {
   // Common pipelines
   buildCommonPassPipeline(pm, options);
 
@@ -326,304 +327,306 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
 }
 
-void rewriteKernelCallABI(mlir::ModuleOp &submod, mlir::Location loc, const std::string &legalName, bool debug, enzymexla::JITCallOp jitCallOp, const std::string &modstr, size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr, int indexBitWidth, const std::string &cubinTriple, const std::string &cubinChip, const std::string &cubinFeatures, const std::string &cubinFormat, int cuOptLevel, const std::string &toolkitPath, const llvm::SmallVectorImpl<std::string> &linkFiles) {
-      OpBuilder builder(submod);
+void rewriteKernelCallABI(
+    mlir::ModuleOp &submod, mlir::Location loc, const std::string &legalName,
+    bool debug, enzymexla::JITCallOp jitCallOp, const std::string &modstr,
+    size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr, int indexBitWidth,
+    const std::string &cubinTriple, const std::string &cubinChip,
+    const std::string &cubinFeatures, const std::string &cubinFormat,
+    int cuOptLevel, const std::string &toolkitPath,
+    const llvm::SmallVectorImpl<std::string> &linkFiles) {
+  OpBuilder builder(submod);
 
-      builder.setInsertionPointToStart(&submod.getBodyRegion().front());
-      auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-      auto i64 = builder.getIntegerType(64);
-      auto i32 = builder.getIntegerType(32);
-      auto idx = i64;
-      auto voidty = LLVM::LLVMVoidType::get(submod.getContext());
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
+  auto i64 = builder.getIntegerType(64);
+  auto i32 = builder.getIntegerType(32);
+  auto idx = i64;
+  auto voidty = LLVM::LLVMVoidType::get(submod.getContext());
 
-      mlir::Type cumodtys[] = {ptrty, ptrty};
-      auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
-      LLVM::LLVMFuncOp modload =
-          builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleLoadData", modload_ty);
+  mlir::Type cumodtys[] = {ptrty, ptrty};
+  auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
+  LLVM::LLVMFuncOp modload =
+      builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleLoadData", modload_ty);
 
-      mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
-                            idx,   i32, ptrty, ptrty, ptrty};
+  mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
+                        idx,   i32, ptrty, ptrty, ptrty};
 
-      auto launch_ty = LLVM::LLVMFunctionType::get(i32, cutys);
-      mlir::Type curesulttys[] = {i32};
-      auto curesult_handler_ty =
-          LLVM::LLVMFunctionType::get(voidty, curesulttys);
-      LLVM::LLVMFuncOp launch =
-          builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
-      auto cusync_ty = LLVM::LLVMFunctionType::get(i32, {ptrty});
+  auto launch_ty = LLVM::LLVMFunctionType::get(i32, cutys);
+  mlir::Type curesulttys[] = {i32};
+  auto curesult_handler_ty = LLVM::LLVMFunctionType::get(voidty, curesulttys);
+  LLVM::LLVMFuncOp launch =
+      builder.create<LLVM::LLVMFuncOp>(loc, "cuLaunchKernel", launch_ty);
+  auto cusync_ty = LLVM::LLVMFunctionType::get(i32, {ptrty});
 
-      mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
-      auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
-      LLVM::LLVMFuncOp funcload = builder.create<LLVM::LLVMFuncOp>(
-          loc, "cuModuleGetFunction", funcload_ty);
+  mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
+  auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
+  LLVM::LLVMFuncOp funcload =
+      builder.create<LLVM::LLVMFuncOp>(loc, "cuModuleGetFunction", funcload_ty);
 
-      LLVM::GlobalOp kernStr;
-      {
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8),
-            legalName.size() + 1);
-        kernStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
-            builder.getStringAttr(legalName + '\0'));
+  LLVM::GlobalOp kernStr;
+  {
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), legalName.size() + 1);
+    kernStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "str",
+        builder.getStringAttr(legalName + '\0'));
+  }
+
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+
+  LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
+      loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
+      LLVM::Linkage::External);
+
+  LLVM::LLVMFuncOp printfunc = nullptr;
+  LLVM::LLVMFuncOp putfunc = nullptr;
+
+  if (debug) {
+    printfunc = builder.create<LLVM::LLVMFuncOp>(
+        loc, "printf",
+        LLVM::LLVMFunctionType::get(ptrty, {ptrty, ptrty}, false),
+        LLVM::Linkage::External);
+    printfunc.setVisibility(SymbolTable::Visibility::Private);
+    putfunc = builder.create<LLVM::LLVMFuncOp>(
+        loc, "puts", LLVM::LLVMFunctionType::get(voidty, {ptrty}, false),
+        LLVM::Linkage::External);
+    putfunc.setVisibility(SymbolTable::Visibility::Private);
+  }
+
+  LLVM::GlobalOp loadModuleStr = nullptr;
+  if (debug) {
+    std::string value = "load Module result = %d\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    loadModuleStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
+        builder.getStringAttr(value + '\0'));
+  }
+  LLVM::GlobalOp loadFuncStr = nullptr;
+  if (debug) {
+    std::string value = "load Func result = %d\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    loadFuncStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
+        builder.getStringAttr(value + '\0'));
+  }
+  LLVM::GlobalOp launchKernelStr = nullptr;
+  if (debug) {
+    std::string value = "launch Kernel result = %d\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    launchKernelStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strlaunch",
+        builder.getStringAttr(value + '\0'));
+  }
+  LLVM::GlobalOp modOpStr = nullptr;
+  if (debug) {
+    std::string opstr;
+    llvm::raw_string_ostream ss(opstr);
+
+    ss << jitCallOp;
+    std::string value = "modstr=" + modstr + "\n" + opstr + "\n\n";
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
+    modOpStr = builder.create<LLVM::GlobalOp>(
+        loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmlirmod",
+        builder.getStringAttr(value + '\0'));
+  }
+
+  LLVM::GlobalOp binary = nullptr;
+  submod.walk([&](gpu::BinaryOp op) {
+    gpu::ObjectAttr object = getSelectedObject(op);
+    auto value = object.getObject().getValue();
+    auto type = LLVM::LLVMArrayType::get(
+        mlir::IntegerType::get(builder.getContext(), 8), value.size());
+    binary = builder.create<LLVM::GlobalOp>(loc, type, /*isConstant=*/true,
+                                            LLVM::Linkage::Internal, "binary",
+                                            builder.getStringAttr(value));
+
+    if (object.getProperties()) {
+      if (auto section = mlir::dyn_cast_or_null<mlir::StringAttr>(
+              object.getProperties().get("section"))) {
+        binary.setSectionAttr(section);
       }
+    }
 
-      builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+    binary.setAlignmentAttr(builder.getI64IntegerAttr(8));
+    binary.setUnnamedAddrAttr(LLVM::UnnamedAddrAttr::get(
+        builder.getContext(), mlir::LLVM::UnnamedAddr::None));
+    op.erase();
+  });
+  if (!binary) {
+    llvm::errs() << "could not find binary object in submod:\n"
+                 << *submod << "\n";
+    assert(binary);
+  }
 
-      LLVM::LLVMFuncOp initfn = builder.create<LLVM::LLVMFuncOp>(
-          loc, "nv_func_init", LLVM::LLVMFunctionType::get(ptrty, {}, false),
-          LLVM::Linkage::External);
+  {
+    auto blk = new Block();
+    initfn.getRegion().push_back(blk);
+    builder.setInsertionPointToEnd(blk);
 
-      LLVM::LLVMFuncOp printfunc = nullptr;
-      LLVM::LLVMFuncOp putfunc = nullptr;
+    auto one = builder.create<LLVM::ConstantOp>(loc, i64,
+                                                builder.getI64IntegerAttr(1));
+    auto modptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
+    auto funcptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
+
+    auto addr_modbin = builder.create<LLVM::AddressOfOp>(loc, binary);
+    SmallVector<mlir::Value> modargs = {modptr->getResult(0),
+                                        addr_modbin->getResult(0)};
+
+    mlir::Value loadModRes =
+        builder.create<LLVM::CallOp>(loc, modload, modargs)->getResult(0);
+
+    if (debug) {
+      Value printargs1[] = {
+          builder.create<LLVM::AddressOfOp>(loc, loadModuleStr)->getResult(0),
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadModRes)
+              ->getResult(0)};
+      builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+    }
+    if (cuResultHandlerPtr) {
+      auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+          loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+      auto addr_glob =
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+              ->getResult(0);
+      mlir::Value args[2] = {addr_glob, loadModRes};
+      builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+    }
+
+    auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
+
+    auto addr_kernstr = builder.create<LLVM::AddressOfOp>(loc, ptrty, "str");
+
+    SmallVector<mlir::Value> funcargs = {
+        funcptr->getResult(0), mod->getResult(0), addr_kernstr->getResult(0)};
+    mlir::Value loadFuncRes =
+        builder.create<LLVM::CallOp>(loc, funcload, funcargs)->getResult(0);
+
+    if (debug) {
+      Value printargs1[] = {
+          builder.create<LLVM::AddressOfOp>(loc, loadFuncStr)->getResult(0),
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadFuncRes)
+              ->getResult(0)};
+      builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+    }
+    if (cuResultHandlerPtr) {
+      auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+          loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+      auto addr_glob =
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+              ->getResult(0);
+      mlir::Value args[2] = {addr_glob, loadFuncRes};
+      builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+    }
+
+    auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
+
+    builder.create<LLVM::ReturnOp>(loc, ValueRange(func));
+  }
+
+  SmallVector<enzymexla::GetStreamOp> streams;
+  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
+  for (auto op : streams) {
+    OpBuilder builder(op);
+    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+    mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
+    for (auto u : llvm::make_early_inc_range(op->getResult(0).getUsers())) {
+      auto ur = cast<UnrealizedConversionCastOp>(u);
+      assert(ur->getResult(0).getType() == stream.getType());
+      ur->getResult(0).replaceAllUsesWith(stream);
+      ur.erase();
+    }
+    op.erase();
+  }
+
+  submod.walk([&](gpu::LaunchFuncOp op) {
+    builder.setInsertionPoint(op);
+    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+    mlir::Value cufunc = pfunc.getBody().begin()->getArgument(2);
+
+    auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
+    assert(ldop);
+    auto params = ldop.getOperand();
+
+    llvm::SmallVector<mlir::Value> args = {
+        cufunc,
+        op.getGridSizeX(),
+        op.getGridSizeY(),
+        op.getGridSizeZ(),
+        op.getBlockSizeX(),
+        op.getBlockSizeY(),
+        op.getBlockSizeZ(),
+        op.getDynamicSharedMemorySize(),
+        op.getAsyncObject(),
+        params,
+        builder.create<LLVM::ZeroOp>(loc, ptrty)};
+
+    Value kernRes =
+        builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
+    if (debug) {
+      Value printargs1[] = {
+          builder.create<LLVM::AddressOfOp>(loc, launchKernelStr)->getResult(0),
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)->getResult(0)};
+      builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
+    }
+    if (debug) {
+      Value printargs1[] = {
+          builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
+      builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
+    }
+    if (cuResultHandlerPtr) {
+      auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+          loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+      auto addr_glob =
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+              ->getResult(0);
+      mlir::Value args[2] = {addr_glob, kernRes};
+      builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
+    }
+
+    if (cuStreamSynchronizePtr) {
+      auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+          loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
+      auto addr_glob =
+          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
+      mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
+      auto syncRes =
+          builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
 
       if (debug) {
-        printfunc = builder.create<LLVM::LLVMFuncOp>(
-            loc, "printf",
-            LLVM::LLVMFunctionType::get(ptrty, {ptrty, ptrty}, false),
-            LLVM::Linkage::External);
-        printfunc.setVisibility(SymbolTable::Visibility::Private);
-        putfunc = builder.create<LLVM::LLVMFuncOp>(
-            loc, "puts", LLVM::LLVMFunctionType::get(voidty, {ptrty}, false),
-            LLVM::Linkage::External);
-        putfunc.setVisibility(SymbolTable::Visibility::Private);
+        Value printargs1[] = {
+            builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
+        builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
       }
-
-      LLVM::GlobalOp loadModuleStr = nullptr;
-      if (debug) {
-        std::string value = "load Module result = %d\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        loadModuleStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strmod",
-            builder.getStringAttr(value + '\0'));
+      if (cuResultHandlerPtr) {
+        auto addr_glob_int = builder.create<LLVM::ConstantOp>(
+            loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+        auto addr_glob =
+            builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+                ->getResult(0);
+        mlir::Value args[2] = {addr_glob, syncRes};
+        builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
       }
-      LLVM::GlobalOp loadFuncStr = nullptr;
-      if (debug) {
-        std::string value = "load Func result = %d\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        loadFuncStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "strfunc",
-            builder.getStringAttr(value + '\0'));
-      }
-      LLVM::GlobalOp launchKernelStr = nullptr;
-      if (debug) {
-        std::string value = "launch Kernel result = %d\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        launchKernelStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-            "strlaunch", builder.getStringAttr(value + '\0'));
-      }
-      LLVM::GlobalOp modOpStr = nullptr;
-      if (debug) {
-        std::string opstr;
-        llvm::raw_string_ostream ss(opstr);
+    }
 
-        ss << jitCallOp;
-        std::string value = "modstr=" + modstr + "\n" + opstr + "\n\n";
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-        modOpStr = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-            "strmlirmod", builder.getStringAttr(value + '\0'));
-      }
-
-      LLVM::GlobalOp binary = nullptr;
-      submod.walk([&](gpu::BinaryOp op) {
-        gpu::ObjectAttr object = getSelectedObject(op);
-        auto value = object.getObject().getValue();
-        auto type = LLVM::LLVMArrayType::get(
-            mlir::IntegerType::get(builder.getContext(), 8), value.size());
-        binary = builder.create<LLVM::GlobalOp>(
-            loc, type, /*isConstant=*/true, LLVM::Linkage::Internal, "binary",
-            builder.getStringAttr(value));
-
-        if (object.getProperties()) {
-          if (auto section = mlir::dyn_cast_or_null<mlir::StringAttr>(
-                  object.getProperties().get("section"))) {
-            binary.setSectionAttr(section);
-          }
-        }
-
-        binary.setAlignmentAttr(builder.getI64IntegerAttr(8));
-        binary.setUnnamedAddrAttr(LLVM::UnnamedAddrAttr::get(
-            builder.getContext(), mlir::LLVM::UnnamedAddr::None));
-        op.erase();
-      });
-      if (!binary) {
-        llvm::errs() << "could not find binary object in submod:\n"
-                     << *submod << "\n";
-        assert(binary);
-      }
-
-      {
-        auto blk = new Block();
-        initfn.getRegion().push_back(blk);
-        builder.setInsertionPointToEnd(blk);
-
-        auto one = builder.create<LLVM::ConstantOp>(
-            loc, i64, builder.getI64IntegerAttr(1));
-        auto modptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
-        auto funcptr = builder.create<LLVM::AllocaOp>(loc, ptrty, ptrty, one);
-
-        auto addr_modbin = builder.create<LLVM::AddressOfOp>(loc, binary);
-        SmallVector<mlir::Value> modargs = {modptr->getResult(0),
-                                            addr_modbin->getResult(0)};
-
-        mlir::Value loadModRes =
-              builder.create<LLVM::CallOp>(loc, modload, modargs)->getResult(0);
-
-        if (debug) {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, loadModuleStr)
-                  ->getResult(0),
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadModRes)
-                  ->getResult(0)};
-          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
-        }
-        if (cuResultHandlerPtr) {
-          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
-              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
-          auto addr_glob =
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
-                  ->getResult(0);
-          mlir::Value args[2] = {addr_glob, loadModRes};
-          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
-        }
-
-        auto mod = builder.create<LLVM::LoadOp>(loc, ptrty, modptr);
-
-        auto addr_kernstr =
-            builder.create<LLVM::AddressOfOp>(loc, ptrty, "str");
-
-        SmallVector<mlir::Value> funcargs = {funcptr->getResult(0),
-                                             mod->getResult(0),
-                                             addr_kernstr->getResult(0)};
-        mlir::Value loadFuncRes = builder.create<LLVM::CallOp>(loc, funcload, funcargs)
-                            ->getResult(0);
-
-        if (debug) {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, loadFuncStr)->getResult(0),
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, loadFuncRes)
-                  ->getResult(0)};
-          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
-        }
-        if (cuResultHandlerPtr) {
-          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
-              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
-          auto addr_glob =
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
-                  ->getResult(0);
-          mlir::Value args[2] = {addr_glob, loadFuncRes};
-          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
-        }
-
-        auto func = builder.create<LLVM::LoadOp>(loc, ptrty, funcptr);
-
-        builder.create<LLVM::ReturnOp>(loc, ValueRange(func));
-      }
-     
-      SmallVector<enzymexla::GetStreamOp> streams;
-      submod.walk([&](enzymexla::GetStreamOp op) {
-        streams.push_back(op);
-      });
-      for (auto op : streams) {
-        OpBuilder builder(op);
-        auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
-        mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
-        for (auto u : llvm::make_early_inc_range(op->getResult(0).getUsers())) {
-          auto ur = cast<UnrealizedConversionCastOp>(u);
-          assert(ur->getResult(0).getType() == stream.getType());
-          ur->getResult(0).replaceAllUsesWith(stream);
-          ur.erase();
-        }
-        op.erase();
-      }
-
-      submod.walk([&](gpu::LaunchFuncOp op) {
-        builder.setInsertionPoint(op);
-        auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
-        mlir::Value cufunc = pfunc.getBody().begin()->getArgument(2);
-
-        auto ldop =
-            op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
-        assert(ldop);
-        auto params = ldop.getOperand();
-
-        llvm::SmallVector<mlir::Value> args = {
-            cufunc,
-            op.getGridSizeX(),
-            op.getGridSizeY(),
-            op.getGridSizeZ(),
-            op.getBlockSizeX(),
-            op.getBlockSizeY(),
-            op.getBlockSizeZ(),
-            op.getDynamicSharedMemorySize(),
-            op.getAsyncObject(),
-            params,
-            builder.create<LLVM::ZeroOp>(loc, ptrty)};
-
-        Value kernRes =
-              builder.create<LLVM::CallOp>(loc, launch, args)->getResult(0);
-        if (debug) {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, launchKernelStr)
-                  ->getResult(0),
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, kernRes)
-                  ->getResult(0)};
-          builder.create<LLVM::CallOp>(loc, printfunc, printargs1);
-        }
-        if (debug) {
-          Value printargs1[] = {
-              builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
-          builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
-        }
-        if (cuResultHandlerPtr) {
-          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
-              loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
-          auto addr_glob =
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
-                  ->getResult(0);
-          mlir::Value args[2] = {addr_glob, kernRes};
-          builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
-        }
-
-        if (cuStreamSynchronizePtr) {
-          auto addr_glob_int = builder.create<LLVM::ConstantOp>(
-              loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
-          auto addr_glob =
-              builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
-          mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
-          auto syncRes =
-              builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
-
-          if (debug) {
-            Value printargs1[] = {
-                builder.create<LLVM::AddressOfOp>(loc, modOpStr)->getResult(0)};
-            builder.create<LLVM::CallOp>(loc, putfunc, printargs1);
-          }
-          if (cuResultHandlerPtr) {
-            auto addr_glob_int = builder.create<LLVM::ConstantOp>(
-                loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
-            auto addr_glob =
-                builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
-                    ->getResult(0);
-            mlir::Value args[2] = {addr_glob, syncRes};
-            builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
-          }
-        }
-
-        op.erase();
-        ldop.erase();
-      });
-
+    op.erase();
+    ldop.erase();
+  });
 }
 
-CallInfo CompileCall(SymbolTableCollection &symbolTable,
-                          mlir::Location loc, FunctionOpInterface op, bool jit,
-                          enzymexla::JITCallOp jcall, bool openmp, size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr, int indexBitWidth, const std::string &cubinTriple, const std::string &cubinChip, const std::string &cubinFeatures, const std::string &cubinFormat, int cuOptLevel, const std::string &toolkitPath, const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug) {
+CallInfo
+CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
+            bool openmp, size_t cuResultHandlerPtr,
+            size_t cuStreamSynchronizePtr, int indexBitWidth,
+            const std::string &cubinTriple, const std::string &cubinChip,
+            const std::string &cubinFeatures, const std::string &cubinFormat,
+            int cuOptLevel, const std::string &toolkitPath,
+            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug) {
 
   OpBuilder builder(op);
 
@@ -657,7 +660,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
 
   SmallVector<Operation *> tocopy;
   op->walk([&](gpu::LaunchFuncOp cop) {
-    tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(cop, cop.getKernelModuleName()));
+    tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
+        cop, cop.getKernelModuleName()));
   });
   op->walk([&](CallOpInterface cop) {
     if (auto op2 = cop.resolveCallable()) {
@@ -682,12 +686,13 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
       continue;
     done.insert(cur);
     if (isa<gpu::GPUModuleOp>(cur))
-        numGPUModule++;
+      numGPUModule++;
     builder.clone(*cur);
     if (isa<gpu::GPUModuleOp>(cur))
-        continue;
+      continue;
     cur->walk([&](gpu::LaunchFuncOp cop) {
-      tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(cop, cop.getKernelModuleName()));
+      tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
+          cop, cop.getKernelModuleName()));
     });
     cur->walk([&](CallOpInterface cop) {
       if (auto op2 = cop.resolveCallable()) {
@@ -756,7 +761,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
 
   auto second = entryBlock.getNextNode();
   entryBlock.getOperations().splice(entryBlock.getOperations().end(),
-                                second->getOperations());
+                                    second->getOperations());
 
   second->erase();
 
@@ -782,67 +787,69 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable,
     return {};
   }
 
-    llvm::sys::SmartScopedWriter<true> jit_lock(jit_kernel_mutex);
+  llvm::sys::SmartScopedWriter<true> jit_lock(jit_kernel_mutex);
 
-    auto found = jitkernels.find(ss.str());
-    if (found != jitkernels.end()) {
-      submod.erase();
-      return found->second;
-    } else {
-      if (numGPUModule != 0)
-        submod->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
-                              UnitAttr::get(jcall.getContext()));
-      static size_t id = 0;
-      submod.setName("jitoffload" + std::to_string(id));
-      id++;
-      PassManager pm(submod.getContext());
-      if (numGPUModule == 0) {
-        if (openmp)
-          pm.addPass(createConvertSCFToOpenMPPass());
-        else
-          pm.addPass(createConvertSCFToCFPass());
+  auto found = jitkernels.find(ss.str());
+  if (found != jitkernels.end()) {
+    submod.erase();
+    return found->second;
+  } else {
+    if (numGPUModule != 0)
+      submod->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
+                      UnitAttr::get(jcall.getContext()));
+    static size_t id = 0;
+    submod.setName("jitoffload" + std::to_string(id));
+    id++;
+    PassManager pm(submod.getContext());
+    if (numGPUModule == 0) {
+      if (openmp)
+        pm.addPass(createConvertSCFToOpenMPPass());
+      else
+        pm.addPass(createConvertSCFToCFPass());
 
-        buildLowerToCPUPassPipeline(pm);
-        auto subres = pm.run(submod);
-        if (!subres.succeeded()) {
-          submod.erase();
-          return {};
-        }
-      } else {
-         submod->walk([](gpu::GPUModuleOp gmod) {
-            auto str = gmod.getName();
-            if (str.size() > 200)
-              gmod.setName(str.substr(0, 200));
-         });
-         mlir::gpu::GPUToNVVMPipelineOptions options;
-         options.indexBitWidth = indexBitWidth;
-         options.cubinTriple = cubinTriple;
-         options.cubinChip = cubinChip;
-         options.cubinFeatures = cubinFeatures;
-         options.cubinFormat = cubinFormat;
-         options.optLevel = cuOptLevel;
-         options.kernelUseBarePtrCallConv = false;
-         options.hostUseBarePtrCallConv = false;
-         buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
-         if (numGPUModule != 1) {
-           llvm::errs() << " only single gpu module calls supported atm\n";
-           submod.erase();
-           return {};
-         }
-         auto subres = pm.run(submod);
-         if (!subres.succeeded()) {
-           submod.erase();
-           return {};
-         }
-         rewriteKernelCallABI(submod, loc, legalName, debug, jcall, modstr, cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip, cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFiles);
+      buildLowerToCPUPassPipeline(pm);
+      auto subres = pm.run(submod);
+      if (!subres.succeeded()) {
+        submod.erase();
+        return {};
       }
-
-      auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0);
-      jitkernels[ss.str()] = ptr;
-      submod.erase();
-      return ptr;
+    } else {
+      submod->walk([](gpu::GPUModuleOp gmod) {
+        auto str = gmod.getName();
+        if (str.size() > 200)
+          gmod.setName(str.substr(0, 200));
+      });
+      mlir::gpu::GPUToNVVMPipelineOptions options;
+      options.indexBitWidth = indexBitWidth;
+      options.cubinTriple = cubinTriple;
+      options.cubinChip = cubinChip;
+      options.cubinFeatures = cubinFeatures;
+      options.cubinFormat = cubinFormat;
+      options.optLevel = cuOptLevel;
+      options.kernelUseBarePtrCallConv = false;
+      options.hostUseBarePtrCallConv = false;
+      buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+      if (numGPUModule != 1) {
+        llvm::errs() << " only single gpu module calls supported atm\n";
+        submod.erase();
+        return {};
+      }
+      auto subres = pm.run(submod);
+      if (!subres.succeeded()) {
+        submod.erase();
+        return {};
+      }
+      rewriteKernelCallABI(submod, loc, legalName, debug, jcall, modstr,
+                           cuResultHandlerPtr, cuStreamSynchronizePtr,
+                           indexBitWidth, cubinTriple, cubinChip, cubinFeatures,
+                           cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
+    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0);
+    jitkernels[ss.str()] = ptr;
+    submod.erase();
+    return ptr;
+  }
 };
 
 namespace {
@@ -918,8 +925,12 @@ struct LowerJITPass
         return;
       }
 
-      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip, cubinFeatures, cubinFormat, cuOptLevel, toolkitPath,linkFilesArray, debug);
-      
+      CallInfo cdata =
+          CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp,
+                      cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth,
+                      cubinTriple, cubinChip, cubinFeatures, cubinFormat,
+                      cuOptLevel, toolkitPath, linkFilesArray, debug);
+
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
 
       OpBuilder rewriter(op);
@@ -962,10 +973,8 @@ struct LowerJITPass
       callees.insert(fn);
     });
     for (auto callee : callees)
-        callee.erase();
-    getOperation()->walk([&](gpu::GPUModuleOp op) {
-      op.erase();
-    });
+      callee.erase();
+    getOperation()->walk([&](gpu::GPUModuleOp op) { op.erase(); });
   }
 };
 
