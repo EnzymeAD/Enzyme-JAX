@@ -6,7 +6,7 @@
 #include "xla/ffi/ffi_api.h"
 
 struct CallInfo {
-  void (*run)(void *, void *, void **);
+  void (*run)(void **, void *, void *);
   void *(*init)();
 };
 
