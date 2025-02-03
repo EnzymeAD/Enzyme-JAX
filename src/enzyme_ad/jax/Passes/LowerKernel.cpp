@@ -47,12 +47,10 @@ using namespace enzymexla;
 
 using namespace stablehlo;
 
-bool CompileGPUKernel(
-    SymbolTableCollection &symbolTable, mlir::Location loc,
-    FunctionOpInterface op, 
-    size_t gridx, size_t gridy, size_t gridz,
-    size_t blockx, size_t blocky, size_t blockz, size_t shmem,
-    enzymexla::KernelCallOp kcall) {
+bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
+                      FunctionOpInterface op, size_t gridx, size_t gridy,
+                      size_t gridz, size_t blockx, size_t blocky, size_t blockz,
+                      size_t shmem, enzymexla::KernelCallOp kcall) {
 
   OpBuilder builder(op);
 
@@ -82,111 +80,113 @@ bool CompileGPUKernel(
   std::string legalName = op.getName().str();
   std::replace(legalName.begin(), legalName.end(), '#', '_');
   std::string gpumodname = "gpumod_" + legalName;
-  
+
   gpu::GPUModuleOp gpumod = nullptr;
   gpu::GPUFuncOp gpufunc = nullptr;
-  
+
   for (auto &gop : *op.getOperation()->getBlock()) {
     auto gmod = dyn_cast<gpu::GPUModuleOp>(gop);
-    if (!gmod) continue;
+    if (!gmod)
+      continue;
     if (gmod.getName() == gpumodname) {
-        gpumod = gmod;
-        break;
+      gpumod = gmod;
+      break;
     }
   }
 
   if (gpumod) {
     for (auto &gop : *(gpumod.getBody())) {
-    auto gfunc = dyn_cast<gpu::GPUFuncOp>(gop);
-    if (!gfunc) continue;
-    if (gfunc.getName() == legalName) {
+      auto gfunc = dyn_cast<gpu::GPUFuncOp>(gop);
+      if (!gfunc)
+        continue;
+      if (gfunc.getName() == legalName) {
         gpufunc = gfunc;
         break;
-    }
+      }
     }
     assert(gpufunc);
   } else {
-  gpumod = builder.create<gpu::GPUModuleOp>(loc, gpumodname);
-  builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
+    gpumod = builder.create<gpu::GPUModuleOp>(loc, gpumodname);
+    builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
 
-  gpufunc = builder.create<gpu::GPUFuncOp>(loc, legalName, gpuTy);
-  {
-    auto entry = &gpufunc.getBody().front();
-    builder.setInsertionPointToEnd(entry);
-    IRMapping map;
-    for (auto &&[oldarg, newarg] :
-         zip(op.getArguments(), gpufunc.getArguments())) {
-      Value newval = newarg;
+    gpufunc = builder.create<gpu::GPUFuncOp>(loc, legalName, gpuTy);
+    {
+      auto entry = &gpufunc.getBody().front();
+      builder.setInsertionPointToEnd(entry);
+      IRMapping map;
+      for (auto &&[oldarg, newarg] :
+           zip(op.getArguments(), gpufunc.getArguments())) {
+        Value newval = newarg;
 
-      if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
-        auto ud =
-            builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
-        int64_t c0[1] = {0};
-        newval = builder.create<LLVM::InsertValueOp>(
-            newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+        if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
+          auto ud =
+              builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
+          int64_t c0[1] = {0};
+          newval = builder.create<LLVM::InsertValueOp>(
+              newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+        }
+
+        map.map(oldarg, newval);
       }
 
-      map.map(oldarg, newval);
+      op.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
+      gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+
+      auto second = entry->getNextNode();
+      entry->getOperations().splice(entry->getOperations().end(),
+                                    second->getOperations());
+
+      second->erase();
+
+      gpufunc->walk([](LLVM::ReturnOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
+
+      gpufunc->walk([](LLVM::UnreachableOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
+
+      gpufunc->walk([](func::ReturnOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
     }
-
-    op.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
-    gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
-
-    auto second = entry->getNextNode();
-    entry->getOperations().splice(entry->getOperations().end(),
-                                  second->getOperations());
-
-    second->erase();
-
-    gpufunc->walk([](LLVM::ReturnOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<gpu::ReturnOp>(op.getLoc());
-      op.erase();
-    });
-
-    gpufunc->walk([](LLVM::UnreachableOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<gpu::ReturnOp>(op.getLoc());
-      op.erase();
-    });
-
-    gpufunc->walk([](func::ReturnOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<gpu::ReturnOp>(op.getLoc());
-      op.erase();
-    });
-  }
-  SmallVector<Operation *> tocopy;
-  op->walk([&](CallOpInterface cop) {
-    if (auto op2 = cop.resolveCallable())
-      tocopy.push_back(op2);
-  });
-  op->walk([&](LLVM::AddressOfOp cop) {
-    if (auto op2 = cop.getGlobal(symbolTable))
-      tocopy.push_back(op2);
-    else if (auto op2 = cop.getFunction(symbolTable))
-      tocopy.push_back(op2);
-  });
-  SmallPtrSet<Operation *, 1> done;
-
-  builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
-  while (tocopy.size()) {
-    auto cur = tocopy.pop_back_val();
-    if (done.count(cur))
-      continue;
-    done.insert(cur);
-    builder.clone(*cur);
-    cur->walk([&](CallOpInterface cop) {
+    SmallVector<Operation *> tocopy;
+    op->walk([&](CallOpInterface cop) {
       if (auto op2 = cop.resolveCallable())
         tocopy.push_back(op2);
     });
-    cur->walk([&](LLVM::AddressOfOp cop) {
+    op->walk([&](LLVM::AddressOfOp cop) {
       if (auto op2 = cop.getGlobal(symbolTable))
         tocopy.push_back(op2);
       else if (auto op2 = cop.getFunction(symbolTable))
         tocopy.push_back(op2);
     });
-  }
+    SmallPtrSet<Operation *, 1> done;
+
+    builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
+    while (tocopy.size()) {
+      auto cur = tocopy.pop_back_val();
+      if (done.count(cur))
+        continue;
+      done.insert(cur);
+      builder.clone(*cur);
+      cur->walk([&](CallOpInterface cop) {
+        if (auto op2 = cop.resolveCallable())
+          tocopy.push_back(op2);
+      });
+      cur->walk([&](LLVM::AddressOfOp cop) {
+        if (auto op2 = cop.getGlobal(symbolTable))
+          tocopy.push_back(op2);
+        else if (auto op2 = cop.getFunction(symbolTable))
+          tocopy.push_back(op2);
+      });
+    }
   }
 
   builder.setInsertionPoint(op);
@@ -216,30 +216,36 @@ bool CompileGPUKernel(
 
   auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
 
-  Value stream = builder.create<enzymexla::GetStreamOp>(loc, gpu::AsyncTokenType::get(kcall.getContext()));
+  Value stream = builder.create<enzymexla::GetStreamOp>(
+      loc, gpu::AsyncTokenType::get(kcall.getContext()));
 
   builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize, dynshmem,
                                     entryBlock.getArguments(), stream.getType(),
                                     ValueRange(stream));
 
   builder.create<mlir::func::ReturnOp>(loc);
-  
-  if (!op->getParentOp()->hasAttr(gpu::GPUDialect::getContainerModuleAttrName()))
-      op->getParentOp()->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
-                              UnitAttr::get(kcall.getContext()));
+
+  if (!op->getParentOp()->hasAttr(
+          gpu::GPUDialect::getContainerModuleAttrName()))
+    op->getParentOp()->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
+                               UnitAttr::get(kcall.getContext()));
 
   OpBuilder rewriter(kcall);
-  auto replacement = rewriter.create<enzymexla::JITCallOp>(kcall.getLoc(), kcall.getResultTypes(), mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName), kcall.getInputs(), kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
+  auto replacement = rewriter.create<enzymexla::JITCallOp>(
+      kcall.getLoc(), kcall.getResultTypes(),
+      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
+      kcall.getInputs(), kcall.getBackendConfigAttr(),
+      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
+      kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
 };
 
-bool CompileCPUKernel(SymbolTableCollection &symbolTable,
-                          mlir::Location loc, FunctionOpInterface op,
-                          size_t gridx, size_t gridy, size_t gridz,
-                          size_t blockx, size_t blocky, size_t blockz,
-                          size_t shmem, enzymexla::KernelCallOp kcall) {
+bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
+                      FunctionOpInterface op, size_t gridx, size_t gridy,
+                      size_t gridz, size_t blockx, size_t blocky, size_t blockz,
+                      size_t shmem, enzymexla::KernelCallOp kcall) {
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
@@ -292,74 +298,79 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable,
   auto executeRegion =
       builder.create<scf::ExecuteRegionOp>(loc, ArrayRef<mlir::Type>());
 
-    op.getFunctionBody().cloneInto(&executeRegion.getRegion(), map);
+  op.getFunctionBody().cloneInto(&executeRegion.getRegion(), map);
 
-    executeRegion->walk([](LLVM::ReturnOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<scf::YieldOp>(op.getLoc());
-      op.erase();
-    });
+  executeRegion->walk([](LLVM::ReturnOp op) {
+    OpBuilder rewriter(op);
+    rewriter.create<scf::YieldOp>(op.getLoc());
+    op.erase();
+  });
 
-    executeRegion->walk([](func::ReturnOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<scf::YieldOp>(op.getLoc());
-      op.erase();
-    });
+  executeRegion->walk([](func::ReturnOp op) {
+    OpBuilder rewriter(op);
+    rewriter.create<scf::YieldOp>(op.getLoc());
+    op.erase();
+  });
 
-    executeRegion->walk([](LLVM::UnreachableOp op) {
-      OpBuilder rewriter(op);
-      rewriter.create<scf::YieldOp>(op.getLoc());
-      op.erase();
-    });
+  executeRegion->walk([](LLVM::UnreachableOp op) {
+    OpBuilder rewriter(op);
+    rewriter.create<scf::YieldOp>(op.getLoc());
+    op.erase();
+  });
 
-    // block idx
-    executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[0]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
-    executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[1]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
-    executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[2]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
+  // block idx
+  executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[0]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[1]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[2]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
 
-    // thread idx
-    executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[3]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
-    executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[4]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
-    executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
-      OpBuilder rewriter(idxOp);
-      auto rep = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), idxOp.getType(), par.getInductionVars()[5]);
-      idxOp.replaceAllUsesWith(rep.getResult());
-      idxOp.erase();
-    });
+  // thread idx
+  executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[3]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[4]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
+                                                   par.getInductionVars()[5]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
 
   OpBuilder rewriter(kcall);
-  auto replacement = rewriter.create<enzymexla::JITCallOp>(kcall.getLoc(), kcall.getResultTypes(), mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName), kcall.getInputs(), kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
+  auto replacement = rewriter.create<enzymexla::JITCallOp>(
+      kcall.getLoc(), kcall.getResultTypes(),
+      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
+      kcall.getInputs(), kcall.getBackendConfigAttr(),
+      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
+      kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -417,15 +428,12 @@ struct LowerKernelPass
 
       // Compiled kernel goes here once ready
       if (backend == "cuda") {
-        CompileGPUKernel(
-            symbolTable, op.getLoc(), fn, data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7], op);
+        CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
+                         data[3], data[4], data[5], data[6], data[7], op);
       } else if (backend == "cpu") {
-        CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1],
-                                 data[2], data[3], data[4], data[5], data[6],
-                                 data[7], op);
-      }
-      else {
+        CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
+                         data[3], data[4], data[5], data[6], data[7], op);
+      } else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
       }
