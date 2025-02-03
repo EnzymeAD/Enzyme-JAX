@@ -372,6 +372,7 @@ gentbl_cc_library(
 
 cc_library(
     name = "XLADerivatives",
+    visibility = ["//visibility:public"],
     srcs = glob(
         [
             "Implementations/*.cpp",
