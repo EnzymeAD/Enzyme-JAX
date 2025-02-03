@@ -375,4 +375,19 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// MPIToStableHLO
+//===----------------------------------------------------------------------===//
+
+def LowerMPIToStableHLOPass : Pass<"convert-mpi-to-stablehlo"> {
+  let summary = "Lower MPI ops to the StableHLO custom calls";
+  let dependentDialects = [
+    "mpi::MPIDialect",
+    "stablehlo::StablehloDialect"
+  ];
+
+  // TODO do we need to add options for getting libmpi path?
+  let options = [];
+}
+
 #endif
