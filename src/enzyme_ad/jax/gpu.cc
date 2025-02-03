@@ -101,7 +101,7 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
       internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(ctx));
   auto cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
 
-  cinfo->run(ptr, stream, cufunc);
+  cinfo->run(ptrs, stream, cufunc);
 
   return nullptr;
 }
