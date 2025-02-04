@@ -108,3 +108,37 @@ func.func @main(%arg0: tensor<4xf32>, %arg1: tensor<8xf64>) {
   enzymexla.kernel_call @bar blocks in(%c_5, %c_8, %c_8) threads in(%c_4, %c_8, %c_8) shmem = %c_6 (%arg1) {} : (tensor<8xf64>) -> ()
   return
 }
+
+// -----
+
+// CHECK-LABEL: ptx_kernelcc @foo
+// CHECK-SAME: llvm.align = 128 : i32, llvm.dereferenceable = 8 : i64, llvm.noalias
+llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+  llvm.return
+}
+
+func.func @main(%arg0: tensor<complex<i32>>) {
+  %c_4 = stablehlo.constant dense<1> : tensor<i64>
+  %c_5 = stablehlo.constant dense<2> : tensor<i64>
+  %c_6 = stablehlo.constant dense<3> : tensor<i64>
+  %c_8 = stablehlo.constant dense<4> : tensor<i64>
+  enzymexla.kernel_call @foo blocks in(%c_5, %c_8, %c_8) threads in(%c_4, %c_8, %c_8) shmem = %c_6 (%arg0) {} : (tensor<complex<i32>>) -> ()
+  return
+}
+
+// -----
+
+// CHECK-LABEL: ptx_kernelcc @foo
+// CHECK-SAME: llvm.align = 128 : i32, llvm.dereferenceable = 40 : i64, llvm.noalias
+llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+  llvm.return
+}
+
+func.func @main(%arg0: tensor<5xcomplex<i32>>) {
+  %c_4 = stablehlo.constant dense<1> : tensor<i64>
+  %c_5 = stablehlo.constant dense<2> : tensor<i64>
+  %c_6 = stablehlo.constant dense<3> : tensor<i64>
+  %c_8 = stablehlo.constant dense<4> : tensor<i64>
+  enzymexla.kernel_call @foo blocks in(%c_5, %c_8, %c_8) threads in(%c_4, %c_8, %c_8) shmem = %c_6 (%arg0) {} : (tensor<5xcomplex<i32>>) -> ()
+  return
+}
