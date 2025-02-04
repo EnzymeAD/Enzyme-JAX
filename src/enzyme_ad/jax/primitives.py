@@ -283,6 +283,7 @@ slice_dot_general<1>;
 dot_reshape_pad<1>;
 pad_dot_general<1>(0);
 
+if_remove_unused<1>;
 if_inline<1>;
 if_to_select<1>;
 while_simplify<1>;

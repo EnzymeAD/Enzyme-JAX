@@ -6990,6 +6990,66 @@ struct TransposeIsReshape final
   }
 };
 
+struct IfRemoveUnused final : OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<bool> resultUsed(op->getNumResults(), true);
+
+    bool anyUnused = false;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool unused = it.value().use_empty();
+      resultUsed[it.index()] = !unused;
+      anyUnused |= unused;
+    }
+
+    if (!anyUnused)
+      return failure();
+
+    SmallVector<Type> newResultTypes;
+
+    Operation *trueTerm = op.getTrueBranch().front().getTerminator();
+    Operation *falseTerm = op.getFalseBranch().front().getTerminator();
+
+    unsigned removed = 0;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool used = resultUsed[it.index()];
+      if (used) {
+        newResultTypes.push_back(it.value().getType());
+        continue;
+      }
+
+      auto i = it.index() - removed;
+      rewriter.modifyOpInPlace(trueTerm, [&] { trueTerm->eraseOperand(i); });
+      rewriter.modifyOpInPlace(falseTerm, [&] { falseTerm->eraseOperand(i); });
+      removed++;
+    }
+
+    auto newIf = rewriter.create<stablehlo::IfOp>(op.getLoc(), newResultTypes,
+                                                  op.getPred());
+    newIf.getTrueBranch().takeBody(op.getTrueBranch());
+    newIf.getFalseBranch().takeBody(op.getFalseBranch());
+
+    removed = 0;
+    for (const auto &it : llvm::enumerate(resultUsed)) {
+      bool used = it.value();
+      if (!used) {
+        removed++;
+        continue;
+      }
+      auto res = op.getResult(it.index());
+      auto newRes = newIf.getResult(it.index() - removed);
+      rewriter.replaceAllUsesWith(res, newRes);
+    }
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -7720,6 +7780,7 @@ struct EnzymeHLOOptPass
         GatherOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
+        IfRemoveUnused,
         IfInline,
         IfToSelect,
         ImagOpCanon,
