@@ -43,6 +43,10 @@ struct PropagateConstantBoundsPass
     }
     if (auto floatType = dyn_cast<FloatType>(ty))
       bitWidth = floatType.getWidth();
+    if (auto complexType = dyn_cast<ComplexType>(ty)) {
+      int32_t sizeInByte = getSizeInBytes(complexType.getElementType());
+      return sizeInByte * 2;
+    }
     assert(bitWidth != 0);
     return bitWidth / 8;
   }
