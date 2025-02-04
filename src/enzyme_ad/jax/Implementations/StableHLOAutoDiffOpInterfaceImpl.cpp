@@ -2282,9 +2282,6 @@ struct IfOpEnzymeOpsRemover
 
     auto ifOp = cast<IfOp>(op);
 
-    llvm::outs() << "processing: \n";
-    ifOp->dump();
-
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
 
