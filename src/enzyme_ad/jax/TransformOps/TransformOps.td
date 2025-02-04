@@ -718,6 +718,11 @@ def TransposeIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeIsReshape"];
 }
 
+def IfRemoveUnused : EnzymeHLOPatternOp<
+    "if_remove_unused"> {
+  let patterns = ["IfRemoveUnused"];
+}
+
 def IfInline : EnzymeHLOPatternOp<
     "if_inline"> {
   let patterns = ["IfInline"];
