@@ -743,6 +743,11 @@ def IfToSelect : EnzymeHLOPatternOp<
   let patterns = ["IfToSelect"];
 }
 
+def IfPredPropagation : EnzymeHLOPatternOp<
+    "if_pred_propagation"> {
+  let patterns = ["IfPredPropagation"];
+}
+
 def WhileSimplify : EnzymeHLOPatternOp<
     "while_simplify"> {
   let patterns = ["WhileSimplify"];
