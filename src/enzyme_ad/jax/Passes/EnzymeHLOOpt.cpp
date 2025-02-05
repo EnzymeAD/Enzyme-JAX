@@ -6939,6 +6939,43 @@ struct IfRemoveUnused final : OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
+struct IfPredPropagation final : OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+    Value pred = op.getPred();
+    bool anyModified = false;
+
+    auto makeBool = [&](bool value) {
+      auto i1type = RankedTensorType::get({}, rewriter.getI1Type());
+      return rewriter
+          .create<stablehlo::ConstantOp>(
+              pred.getLoc(), i1type,
+              SplatElementsAttr::get(i1type, rewriter.getBoolAttr(value)))
+          .getResult();
+    };
+
+    Region *trueBranch = &op.getTrueBranch();
+    Region *falseBranch = &op.getFalseBranch();
+
+    for (OpOperand &use : pred.getUses()) {
+      Operation *owner = use.getOwner();
+      Region *useRegion = owner->getParentRegion();
+
+      if (trueBranch->isAncestor(useRegion)) {
+        anyModified = true;
+        rewriter.modifyOpInPlace(owner, [&]() { use.assign(makeBool(true)); });
+      } else if (falseBranch->isAncestor(useRegion)) {
+        anyModified = true;
+        rewriter.modifyOpInPlace(owner, [&]() { use.assign(makeBool(false)); });
+      }
+    }
+
+    return success(anyModified);
+  }
+};
+
 struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -7976,6 +8013,7 @@ struct EnzymeHLOOptPass
         IfRemoveUnused,
         IfInline,
         IfToSelect,
+        IfPredPropagation,
         ImagOpCanon,
         MergeConsecutiveReshapes,
         NoopReduceOpCanon,
