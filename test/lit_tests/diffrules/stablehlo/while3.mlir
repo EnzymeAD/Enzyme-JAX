@@ -57,40 +57,41 @@ module {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func private @diffef(%arg0: tensor<f64>, %arg1: tensor<f64>) -> (tensor<f64>, tensor<f64>) {
-// REVERSE-NEXT:    %c = stablehlo.constant dense<3> : tensor<i64>
-// REVERSE-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// REVERSE-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<i64>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<f64>
-// REVERSE-NEXT:    %0 = "enzyme.init"() : () -> !enzyme.Cache<tensor<f64>>
-// REVERSE-NEXT:    %1 = "enzyme.init"() : () -> !enzyme.Cache<tensor<f64>>
-// REVERSE-NEXT:    %2 = stablehlo.subtract %c, %c_1 : tensor<i64>
-// REVERSE-NEXT:    %3 = stablehlo.divide %2, %c_0 : tensor<i64>
-// REVERSE-NEXT:    %4:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64>
+// REVERSE-NEXT:    %c = stablehlo.constant dense<2> : tensor<i64>
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<3xf64>
+// REVERSE-NEXT:    %c_0 = stablehlo.constant dense<3> : tensor<i64>
+// REVERSE-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i64>
+// REVERSE-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<i64>
+// REVERSE-NEXT:    %cst_3 = arith.constant dense<0.000000e+00> : tensor<f64>
+// REVERSE-NEXT:    %0 = stablehlo.subtract %c_0, %c_2 : tensor<i64>
+// REVERSE-NEXT:    %1 = stablehlo.divide %0, %c_1 : tensor<i64>
+// REVERSE-NEXT:    %2:3 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %arg0, %iterArg_5 = %cst) : tensor<i64>, tensor<f64>, tensor<3xf64>
 // REVERSE-NEXT:     cond {
-// REVERSE-NEXT:      %8 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:      stablehlo.return %8 : tensor<i1>
+// REVERSE-NEXT:      %6 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %6 : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      "enzyme.push"(%1, %iterArg_2) : (!enzyme.Cache<tensor<f64>>, tensor<f64>) -> ()
-// REVERSE-NEXT:      "enzyme.push"(%0, %iterArg_2) : (!enzyme.Cache<tensor<f64>>, tensor<f64>) -> ()
-// REVERSE-NEXT:      %8 = stablehlo.multiply %iterArg_2, %iterArg_2 : tensor<f64>
-// REVERSE-NEXT:      %9 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// REVERSE-NEXT:      stablehlo.return %9, %8 : tensor<i64>, tensor<f64>
+// REVERSE-NEXT:      %6 = stablehlo.reshape %iterArg_4 : (tensor<f64>) -> tensor<1xf64>
+// REVERSE-NEXT:      %7 = stablehlo.dynamic_update_slice %iterArg_5, %6, %iterArg : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
+// REVERSE-NEXT:      %8 = stablehlo.multiply %iterArg_4, %iterArg_4 : tensor<f64>
+// REVERSE-NEXT:      %9 = stablehlo.add %iterArg, %c_1 : tensor<i64>
+// REVERSE-NEXT:      stablehlo.return %9, %8, %7 : tensor<i64>, tensor<f64>, tensor<3xf64>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %5 = arith.addf %arg1, %cst : tensor<f64>
-// REVERSE-NEXT:    %6:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %5) : tensor<i64>, tensor<f64>
+// REVERSE-NEXT:    %3 = arith.addf %arg1, %cst_3 : tensor<f64>
+// REVERSE-NEXT:    %4:3 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %3, %iterArg_5 = %c) : tensor<i64>, tensor<f64>, tensor<i64>
 // REVERSE-NEXT:     cond {
-// REVERSE-NEXT:      %8 = stablehlo.compare  LT, %iterArg, %3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:      stablehlo.return %8 : tensor<i1>
+// REVERSE-NEXT:      %6 = stablehlo.compare  LT, %iterArg, %1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %6 : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      %8 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// REVERSE-NEXT:      %9 = "enzyme.pop"(%1) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
-// REVERSE-NEXT:      %10 = "enzyme.pop"(%0) : (!enzyme.Cache<tensor<f64>>) -> tensor<f64>
-// REVERSE-NEXT:      %11 = stablehlo.multiply %iterArg_2, %10 : tensor<f64>
-// REVERSE-NEXT:      %12 = arith.addf %11, %cst : tensor<f64>
-// REVERSE-NEXT:      %13 = stablehlo.multiply %iterArg_2, %9 : tensor<f64>
-// REVERSE-NEXT:      %14 = arith.addf %12, %13 : tensor<f64>
-// REVERSE-NEXT:      stablehlo.return %8, %14 : tensor<i64>, tensor<f64>
+// REVERSE-NEXT:      %6 = stablehlo.add %iterArg, %c_1 : tensor<i64>
+// REVERSE-NEXT:      %7 = stablehlo.dynamic_slice %2#2, %iterArg_5, sizes = [1] : (tensor<3xf64>, tensor<i64>) -> tensor<1xf64>
+// REVERSE-NEXT:      %8 = stablehlo.reshape %7 : (tensor<1xf64>) -> tensor<f64>
+// REVERSE-NEXT:      %9 = stablehlo.multiply %iterArg_4, %8 : tensor<f64>
+// REVERSE-NEXT:      %10 = arith.addf %9, %cst_3 : tensor<f64>
+// REVERSE-NEXT:      %11 = stablehlo.multiply %iterArg_4, %8 : tensor<f64>
+// REVERSE-NEXT:      %12 = arith.addf %10, %11 : tensor<f64>
+// REVERSE-NEXT:      %13 = stablehlo.subtract %iterArg_5, %c_1 : tensor<i64>
+// REVERSE-NEXT:      stablehlo.return %6, %12, %13 : tensor<i64>, tensor<f64>, tensor<i64>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %7 = arith.addf %6#1, %cst : tensor<f64>
-// REVERSE-NEXT:    return %4#1, %7 : tensor<f64>, tensor<f64>
+// REVERSE-NEXT:    %5 = arith.addf %4#1, %cst_3 : tensor<f64>
+// REVERSE-NEXT:    return %2#1, %5 : tensor<f64>, tensor<f64>
 // REVERSE-NEXT:  }
