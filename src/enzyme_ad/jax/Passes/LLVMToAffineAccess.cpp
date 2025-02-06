@@ -449,8 +449,7 @@ struct AffineExprBuilder {
       return getAffineConstantExpr(constIndex.getInt(), user->getContext());
     } else {
       auto expr = buildExpr(cast<Value>(index));
-      if (succeeded(expr))
-        expr->dump();
+      LLVM_DEBUG(if (succeeded(expr)) expr->dump());
       return expr;
     }
   }
