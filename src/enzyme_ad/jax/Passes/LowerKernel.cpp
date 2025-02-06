@@ -290,7 +290,19 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   IRMapping map;
   map.map(op.getArguments(), entryBlock.getArguments());
 
-  auto par = builder.create<scf::ParallelOp>(loc, inits, finals, incs);
+  auto context = loc.getContext();
+  SmallVector<AffineMap> idMaps, zeroMaps;
+  auto zeroMap = AffineMap::getConstantMap(0, context);
+  zeroMaps.insert(zeroMaps.begin(), 6, zeroMap);
+  for (unsigned i = 0; i < 6; i++) {
+    auto idMap = AffineMap::get(0, 6, getAffineSymbolExpr(i, context));
+    idMaps.push_back(idMap);
+  }
+
+  SmallVector<int64_t> steps(6, 1);
+  auto par = builder.create<affine::AffineParallelOp>(
+    loc, TypeRange(), ArrayRef<arith::AtomicRMWKind>(), zeroMaps,
+    ValueRange(), idMaps, finals, steps);
 
   builder.create<mlir::func::ReturnOp>(loc);
 
@@ -322,21 +334,21 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[0]);
+                                                   par.getIVs()[0]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[1]);
+                                                   par.getIVs()[1]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[2]);
+                                                   par.getIVs()[2]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
@@ -345,21 +357,21 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[3]);
+                                                   par.getIVs()[3]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[4]);
+                                                   par.getIVs()[4]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getInductionVars()[5]);
+                                                   par.getIVs()[5]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
