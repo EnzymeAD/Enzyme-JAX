@@ -920,6 +920,7 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
+// Gather Adjoint
 def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getDimensionNumbers();
 }]>;
@@ -949,7 +950,7 @@ def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [
   );
 }]>;
 
-def Binary2ndArgSetOp : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def BinaryAdd : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   Region *region = new Region;
   Block *block = new Block;
   region->push_back(block);
@@ -961,19 +962,50 @@ def Binary2ndArgSetOp : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   block->addArgument(tensorType, loc);
   block->addArgument(tensorType, loc);
 
-  builder.create<ReturnOp>(loc, block->getArgument(1));
+  auto addOp = builder.create<AddOp>(loc, block->getArgument(0), block->getArgument(1));
+  builder.create<ReturnOp>(loc, addOp->getResult());
   
   region;
+}]>;
+
+def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto operand = op->getOperand(0);
+  auto operandType = operand.getType().cast<ShapedType>();
+  auto elemType = operandType.getElementType();
+  
+  // Create appropriate zero attribute based on element type
+  Attribute zeroAttr;
+  if (elemType.isa<FloatType>()) {
+    zeroAttr = builder.getFloatAttr(elemType, 0.0);
+  } else if (elemType.isa<IntegerType>()) {
+    zeroAttr = builder.getIntegerAttr(elemType, 0);
+  } else if (elemType.isa<ComplexType>()) {
+    auto complexTy = elemType.cast<ComplexType>();
+    if (complexTy.getElementType().isa<FloatType>()) {
+      zeroAttr = builder.getFloatAttr(complexTy.getElementType(), 0.0);
+    } else {
+      llvm_unreachable("unsupported complex element type");
+    }
+  } else {
+    llvm_unreachable("unsupported element type");
+  }
+  
+  // Create constant op with the zero tensor
+  auto constantOp = builder.create<mhlo::ConstantOp>(
+    operand.getLoc(), operandType, DenseElementsAttr::get(operandType, zeroAttr)
+  );
+  
+  constantOp.getResult();
 }]>;
 
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     [
                       (Scatter 
-                        (HLOConstantFP<"0"> $operand),
+                        (GatherScatterInputData),
                         $start_indices,
                         (DiffeRet),
                         (GatherToScatterDimNumbers),
-                        (Binary2ndArgSetOp)
+                        (BinaryAdd)
                       ),
                       (AssertingInactiveArg)
                     ],
