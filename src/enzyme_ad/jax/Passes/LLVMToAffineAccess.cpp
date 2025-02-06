@@ -1273,7 +1273,8 @@ convertLLVMToAffineAccess(Operation *op,
     RewritePatternSet patterns(context);
     patterns.insert<ConvertToTypedMemref>(context, dataLayoutAnalysis);
     GreedyRewriteConfig config;
-    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
+    config.fold = false;
+    if (applyPatternsGreedily(op, std::move(patterns), config).failed())
       return failure();
   }
   {
