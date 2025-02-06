@@ -2766,30 +2766,58 @@ struct ScatterToDynamicUpdateSlice final
     auto input = op.getInputs()[0];
     auto update = op.getUpdates()[0];
     auto scatter = op.getScatterIndices();
-    auto updateShape = update.getType().cast<ShapedType>().getShape();
+    auto updateType = update.getType().cast<ShapedType>(); // Cast to ShapedType
+    auto updateShape = updateType.getShape();
+    auto elementType = updateType.getElementType(); // Preserve the element type
 
-    if (dims.getInsertedWindowDims().size() == 0 &
-        dims.getUpdateWindowDims().size() == updateShape.size()) {
+    // Handle inserted_window_dims and update_window_dims
+    SmallVector<int64_t> newUpdateShape;
+    for (int64_t i = 0; i < updateShape.size(); ++i) {
+      if (llvm::is_contained(dims.getInsertedWindowDims(), i))
+        continue; // Skip inserted dimensions
+      newUpdateShape.push_back(updateShape[i]);
+    }
 
-      auto ity = RankedTensorType::get({}, rewriter.getI32Type());
-      SmallVector<Value> start(updateShape.size(), 0);
-      for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
-        auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
-        if (!startval)
-          return failure();
-        start[en.value()] = *startval;
-      }
-      for (auto &v : start) {
-        if (v != nullptr)
-          continue;
-        v = rewriter.create<stablehlo::ConstantOp>(
+    // Reshape the update tensor to remove the inserted dimensions
+    auto newUpdateType = RankedTensorType::get(
+        newUpdateShape, elementType); // Use the preserved element type
+    update = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), newUpdateType,
+                                                   update);
+
+    // Compute start indices
+    auto ity = RankedTensorType::get(
+        {}, scatter.getType().cast<ShapedType>().getElementType());
+    SmallVector<Value> start(input.getType().cast<ShapedType>().getRank(),
+                             nullptr);
+
+    // Compute start indices based on scatter_indices and scatter_dims_to_operand_dims
+    for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+      auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
+      if (!startval)
+        return failure();
+      start[en.value()] = *startval;
+    }
+
+    // Adjust start indices to account for update_window_dims
+    for (auto dim : dims.getUpdateWindowDims()) {
+      if (start[dim] == nullptr) {
+        start[dim] = rewriter.create<stablehlo::ConstantOp>(
             op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
       }
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-          op, op.getResult(0).getType(), input, update, start);
-      return success();
     }
-    return failure();
+
+    // Fill in missing start indices with zero
+    for (auto &v : start) {
+      if (v != nullptr)
+        continue;
+      v = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
+    }
+
+    // Replace the scatter operation with a dynamic_update_slice operation
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        op, op.getResult(0).getType(), input, update, start);
+    return success();
   }
 };
 
