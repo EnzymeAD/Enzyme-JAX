@@ -858,6 +858,11 @@ def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
   let patterns = ["CommonCompareExpressionRewrite"];
 }
 
+def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
+    "scatter_update_computation_const_prop"> {
+  let patterns = ["ScatterUpdateComputationConstProp"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
