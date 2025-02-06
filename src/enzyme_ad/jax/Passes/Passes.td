@@ -34,6 +34,12 @@ def PropagateConstantBoundsPass
     "mlir::LLVM::LLVMDialect",
     "mlir::NVVM::NVVMDialect"
   ];
+  let options = [Option<
+      /*C++ variable name=*/"tensor_types",
+      /*CLI argument=*/"tensor_types",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to propagate tensor types">];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {
@@ -408,6 +414,16 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
     // TODO: This is only necessary until we have a
     //       ub.unreachable op.
     "func::FuncDialect"
+  ];
+}
+
+def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
+  let summary = "";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "affine::AffineDialect",
+    "vector::VectorDialect",
+    "enzymexla::EnzymeXLADialect",
   ];
 }
 
