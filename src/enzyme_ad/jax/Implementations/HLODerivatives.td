@@ -920,7 +920,75 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
+def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbers();
+}]>;
+
+def ResultSliceSizes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getSliceSizes();
+}]>;
+
+def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto gatherDims = op.getDimensionNumbers();
+  
+  auto updateWindowDims = gatherDims.getOffsetDims();
+  auto insertedWindowDims = gatherDims.getCollapsedSliceDims();
+  auto inputBatchingDims = gatherDims.getOperandBatchingDims();
+  auto indicesBatchingDims = gatherDims.getStartIndicesBatchingDims();
+  auto scatterDimsToOperandDims = gatherDims.getStartIndexMap();
+  auto indexVectorDim = gatherDims.getIndexVectorDim();
+  
+  ScatterDimensionNumbersAttr::get(
+    op.getContext(),
+    updateWindowDims,
+    insertedWindowDims,
+    inputBatchingDims,
+    indicesBatchingDims,
+    scatterDimsToOperandDims,
+    indexVectorDim
+  );
+}]>;
+
+def Binary2ndArgSetOp : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  Region *region = new Region;
+  Block *block = new Block;
+  region->push_back(block);
+  
+  auto loc = builder.getUnknownLoc();
+  auto elemType = op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto tensorType = RankedTensorType::get({}, elemType);
+  
+  block->addArgument(tensorType, loc);
+  block->addArgument(tensorType, loc);
+
+  builder.create<ReturnOp>(loc, block->getArgument(1));
+  
+  region;
+}]>;
+
+def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
+                    [
+                      (Scatter 
+                        $operand,
+                        $start_indices,
+                        (DiffeRet),
+                        (GatherToScatterDimNumbers),
+                        (Binary2ndArgSetOp)
+                      ),
+                      (AssertingInactiveArg)
+                    ],
+                    // Forward shadow rule
+                    (SelectIfActive $operand,
+                      (Gather 
+                        (ResultTypes),
+                        (Shadow $operand),
+                        $start_indices,
+                        (ResultDimensionNumbers),
+                        (ResultSliceSizes)
+                      ),
+                      (HLOConstantFP<"0">)
+                    )
+                  >;
 
 def : HLOInactiveOp<"CeilOp">;
 
