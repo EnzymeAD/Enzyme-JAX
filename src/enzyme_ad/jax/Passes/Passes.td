@@ -411,4 +411,12 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
   ];
 }
 
+def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
+  let summary = "";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "vector::VectorDialect",
+  ];
+}
+
 #endif
