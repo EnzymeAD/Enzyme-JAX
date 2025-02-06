@@ -142,7 +142,19 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
         /*CLI argument=*/"dump_postllvm",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Whether to dump LLVM after optimizations">
+        /*description=*/"Whether to dump LLVM after optimizations">,
+    Option<
+        /*C++ variable name=*/"instcombine",
+        /*CLI argument=*/"instcombine",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Whether to run instcombine">,
+    Option<
+        /*C++ variable name=*/"instsimplify",
+        /*CLI argument=*/"instsimplify",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to run instsimplify">,
   ];
 }
 
