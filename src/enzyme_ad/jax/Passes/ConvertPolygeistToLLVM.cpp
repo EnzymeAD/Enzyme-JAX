@@ -437,12 +437,15 @@ public:
       rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
           allocOp, convertedType, allocated);
     } else {
-      LLVM::LLVMFuncOp mallocFunc =
+      FailureOr<LLVM::LLVMFuncOp> mallocFunc =
           getTypeConverter()->getOptions().useGenericFunctions
               ? LLVM::lookupOrCreateGenericAllocFn(module, getIndexType())
               : LLVM::lookupOrCreateMallocFn(module, getIndexType());
+      if (failed(mallocFunc))
+        return failure();
       Value allocated =
-          rewriter.create<LLVM::CallOp>(loc, mallocFunc, size).getResult();
+          rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), size)
+              .getResult();
       rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(allocOp, convertedType,
                                                    allocated);
     }
@@ -465,11 +468,13 @@ public:
           adaptor.getMemref());
       rewriter.replaceOpWithNewOp<func::CallOp>(deallocOp, F, casted);
     } else {
-      LLVM::LLVMFuncOp freeFunc =
+      FailureOr<LLVM::LLVMFuncOp> freeFunc =
           getTypeConverter()->getOptions().useGenericFunctions
               ? LLVM::lookupOrCreateGenericFreeFn(module)
               : LLVM::lookupOrCreateFreeFn(module);
-      rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc,
+      if (failed(freeFunc))
+        return failure();
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc.value(),
                                                 adaptor.getMemref());
     }
     return success();

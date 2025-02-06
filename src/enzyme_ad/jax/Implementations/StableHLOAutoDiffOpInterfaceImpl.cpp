@@ -1826,7 +1826,8 @@ public:
 static void removalBlockExplore(Block *block, IRMapping &mapping,
                                 OpBuilder &builder,
                                 llvm::SetVector<Value> &gradients,
-                                llvm::MapVector<Value, CacheInfo> &caches) {
+                                llvm::MapVector<Value, CacheInfo> &caches,
+                                PatternRewriter &rewriter) {
   for (auto it = block->begin(), e = block->end(); it != e;) {
     Operation *op = &*it;
 
@@ -1875,7 +1876,7 @@ static void removalBlockExplore(Block *block, IRMapping &mapping,
       }
 
       if (caches.contains(pushedValue)) {
-        info = info.merge(caches.lookup(pushedValue));
+        info = info.merge(caches.lookup(pushedValue), rewriter);
       }
       caches[pushedValue] = info;
     }
@@ -1887,7 +1888,8 @@ static void removalBlockExplore(Block *block, IRMapping &mapping,
 struct IfOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<IfOpEnzymeOpsRemover,
                                                         stablehlo::IfOp> {
-  LogicalResult removeEnzymeOps(Operation *op) const {
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
     // Gradients:
     //
     //  For each set in a branch, we instead set after the if by using the
@@ -1922,11 +1924,6 @@ struct IfOpEnzymeOpsRemover
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
 
-    if (enzyme::removeOpsWithinBlock(trueBlock).failed() ||
-        enzyme::removeOpsWithinBlock(falseBlock).failed()) {
-      return failure();
-    }
-
     // Gradients whose value is set in either branches.
     llvm::SetVector<Value> gradients;
 
@@ -1938,9 +1935,9 @@ struct IfOpEnzymeOpsRemover
     OpBuilder builder(ifOp);
 
     removalBlockExplore(trueBlock, trueMapping, builder, gradients,
-                        pushedCaches);
+                        pushedCaches, rewriter);
     removalBlockExplore(falseBlock, falseMapping, builder, gradients,
-                        pushedCaches);
+                        pushedCaches, rewriter);
 
     if (gradients.size() == 0 && pushedCaches.size() == 0)
       return success();
