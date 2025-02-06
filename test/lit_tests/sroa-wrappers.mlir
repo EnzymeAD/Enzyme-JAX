@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{instcombine=true})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{instsimplify=true instcombine=false},canonicalize)" | FileCheck %s
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
 #tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_type_desc, access_type = #tbaa_type_desc, offset = 0>
