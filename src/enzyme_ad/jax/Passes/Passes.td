@@ -418,6 +418,15 @@ def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
     "affine::AffineDialect",
     "vector::VectorDialect",
     "enzymexla::EnzymeXLADialect",
+    "vector::VectorDialect",
+  ];
+}
+
+def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
+  let summary = "";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "vector::VectorDialect",
   ];
 }
 
