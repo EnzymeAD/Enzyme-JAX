@@ -130,9 +130,9 @@ struct SROAWrappersPass
         MPM.addPass(createModuleToFunctionPassAdaptor(
             SROAPass(SROAOptions::ModifyCFG)));
       if (instcombine)
-          MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+        MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
       if (instsimplify)
-          MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
+        MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
       if (attributor)
         MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
