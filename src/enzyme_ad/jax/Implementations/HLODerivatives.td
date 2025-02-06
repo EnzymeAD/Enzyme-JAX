@@ -924,6 +924,8 @@ def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
 
 def : HLOInactiveOp<"CeilOp">;
 
+def : HLOInactiveOp<"GetDimensionSizeOp">;
+
 def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
   (Select
     (And
