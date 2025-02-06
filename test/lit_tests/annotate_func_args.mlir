@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --propagate-constant-bounds --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(propagate-constant-bounds{tensor_types=false})" --split-input-file | FileCheck %s
 
 // CHECK-LABEL: ptx_kernelcc @foo
 // CHECK-SAME: llvm.align = 128 : i32, llvm.dereferenceable = 16 : i64, llvm.noalias
@@ -142,3 +142,4 @@ func.func @main(%arg0: tensor<5xcomplex<i32>>) {
   enzymexla.kernel_call @foo blocks in(%c_5, %c_8, %c_8) threads in(%c_4, %c_8, %c_8) shmem = %c_6 (%arg0) {} : (tensor<5xcomplex<i32>>) -> ()
   return
 }
+
