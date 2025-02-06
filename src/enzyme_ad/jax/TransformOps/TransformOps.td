@@ -858,6 +858,11 @@ def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
   let patterns = ["CommonCompareExpressionRewrite"];
 }
 
+def DotGeneralChainReorderPatterns : EnzymeHLOPatternOp<
+    "greedy_dot_general_reorder"> {
+  let patterns = ["DotGeneralChainReorder"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

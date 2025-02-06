@@ -7618,6 +7618,240 @@ struct CommonCompareExpressionRewrite
   }
 };
 
+// Given a chain of DotGeneral we determine the optimal ordering of the chain to
+// minimize flops. This is similar to jax.lax.multi_dot which uses opt_einsum
+// (XLA doesn't do dot_general reordering -- atleast according to jax issue
+// comments)
+struct DotGeneralChainReorder final
+    : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
+  using OpRewritePattern<stablehlo::DotGeneralOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
+                                PatternRewriter &rewriter) const override {
+    // Collect the chain of dot_general ops
+    SmallVector<mlir::stablehlo::DotGeneralOp> chain;
+    auto current_op = op;
+
+    while (current_op) {
+      chain.push_back(current_op);
+      // Try to get next dot_general from LHS
+      if (auto next_op = current_op.getLhs()
+                             .getDefiningOp<mlir::stablehlo::DotGeneralOp>()) {
+        current_op = next_op;
+      } else {
+        break;
+      }
+    }
+
+    // If chain is too short, nothing to optimize
+    if (chain.size() < 3)
+      return failure();
+
+    // Build DP table
+    const int n = chain.size();
+    std::vector<std::vector<DPEntry>> dp(n, std::vector<DPEntry>(n));
+
+    // Initialize diagonal
+    for (int i = 0; i < n; i++) {
+      dp[i][i].flops = 0;
+      dp[i][i].result_value = chain[i].getResult();
+    }
+
+    // Fill table
+    for (int len = 2; len <= n; len++) {
+      for (int i = 0; i < n - len + 1; i++) {
+        int j = i + len - 1;
+        dp[i][j].flops = std::numeric_limits<int64_t>::max();
+
+        for (int k = i; k < j; k++) {
+          auto lhs_shape = dp[i][k]
+                               .result_value.getType()
+                               .cast<RankedTensorType>()
+                               .getShape();
+          auto rhs_shape = dp[k + 1][j]
+                               .result_value.getType()
+                               .cast<RankedTensorType>()
+                               .getShape();
+
+          int64_t current_flops =
+              dp[i][k].flops + dp[k + 1][j].flops +
+              computeFlops(lhs_shape, rhs_shape,
+                           chain[j].getDotDimensionNumbers());
+
+          llvm::errs() << "current_flops: " << current_flops << "\n";
+          llvm::errs() << "i = " << i << ", j = " << j << ", k = " << k << "\n";
+
+          if (current_flops < dp[i][j].flops) {
+            dp[i][j].flops = current_flops;
+            dp[i][j].split_point = k;
+
+            auto precision_config = chain[j].getPrecisionConfig();
+            auto algorithm = chain[j].getAlgorithm();
+            auto new_dot = rewriter.create<mlir::stablehlo::DotGeneralOp>(
+                op.getLoc(), chain[j].getType(), dp[i][k].result_value,
+                dp[k + 1][j].result_value, chain[j].getDotDimensionNumbers(),
+                precision_config ? *precision_config : mlir::ArrayAttr(),
+                algorithm ? *algorithm : mlir::stablehlo::DotAlgorithmAttr());
+
+            dp[i][j].result_value = new_dot;
+          }
+        }
+      }
+    }
+
+    llvm::errs() << "dp:\n";
+    for (int i = 0; i < n; i++) {
+      for (int j = 0; j < n; j++) {
+        llvm::errs() <<  dp[i][j].flops << " ";
+      }
+      llvm::errs() << "\n";
+    }
+
+    // Replace original op with optimized chain
+    rewriter.replaceOp(op, dp[0][n - 1].result_value);
+    return success();
+  }
+
+private:
+  int64_t computeFlops(ArrayRef<int64_t> lhs_shape, ArrayRef<int64_t> rhs_shape,
+                       mlir::stablehlo::DotDimensionNumbersAttr dims) const {
+    int64_t result = 1;
+
+    // First multiply by all batch dimensions
+    for (auto dim : dims.getLhsBatchingDimensions()) {
+      result *= lhs_shape[dim];
+    }
+
+    // Compute non-contracting output dimensions
+    for (int i = 0; i < lhs_shape.size(); ++i) {
+      if (!llvm::is_contained(dims.getLhsContractingDimensions(), i) &&
+          !llvm::is_contained(dims.getLhsBatchingDimensions(), i)) {
+        result *= lhs_shape[i];
+      }
+    }
+    for (int i = 0; i < rhs_shape.size(); ++i) {
+      if (!llvm::is_contained(dims.getRhsContractingDimensions(), i) &&
+          !llvm::is_contained(dims.getRhsBatchingDimensions(), i)) {
+        result *= rhs_shape[i];
+      }
+    }
+    // Multiply by the size of contracting dimensions
+    for (auto dim : dims.getLhsContractingDimensions()) {
+      result *= lhs_shape[dim];
+    }
+    return result;
+  }
+
+  // Find optimal parenthesization using dynamic programming
+  struct DPEntry {
+    int64_t flops;
+    int split_point;
+    Value result_value;
+  };
+};
+
+// A x B x C --> (A x B) x C or A x (B x C) [based on Flops]
+// struct DotGeneralChainReorder
+//     : public OpRewritePattern<stablehlo::DotGeneralOp> {
+//   using OpRewritePattern<stablehlo::DotGeneralOp>::OpRewritePattern;
+
+//   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op,
+//                                 PatternRewriter &rewriter) const final {
+//     auto lhs = op.getLhs();
+//     auto rhs = op.getRhs();
+//     auto lhsType = lhs.getType().cast<RankedTensorType>();
+//     auto rhsType = rhs.getType().cast<RankedTensorType>();
+//     auto dimNumbers = op.getDotDimensionNumbers();
+
+//     // Case I: Check if the right operand is a dot_general operation
+//     //         (i.e. A x (B x C))
+//     auto rhsDot = rhs.getDefiningOp<stablehlo::DotGeneralOp>();
+//     if (rhsDot) {
+//       // Get the dot dimension numbers for the current and right dot_general
+//       // operations
+//       auto rhsDimNumbers = rhsDot.getDotDimensionNumbers();
+
+//       if (rhsDot->hasOneUse()) {
+//         if (dimNumbers.getRhsContractingDimensions() !=
+//             rhsDimNumbers.getLhsBatchingDimensions())
+//           return failure();
+
+//         auto AType = lhsType;
+//         auto rhsDotType = rhsDot.getType().cast<RankedTensorType>();
+//         auto BType = rhsDot.getLhs().getType().cast<RankedTensorType>();
+//         auto CType = rhsDot.getRhs().getType().cast<RankedTensorType>();
+
+//         // Calculate the FLOPs for the current order (A · (B · C))
+//         int64_t currentFlops = calculateFlops(lhsType, rhsDotType,
+//         dimNumbers);
+
+//         // Calculate the FLOPs for the reordered operation ((A · B) · C)
+//         int64_t reorderedFlops =
+//             calculateFlops(lhsType, rhsType, dimNumbers) +
+//             calculateFlops(lhsType, rhsDotType, dimNumbers);
+//       }
+//     }
+
+//     // Case II: Check if the left operand is a dot_general operation
+//     //          (i.e. (A x B) x C)
+//     auto lhsDot = lhs.getDefiningOp<stablehlo::DotGeneralOp>();
+//     if (lhsDot) {
+//       // TODO: Implement the logic for case II
+//     }
+
+//     return failure();
+//   }
+
+// private:
+//   // Helper function to calculate the number of FLOPs for a dot_general
+//   // operation
+//   int64_t calculateFlops(RankedTensorType lhsType, RankedTensorType rhsType,
+//                          stablehlo::DotDimensionNumbersAttr dimNumbers) const
+//                          {
+//     auto lhsShape = lhsType.getShape();
+//     auto rhsShape = rhsType.getShape();
+
+//     // Get the batching and contracting dimensions
+//     auto lhsBatchingDims = dimNumbers.getLhsBatchingDimensions();
+//     auto rhsBatchingDims = dimNumbers.getRhsBatchingDimensions();
+//     auto lhsContractingDims = dimNumbers.getLhsContractingDimensions();
+//     auto rhsContractingDims = dimNumbers.getRhsContractingDimensions();
+
+//     // Calculate the FLOPs based on the batching and contracting dimensions
+//     int64_t batchSize = 1;
+//     for (auto dim : lhsBatchingDims) {
+//       batchSize *= lhsShape[dim];
+//     }
+
+//     // Calculate the size of the contracting dimensions
+//     int64_t contractingSize = 1;
+//     for (auto dim : lhsContractingDims) {
+//       contractingSize *= lhsShape[dim];
+//     }
+
+//     // Calculate the size of the output dimensions (non-batching and
+//     // non-contracting)
+//     int64_t outputSize = 1;
+//     for (int64_t i = 0; i < lhsType.getRank(); ++i) {
+//       if (!llvm::is_contained(lhsBatchingDims, i) &&
+//           !llvm::is_contained(lhsContractingDims, i)) {
+//         outputSize *= lhsShape[i];
+//       }
+//     }
+//     for (int64_t i = 0; i < rhsType.getRank(); ++i) {
+//       if (!llvm::is_contained(rhsBatchingDims, i) &&
+//           !llvm::is_contained(rhsContractingDims, i)) {
+//         outputSize *= rhsShape[i];
+//       }
+//     }
+
+//     // Calculate the total FLOPs: batchSize * outputSize * (2 *
+//     contractingSize
+//     // - 1)
+//     return batchSize * outputSize * (2 * contractingSize - 1);
+//   }
+// };
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7848,7 +8082,8 @@ struct EnzymeHLOOptPass
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
-        CommonCompareExpressionRewrite
+        CommonCompareExpressionRewrite,
+        DotGeneralChainReorder
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

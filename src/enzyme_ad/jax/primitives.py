@@ -220,6 +220,7 @@ binop_const_simplify<1>;
 compare_select_simplify;
 common_compare_expression_rewrite;
 not_select_simplify;
+greedy_dot_general_reorder;
 
 transpose_unary_transpose_abs<1>;
 transpose_unary_transpose_neg<1>;
