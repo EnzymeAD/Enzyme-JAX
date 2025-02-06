@@ -963,7 +963,7 @@ def BinaryAdd : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   block->addArgument(tensorType, loc);
 
   auto addOp = builder.create<AddOp>(loc, block->getArgument(0), block->getArgument(1));
-  builder.create<ReturnOp>(loc, addOp->getResult());
+  builder.create<ReturnOp>(loc, addOp->getResult(0));
   
   region;
 }]>;
