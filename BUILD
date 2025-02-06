@@ -55,6 +55,7 @@ cc_binary(
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:MPIDialect",
         "@llvm-project//mlir:NVVMDialect",
         "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:OpenMPDialect",
