@@ -82,7 +82,7 @@ def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
 def Round : HLOInst<"RoundOp">; // round_nearest_afz
 def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
 def Rsqrt : HLOInst<"RsqrtOp">;
-def Scatter : HLOInst<"ScatterOp">;
+def Scatter : HLOInst<"ScatterOp", "->getResult(0)">;
 def Select : HLOInst<"SelectOp">;
 def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
 def Send : HLOInst<"SendOp">;
@@ -972,30 +972,7 @@ def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto operand = op->getOperand(0);
   auto operandType = operand.getType().cast<ShapedType>();
   auto elemType = operandType.getElementType();
-  
-  // Create appropriate zero attribute based on element type
-  Attribute zeroAttr;
-  if (elemType.isa<FloatType>()) {
-    zeroAttr = builder.getFloatAttr(elemType, 0.0);
-  } else if (elemType.isa<IntegerType>()) {
-    zeroAttr = builder.getIntegerAttr(elemType, 0);
-  } else if (elemType.isa<ComplexType>()) {
-    auto complexTy = elemType.cast<ComplexType>();
-    if (complexTy.getElementType().isa<FloatType>()) {
-      zeroAttr = builder.getFloatAttr(complexTy.getElementType(), 0.0);
-    } else {
-      llvm_unreachable("unsupported complex element type");
-    }
-  } else {
-    llvm_unreachable("unsupported element type");
-  }
-  
-  // Create constant op with the zero tensor
-  auto constantOp = builder.create<mhlo::ConstantOp>(
-    operand.getLoc(), operandType, DenseElementsAttr::get(operandType, zeroAttr)
-  );
-  
-  constantOp.getResult();
+  cast<AutoDiffTypeInterface>(elemType).createNullValue(builder, op.getLoc()); 
 }]>;
 
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
