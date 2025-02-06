@@ -969,7 +969,7 @@ def Binary2ndArgSetOp : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     [
                       (Scatter 
-                        $operand,
+                        (HLOConstantFP<"0"> $operand),
                         $start_indices,
                         (DiffeRet),
                         (GatherToScatterDimNumbers),
