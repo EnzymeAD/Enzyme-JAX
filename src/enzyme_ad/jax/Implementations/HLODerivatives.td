@@ -920,7 +920,107 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
+// Gather Adjoint
+def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbers();
+}]>;
+
+def ResultSliceSizes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getSliceSizes();
+}]>;
+
+def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto gatherDims = op.getDimensionNumbers();
+  
+  auto updateWindowDims = gatherDims.getOffsetDims();
+  auto insertedWindowDims = gatherDims.getCollapsedSliceDims();
+  auto inputBatchingDims = gatherDims.getOperandBatchingDims();
+  auto indicesBatchingDims = gatherDims.getStartIndicesBatchingDims();
+  auto scatterDimsToOperandDims = gatherDims.getStartIndexMap();
+  auto indexVectorDim = gatherDims.getIndexVectorDim();
+  
+  ScatterDimensionNumbersAttr::get(
+    op.getContext(),
+    updateWindowDims,
+    insertedWindowDims,
+    inputBatchingDims,
+    indicesBatchingDims,
+    scatterDimsToOperandDims,
+    indexVectorDim
+  );
+}]>;
+
+def BinaryAdd : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  Region *region = new Region;
+  Block *block = new Block;
+  region->push_back(block);
+  
+  auto loc = builder.getUnknownLoc();
+  auto elemType = op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto tensorType = RankedTensorType::get({}, elemType);
+  
+  block->addArgument(tensorType, loc);
+  block->addArgument(tensorType, loc);
+
+  auto addOp = builder.create<AddOp>(loc, block->getArgument(0), block->getArgument(1));
+  builder.create<ReturnOp>(loc, addOp->getResult(0));
+  
+  region;
+}]>;
+
+def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto operand = op->getOperand(0);
+  auto operandType = operand.getType().cast<ShapedType>();
+  auto elemType = operandType.getElementType();
+  
+  // Create appropriate zero attribute based on element type
+  Attribute zeroAttr;
+  if (elemType.isa<FloatType>()) {
+    zeroAttr = builder.getFloatAttr(elemType, 0.0);
+  } else if (elemType.isa<IntegerType>()) {
+    zeroAttr = builder.getIntegerAttr(elemType, 0);
+  } else if (elemType.isa<ComplexType>()) {
+    auto complexTy = elemType.cast<ComplexType>();
+    if (complexTy.getElementType().isa<FloatType>()) {
+      zeroAttr = builder.getFloatAttr(complexTy.getElementType(), 0.0);
+    } else {
+      llvm_unreachable("unsupported complex element type");
+    }
+  } else {
+    llvm_unreachable("unsupported element type");
+  }
+  
+  // Create constant op with the zero tensor
+  auto constantOp = builder.create<mhlo::ConstantOp>(
+    operand.getLoc(), operandType, DenseElementsAttr::get(operandType, zeroAttr)
+  );
+  
+  constantOp.getResult();
+}]>;
+
+def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
+                    [
+                      (Scatter 
+                        (GatherScatterInputData),
+                        $start_indices,
+                        (DiffeRet),
+                        (GatherToScatterDimNumbers),
+                        (BinaryAdd)
+                      ),
+                      (AssertingInactiveArg)
+                    ],
+                    // Forward shadow rule
+                    (SelectIfActive $operand,
+                      (Gather 
+                        (ResultTypes),
+                        (Shadow $operand),
+                        $start_indices,
+                        (ResultDimensionNumbers),
+                        (ResultSliceSizes)
+                      ),
+                      (HLOConstantFP<"0">)
+                    )
+                  >;
 
 def : HLOInactiveOp<"CeilOp">;
 
