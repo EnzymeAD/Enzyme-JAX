@@ -301,8 +301,8 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   SmallVector<int64_t> steps(6, 1);
   auto par = builder.create<affine::AffineParallelOp>(
-    loc, TypeRange(), ArrayRef<arith::AtomicRMWKind>(), zeroMaps,
-    ValueRange(), idMaps, finals, steps);
+      loc, TypeRange(), ArrayRef<arith::AtomicRMWKind>(), zeroMaps,
+      ValueRange(), idMaps, finals, steps);
 
   builder.create<mlir::func::ReturnOp>(loc);
 
