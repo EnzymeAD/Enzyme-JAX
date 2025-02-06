@@ -56,6 +56,7 @@
 #include "Utils.h"
 
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -113,8 +114,8 @@ convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
   Type elType = rewriter.getI8Type();
   int64_t elNum = dataLayout.getTypeSize(alloc.getElemType()) * (*sizeVal);
 
-  auto ptr2memref =
-      dyn_cast<enzymexla::Pointer2MemrefOp>(alloc.getRes().use_begin()->getOwner());
+  auto ptr2memref = dyn_cast<enzymexla::Pointer2MemrefOp>(
+      alloc.getRes().use_begin()->getOwner());
   if (!ptr2memref)
     return failure();
 
@@ -133,6 +134,121 @@ convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
 }
 
 namespace {
+
+struct ConvertToTypedMemref
+    : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern<enzymexla::Pointer2MemrefOp>::OpRewritePattern;
+  const DataLayoutAnalysis &dl;
+  ConvertToTypedMemref(MLIRContext *context, const DataLayoutAnalysis &dl)
+      : OpRewritePattern<enzymexla::Pointer2MemrefOp>(context), dl(dl) {}
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    LLVM_DEBUG(llvm::dbgs() << "Checking " << p2m << "\n");
+    TypedValue<MemRefType> memref = p2m.getResult();
+    bool allGood = true;
+    Type type = nullptr;
+    int64_t allSize = 0;
+    TypedValue<MemRefType> newMemref = nullptr;
+    auto getNewMemref = [&]() {
+      OpBuilder::InsertionGuard g(rewriter);
+      if (!newMemref) {
+        rewriter.setInsertionPoint(p2m);
+        auto newp2m = rewriter.create<enzymexla::Pointer2MemrefOp>(
+            p2m.getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, type,
+                            MemRefLayoutAttrInterface{},
+                            memref.getType().getMemorySpace()),
+            p2m.getSource());
+        newMemref = newp2m.getResult();
+      }
+      return newMemref;
+    };
+
+    SmallVector<Operation *> toErase;
+
+    IRMapping mapping;
+    for (auto &use : memref.getUses()) {
+      auto checkTypeAndAlignment = [&](int64_t size, Type t, AffineExpr expr) {
+        allSize = size;
+        if (!expr.isMultipleOf(size))
+          return failure();
+        if (!type) {
+          type = t;
+          return success();
+        }
+        if (type == t) {
+          return success();
+        }
+        return failure();
+      };
+      if (auto load = dyn_cast<affine::AffineVectorLoadOp>(use.getOwner())) {
+        assert(load.getValue().hasOneUse());
+        Operation *user = *load.getValue().user_begin();
+        assert(user->getNumResults() == 1);
+        assert(load.getType().getRank() == 1);
+        assert(load.getMemRefType().getRank() == 1);
+        auto size = load.getType().getShape()[0];
+        assert(size != ShapedType::kDynamic);
+        auto map = load.getMap();
+        auto expr = map.getResults()[0];
+        auto value = user->getResult(0);
+        if (checkTypeAndAlignment(size, value.getType(), expr).failed()) {
+          allGood = false;
+          break;
+        }
+        rewriter.setInsertionPoint(load);
+        auto newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                     {expr.floorDiv(size)}, load.getContext());
+        auto newLoad = rewriter.create<affine::AffineLoadOp>(
+            load.getLoc(), getNewMemref(), newMap, load.getMapOperands());
+        mapping.map(value, newLoad.getValue());
+        toErase.push_back(user);
+        toErase.push_back(load);
+      } else if (auto store =
+                     dyn_cast<affine::AffineVectorStoreOp>(use.getOwner())) {
+        Operation *user = store.getValue().getDefiningOp();
+        auto size = store.getValue().getType().getShape()[0];
+        assert(size != ShapedType::kDynamic);
+        auto map = store.getMap();
+        auto expr = map.getResults()[0];
+        auto value = user->getOperand(0);
+        if (checkTypeAndAlignment(size, value.getType(), expr).failed()) {
+          allGood = false;
+          break;
+        }
+        rewriter.setInsertionPoint(store);
+        auto newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                     {expr.floorDiv(size)}, store.getContext());
+        auto newStore = rewriter.create<affine::AffineStoreOp>(
+            store.getLoc(), value, getNewMemref(), newMap,
+            store.getMapOperands());
+        toErase.push_back(store);
+        toErase.push_back(user);
+      } else {
+        allGood = false;
+        break;
+      }
+    }
+
+    if (!allGood)
+      return failure();
+
+    if (type == rewriter.getI8Type())
+      return failure();
+
+    LLVM_DEBUG(llvm::dbgs() << "all good " << allGood << "\n");
+
+    for (auto &m : mapping.getValueMap())
+      rewriter.replaceAllUsesWith(m.getFirst(), m.getSecond());
+
+    for (Operation *op : toErase)
+      rewriter.eraseOp(op);
+
+    return failure();
+  }
+};
+
 struct ConvertLLVMAllocaToMemrefAlloca
     : public OpRewritePattern<LLVM::AllocaOp> {
   using OpRewritePattern<LLVM::AllocaOp>::OpRewritePattern;
@@ -179,7 +295,8 @@ static MemRefVal convertToMemref(PtrVal addr) {
   auto ptr2memref = builder.create<enzymexla::Pointer2MemrefOp>(
       addr.getLoc(),
       MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
-                      MemRefLayoutAttrInterface{}, Attribute(addrSpace)), addr);
+                      MemRefLayoutAttrInterface{}, Attribute(addrSpace)),
+      addr);
   return cast<MemRefVal>(ptr2memref.getResult());
 }
 
@@ -1152,10 +1269,22 @@ convertLLVMToAffineAccess(Operation *op,
     rewriter.replaceOp(oldOp, newOp);
   }
 
-  RewritePatternSet patterns(context);
-  patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context, dataLayoutAnalysis);
-  GreedyRewriteConfig config;
-  return applyPatternsAndFoldGreedily(op, std::move(patterns), config);
+  {
+    RewritePatternSet patterns(context);
+    patterns.insert<ConvertToTypedMemref>(context, dataLayoutAnalysis);
+    GreedyRewriteConfig config;
+    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
+      return failure();
+  }
+  {
+    RewritePatternSet patterns(context);
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context,
+                                                     dataLayoutAnalysis);
+    GreedyRewriteConfig config;
+    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
+      return failure();
+  }
+  return success();
 }
 } // namespace mlir
 
