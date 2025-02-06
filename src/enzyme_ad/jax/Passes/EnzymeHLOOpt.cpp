@@ -7643,6 +7643,92 @@ struct CommonCompareExpressionRewrite
   }
 };
 
+struct ScatterUpdateComputationConstProp
+    : public OpRewritePattern<stablehlo::ScatterOp> {
+  using OpRewritePattern<stablehlo::ScatterOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
+                                PatternRewriter &rewriter) const final {
+    // If this scatter op was created by this pass, don't rewrite it again
+    // Q: Is there a better way to do this?
+    if (op->hasAttr("enzymexla.transformed_by_scatter_const_prop"))
+      return failure();
+
+    auto &region = op.getUpdateComputation();
+    auto &block = region.front();
+
+    // Check all inputs are constant and splat and their values are the same.
+    auto [constInput, inputSplatAttr] =
+        isConstantSplatValueRange(op.getInputs());
+
+    // Check all updates are constant and splat and their values are the same.
+    auto [constUpdate, updateSplatAttr] =
+        isConstantSplatValueRange(op.getUpdates());
+
+    if (constInput || constUpdate) {
+      if (constInput) {
+        auto blockArgInput = block.getArgument(0);
+        auto denseAttr = DenseElementsAttr::get(
+            blockArgInput.getType().cast<ShapedType>(), inputSplatAttr);
+        auto constInputOp =
+            rewriter.create<stablehlo::ConstantOp>(op.getLoc(), denseAttr);
+        blockArgInput.replaceAllUsesWith(constInputOp);
+      }
+
+      if (constUpdate) {
+        auto blockArgUpdate = block.getArgument(1);
+        auto denseAttr = DenseElementsAttr::get(
+            blockArgUpdate.getType().cast<ShapedType>(), updateSplatAttr);
+        auto constUpdateOp =
+            rewriter.create<stablehlo::ConstantOp>(op.getLoc(), denseAttr);
+        blockArgUpdate.replaceAllUsesWith(constUpdateOp);
+      }
+
+      auto newOp = rewriter.create<stablehlo::ScatterOp>(
+          op.getLoc(), op.getResultTypes(), op.getInputs(),
+          op.getScatterIndices(), op.getUpdates(),
+          op.getScatterDimensionNumbers(), op.getIndicesAreSorted(),
+          op.getUniqueIndices());
+      newOp.getUpdateComputation().takeBody(region);
+      newOp->setAttr("enzymexla.transformed_by_scatter_const_prop",
+                     rewriter.getUnitAttr());
+      rewriter.replaceOp(op, newOp);
+
+      return success();
+    }
+
+    return failure();
+  }
+
+private:
+  std::tuple<bool, Attribute>
+  isConstantSplatValueRange(ValueRange range) const {
+    Attribute splatAttr = nullptr;
+    bool isConstant = true;
+    for (auto val : range) {
+      DenseElementsAttr attr;
+      if (matchPattern(val, m_Constant(&attr))) {
+        if (attr.isSplat()) {
+          if (!splatAttr) {
+            splatAttr = attr.getSplatValue<Attribute>();
+            continue;
+          } else if (splatAttr != attr.getSplatValue<Attribute>()) {
+            isConstant = false;
+            break;
+          }
+        } else {
+          isConstant = false;
+          break;
+        }
+      } else {
+        isConstant = false;
+        break;
+      }
+    }
+    return std::make_tuple(isConstant, splatAttr);
+  };
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7873,7 +7959,8 @@ struct EnzymeHLOOptPass
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
-        CommonCompareExpressionRewrite
+        CommonCompareExpressionRewrite,
+        ScatterUpdateComputationConstProp
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
