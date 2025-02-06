@@ -155,6 +155,18 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Whether to run instsimplify">,
+    Option<
+        /*C++ variable name=*/"sroa",
+        /*CLI argument=*/"sroa",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to run instsimplify">,
+    Option<
+        /*C++ variable name=*/"attributor",
+        /*CLI argument=*/"attributor",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to run instsimplify">,
   ];
 }
 

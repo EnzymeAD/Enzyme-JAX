@@ -26,7 +26,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/InstSimplify/InstSimplify.h"
+#include "llvm/Transforms/Scalar/InstSimplifyPass.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -51,6 +51,7 @@ namespace enzyme {
 using namespace mlir::enzyme;
 
 namespace {
+
 struct SROAWrappersPass
     : public mlir::enzyme::impl::SROAWrappersPassBase<SROAWrappersPass> {
   using SROAWrappersPassBase::SROAWrappersPassBase;
@@ -125,13 +126,15 @@ struct SROAWrappersPass
 
       ModulePassManager MPM;
       FunctionPassManager FPM;
-      MPM.addPass(
-          createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
+      if (sroa)
+        MPM.addPass(createModuleToFunctionPassAdaptor(
+            SROAPass(SROAOptions::ModifyCFG)));
       if (instcombine)
           MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
       if (instsimplify)
           MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
-      MPM.addPass(llvm::AttributorPass());
+      if (attributor)
+        MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)
