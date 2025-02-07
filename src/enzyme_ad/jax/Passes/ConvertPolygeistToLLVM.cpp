@@ -156,7 +156,7 @@ struct Pointer2MemrefOpLowering
       return success();
     }
 
-    auto descr = MemRefDescriptor::undef(rewriter, loc, convertedType);
+    auto descr = MemRefDescriptor::poison(rewriter, loc, convertedType);
     auto ptr = rewriter.create<LLVM::BitcastOp>(
         op.getLoc(), descr.getElementPtrType(), adaptor.getSource());
 
