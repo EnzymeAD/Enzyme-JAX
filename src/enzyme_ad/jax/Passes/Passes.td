@@ -239,7 +239,7 @@ def ConvertPolygeistToLLVM
   ];
 }
 
-def DelinearizeIndexing : Pass<"delinearize-indexing"> {
+def DelinearizeIndexingPass : Pass<"delinearize-indexing"> {
   let summary = "Delinearize indexing";
   let dependentDialects = [
     "affine::AffineDialect",
