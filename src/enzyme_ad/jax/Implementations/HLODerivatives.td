@@ -951,40 +951,51 @@ def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [
 }]>;
 
 def BinaryAdd : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  Region *region = new Region;
-  Block *block = new Block;
+  auto region = std::make_unique<Region>();
+  auto *block = new Block;
   region->push_back(block);
-  
-  auto loc = builder.getUnknownLoc();
+
   auto elemType = op->getResult(0).getType().cast<ShapedType>().getElementType();
   auto tensorType = RankedTensorType::get({}, elemType);
-  
-  block->addArgument(tensorType, loc);
-  block->addArgument(tensorType, loc);
 
-  auto addOp = builder.create<AddOp>(loc, block->getArgument(0), block->getArgument(1));
-  builder.create<ReturnOp>(loc, addOp->getResult(0));
-  
-  region;
+  block->addArguments({tensorType, tensorType}, {op.getLoc(), op.getLoc()});
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(block);
+
+  auto addOp = builder.create<AddOp>(op.getLoc(), block->getArgument(0),
+                                     block->getArgument(1));
+  auto retOp = builder.create<ReturnOp>(op.getLoc(), addOp.getResult());
+
+  addOp->remove();
+  retOp->remove();
+  block->push_back(addOp);
+  block->push_back(retOp);
+
+  region.release();
 }]>;
 
 def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto operand = op->getOperand(0);
-  auto operandType = operand.getType().cast<ShapedType>();
-  auto elemType = operandType.getElementType();
-  cast<AutoDiffTypeInterface>(elemType).createNullValue(builder, op.getLoc()); 
+  auto operandType = operand.getType();
+  cast<AutoDiffTypeInterface>(operandType).createNullValue(builder, op.getLoc()); 
+}]>;
+
+def GatherScatterResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op->getOperand(0).getType();
 }]>;
 
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     [
                       (Scatter 
+                        (GatherScatterResultType),
                         (GatherScatterInputData),
                         $start_indices,
                         (DiffeRet),
                         (GatherToScatterDimNumbers),
                         (BinaryAdd)
                       ),
-                      (AssertingInactiveArg)
+                      (HLOConstantFP<"0">)
                     ],
                     // Forward shadow rule
                     (SelectIfActive $operand,
