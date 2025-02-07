@@ -34,12 +34,6 @@ def PropagateConstantBoundsPass
     "mlir::LLVM::LLVMDialect",
     "mlir::NVVM::NVVMDialect"
   ];
-  let options = [Option<
-      /*C++ variable name=*/"tensor_types",
-      /*CLI argument=*/"tensor_types",
-      /*type=*/"bool",
-      /*default=*/"true",
-      /*description=*/"Whether to propagate tensor types">];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {

@@ -11,7 +11,6 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/Matchers.h"
@@ -34,7 +33,6 @@ namespace {
 struct PropagateConstantBoundsPass
     : public enzyme::impl::PropagateConstantBoundsPassBase<
           PropagateConstantBoundsPass> {
-  using PropagateConstantBoundsPassBase::PropagateConstantBoundsPassBase;
 
   static int32_t getSizeInBytes(Type ty) {
     int32_t bitWidth = 0;
@@ -262,104 +260,6 @@ struct PropagateConstantBoundsPass
                               LLVM::LLVMDialect::getDereferenceableAttrName(),
                               IntegerAttr::get(IntegerType::get(ctx, 64),
                                                dereferenceable[index]));
-          }
-        }
-      }
-
-      if (!tensor_types)
-        continue;
-
-      bool changed = false;
-      SmallVector<Type> newTypes;
-      SmallVector<unsigned> indices;
-      for (auto [index, argTy, arg] :
-           llvm::enumerate(callee.getArgumentTypes(), callee.getArguments())) {
-        assert(!callers.empty());
-        if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(argTy)) {
-          bool allMatch = true;
-          ArrayRef<int64_t> shape;
-          Type elTy;
-          for (auto caller : callers) {
-            Value param = caller.getOperands()[index];
-            Type type = param.getType();
-
-            if (auto rtt = dyn_cast<RankedTensorType>(type)) {
-              auto thisShape = rtt.getShape();
-              auto thisElTy = rtt.getElementType();
-              if (!elTy) {
-                elTy = thisElTy;
-                shape = thisShape;
-              } else if (shape != thisShape || elTy != thisElTy) {
-                allMatch = false;
-                break;
-              }
-            } else {
-              allMatch = false;
-              break;
-            }
-          }
-          if (allMatch) {
-
-            Attribute addrSpace;
-            if (ptrTy.getAddressSpace() == 0)
-              addrSpace = nullptr;
-            else
-              addrSpace =
-                  IntegerAttr::get(IntegerType::get(arg.getContext(), 64),
-                                   ptrTy.getAddressSpace());
-
-            MemRefType memrefTy = MemRefType::get({ShapedType::kDynamic}, elTy,
-                                                  // TODO do we need a layout?
-                                                  MemRefLayoutAttrInterface{},
-                                                  Attribute(addrSpace));
-
-            changed = true;
-            newTypes.push_back(memrefTy);
-            indices.push_back(index);
-          } else {
-            newTypes.push_back(argTy);
-          }
-        }
-      }
-
-      if (changed) {
-        SmallVector<Type> newFtyArgs;
-        if (auto fty =
-                dyn_cast<LLVM::LLVMFunctionType>(callee.getFunctionType())) {
-          if (fty.getReturnType() == LLVM::LLVMVoidType::get(ctx) &&
-              !fty.isVarArg()) {
-            auto newLLVMFty = LLVM::LLVMFunctionType::get(
-                fty.getReturnType(), newTypes, fty.isVarArg());
-
-            Block *entry = &callee.getFunctionBody().front();
-            builder.setInsertionPointToStart(entry);
-            for (auto index : indices) {
-              auto newType = newTypes[index];
-              auto oldArg = callee.getArgument(index);
-              auto newArg =
-                  entry->insertArgument(index, newType, oldArg.getLoc());
-              auto newPtr = builder.create<enzymexla::Memref2PointerOp>(
-                  newArg.getLoc(), oldArg.getType(), newArg);
-              oldArg.replaceAllUsesWith(newPtr);
-              entry->eraseArgument(index + 1);
-            }
-
-            builder.setInsertionPoint(callee);
-            auto newFty = FunctionType::get(ctx, newTypes, TypeRange{});
-            auto newF = builder.create<func::FuncOp>(
-                callee.getLoc(), callee.getNameAttr(), newFty);
-            newF.getBlocks().splice(newF.getBlocks().begin(),
-                                    callee.getFunctionBody().getBlocks());
-
-            newF.setAllArgAttrs(callee.getArgAttrsAttr());
-            newF.setResAttrsAttr(callee.getResAttrsAttr());
-
-            // TODO collect useful function attributes from here e.g. calling
-            // convention, visibility etc. we shuold probably just filter out
-            // the problematic ones such as `function_type`.
-            auto oldAttrs = cast<LLVM::LLVMFuncOp>(callee)->getAttrs();
-
-            callee->erase();
           }
         }
       }
