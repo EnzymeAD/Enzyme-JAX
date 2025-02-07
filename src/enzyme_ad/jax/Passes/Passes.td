@@ -239,6 +239,15 @@ def ConvertPolygeistToLLVM
   ];
 }
 
+def DelinearizeIndexing : Pass<"delinearize-indexing"> {
+  let summary = "Delinearize indexing";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
+
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
