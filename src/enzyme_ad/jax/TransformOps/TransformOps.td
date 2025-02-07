@@ -489,7 +489,7 @@ def ApplyTransposeUnaryTransposeTanhPatterns : EnzymeHLOPatternOp<
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "transpose_broadcast_in_dim_to_broadcast_in_dim"> {
-  let patterns = ["TransposeBroadcastInDimToBroadcastInDim"];
+  let patterns = ["TransposeBroadcastInDimToBroadcastInDim", "BroadcastInDimTransposeToBroadcastInDim"];
 }
 
 def AddPadPadToConcatPatterns : EnzymeHLOPatternOp<
@@ -551,6 +551,13 @@ def ApplyBinopPadPadMinPatterns : EnzymeHLOPatternOp<
 def ApplyBinopPadPadMaxPatterns : EnzymeHLOPatternOp<
     "binop_pad_pad_max"> {
   let patterns = ["BinopPadPad<stablehlo::MaxOp>"];
+}
+def ApplyBinopConstSimplify : EnzymeHLOPatternOp<
+    "binop_const_simplify"> {
+  let patterns = [
+    "BinOpConstSimplify<stablehlo::AddOp>",
+    "BinOpConstSimplify<stablehlo::MulOp>"
+  ];
 }
 def ApplyUnaryPadPushConvertPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_convert"> {
@@ -711,6 +718,11 @@ def TransposeIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeIsReshape"];
 }
 
+def IfRemoveUnused : EnzymeHLOPatternOp<
+    "if_remove_unused"> {
+  let patterns = ["IfRemoveUnused"];
+}
+
 def IfInline : EnzymeHLOPatternOp<
     "if_inline"> {
   let patterns = ["IfInline"];
@@ -829,6 +841,21 @@ def DynamicGatherOpIsNotDynamicPatterns : EnzymeHLOPatternOp<
 def DivideSqrtToMultiplyRsqrtPatterns : EnzymeHLOPatternOp<
     "divide_sqrt_to_multiply_rsqrt"> {
   let patterns = ["DivideSqrtToMultiplyRsqrt"];
+}
+
+def CompareSelectSimplifyPatterns : EnzymeHLOPatternOp<
+    "compare_select_simplify"> {
+  let patterns = ["CompareSelectSimplify"];
+}
+
+def NotSelectSimplifyPatterns : EnzymeHLOPatternOp<
+    "not_select_simplify"> {
+  let patterns = ["NotSelectSimplify"];
+}
+
+def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
+    "common_compare_expression_rewrite"> {
+  let patterns = ["CommonCompareExpressionRewrite"];
 }
 
 // TODO: better naming for parameters requires a static interface for

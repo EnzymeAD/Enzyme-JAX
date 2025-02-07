@@ -216,6 +216,10 @@ binary_op_transpose_simplify_and<1>;
 binary_op_transpose_simplify_or<1>;
 binary_op_transpose_simplify_xor<1>;
 binary_op_transpose_simplify_rem<1>;
+binop_const_simplify<1>;
+compare_select_simplify;
+common_compare_expression_rewrite;
+not_select_simplify;
 
 transpose_unary_transpose_abs<1>;
 transpose_unary_transpose_neg<1>;
@@ -280,6 +284,7 @@ slice_dot_general<1>;
 dot_reshape_pad<1>;
 pad_dot_general<1>(0);
 
+if_remove_unused<1>;
 if_inline<1>;
 if_to_select<1>;
 while_simplify<1>;

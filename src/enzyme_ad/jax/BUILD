@@ -20,6 +20,15 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "cpu",
+    srcs = ["cpu.cc"],
+    deps = [
+        "@xla//xla/service:custom_call_target_registry",
+    ],
+)
+
+
 pybind_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
@@ -112,10 +121,91 @@ gentbl_cc_library(
     tblgen = "//:enzymexlamlir-tblgen",
 )
 
+td_library(
+    name = "RaisingTransformOpsTdFiles",
+    srcs = [
+        "TransformOps/RaisingTransformOps.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:TransformDialectTdFiles",
+    ]
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformOpsIncGen",
+    tbl_outs = [(
+            ["-gen-op-decls"],
+            "TransformOps/RaisingTransformOps.h.inc",
+        ), (
+            ["-gen-op-defs"],
+            "TransformOps/RaisingTransformOps.cpp.inc",
+        ),
+    ],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformOpsImplIncGen",
+    tbl_outs = [(
+        ["-gen-populate-raising-patterns-interface-impl"],
+        "TransformOps/RaisingTransformOpsImpl.cpp.inc"
+    )],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "RaisingTransformPatternsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-raising-patterns-func-decls"],
+            "TransformOps/RaisingTransformPatterns.h.inc",
+        ), (
+            ["-gen-populate-raising-patterns-func-defs"],
+            "TransformOps/RaisingTransformPatterns.cpp.inc",
+        )],
+    td_file = "TransformOps/RaisingTransformOps.td",
+    deps = [
+        ":RaisingTransformOpsTdFiles",
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+)
+
+cc_library(
+    name = "RaisingTransformOps",
+    srcs = ["TransformOps/RaisingTransformOps.cpp"],
+    hdrs = ["TransformOps/RaisingTransformOps.h"],
+    deps = [
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFUtils",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LinalgTransformOps",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
+        ":RaisingTransformOpsIncGen",
+        ":RaisingTransformOpsImplIncGen",
+        ":RaisingTransformPatternsIncGen",
+    ],
+)
+
 cc_library(
     name = "TransformOps",
-    srcs = glob(["TransformOps/*.cpp"]),
-    hdrs = glob(["TransformOps/*.h"]),
+    srcs = [
+        "TransformOps/TransformOps.cpp",
+        "TransformOps/GenerateApplyPatterns.cpp",
+    ],
+    hdrs = ["TransformOps/TransformOps.h"],
     deps = [
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -264,7 +354,7 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
-    name = "EnzyeHLOPatternsIncGen",
+    name = "EnzymeHLOPatternsIncGen",
     tbl_outs = [
         (
             ["-gen-populate-patterns-func-decls"],
@@ -282,6 +372,7 @@ gentbl_cc_library(
 
 cc_library(
     name = "XLADerivatives",
+    visibility = ["//visibility:public"],
     srcs = glob(
         [
             "Implementations/*.cpp",
@@ -303,7 +394,8 @@ cc_library(
     deps = [
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
-        ":EnzyeHLOPatternsIncGen",
+        ":EnzymeHLOPatternsIncGen",
+        ":RaisingTransformOps",
         "@llvm-project//mlir:DLTIDialect",
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//llvm:Core",
@@ -327,8 +419,12 @@ cc_library(
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:SCFToOpenMP",
+        "@llvm-project//mlir:OpenMPToLLVM",
         "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:ViewLikeInterface",
         "@llvm-project//mlir:ControlFlowToSCF",
+        "@llvm-project//mlir:ControlFlowToLLVM",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:AffineToStandard",
@@ -347,6 +443,7 @@ cc_library(
         "@llvm-project//mlir:FuncToLLVM",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:FuncTransforms",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:NVVMDialect",
         "@llvm-project//mlir:IndexToLLVM",

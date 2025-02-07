@@ -63,7 +63,69 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   }];
 
   let hasCanonicalizer = 1;
+}
 
+def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+  let summary = "JIT Call operation";
+  let description = [{
+  }];
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$fn, 
+    Variadic<AnyType>:$inputs,
+    DefaultValuedStrAttr<StrAttr, "">:$backend_config,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<AnyAttr>:$result_layouts,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases
+  );
+
+  let results = (outs Variadic<AnyType>);
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+  let hasCanonicalizer = 1;
+}
+
+def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
+  let summary = "Get current execution stream within a jit_call operation";
+  let description = [{
+  }];
+  let results = (outs AnyType:$result);
+}
+
+def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
+  ViewLikeOpInterface, Pure
+]> {
+  let summary = "Extract and LLVM pointer from a MemRef";
+
+  let arguments = (ins AnyMemRef : $source);
+  let results = (outs AnyType:$result);
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+  
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
+}
+
+def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
+  ViewLikeOpInterface, Pure
+]> {
+  let summary = "Upgrade a pointer to a memref";
+
+  let arguments = (ins AnyType:$source);
+  let results = (outs AnyMemRef : $result);
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+  
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
 }
 
 #endif // ENZYMEXLA_OPS

@@ -21,6 +21,7 @@
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
@@ -41,6 +42,7 @@
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -48,9 +50,12 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
 
+#include "shardy/dialect/sdy/ir/dialect.h"
+
 namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
+void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
 } // namespace enzyme
 } // namespace mlir
 
@@ -83,6 +88,8 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
 
+  registry.insert<mlir::sdy::SdyDialect>();
+
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 
   mlir::func::registerInlinerExtension(registry);
@@ -95,7 +102,8 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::vector::VectorDialect,
                   mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
-                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
+                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect,
+                  mlir::omp::OpenMPDialect>();
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertComplexToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
@@ -112,8 +120,10 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::registerGPUDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
   mlir::registerNVVMDialectTranslation(registry);
+  mlir::registerOpenMPDialectTranslation(registry);
 
   mlir::registerConvertOpenMPToLLVMInterface(registry);
+  mlir::vector::registerConvertVectorToLLVMInterface(registry);
 
   // Register the autodiff interface implementations for upstream dialects.
   mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);
@@ -121,6 +131,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::linalg::registerTransformDialectExtension(registry);
 
   mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
+  mlir::enzyme::registerRaisingTransformExtension(registry);
 
   mlir::registerLLVMDialectImport(registry);
   mlir::registerNVVMDialectImport(registry);

@@ -2922,6 +2922,54 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
+// ((add x cst0) cst1) -> (add x1 (add cst0 cst1))
+template <typename T> struct BinOpConstSimplify : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    // Only apply to integers
+    if (!isa<IntegerType>(op.getType().getElementType()))
+      return failure();
+
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsConst = matchPattern(lhs, m_Constant());
+    auto rhsConst = matchPattern(rhs, m_Constant());
+
+    if (!lhsConst && !rhsConst)
+      return failure();
+
+    auto constVal = lhsConst ? lhs : rhs;
+    auto otherOp = lhsConst ? rhs.template getDefiningOp<T>()
+                            : lhs.template getDefiningOp<T>();
+
+    if (!otherOp)
+      return failure();
+
+    auto otherLhs = otherOp.getRhs();
+    auto otherRhs = otherOp.getLhs();
+
+    auto otherLhsConst = matchPattern(otherLhs, m_Constant());
+    auto otherRhsConst = matchPattern(otherRhs, m_Constant());
+
+    if (!otherLhsConst && !otherRhsConst)
+      return failure();
+
+    // Both op and other have a constant operand
+    // group constants to a new op.
+    auto otherConstVal = otherLhsConst ? otherLhs : otherRhs;
+    auto otherOperand = otherLhsConst ? otherRhs : otherLhs;
+
+    auto constantAdd = rewriter.create<T>(
+        otherOp.getLoc(), op.getResult().getType(), constVal, otherConstVal);
+    rewriter.replaceOpWithNewOp<T>(op, otherOperand, constantAdd);
+
+    return success();
+  }
+};
+
 struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -6382,6 +6430,40 @@ struct TransposeBroadcastInDimToBroadcastInDim final
   }
 };
 
+struct BroadcastInDimTransposeToBroadcastInDim final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto broadcastOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!broadcastOp)
+      return failure();
+
+    auto broadcastDims = broadcastOp.getBroadcastDimensions();
+    auto permutation = op.getPermutation();
+
+    // Compute the inverse permutation
+    SmallVector<int64_t> inversePermutation(permutation.size());
+    for (auto [idx, perm] : llvm::enumerate(permutation)) {
+      inversePermutation[perm] = idx;
+    }
+
+    // Adjust the broadcast dimensions using the inverse permutation
+    SmallVector<int64_t> newBroadcastDims;
+    for (auto oldDim : broadcastDims) {
+      newBroadcastDims.push_back(inversePermutation[oldDim]);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), broadcastOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+
+    return success();
+  }
+};
+
 struct ConcatenateOpCanon final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -6956,6 +7038,66 @@ struct TransposeIsReshape final
   }
 };
 
+struct IfRemoveUnused final : OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<bool> resultUsed(op->getNumResults(), true);
+
+    bool anyUnused = false;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool unused = it.value().use_empty();
+      resultUsed[it.index()] = !unused;
+      anyUnused |= unused;
+    }
+
+    if (!anyUnused)
+      return failure();
+
+    SmallVector<Type> newResultTypes;
+
+    Operation *trueTerm = op.getTrueBranch().front().getTerminator();
+    Operation *falseTerm = op.getFalseBranch().front().getTerminator();
+
+    unsigned removed = 0;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool used = resultUsed[it.index()];
+      if (used) {
+        newResultTypes.push_back(it.value().getType());
+        continue;
+      }
+
+      auto i = it.index() - removed;
+      rewriter.modifyOpInPlace(trueTerm, [&] { trueTerm->eraseOperand(i); });
+      rewriter.modifyOpInPlace(falseTerm, [&] { falseTerm->eraseOperand(i); });
+      removed++;
+    }
+
+    auto newIf = rewriter.create<stablehlo::IfOp>(op.getLoc(), newResultTypes,
+                                                  op.getPred());
+    newIf.getTrueBranch().takeBody(op.getTrueBranch());
+    newIf.getFalseBranch().takeBody(op.getFalseBranch());
+
+    removed = 0;
+    for (const auto &it : llvm::enumerate(resultUsed)) {
+      bool used = it.value();
+      if (!used) {
+        removed++;
+        continue;
+      }
+      auto res = op.getResult(it.index());
+      auto newRes = newIf.getResult(it.index() - removed);
+      rewriter.replaceAllUsesWith(res, newRes);
+    }
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -7348,6 +7490,134 @@ private:
   bool allowOnFloatingPointMath = false;
 };
 
+// a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
+// a < b ? a : b or a <= b ? a : b ---> minimum(a, b)
+struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const final {
+    auto compOp = op.getPred().getDefiningOp<stablehlo::CompareOp>();
+    if (!compOp)
+      return failure();
+
+    auto selectlhs = op.getOnTrue();
+    auto selectrhs = op.getOnFalse();
+
+    auto complhs = compOp.getLhs();
+    auto comprhs = compOp.getRhs();
+
+    if ((compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::GT) ||
+        (compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::GE)) {
+      // select(a > b || a >= b, a, b)
+      if (complhs == selectlhs && comprhs == selectrhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+      // select(a > b || a >= b, b, a)
+      if (complhs == selectrhs && comprhs == selectlhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+    }
+
+    if ((compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::LT) ||
+        (compOp.getComparisonDirection() ==
+         stablehlo::ComparisonDirection::LE)) {
+      // select(a < b || a <= b, a, b)
+      if (complhs == selectlhs && comprhs == selectrhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MinOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+      // select(a < b || a <= b, b, a)
+      if (complhs == selectrhs && comprhs == selectlhs) {
+        rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(op, selectlhs, selectrhs);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+// select(!op, lhs, rhs) --> select(op, rhs, lhs)
+struct NotSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const final {
+    auto notOp = op.getPred().getDefiningOp<stablehlo::NotOp>();
+    if (!notOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        op, notOp.getOperand(), op.getOnFalse(), op.getOnTrue());
+    return success();
+  }
+};
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GT;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GE;
+  }
+}
+
+struct CommonCompareExpressionRewrite
+    : public OpRewritePattern<stablehlo::CompareOp> {
+  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto negDir = negatedComparisonDirection(op.getComparisonDirection());
+
+    for (int i = 0; i < op.getNumOperands(); ++i) {
+      auto opOperand = op.getOperand(i);
+      for (auto user : opOperand.getUsers()) {
+        auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
+        if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
+          continue;
+
+        if (user->getBlock() != op->getBlock())
+          continue;
+
+        if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
+          if (user->isBeforeInBlock(op)) {
+            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+                op.getLoc(), userCompareOp.getResult());
+            rewriter.replaceOp(op, negatedCondition);
+            return success();
+          } else {
+            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+                userCompareOp.getLoc(), op.getResult());
+            rewriter.replaceOp(user, negatedCondition);
+            return success();
+          }
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7429,7 +7699,9 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>>(context);
+        BinBroadcastSplat<stablehlo::MulOp>,
+        BinOpConstSimplify<stablehlo::AddOp>,
+        BinOpConstSimplify<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
@@ -7558,6 +7830,7 @@ struct EnzymeHLOOptPass
         GatherOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
+        IfRemoveUnused,
         IfInline,
         IfToSelect,
         ImagOpCanon,
@@ -7568,10 +7841,14 @@ struct EnzymeHLOOptPass
         ReshapeOpCanon,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
+        BroadcastInDimTransposeToBroadcastInDim,
         TransposeIsReshape,
         WhileDeadResults,
         WhileSimplify,
-        ZeroExtentTensorCanon
+        ZeroExtentTensorCanon,
+        CompareSelectSimplify,
+        NotSelectSimplify,
+        CommonCompareExpressionRewrite
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
