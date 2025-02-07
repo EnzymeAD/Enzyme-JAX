@@ -128,4 +128,15 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
   }];
 }
 
+def AffineScopeOp : EnzymeXLA_Op<"scope", [
+      AffineScope,
+      AutomaticAllocationScope,
+      RecursiveMemoryEffects,
+    ]>,
+    Arguments<(ins Variadic<AnyType>:$operands)>,
+    Results<(outs Variadic<AnyType>:$results)> {
+  let summary = "Inline affine scope";
+  let regions = (region SizedRegion<1>:$region);
+}
+
 #endif // ENZYMEXLA_OPS
