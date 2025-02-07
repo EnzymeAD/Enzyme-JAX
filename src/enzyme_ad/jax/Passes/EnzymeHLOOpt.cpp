@@ -2778,41 +2778,73 @@ struct ScatterToDynamicUpdateSlice final
     }
 
     auto dims = op.getScatterDimensionNumbers();
-
     auto input = op.getInputs()[0];
     auto scatter = op.getScatterIndices();
     auto updateShape =
         op.getUpdates()[0].getType().cast<ShapedType>().getShape();
 
-    if (dims.getInsertedWindowDims().size() == 0 &&
-        dims.getUpdateWindowDims().size() == updateShape.size()) {
+    // Create a mapping from update dimensions to operand dimensions
+    SmallVector<int64_t> dimMap(updateShape.size(), -1);
+    int updateDimIdx = 0;
 
-      if (update == nullptr) {
-        update = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), op.getUpdates()[0].getType(), splatAttr);
+    // Handle update window dimensions
+    for (auto updateDim : dims.getUpdateWindowDims()) {
+      // Find corresponding operand dimension by skipping inserted dims
+      int64_t operandDim = updateDim;
+      for (auto insertedDim : dims.getInsertedWindowDims()) {
+        if (insertedDim <= operandDim)
+          operandDim++;
       }
-
-      auto ity = RankedTensorType::get(
-          {}, scatter.getType().cast<ShapedType>().getElementType());
-      SmallVector<Value> start(updateShape.size(), 0);
-      for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
-        auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
-        if (!startval)
-          return failure();
-        start[en.value()] = *startval;
-      }
-      for (auto &v : start) {
-        if (v != nullptr)
-          continue;
-        v = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-          op, op.getResult(0).getType(), input, update, start);
-      return success();
+      dimMap[updateDim] = operandDim;
     }
 
-    return failure();
+    // Handle scatter dimensions
+    for (auto [scatterIdx, operandDim] :
+         llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+      // Find update dimension that corresponds to this scatter dimension
+      for (int i = 0; i < updateShape.size(); i++) {
+        if (dimMap[i] == -1) {
+          dimMap[i] = operandDim;
+          break;
+        }
+      }
+    }
+
+    // Check if we have a valid dimension mapping
+    if (llvm::any_of(dimMap, [](int64_t dim) { return dim == -1; }))
+      return failure();
+
+    // Create start indices for dynamic_update_slice
+    auto ity = RankedTensorType::get(
+        {}, scatter.getType().cast<ShapedType>().getElementType());
+    SmallVector<Value> start(
+        input.getType().cast<ShapedType>().getShape().size(), nullptr);
+
+    // Map scatter indices to operand dimensions
+    for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+      auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
+      if (!startval)
+        return failure();
+      start[en.value()] = *startval;
+    }
+
+    // Fill remaining start indices with 0
+    for (auto &v : start) {
+      if (v != nullptr)
+        continue;
+      v = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
+    }
+
+    if (update == nullptr) {
+      update = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), op.getUpdates()[0].getType(), splatAttr);
+    }
+
+    // Create dynamic_update_slice operation
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        op, op.getResult(0).getType(), input, update, start);
+    return success();
   }
 };
 
