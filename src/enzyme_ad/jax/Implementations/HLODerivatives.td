@@ -82,7 +82,6 @@ def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
 def Round : HLOInst<"RoundOp">; // round_nearest_afz
 def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
 def Rsqrt : HLOInst<"RsqrtOp">;
-def Scatter : HLOInst<"ScatterOp", "->getResult(0)">;
 def Select : HLOInst<"SelectOp">;
 def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
 def Send : HLOInst<"SendOp">;
@@ -950,31 +949,6 @@ def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [
   );
 }]>;
 
-def BinaryAdd : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto region = std::make_unique<Region>();
-  auto *block = new Block;
-  region->push_back(block);
-
-  auto elemType = op->getResult(0).getType().cast<ShapedType>().getElementType();
-  auto tensorType = RankedTensorType::get({}, elemType);
-
-  block->addArguments({tensorType, tensorType}, {op.getLoc(), op.getLoc()});
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToEnd(block);
-
-  auto addOp = builder.create<AddOp>(op.getLoc(), block->getArgument(0),
-                                     block->getArgument(1));
-  auto retOp = builder.create<ReturnOp>(op.getLoc(), addOp.getResult());
-
-  addOp->remove();
-  retOp->remove();
-  block->push_back(addOp);
-  block->push_back(retOp);
-
-  region.release();
-}]>;
-
 def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto operand = op->getOperand(0);
   auto operandType = operand.getType();
@@ -985,17 +959,18 @@ def GatherScatterResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op->getOperand(0).getType();
 }]>;
 
+def ScatterAdd : HLOInst<"ScatterOp", ")->getResult(0)", "createAddRegion(">;
+
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     [
-                      (Scatter 
+                      (ScatterAdd
                         (GatherScatterResultType),
                         (GatherScatterInputData),
                         $start_indices,
                         (DiffeRet),
-                        (GatherToScatterDimNumbers),
-                        (BinaryAdd)
+                        (GatherToScatterDimNumbers)
                       ),
-                      (HLOConstantFP<"0">)
+                      (InactiveArg)
                     ],
                     // Forward shadow rule
                     (SelectIfActive $operand,

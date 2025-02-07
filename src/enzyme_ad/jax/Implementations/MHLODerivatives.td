@@ -2,7 +2,7 @@ include "src/enzyme_ad/jax/Implementations/Common.td"
 
 class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps, dag forwardOps=(ForwardFromSummedReverse)> : MLIRDerivative<"mhlo", opName_, patternToMatch, resultOps, forwardOps>;
 
-class HLOInst<string m, string postopt=""> : Inst<m, "mhlo", postopt>;
+class HLOInst<string m, string postopt="", string preopt=""> : Inst<m, "mhlo", postopt, preopt>;
 
 class HLOMemoryIdentityOp<string opName_, list<int> ptrargs_, list<int> storedargs_ = [], dag patternToMatch=(Unimplemented), list<dag> reverse_ = []>  : MemoryIdentityOp<"mhlo", opName_, ptrargs_, storedargs_, patternToMatch, reverse_>;
 
