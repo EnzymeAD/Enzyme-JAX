@@ -1,7 +1,7 @@
 JAX_COMMIT = "0fb278a0b9152f341df69662c573d14f991fd51a"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "8eda577e8089e5f2134e01fed1c306f2eb20e062"
+ENZYME_COMMIT = "e394dbf8856ca5eea78a7cded6d81ec5e2f5e81b"
 ENZYME_SHA256 = ""
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme

@@ -62,6 +62,23 @@ static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
                               ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
       .getResult();
 }
+static inline Operation *createAddRegion(Operation *op) {
+  mlir::OpBuilder builder(op->getContext());
+  mlir::Block *block = new Block();
+  op->getRegion(0).push_back(block);
+  auto elemType =
+      op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto tensorType = RankedTensorType::get({}, elemType);
+  block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
+  builder.setInsertionPointToEnd(block);
+  builder.create<mlir::stablehlo::ReturnOp>(
+      op->getLoc(),
+      builder
+          .create<mlir::stablehlo::AddOp>(op->getLoc(), block->getArgument(0),
+                                          block->getArgument(1))
+          ->getResult(0));
+  return op;
+}
 
 namespace {
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
