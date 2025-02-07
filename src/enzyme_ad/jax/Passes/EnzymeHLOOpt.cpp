@@ -2781,7 +2781,8 @@ struct ScatterToDynamicUpdateSlice final
 
     auto input = op.getInputs()[0];
     auto scatter = op.getScatterIndices();
-    auto updateShape = op.getUpdates()[0].getType().cast<ShapedType>().getShape();
+    auto updateShape =
+        op.getUpdates()[0].getType().cast<ShapedType>().getShape();
 
     if (dims.getInsertedWindowDims().size() == 0 &&
         dims.getUpdateWindowDims().size() == updateShape.size()) {
