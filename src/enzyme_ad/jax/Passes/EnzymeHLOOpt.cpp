@@ -7649,11 +7649,6 @@ struct ScatterUpdateComputationConstProp
 
   LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const final {
-    // If this scatter op was created by this pass, don't rewrite it again
-    // Q: Is there a better way to do this?
-    if (op->hasAttr("enzymexla.transformed_by_scatter_const_prop"))
-      return failure();
-
     auto &region = op.getUpdateComputation();
     auto &block = region.front();
 
@@ -7666,8 +7661,13 @@ struct ScatterUpdateComputationConstProp
         isConstantSplatValueRange(op.getUpdates());
 
     if (constInput || constUpdate) {
-      if (constInput) {
-        auto blockArgInput = block.getArgument(0);
+      bool inputTransformed = false;
+      bool updateTransformed = false;
+      auto blockArgInput = block.getArgument(0);
+      auto blockArgUpdate = block.getArgument(1);
+
+      if (constInput && !blockArgInput.getUses().empty()) {
+        inputTransformed = true;
         auto denseAttr = DenseElementsAttr::get(
             blockArgInput.getType().cast<ShapedType>(), inputSplatAttr);
         auto constInputOp =
@@ -7675,8 +7675,8 @@ struct ScatterUpdateComputationConstProp
         blockArgInput.replaceAllUsesWith(constInputOp);
       }
 
-      if (constUpdate) {
-        auto blockArgUpdate = block.getArgument(1);
+      if (constUpdate && !blockArgUpdate.getUses().empty()) {
+        updateTransformed = true;
         auto denseAttr = DenseElementsAttr::get(
             blockArgUpdate.getType().cast<ShapedType>(), updateSplatAttr);
         auto constUpdateOp =
@@ -7684,14 +7684,15 @@ struct ScatterUpdateComputationConstProp
         blockArgUpdate.replaceAllUsesWith(constUpdateOp);
       }
 
+      if (!inputTransformed && !updateTransformed)
+        return failure();
+
       auto newOp = rewriter.create<stablehlo::ScatterOp>(
           op.getLoc(), op.getResultTypes(), op.getInputs(),
           op.getScatterIndices(), op.getUpdates(),
           op.getScatterDimensionNumbers(), op.getIndicesAreSorted(),
           op.getUniqueIndices());
       newOp.getUpdateComputation().takeBody(region);
-      newOp->setAttr("enzymexla.transformed_by_scatter_const_prop",
-                     rewriter.getUnitAttr());
       rewriter.replaceOp(op, newOp);
 
       return success();
