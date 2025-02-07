@@ -2750,28 +2750,49 @@ struct ScatterToDynamicUpdateSlice final
     if (innerOp.getNumOperands() != 1) {
       return failure();
     }
-    auto retop = innerOp.getOperand(0).dyn_cast<BlockArgument>();
-    if (!retop)
-      return failure();
-    if (retop.getOwner() != &body)
-      return failure();
-    if (retop.getArgNumber() != 1)
-      return failure();
 
     if (op.getInputs().size() != 1)
       return failure();
 
+    // For us to proceed, either we are returning the last block argument or we
+    // are returning a constant
+    Value update = nullptr;
+    DenseElementsAttr splatAttr;
+
+    auto retop = innerOp.getOperand(0).dyn_cast<BlockArgument>();
+    if (retop) {
+      if (retop.getOwner() != &body)
+        return failure();
+      if (retop.getArgNumber() != 1)
+        return failure();
+      update = op.getUpdates()[0];
+    } else {
+      DenseElementsAttr attr;
+      if (matchPattern(innerOp.getOperand(0), m_Constant(&attr))) {
+        splatAttr = DenseElementsAttr::get(
+            op.getUpdates()[0].getType().cast<ShapedType>(),
+            attr.getSplatValue<Attribute>());
+      } else {
+        return failure();
+      }
+    }
+
     auto dims = op.getScatterDimensionNumbers();
 
     auto input = op.getInputs()[0];
-    auto update = op.getUpdates()[0];
     auto scatter = op.getScatterIndices();
-    auto updateShape = update.getType().cast<ShapedType>().getShape();
+    auto updateShape = op.getUpdates()[0].getType().cast<ShapedType>().getShape();
 
-    if (dims.getInsertedWindowDims().size() == 0 &
+    if (dims.getInsertedWindowDims().size() == 0 &&
         dims.getUpdateWindowDims().size() == updateShape.size()) {
 
-      auto ity = RankedTensorType::get({}, rewriter.getI32Type());
+      if (update == nullptr) {
+        update = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), op.getUpdates()[0].getType(), splatAttr);
+      }
+
+      auto ity = RankedTensorType::get(
+          {}, scatter.getType().cast<ShapedType>().getElementType());
       SmallVector<Value> start(updateShape.size(), 0);
       for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
         auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
@@ -2789,6 +2810,7 @@ struct ScatterToDynamicUpdateSlice final
           op, op.getResult(0).getType(), input, update, start);
       return success();
     }
+
     return failure();
   }
 };
