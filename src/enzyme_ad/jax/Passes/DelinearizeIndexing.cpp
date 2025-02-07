@@ -1,4 +1,5 @@
 
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -34,7 +35,7 @@
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_PROPAGATECONSTANTBOUNDSPASS
+#define GEN_PASS_DEF_DELINEARIZEINDEXINGPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -50,7 +51,7 @@ struct AccessInfo {
   affine::MemRefAccess access;
   AffineMap map;
 
-  AccessInfo(affine::MemRefAccess access) : access(access) {}
+  AccessInfo(affine::MemRefAccess access, AffineMap map = AffineMap()) : access(access), map(map) {}
 };
 
 LogicalResult getOpIndexSet(Operation *op,
@@ -60,6 +61,9 @@ LogicalResult getOpIndexSet(Operation *op,
   return getIndexSet(ops, indexSet);
 }
 
+// TODO This code needs to be adapted to do analysis on the ranges of the dims
+// in the affine expressions so that we can simplify the floordiv/mod by
+// constants
 LogicalResult
 reshapeMemref(Value memref,
               std::function<void(RewriterBase &, unsigned, unsigned)>
@@ -258,55 +262,100 @@ reshapeMemref(Value memref,
   return failure();
 }
 
-LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
-  auto memref = atAddr.getResult();
-  return reshapeMemref(memref, [&](RewriterBase &rewriter, unsigned resultId,
-                                   unsigned cst) {
-    rewriter.setInsertionPoint(atAddr);
-    auto oldMt = atAddr.getResult().getType();
-    SmallVector<int64_t> shape(oldMt.getShape().begin(),
-                               oldMt.getShape().end());
-    shape.insert(std::next(shape.begin(), resultId + 1), cst);
-    if (shape[resultId] != ShapedType::kDynamic) {
-      shape[resultId] = llvm::divideCeil(shape[resultId], cst);
-    } else {
-      shape[resultId] = ShapedType::kDynamic;
-    }
-    // TODO should we use the existing alloca layout interface in here
-    // somehow?
-    auto newMt =
-        MemRefType::get(shape, oldMt.getElementType(),
-                        MemRefLayoutAttrInterface{}, oldMt.getMemorySpace());
+LogicalResult
+reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
+              std::function<void(RewriterBase &)>
+                  rewriteMemrefCallback) {
 
-    atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
-        atAddr, atAddr.getSource(), newMt);
-  });
+  MLIRContext *ctx = memref.getContext();
+  using namespace mlir::affine;
+
+  SmallVector<AccessInfo> accesses;
+  bool foundAllUses = true;
+  for (auto user : memref.getUsers()) {
+    if (auto load = dyn_cast<AffineLoadOp>(user)) {
+      accesses.push_back({MemRefAccess(load), load.getAffineMap()});
+    } else if (auto store = dyn_cast<AffineStoreOp>(user)) {
+      accesses.push_back({MemRefAccess(store), store.getAffineMap()});
+    } else {
+      foundAllUses = false;
+      break;
+    }
+  }
+
+  if (!foundAllUses)
+    return failure();
+
+  IRRewriter rewriter(ctx);
+
+  for (unsigned shapeIdx : llvm::reverse(llvm::seq<unsigned>(1, shape.size()))) {
+    int64_t cst = shape[shapeIdx];
+    unsigned resultId = 0;
+    for (auto &ainfo : accesses) {
+      auto access = ainfo.access;
+      AffineMap map = ainfo.map;
+      AffineExpr expr = map.getResult(resultId);
+      LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
+                 << " with expr " << expr << "\n");
+      auto mod = expr % cst;
+      auto floor = expr.floorDiv(cst);
+      LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
+
+      SmallVector<AffineExpr> exprs(
+          map.getResults().begin(),
+          map.getResults().end());
+      exprs.erase(std::next(exprs.begin(), resultId));
+      exprs.insert(std::next(exprs.begin(), resultId), mod);
+      exprs.insert(std::next(exprs.begin(), resultId), floor);
+      ainfo.map = AffineMap::get(map.getNumDims(),
+                                 map.getNumSymbols(), exprs, ctx);
+      LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
+    }
+  }
+
+  rewriteMemrefCallback(rewriter);
+
+  for (auto &ainfo : accesses) {
+      if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
+          rewriter.setInsertionPoint(load);
+          rewriter.replaceOpWithNewOp<AffineLoadOp>(
+              load, load.getMemref(), ainfo.map, load.getMapOperands());
+      } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
+          rewriter.setInsertionPoint(store);
+          rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
+                                                     store.getMemref(), ainfo.map,
+                                                     store.getMapOperands());
+      } else {
+          llvm_unreachable("unexpected");
+      }
+  }
+  return success();
 }
 
-LogicalResult reshapeAlloca(memref::AllocaOp &alloca) {
-  auto memref = alloca.getResult();
-  return reshapeMemref(memref, [&](RewriterBase &rewriter, unsigned resultId,
-                                   unsigned cst) {
-    rewriter.setInsertionPoint(alloca);
-    auto oldMt = alloca.getMemref().getType();
-    SmallVector<Value> dynSizes = alloca.getDynamicSizes();
-    SmallVector<int64_t> shape(oldMt.getShape().begin(),
-                               oldMt.getShape().end());
-    shape.insert(std::next(shape.begin(), resultId + 1), cst);
-    if (shape[resultId] != ShapedType::kDynamic) {
-      shape[resultId] = llvm::divideCeil(shape[resultId], cst);
-    } else {
-      llvm_unreachable("Unsupported dymanic memref.alloca");
-    }
-    // TODO should we use the existing alloca layout interface in here
-    // somehow?
-    auto newMt =
-        MemRefType::get(shape, oldMt.getElementType(),
-                        MemRefLayoutAttrInterface{}, oldMt.getMemorySpace());
+LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
+    auto source = atAddr.getSource();
+    auto m2p = source.getDefiningOp<enzymexla::Memref2PointerOp>();
+    if (!m2p)
+        return failure();
+    MemRefType newMt = m2p.getSource().getType();
+    auto shape = newMt.getShape();
 
-    alloca = rewriter.replaceOpWithNewOp<memref::AllocaOp>(
-        alloca, newMt, alloca.getDynamicSizes(), alloca.getSymbolOperands(),
-        alloca.getAlignmentAttr());
+    // Only the first rank can be dynamic
+    if (llvm::any_of(llvm::drop_begin(shape),
+                     [](int64_t size) { return size == ShapedType::kDynamic; }))
+        return failure();
+
+    if (shape.size() <= 1)
+      return failure();
+
+  auto memref = atAddr.getResult();
+  return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
+    rewriter.setInsertionPoint(atAddr);
+    auto oldMt = atAddr.getResult().getType();
+
+    atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
+        atAddr, newMt, atAddr.getSource());
   });
 }
 
@@ -318,24 +367,16 @@ struct DelinearizeIndexingPass
   void runOnOperation() override {
     Operation *op = getOperation();
     {
-      SmallVector<memref::AllocaOp> toHandle;
-      op->walk([&](memref::AllocaOp alloca) { toHandle.push_back(alloca); });
-      for (auto alloca : toHandle)
-        while (succeeded(reshapeAlloca(alloca)))
-          ;
-    }
-    {
       SmallVector<enzymexla::Pointer2MemrefOp> toHandle;
       op->walk([&](enzymexla::Pointer2MemrefOp atAddr) {
         toHandle.push_back(atAddr);
       });
       for (auto atAddr : toHandle)
-        while (succeeded(reshapeAtAddr(atAddr)))
-          ;
+        succeeded(reshapeAtAddr(atAddr));
     }
   }
 };
 
-std::unique_ptr<Pass> mlir::createDelinearizeIndexingPass() {
-  return std::make_unique<DelinearizeIndexingPass>();
-}
+// std::unique_ptr<Pass> mlir::enzyme::impl::createDelinearizeIndexingPass() {
+//   return std::make_unique<DelinearizeIndexingPass>();
+// }
