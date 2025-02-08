@@ -5765,15 +5765,6 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp op,
                                 PatternRewriter &rewriter) const override {
-
-    auto operand = op.getOperand();
-    auto offsetDims = op.getDimensionNumbers().getOffsetDims();
-    auto collapsedSliceDims = op.getDimensionNumbers().getCollapsedSliceDims();
-    auto startIndexMap = op.getDimensionNumbers().getStartIndexMap();
-    auto indexVectorDim = op.getDimensionNumbers().getIndexVectorDim();
-    auto sliceSizes = op.getSliceSizes();
-    auto indicesAreSorted = op.getIndicesAreSorted();
-
     DenseIntElementsAttr startIndicesCst;
     if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
       return failure();
@@ -5799,107 +5790,6 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
         return success();
       }
     }
-
-    /*
-    SmallVector<int64_t> batchDims;
-    for (auto d : result.getAxes())
-    if (!llvm::is_contained(offsetDims, d)) batchDims.push_back(d);
-
-for (auto resultIt = result.index_begin(); resultIt != result.index_end();
-   ++resultIt) {
-auto resultIndex = *resultIt;
-
-Index batchIndex;
-for (auto d : batchDims) batchIndex.push_back(resultIndex[d]);
-
-auto startIndicesIndex = batchIndex;
-if (indexVectorDim < startIndices.getRank())
-  startIndicesIndex.insert(startIndicesIndex.begin() + indexVectorDim,
-                           kColon);
-auto startIndex = evalIndex(evalSliceOp(startIndices, startIndicesIndex));
-
-SmallVector<int64_t> fullStartIndex(operand.getRank(), 0);
-for (auto dOperand : operand.getAxes()) {
-  auto dStartIt = llvm::find(startIndexMap, dOperand);
-  if (dStartIt == startIndexMap.end()) continue;
-  auto dStart = dStartIt - startIndexMap.begin();
-  fullStartIndex[dOperand] = std::clamp<int64_t>(
-      startIndex[dStart], 0ll,
-      operand.getShape()[dOperand] - sliceSizes[dOperand]);
-}
-
-Index offsetIndex;
-for (auto d : offsetDims) offsetIndex.push_back(resultIndex[d]);
-
-Index fullOffsetIndex(offsetIndex.size() + collapsedSliceDims.size(), 0);
-for (size_t i = 0, oi = 0; i < fullOffsetIndex.size(); ++i) {
-  if (llvm::is_contained(collapsedSliceDims, i)) continue;
-  fullOffsetIndex[i] = offsetIndex[oi++];
-}
-
-auto operandIndex = fullStartIndex + fullOffsetIndex;
-result.set(resultIndex, operand.get(operandIndex));
-}
-
-
-mlir::stablehlo::GatherDimensionNumbersAttr dnums =
-    gather.getDimensionNumbers();
-if (dnums.getIndexVectorDim() != 0 || index.getType().getRank() > 1)
-  return failure();
-
-// TODO: Remove when the verifier catches this case that is
-// invalid if all previous condition holds.
-if (index.getNumElements() !=
-    static_cast<int64_t>(dnums.getStartIndexMap().size())) {
-  return failure();
-}
-
-auto operandType = gather->getOperand(0).getType().cast<RankedTensorType>();
-if (!operandType.hasStaticShape()) return failure();
-
-auto sliceEnd = llvm::to_vector(gather.getSliceSizes());
-SmallVector<int64_t> sliceStart(sliceEnd.size(), 0);
-for (auto [mapIndex, value] :
-     llvm::zip_equal(dnums.getStartIndexMap(), index.getValues<APInt>())) {
-  // Clamp the indices within bounds to faithfully mirror gather semantics.
-  int64_t offset =
-      std::clamp(value.getSExtValue(), static_cast<int64_t>(0),
-                 operandType.getDimSize(mapIndex) - sliceEnd[mapIndex]);
-  sliceStart[mapIndex] += offset;
-  sliceEnd[mapIndex] += offset;
-}
-
-SmallVector<int64_t> sliceStride(sliceEnd.size(), 1);
-SmallVector<int64_t> sliceShape(sliceEnd.size());
-for (auto [shapeElem, startElem, endElem] :
-     llvm::zip_equal(sliceShape, sliceStart, sliceEnd)) {
-  shapeElem = endElem - startElem;
-}
-
-Type elementType = gather.getType().getElementType();
-auto sliceType = RankedTensorType::get(sliceShape, elementType);
-Value result = rewriter.create<mlir::stablehlo::SliceOp>(
-    gather.getLoc(), sliceType, gather.getOperand(),
-    rewriter.getDenseI64ArrayAttr(sliceStart),
-    rewriter.getDenseI64ArrayAttr(sliceEnd),
-    rewriter.getDenseI64ArrayAttr(sliceStride));
-
-ArrayRef<int64_t> collapsedSliceDims = dnums.getCollapsedSliceDims();
-if (!collapsedSliceDims.empty()) {
-  llvm::SmallVector<int64_t> reshapeShape;
-  for (auto [idx, dim] : llvm::enumerate(sliceShape)) {
-    if (!llvm::is_contained(collapsedSliceDims, idx))
-      reshapeShape.push_back(dim);
-  }
-  auto reshapeType = RankedTensorType::get(reshapeShape, elementType);
-  result = rewriter.create<mlir::stablehlo::ReshapeOp>(gather.getLoc(),
-                                                       reshapeType, result);
-}
-
-result.setType(gather.getType());
-rewriter.replaceOp(gather, result);
-return success();
-*/
     return failure();
   }
 };
