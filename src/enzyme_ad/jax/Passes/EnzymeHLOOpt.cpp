@@ -1321,56 +1321,7 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 DenseElementsAttr fromTensor(stablehlo::Tensor tensor) {
-  auto type = tensor.getType();
-  auto elementType = type.getElementType();
-
-  if (auto floatType = dyn_cast<FloatType>(elementType)) {
-    // Build from tensor data ref
-    uint32_t bitWidth = floatType.getWidth();
-    bitWidth = bitWidth / 8;
-    auto size = tensor.getNumElements() * bitWidth;
-    auto floatValues = ArrayRef(tensor.getData(), size);
-    return DenseElementsAttr::getFromRawBuffer(type, floatValues);
-  }
-  if (auto intType = dyn_cast<IntegerType>(elementType)) {
-    uint32_t bitWidth = intType.getWidth();
-    if (bitWidth == 1) {
-      // Need to convert bool data to vector before dense elements creation.
-      SmallVector<bool, 1> data;
-      data.reserve(tensor.getNumElements());
-      auto v = tensor.getData();
-      for (size_t i = 0; i < tensor.getNumElements(); ++i)
-        data.push_back(v[i] ? 1 : 0);
-      return DenseElementsAttr::get(type, data);
-    }
-    // Build from tensor data ref
-    bitWidth = bitWidth / 8;
-    auto size = tensor.getNumElements() * bitWidth;
-    auto floatValues = ArrayRef(tensor.getData(), size);
-    return DenseElementsAttr::getFromRawBuffer(type, floatValues);
-  }
-  if (isa<ComplexType>(elementType)) {
-    auto complexElemTy = cast<ComplexType>(elementType).getElementType();
-
-    if (complexElemTy.isF32()) {
-      auto elementData =
-          reinterpret_cast<const std::complex<float> *>(tensor.getData());
-      ArrayRef<std::complex<float>> elementDataRef(elementData,
-                                                   tensor.getNumElements());
-      return DenseElementsAttr::get(tensor.getType(), elementDataRef);
-    }
-
-    if (complexElemTy.isF64()) {
-      auto elementData =
-          reinterpret_cast<const std::complex<double> *>(tensor.getData());
-      ArrayRef<std::complex<double>> elementDataRef(elementData,
-                                                    tensor.getNumElements());
-      return DenseElementsAttr::get(tensor.getType(), elementDataRef);
-    }
-  }
-
-  llvm::report_fatal_error(
-      "Only FloatType, IntType, and Complex<f32,f64> are handled currently.");
+  return mlir::stablehlo::makeDenseElementsAttr(tensor);
 }
 
 /*
