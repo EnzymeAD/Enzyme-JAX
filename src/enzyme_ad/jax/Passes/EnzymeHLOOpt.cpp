@@ -7721,8 +7721,10 @@ private:
 };
 
 // This lets us reorder the following
-// Case 1: (op x (op y (op x y))) -> (op (op x y) (op x y))
-// Case 2: (op x (op (op y x) y)) -> (op (op x y) (op x y))
+// Case 1: (op x (op (op y x) y)) -> (op (op x y) (op x y))
+// Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
+// Case 3: (op x (op y (op x y))) -> (op (op x y) (op x y))
+// Case 4: (op x (op y (op y x))) -> (op (op x y) (op x y))
 template <typename Op>
 struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
@@ -7741,10 +7743,19 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
       auto rhslhslhs = rhslhsOp.getLhs();
       auto rhslhsrhs = rhslhsOp.getRhs();
 
-      // Case 2
+      // Case 1
       if (lhs == rhslhsrhs && rhslhslhs == rhsrhs) {
         auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhsrhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(), newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
+                                        newOp.getResult());
+        return success();
+      }
+
+      // Case 2
+      if (lhs == rhslhslhs && rhslhsrhs == rhsrhs) {
+        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhsrhs);
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
+                                        newOp.getResult());
         return success();
       }
     }
@@ -7754,10 +7765,19 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
       auto rhsrhslhs = rhsrhsOp.getLhs();
       auto rhsrhsrhs = rhsrhsOp.getRhs();
 
-      // Case 1
+      // Case 3
       if (lhs == rhsrhslhs && rhslhs == rhsrhsrhs) {
         auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhslhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(), newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
+                                        newOp.getResult());
+        return success();
+      }
+
+      // Case 4
+      if (lhs == rhsrhsrhs && rhslhs == rhsrhslhs) {
+        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhslhs);
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
+                                        newOp.getResult());
         return success();
       }
     }
