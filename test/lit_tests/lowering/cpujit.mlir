@@ -4,7 +4,7 @@ module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
     llvm.unreachable
   }
-  func.func private @kern$par0(%arg0: !llvm.ptr<1>) {
+  func.func private @foo(%arg0: !llvm.ptr<1>) {
     %c0_i32 = arith.constant 0 : i32
     %0 = llvm.mlir.constant(63 : i32) : i32
     %c0 = arith.constant 0 : index
@@ -28,13 +28,14 @@ module {
     return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-    %0 = enzymexla.jit_call @kern$par0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.jit_call @foo (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_cpu(%arg0) {api_version = 3 : i32, backend_config = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00", output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
-// CHECK-NEXT:    return %0 : tensor<64xi64>
-// CHECK-NEXT:  }
-// CHECK-NEXT:}
+// CHECK-LABEL: @main
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<64xi64>) -> tensor<64xi64> {
+// CHECK-NEXT:    %[[CALL:.+]] = stablehlo.custom_call @enzymexla_compile_cpu(%arg0) 
+// CHECK-SAME: {api_version = 3 : i32, backend_config = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00", 
+// CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    return %[[CALL]] : tensor<64xi64>
