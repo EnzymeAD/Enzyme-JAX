@@ -863,6 +863,11 @@ def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterUpdateComputationConstProp"];
 }
 
+def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
+    "scatter_indices_are_unique"> {
+  let patterns = ["ScatterIndicesAreUnique"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

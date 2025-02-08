@@ -7649,6 +7649,76 @@ private:
   };
 };
 
+struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
+  using OpRewritePattern<stablehlo::ScatterOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getUniqueIndices())
+      return failure(); // already unique, no need to do anything
+
+    auto scatterIndices = op.getScatterIndices();
+    Attribute scatterIndicesAttr;
+    if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
+      llvm::errs() << "scatterIndicesAttr: " << scatterIndicesAttr << "\n";
+
+      auto denseAttr = scatterIndicesAttr.dyn_cast<DenseIntElementsAttr>();
+
+      auto shape = scatterIndices.getType().cast<ShapedType>().getShape();
+      if (shape.empty())
+        return failure();
+
+      int64_t numTuples = 1;
+      for (int64_t i = 0; i < shape.size() - 1; ++i) {
+        numTuples *= shape[i];
+      }
+      int64_t tupleSize = shape.back();
+
+      // Iterate over the scatter indices tensor to extract tuples
+      SmallVector<SmallVector<int64_t>> indexTuples;
+      auto values = denseAttr.getValues<APInt>();
+      auto it = values.begin();
+      for (int64_t i = 0; i < numTuples; ++i) {
+        SmallVector<int64_t> indexTuple;
+        for (int64_t j = 0; j < tupleSize; ++j) {
+          if (it == values.end()) {
+            return failure(); // Unexpected end of values
+          }
+          indexTuple.push_back((*it).getSExtValue());
+          ++it;
+        }
+        indexTuples.push_back(indexTuple);
+      }
+
+      if (areIndexTuplesUnique(indexTuples)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ScatterOp>(
+            op, op.getResultTypes(), op.getInputs(), op.getScatterIndices(),
+            op.getUpdates(), op.getScatterDimensionNumbers(),
+            op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(true));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+
+private:
+  bool areIndexTuplesUnique(
+      const SmallVector<SmallVector<int64_t>> &indexTuples) const {
+    bool hasUnique = true;
+    for (int64_t i = 0; i < indexTuples.size() && hasUnique; ++i) {
+      for (int64_t j = i + 1; j < indexTuples.size() && hasUnique; ++j) {
+        if (std::equal(indexTuples[i].begin(), indexTuples[i].end(),
+                       indexTuples[j].begin(), indexTuples[j].end())) {
+          hasUnique = false;
+          break;
+        }
+      }
+    }
+    return hasUnique;
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7880,7 +7950,8 @@ struct EnzymeHLOOptPass
         CompareSelectSimplify,
         NotSelectSimplify,
         CommonCompareExpressionRewrite,
-        ScatterUpdateComputationConstProp
+        ScatterUpdateComputationConstProp,
+        ScatterIndicesAreUnique
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
