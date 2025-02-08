@@ -81,7 +81,6 @@ struct PropagateConstantBoundsPass
   static ThreadAndBlockInfo getRange(FunctionOpInterface callee,
                                      enzymexla::KernelCallOp caller) {
     ThreadAndBlockInfo info;
-    Region *reg = callee.getCallableRegion();
 
     APInt intValue;
     if (matchPattern(caller.getBlockx(), m_ConstantInt(&intValue)))
