@@ -7565,6 +7565,9 @@ struct ScatterUpdateComputationConstProp
 
   LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const final {
+    if (!op.getUniqueIndices())
+      return failure();
+
     auto &region = op.getUpdateComputation();
     auto &block = region.front();
 
