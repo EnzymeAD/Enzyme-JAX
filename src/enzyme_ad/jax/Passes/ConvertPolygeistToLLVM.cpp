@@ -423,7 +423,6 @@ public:
           createIndexAttrConstant(rewriter, loc, rewriter.getIndexType(),
                                   innerSizes));
     }
-    Value null = rewriter.create<LLVM::ZeroOp>(loc, convertedType);
     assert(0 && "todo alloc lower");
     Value elementSize;
     // = rewriter.create<enzymexla::TypeSizeOp>(
@@ -1114,7 +1113,6 @@ struct ConvertPolygeistToLLVMPass
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
 
-    bool kernelBarePtrCallConv = false;
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
       // patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
