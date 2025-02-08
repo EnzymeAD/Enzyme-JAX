@@ -7690,9 +7690,10 @@ struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
 
       if (areIndexTuplesUnique(indexTuples)) {
         auto newOp = rewriter.create<stablehlo::ScatterOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(), op.getScatterIndices(),
-            op.getUpdates(), op.getScatterDimensionNumbers(),
-            op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(true));
+            op.getLoc(), op.getResultTypes(), op.getInputs(),
+            op.getScatterIndices(), op.getUpdates(),
+            op.getScatterDimensionNumbers(), op.getIndicesAreSortedAttr(),
+            rewriter.getBoolAttr(true));
         newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
         rewriter.replaceOp(op, newOp);
         return success();
