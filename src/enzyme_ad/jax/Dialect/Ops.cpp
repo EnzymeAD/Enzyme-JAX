@@ -698,7 +698,7 @@ public:
 
   Value computeIndex(Op op, size_t idx, PatternRewriter &rewriter) const;
 
-  void rewrite(Op op, Value ptr, PatternRewriter &rewriter) const;
+  void rewriteInternal(Op op, Value ptr, PatternRewriter &rewriter) const;
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
@@ -762,7 +762,7 @@ public:
       val = rewriter.create<LLVM::GEPOp>(op.getLoc(), val.getType(),
                                          mt.getElementType(), val, idxs);
     }
-    rewrite(op, val, rewriter);
+    rewriteInternal(op, val, rewriter);
     return success();
   }
 };
@@ -774,7 +774,7 @@ Value MetaPointer2Memref<memref::LoadOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<memref::LoadOp>::rewrite(
+void MetaPointer2Memref<memref::LoadOp>::rewriteInternal(
     memref::LoadOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getType(), ptr);
 }
@@ -786,7 +786,7 @@ Value MetaPointer2Memref<memref::StoreOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<memref::StoreOp>::rewrite(
+void MetaPointer2Memref<memref::StoreOp>::rewriteInternal(
     memref::StoreOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
@@ -801,7 +801,7 @@ Value MetaPointer2Memref<affine::AffineLoadOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<affine::AffineLoadOp>::rewrite(
+void MetaPointer2Memref<affine::AffineLoadOp>::rewriteInternal(
     affine::AffineLoadOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getType(), ptr);
 }
@@ -816,7 +816,7 @@ Value MetaPointer2Memref<affine::AffineStoreOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<affine::AffineStoreOp>::rewrite(
+void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
     affine::AffineStoreOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
