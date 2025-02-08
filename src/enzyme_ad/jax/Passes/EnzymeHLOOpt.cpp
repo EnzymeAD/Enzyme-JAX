@@ -7660,8 +7660,6 @@ struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
     auto scatterIndices = op.getScatterIndices();
     Attribute scatterIndicesAttr;
     if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
-      llvm::errs() << "scatterIndicesAttr: " << scatterIndicesAttr << "\n";
-
       auto denseAttr = scatterIndicesAttr.dyn_cast<DenseIntElementsAttr>();
 
       auto shape = scatterIndices.getType().cast<ShapedType>().getShape();
@@ -7691,10 +7689,12 @@ struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
       }
 
       if (areIndexTuplesUnique(indexTuples)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ScatterOp>(
-            op, op.getResultTypes(), op.getInputs(), op.getScatterIndices(),
+        auto newOp = rewriter.create<stablehlo::ScatterOp>(
+            op.getLoc(), op.getResultTypes(), op.getInputs(), op.getScatterIndices(),
             op.getUpdates(), op.getScatterDimensionNumbers(),
             op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(true));
+        newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+        rewriter.replaceOp(op, newOp);
         return success();
       }
     }
