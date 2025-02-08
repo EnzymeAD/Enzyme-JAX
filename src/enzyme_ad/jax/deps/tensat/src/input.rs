@@ -3,7 +3,6 @@ use crate::optimize::*;
 use crate::rewrites::*;
 use cxx::CxxVector;
 use egg::*;
-use ffi::get_graph_cost;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1044,7 +1043,7 @@ impl CppGraphConverter {
     fn convert_to_node(
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
-        rec_expr: RecExpr<Mdl>,
+        rec_expr: &RecExpr<Mdl>,
     ) -> Vec<ffi::Node> {
         let mut res: Vec<ffi::Node> = Vec::new();
 
@@ -1132,10 +1131,11 @@ impl CppGraphConverter {
     pub fn get_end_to_end_cost(
         egraph: &EGraph<Mdl, TensorAnalysis>,
         to_egraph: &HashMap<Id, Id>,
-        rec_expr: RecExpr<Mdl>,
+        rec_expr: &RecExpr<Mdl>,
     ) -> u64 {
         let nodes = CppGraphConverter::convert_to_node(egraph, to_egraph, rec_expr);
-        get_graph_cost(nodes)
+        println!("getting graph cost");
+        ffi::get_graph_cost(nodes)
     }
 
     pub fn optimize<'a>(&'a self) -> Vec<ffi::Node> {
@@ -1146,8 +1146,8 @@ impl CppGraphConverter {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3600);
-        let no_cycle = false; // disallow cycle in egraph?
-        let filter_after = false; // vanilla filtering or efficient filtering
+        let no_cycle = env::var("NO_CYCLE").unwrap_or("true".to_string()) == "true"; // disallow cycle in egraph?
+        let filter_after = env::var("FILTER_AFTER").unwrap_or("true".to_string()) == "true"; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 
@@ -1202,7 +1202,7 @@ impl CppGraphConverter {
             .map(|r| {
                 rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }})
+                          => { MlirRewriteApplier { rewrite: r.clone(), no_cycle, filter_after, }})
             })
             .collect();
 
@@ -1248,6 +1248,7 @@ impl CppGraphConverter {
 
         let start_time = Instant::now();
         let mut runner = runner.run(&rules[..]);
+        println!("RUNNER RUN done");
         if do_filter_after {
             // Do cycle removal after the final iteration
             remove_cycle_by_order(&mut runner);
@@ -1274,7 +1275,16 @@ impl CppGraphConverter {
         // let (best, ext_secs) = extract_by_greedy(&egraph, root, &cost_model);
 
         // println!("{}", best);
-        CppGraphConverter::convert_to_node(&egraph, &to_egraph, best)
+        // let global_extractor = GlobalExtractor::new(
+        //     runner.egraph.number_of_classes(),
+        //     &runner.egraph,
+        //     cost_model,
+        // );
+        // println!(
+        //     "end-to-end cost: {}",
+        //     CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),
+        // );
+        CppGraphConverter::convert_to_node(&egraph, &to_egraph, &best)
     }
 }
 
