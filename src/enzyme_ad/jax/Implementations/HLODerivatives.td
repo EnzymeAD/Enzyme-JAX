@@ -959,6 +959,14 @@ def GatherScatterResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op->getOperand(0).getType();
 }]>;
 
+def GatherScatterUniqueIndices : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  builder.getBoolAttr(true);
+}]>;
+
+def ScatterIndicesAreSorted : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  builder.getBoolAttr(false); // Can this be guaranteed to be true
+}]>;
+
 def ScatterAdd : HLOInst<"ScatterOp", ")->getResult(0)", "createAddRegion(">;
 
 def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
@@ -968,7 +976,9 @@ def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                         (GatherScatterInputData),
                         $start_indices,
                         (DiffeRet),
-                        (GatherToScatterDimNumbers)
+                        (GatherToScatterDimNumbers),
+                        (ScatterIndicesAreSorted),
+                        (GatherScatterUniqueIndices)
                       ),
                       (InactiveArg)
                     ],
