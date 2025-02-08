@@ -7745,17 +7745,15 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
 
       // Case 1
       if (lhs == rhslhsrhs && rhslhslhs == rhsrhs) {
-        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhsrhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
-                                        newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
+                                        rhslhsOp.getResult());
         return success();
       }
 
       // Case 2
       if (lhs == rhslhslhs && rhslhsrhs == rhsrhs) {
-        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhsrhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
-                                        newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
+                                        rhslhsOp.getResult());
         return success();
       }
     }
@@ -7767,17 +7765,15 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
 
       // Case 3
       if (lhs == rhsrhslhs && rhslhs == rhsrhsrhs) {
-        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhslhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
-                                        newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
+                                        rhsrhsOp.getResult());
         return success();
       }
 
       // Case 4
       if (lhs == rhsrhsrhs && rhslhs == rhsrhslhs) {
-        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhslhs);
-        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(),
-                                        newOp.getResult());
+        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
+                                        rhsrhsOp.getResult());
         return success();
       }
     }
