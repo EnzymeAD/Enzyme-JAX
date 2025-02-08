@@ -216,6 +216,8 @@ binary_op_transpose_simplify_and<1>;
 binary_op_transpose_simplify_or<1>;
 binary_op_transpose_simplify_xor<1>;
 binary_op_transpose_simplify_rem<1>;
+associative_binary_op_reordering<1>;
+
 binop_const_simplify<1>;
 compare_select_simplify;
 common_compare_expression_rewrite;
