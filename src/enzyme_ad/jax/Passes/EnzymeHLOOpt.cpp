@@ -2779,6 +2779,14 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
+  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
+  for (int64_t i = 0; i < perm.size(); ++i) {
+    inversePerm[perm[i]] = i;
+  }
+  return inversePerm;
+}
+
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
@@ -2800,7 +2808,8 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
-          rhsConstOp.getLoc(), rhsConstOp, lhsOp.getPermutation());
+          rhsConstOp.getLoc(), rhsConstOp,
+          getInversePermutation(lhsOp.getPermutation()));
       auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
                                            transposedConstOp);
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
@@ -2816,7 +2825,8 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
-          lhsConstOp.getLoc(), lhsConstOp, rhsOp.getPermutation());
+          lhsConstOp.getLoc(), lhsConstOp,
+          getInversePermutation(rhsOp.getPermutation()));
       auto newOp = rewriter.create<OpType>(op.getLoc(), transposedConstOp,
                                            rhsOp.getOperand());
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
