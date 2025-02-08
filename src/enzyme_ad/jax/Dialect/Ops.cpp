@@ -57,6 +57,12 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+CallInterfaceCallable KernelCallOp::getCallableForCallee() {
+  return SymbolRefAttr::get(getContext(), getFn());
+}
+
+Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
+
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
@@ -68,6 +74,12 @@ LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   return success();
 }
+
+CallInterfaceCallable JITCallOp::getCallableForCallee() {
+  return SymbolRefAttr::get(getContext(), getFn());
+}
+
+Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)

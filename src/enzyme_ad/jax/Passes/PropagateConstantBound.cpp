@@ -79,37 +79,40 @@ struct PropagateConstantBoundsPass
   };
 
   static ThreadAndBlockInfo getRange(FunctionOpInterface callee,
-                                     enzymexla::KernelCallOp caller) {
+                                     CallOpInterface caller) {
     ThreadAndBlockInfo info;
 
-    APInt intValue;
-    if (matchPattern(caller.getBlockx(), m_ConstantInt(&intValue)))
-      info.threadIdX = intValue.getSExtValue();
-    if (matchPattern(caller.getBlocky(), m_ConstantInt(&intValue)))
-      info.threadIdY = intValue.getSExtValue();
-    if (matchPattern(caller.getBlockz(), m_ConstantInt(&intValue)))
-      info.threadIdZ = intValue.getSExtValue();
+    if (auto kernelCall =
+            dyn_cast<enzymexla::KernelCallOp>(caller.getOperation())) {
+      APInt intValue;
+      if (matchPattern(kernelCall.getBlockx(), m_ConstantInt(&intValue)))
+        info.threadIdX = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getBlocky(), m_ConstantInt(&intValue)))
+        info.threadIdY = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getBlockz(), m_ConstantInt(&intValue)))
+        info.threadIdZ = intValue.getSExtValue();
 
-    if (matchPattern(caller.getGridx(), m_ConstantInt(&intValue)))
-      info.blockIdX = intValue.getSExtValue();
-    if (matchPattern(caller.getGridy(), m_ConstantInt(&intValue)))
-      info.blockIdY = intValue.getSExtValue();
-    if (matchPattern(caller.getGridz(), m_ConstantInt(&intValue)))
-      info.blockIdZ = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridx(), m_ConstantInt(&intValue)))
+        info.blockIdX = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridy(), m_ConstantInt(&intValue)))
+        info.blockIdY = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridz(), m_ConstantInt(&intValue)))
+        info.blockIdZ = intValue.getSExtValue();
 
-    if (matchPattern(caller.getBlockx(), m_ConstantInt(&intValue)))
-      info.blockDimX = intValue.getSExtValue();
-    if (matchPattern(caller.getBlocky(), m_ConstantInt(&intValue)))
-      info.blockDimY = intValue.getSExtValue();
-    if (matchPattern(caller.getBlockz(), m_ConstantInt(&intValue)))
-      info.blockDimZ = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getBlockx(), m_ConstantInt(&intValue)))
+        info.blockDimX = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getBlocky(), m_ConstantInt(&intValue)))
+        info.blockDimY = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getBlockz(), m_ConstantInt(&intValue)))
+        info.blockDimZ = intValue.getSExtValue();
 
-    if (matchPattern(caller.getGridx(), m_ConstantInt(&intValue)))
-      info.gridDimX = intValue.getSExtValue();
-    if (matchPattern(caller.getGridy(), m_ConstantInt(&intValue)))
-      info.gridDimY = intValue.getSExtValue();
-    if (matchPattern(caller.getGridz(), m_ConstantInt(&intValue)))
-      info.gridDimZ = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridx(), m_ConstantInt(&intValue)))
+        info.gridDimX = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridy(), m_ConstantInt(&intValue)))
+        info.gridDimY = intValue.getSExtValue();
+      if (matchPattern(kernelCall.getGridz(), m_ConstantInt(&intValue)))
+        info.gridDimZ = intValue.getSExtValue();
+    }
     return info;
   }
 
@@ -119,11 +122,14 @@ struct PropagateConstantBoundsPass
     OpBuilder builder(ctx);
     SymbolTable symTable(moduleOp);
 
-    DenseMap<FunctionOpInterface, SetVector<enzymexla::KernelCallOp>>
-        funcToKernelMap;
-    moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
-      auto symbolName = callOp.getFn();
-      auto callee = symTable.lookup<FunctionOpInterface>(symbolName);
+    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    moduleOp->walk([&](CallOpInterface callOp) {
+      auto symbolName =
+          dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
+      if (!symbolName)
+        return;
+      auto callee =
+          symTable.lookup<FunctionOpInterface>(symbolName.getLeafReference());
       if (!callee)
         return;
       funcToKernelMap[callee].insert(callOp);
@@ -141,6 +147,9 @@ struct PropagateConstantBoundsPass
       // callers for thread/blocks related things while min for dereferenceable
       // attribute.
       for (auto caller : callers) {
+        SmallVector<Value> operands = llvm::to_vector(caller.getArgOperands());
+        assert(operands.size() == callee.getNumArguments());
+
         ThreadAndBlockInfo currentRange = getRange(callee, caller);
         maxRange.threadIdX =
             std::max(maxRange.threadIdX, currentRange.threadIdX);
@@ -165,9 +174,8 @@ struct PropagateConstantBoundsPass
         maxRange.gridDimZ = std::max(maxRange.gridDimZ, currentRange.gridDimZ);
 
         for (auto [index, operand] : llvm::enumerate(callee.getArguments())) {
-          dereferenceable[index] =
-              std::min(dereferenceable[index],
-                       getMemRefSizeInBytes(caller.getInputs()[index]));
+          dereferenceable[index] = std::min(
+              dereferenceable[index], getMemRefSizeInBytes(operands[index]));
         }
       }
       Region *reg = callee.getCallableRegion();
