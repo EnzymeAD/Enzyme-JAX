@@ -54,8 +54,6 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   OpBuilder builder(op);
 
-  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
     if (auto lty = dyn_cast<LLVM::LLVMFunctionType>(op.getFunctionType())) {
@@ -245,8 +243,6 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
                       size_t shmem, enzymexla::KernelCallOp kcall) {
   OpBuilder builder(op);
-
-  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
