@@ -1146,8 +1146,8 @@ impl CppGraphConverter {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3600);
-        let no_cycle = false; // disallow cycle in egraph?
-        let filter_after = false; // vanilla filtering or efficient filtering
+        let no_cycle = env::var("NO_CYCLE").unwrap_or("true".to_string()) == "true"; // disallow cycle in egraph?
+        let filter_after = env::var("FILTER_AFTER").unwrap_or("true".to_string()) == "true"; // vanilla filtering or efficient filtering
         let iter_limit = 10000;
         let node_limit = 5000000; // max nodes in e-graph
 
@@ -1202,7 +1202,7 @@ impl CppGraphConverter {
             .map(|r| {
                 rewrite!(r.to_string();
                           (r.to_ast().to_string().parse::<Pattern<Mdl>>().unwrap())
-                          => { MlirRewriteApplier { rewrite: r.clone(), filter_after }})
+                          => { MlirRewriteApplier { rewrite: r.clone(), no_cycle, filter_after, }})
             })
             .collect();
 
@@ -1280,11 +1280,10 @@ impl CppGraphConverter {
         //     &runner.egraph,
         //     cost_model,
         // );
-
-        println!(
-            "end-to-end cost: {}",
-            CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),
-        );
+        // println!(
+        //     "end-to-end cost: {}",
+        //     CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),
+        // );
         CppGraphConverter::convert_to_node(&egraph, &to_egraph, &best)
     }
 }
