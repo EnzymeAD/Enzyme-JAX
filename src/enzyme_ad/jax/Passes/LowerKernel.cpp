@@ -55,8 +55,6 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-  mlir::Type intys[] = {ptrty, ptrty, ptrty};
-  FunctionType calleeType = builder.getFunctionType(intys, {});
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -249,7 +247,6 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-  mlir::Type intys[] = {ptrty, ptrty, ptrty};
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -268,7 +265,6 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     }
     newParams.push_back(p);
   }
-  FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
   static int id = 0;
   auto callName = (op.getName() + "$" + "par" + std::to_string(id)).str();
@@ -399,15 +395,6 @@ struct LowerKernelPass
     symbolTable.getSymbolTable(getOperation());
 
     getOperation()->walk([&](KernelCallOp op) {
-      mlir::ArrayAttr operand_layouts =
-          op.getOperandLayouts()
-              ? cast<mlir::ArrayAttr>(*op.getOperandLayouts())
-              : nullptr;
-      mlir::ArrayAttr result_layouts =
-          op.getResultLayouts() ? cast<mlir::ArrayAttr>(*op.getResultLayouts())
-                                : nullptr;
-      mlir::ArrayAttr output_operand_aliases = op.getOutputOperandAliases();
-
       size_t data[8];
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
