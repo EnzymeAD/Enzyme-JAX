@@ -142,3 +142,39 @@ func.func @main(%arg0: tensor<5xcomplex<i32>>) {
   enzymexla.kernel_call @foo blocks in(%c_5, %c_8, %c_8) threads in(%c_4, %c_8, %c_8) shmem = %c_6 (%arg0) {} : (tensor<5xcomplex<i32>>) -> ()
   return
 }
+
+// -----
+
+// CHECK-LABEL: ptx_kernelcc @foo
+// CHECK-SAME: llvm.align = 128 : i32, llvm.dereferenceable = 512 : i64, llvm.noalias
+llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+  llvm.return
+}
+
+func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
+  %0 = enzymexla.jit_call @foo (%arg0) {
+      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+      operand_index = 0, operand_tuple_indices = []>]
+    } : (tensor<64xi64>) -> tensor<64xi64>
+  return %0 : tensor<64xi64>
+}
+
+// -----
+
+// CHECK-LABEL: ptx_kernelcc @foo
+// CHECK-SAME: llvm.align = 128 : i32, llvm.dereferenceable = 256 : i64, llvm.noalias
+llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+  llvm.return
+}
+
+func.func @main(%arg0: tensor<64xi64>, %arg1: tensor<32xi64>) -> (tensor<64xi64>, tensor<32xi64>) {
+  %0 = enzymexla.jit_call @foo (%arg0) {
+      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+      operand_index = 0, operand_tuple_indices = []>]
+    } : (tensor<64xi64>) -> tensor<64xi64>
+  %1 = enzymexla.jit_call @foo (%arg1) {
+      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+      operand_index = 0, operand_tuple_indices = []>]
+    } : (tensor<32xi64>) -> tensor<32xi64>
+  return %0, %1 : tensor<64xi64>, tensor<32xi64>
+}
