@@ -5771,7 +5771,7 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
 
     {
       DenseIntElementsAttr operandVals;
-      if (matchPattern(operand, m_Constant(&operandVals))) {
+      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
         auto out = stablehlo::gatherOp(
             stablehlo::constantOp(operandVals),
             stablehlo::constantOp(startIndicesCst),
