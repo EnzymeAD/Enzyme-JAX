@@ -600,6 +600,7 @@ impl MlirRewrites {
 #[derive(Clone)]
 pub struct MlirRewriteApplier {
     pub rewrite: MlirRewrites,
+    pub no_cycle: bool,
     pub filter_after: bool,
 }
 
@@ -717,6 +718,7 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
                             None => {
                                 if self.filter_after {
                                     egraph.analysis.newly_added.push(new_node.clone());
+                                    egraph.analysis.blacklist_nodes.insert(new_node.clone());
                                 }
                                 egraph.add(new_node)
                             }
@@ -730,8 +732,19 @@ impl Applier<Mdl, TensorAnalysis> for MlirRewriteApplier {
                     }
                 }
             }
-            egraph.union(last_added, matched_id);
-            vec![last_added]
+            let should_union = if !self.no_cycle {
+                let mut descendents = HashMap::new();
+                !check_cycle(egraph, &subst, &HashMap::new(), &HashMap::new(), last_added, matched_id, &mut descendents)
+            } else {
+                true // no cycle check when no_cycle is true
+            };
+            
+            if should_union {
+                egraph.union(last_added, matched_id);
+                vec![last_added]
+            } else {
+                vec![]
+            }
         }
     }
 }
