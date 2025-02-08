@@ -799,6 +799,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     id++;
     PassManager pm(submod.getContext());
     if (numGPUModule == 0) {
+      pm.addPass(createLowerAffinePass());
       if (openmp)
         pm.addPass(createConvertSCFToOpenMPPass());
       else
