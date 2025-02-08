@@ -7720,6 +7720,52 @@ private:
   }
 };
 
+// This lets us reorder the following
+// Case 1: (op x (op y (op x y))) -> (op (op x y) (op x y))
+// Case 2: (op x (op (op y x) y)) -> (op (op x y) (op x y))
+template <typename Op>
+struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhsOp = op.getRhs().template getDefiningOp<Op>();
+    if (!rhsOp)
+      return failure();
+
+    auto rhslhs = rhsOp.getLhs();
+    auto rhsrhs = rhsOp.getRhs();
+
+    auto rhslhsOp = rhslhs.template getDefiningOp<Op>();
+    if (rhslhsOp) {
+      auto rhslhslhs = rhslhsOp.getLhs();
+      auto rhslhsrhs = rhslhsOp.getRhs();
+
+      // Case 2
+      if (lhs == rhslhsrhs && rhslhslhs == rhsrhs) {
+        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhsrhs);
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(), newOp.getResult());
+        return success();
+      }
+    }
+
+    auto rhsrhsOp = rhsrhs.template getDefiningOp<Op>();
+    if (rhsrhsOp) {
+      auto rhsrhslhs = rhsrhsOp.getLhs();
+      auto rhsrhsrhs = rhsrhsOp.getRhs();
+
+      // Case 1
+      if (lhs == rhsrhslhs && rhslhs == rhsrhsrhs) {
+        auto newOp = rewriter.template create<Op>(op.getLoc(), lhs, rhslhs);
+        rewriter.replaceOpWithNewOp<Op>(op, newOp.getResult(), newOp.getResult());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7829,7 +7875,13 @@ struct EnzymeHLOOptPass
                  TransposeUnaryTransposeSimplify<stablehlo::SignOp>,
                  TransposeUnaryTransposeSimplify<stablehlo::SineOp>,
                  TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>>(context);
+                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>,
+                 AssociativeBinaryOpReordering<stablehlo::AddOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MulOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MinOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MaxOp>,
+                 AssociativeBinaryOpReordering<stablehlo::AndOp>,
+                 AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
