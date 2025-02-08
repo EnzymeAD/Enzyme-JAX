@@ -5751,70 +5751,6 @@ stablehlo::Tensor sliceOp(const stablehlo::Tensor &operand,
                             inferredTypes[0].cast<mlir::ShapedType>());
 }
 
-stablehlo::Tensor mygatherOp(const stablehlo::Tensor &operand,
-                             const stablehlo::Tensor &startIndices,
-                             const stablehlo::Axes &offsetDims,
-                             const stablehlo::Axes &collapsedSliceDims,
-                             const stablehlo::Axes &startIndexMap,
-                             stablehlo::Axis indexVectorDim,
-                             const stablehlo::Sizes &sliceSizes,
-                             bool indicesAreSorted, ShapedType resultType) {
-  using namespace stablehlo;
-  constexpr int64_t kColon = -1;
-
-  Tensor result(resultType);
-  Axes batchDims;
-  for (auto d : result.getAxes())
-    if (!llvm::is_contained(offsetDims, d))
-      batchDims.push_back(d);
-
-  for (auto resultIt = result.index_begin(); resultIt != result.index_end();
-       ++resultIt) {
-    auto resultIndex = *resultIt;
-
-    Index batchIndex;
-    for (auto d : batchDims)
-      batchIndex.push_back(resultIndex[d]);
-
-    auto startIndicesIndex = batchIndex;
-    if (indexVectorDim < startIndices.getRank())
-      startIndicesIndex.insert(startIndicesIndex.begin() + indexVectorDim,
-                               kColon);
-    auto startIndex = index(sliceOp(startIndices, startIndicesIndex));
-
-    Index fullStartIndex(operand.getRank(), 0);
-    for (auto dOperand : operand.getAxes()) {
-      auto dStartIt = llvm::find(startIndexMap, dOperand);
-      if (dStartIt == startIndexMap.end())
-        continue;
-      auto dStart = dStartIt - startIndexMap.begin();
-      fullStartIndex[dOperand] = std::clamp<int64_t>(
-          startIndex[dStart], 0ll,
-          operand.getShape()[dOperand] - sliceSizes[dOperand]);
-    }
-
-    Index offsetIndex;
-    for (auto d : offsetDims)
-      offsetIndex.push_back(resultIndex[d]);
-
-    // Change here
-    Index fullOffsetIndex(operand.getRank(), 0);
-    {
-      size_t remapped_idx = 0;
-      for (auto off : offsetDims) {
-        while (llvm::is_contained(collapsedSliceDims, remapped_idx))
-          remapped_idx++;
-        fullOffsetIndex[remapped_idx] = off;
-      }
-    }
-    // End change
-
-    auto operandIndex = fullStartIndex + fullOffsetIndex;
-    result.set(resultIndex, operand.get(operandIndex));
-  }
-  return result;
-}
-
 bool is_iota(ArrayRef<int64_t> idx) {
   for (auto en : llvm::enumerate(idx))
     if (en.index() != en.value())
@@ -5845,12 +5781,18 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
     {
       DenseIntElementsAttr operandVals;
       if (matchPattern(operand, m_Constant(&operandVals))) {
-        auto out = mygatherOp(
+        auto out = stablehlo::gatherOp(
             stablehlo::constantOp(operandVals),
-            stablehlo::constantOp(startIndicesCst), stablehlo::Axes(offsetDims),
-            stablehlo::Axes(collapsedSliceDims), stablehlo::Axes(startIndexMap),
-            stablehlo::Axis(indexVectorDim), stablehlo::Sizes(sliceSizes),
-            indicesAreSorted, op.getType());
+            stablehlo::constantOp(startIndicesCst),
+            stablehlo::Axes(op.getDimensionNumbers().getOffsetDims()),
+            stablehlo::Axes(op.getDimensionNumbers().getCollapsedSliceDims()),
+            stablehlo::Axes(op.getDimensionNumbers().getOperandBatchingDims()),
+            stablehlo::Axes(
+                op.getDimensionNumbers().getStartIndicesBatchingDims()),
+            stablehlo::Axes(op.getDimensionNumbers().getStartIndexMap()),
+            stablehlo::Axis(op.getDimensionNumbers().getIndexVectorDim()),
+            stablehlo::Sizes(op.getSliceSizes()), op.getIndicesAreSorted(),
+            op.getType());
 
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                            fromTensor(out));
