@@ -20,7 +20,7 @@ impl<'a> Anneal for GlobalExtractor<'a> {
 
         for eclass in self.egraph.classes() {
             let id = self.egraph.find(eclass.id);
-            let should_modify = rng.random_bool(temp);
+            let should_modify = rng.random_bool(f64::min(1.0, temp));
             if should_modify {
                 let ub = eclass.len();
                 let choice = rng.random_range(0..ub);
