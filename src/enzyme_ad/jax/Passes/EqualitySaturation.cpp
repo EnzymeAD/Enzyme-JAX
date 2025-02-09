@@ -2568,11 +2568,9 @@ uint64_t tensat::get_graph_cost(rust::Vec<tensat::Node> nodes) {
   func.addEntryBlock();
   root.push_back(func);
 
-  llvm::errs() << "calling reconstruct\n";
   reconstructStablehlo(&root, OperationTimer::currentBlackboxIDToTensorInfo,
                        OperationTimer::currentBlackboxIDToCapturedValues,
                        nodes);
-  llvm::errs() << "reconstruction done\n";
   return OperationTimer::getCost(root).first;
 }
 

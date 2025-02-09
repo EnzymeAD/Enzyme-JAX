@@ -1134,7 +1134,6 @@ impl CppGraphConverter {
         rec_expr: &RecExpr<Mdl>,
     ) -> u64 {
         let nodes = CppGraphConverter::convert_to_node(egraph, to_egraph, rec_expr);
-        println!("getting graph cost");
         ffi::get_graph_cost(nodes)
     }
 

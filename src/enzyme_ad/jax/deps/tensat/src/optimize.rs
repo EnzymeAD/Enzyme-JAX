@@ -160,7 +160,7 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let default: HashMap<Id, usize> = HashMap::new();
             let solver = Executor::new(extractor, sa)
                 .configure(|state| state.param(default).max_iters(50000))
-                .add_observer(SlogLogger::term(), observers::ObserverMode::Always);
+                .add_observer(SlogLogger::term(), observers::ObserverMode::Every(50));
             solver.run().unwrap().state.param.unwrap()
         }
     }
