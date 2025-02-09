@@ -1271,19 +1271,24 @@ impl CppGraphConverter {
 
         let (egraph, root) = (runner.egraph, runner.roots[0]);
         let cost_model: CostModel = CostModel::new();
-        let (best, ext_secs, to_egraph) = extract_by_ilp(&egraph, root, &cost_model);
         // let (best, ext_secs) = extract_by_greedy(&egraph, root, &cost_model);
 
         // println!("{}", best);
-        // let global_extractor = GlobalExtractor::new(
-        //     runner.egraph.number_of_classes(),
-        //     &runner.egraph,
-        //     cost_model,
-        // );
+        let global_extractor = GlobalExtractor::new(
+            &egraph,
+            &cost_model,
+            root,
+        );
+
+        let candidate = extract_by_optimization(global_extractor, OptimizationMethod::SimulatedAnnealing);
+        println!("optimized candidate: {:?}", candidate);
+
         // println!(
         //     "end-to-end cost: {}",
         //     CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),
         // );
+
+        let (best, ext_secs, to_egraph) = extract_by_ilp(&egraph, root, &cost_model);
         CppGraphConverter::convert_to_node(&egraph, &to_egraph, &best)
     }
 }

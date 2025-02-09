@@ -1713,7 +1713,6 @@ fn get_descendents(
     check_blacklist: bool,
     descendents: &mut HashMap<Id, HashSet<Id>>,
 ) {
-    println!("get descendents {:?}", eclass);
     match descendents.get(&eclass) {
         Some(desc) => (),
         None => {

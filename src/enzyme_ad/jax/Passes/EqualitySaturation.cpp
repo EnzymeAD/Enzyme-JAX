@@ -248,20 +248,14 @@ public:
     auto context = OperationTimer::getContext();
     int64_t cost = -1, fus_cost = -1;
 
-    std::cout << "Before clone" << std::endl;
     // For some reason, not cloning the op here leads to a segfault. Maybe
     // prepareExecutable/ClientCompile consumes the op?
     auto opForMeasurement = op->clone();
-    std::cout << "after clone" << std::endl;
 
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
 
-    std::cout << "aftre wrapper" << std::endl;
-
     auto empirical_cost = getEmpiricalCost(wrapperModule);
-
-    std::cout << "after empirical" << std::endl;
 
     switch (getPlatform()) {
     case CPU: {
@@ -438,9 +432,6 @@ private:
 
     auto funcOp = funcOpInModule(wrapperModule);
     auto funcType = funcOp.getFunctionType();
-
-    std::cout << "Type: " << std::endl;
-    funcType.dump();
 
     auto executable = prepareExecutable(client, wrapperModule);
 
@@ -698,11 +689,11 @@ std::vector<int64_t> convolutionShapeComputation(
     output_shape[out_spatial_dims[i]] = out_dim;
   }
   output_shape[out_spec[1]] = output_feature_dim;
-  std::cout << "Computed Output Shape: ";
-  for (int64_t dim : output_shape) {
-    std::cout << dim << " ";
-  }
-  std::cout << std::endl;
+  // std::cout << "Computed Output Shape: ";
+  // for (int64_t dim : output_shape) {
+  //   std::cout << dim << " ";
+  // }
+  // std::cout << std::endl;
   return output_shape;
 }
 

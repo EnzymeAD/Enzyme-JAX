@@ -5,6 +5,8 @@ use crate::{
     rewrites::*,
 };
 use egg::*;
+use argmin::{core::*, solver::simulatedannealing::*};
+use argmin_observer_slog::SlogLogger;
 // use cxx::UniquePtr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ pub struct TensorCost<'a> {
     pub cost_model: &'a CostModel,
 }
 
-impl CostFunction<Mdl> for TensorCost<'_> {
+impl egg::CostFunction<Mdl> for TensorCost<'_> {
     type Cost = f32;
     /// Getting total cost for the subtree rooted at enode. See egg::CostFunction
     /// trait for more information on interface.
@@ -72,54 +74,57 @@ impl CostModel {
 }
 
 // extraction
-type Candidate = Vec<usize>;
+pub type Candidate = HashMap<Id, usize>;
 
 enum CostModels {
     Analytical,
     Measured,
 }
 
+pub enum OptimizationMethod {
+    SimulatedAnnealing,
+}
+
 pub struct GlobalExtractor<'a> {
-    n_eclasses: usize,
-    egraph: &'a EGraph<Mdl, TensorAnalysis>,
-    pub candidate: Candidate,
-    cost_model: CostModel,
+    pub egraph: &'a EGraph<Mdl, TensorAnalysis>,
+    cost_model: &'a CostModel,
+    root: Id,
 }
 
 impl<'a> GlobalExtractor<'a> {
     pub fn new(
-        n_eclasses: usize,
         egraph: &'a EGraph<Mdl, TensorAnalysis>,
-        cost_model: CostModel,
+        cost_model: &'a CostModel,
+        root: Id,
     ) -> Self {
         Self {
-            n_eclasses,
             egraph,
-            candidate: vec![1; n_eclasses], // Maybe this is a bad default...
             cost_model,
+            root,
         }
     }
 
-    pub fn cost(&self, candidate: Candidate, root: Id) -> f32 {
-        let (rec_expr, to_egraph) = self.candidate_to_recexpr(candidate, root);
+    pub fn cost(&self, candidate: &Candidate) -> f64 {
+        let (rec_expr, to_egraph) = self.candidate_to_recexpr(&candidate);
         let cost = CppGraphConverter::get_end_to_end_cost(self.egraph, &to_egraph, &rec_expr);
-        cost as f32 // Return the computed cost
+        cost as f64 // Return the computed cost
     }
 
-    /// Starting at the given root, convert the Candidate into a RecExpr, and also return a
+    /// Starting at the root, convert the Candidate into a RecExpr, and also return a
     /// mapping from the RecExpr Id to the EGraph Id
     pub fn candidate_to_recexpr(
         &self,
-        candidate: Candidate,
-        root: Id,
+        candidate: &Candidate,
     ) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
         // TODO: untested
         let mut node_picked: HashMap<Id, Mdl> = HashMap::new();
-        for (i, node_idx) in candidate.iter().enumerate() {
-            let eclass_id = Id::from(i);
+        for eclass in self.egraph.classes() {
+            let eclass_id = self.egraph.find(eclass.id);
             let enodes = &self.egraph[eclass_id].nodes;
+            // We treat the default state as 0. TODO: improve (maybe initialise with input graph)
+            let node_idx = candidate.get(&eclass_id).or(Some(&0)).unwrap();
             let enode = enodes[*node_idx].clone();
-            assert!(node_picked.insert(eclass_id, enode).is_none());
+            assert!(node_picked.insert(eclass_id.clone(), enode).is_none());
         }
 
         let mut egraph_to_recexpr: HashMap<Id, Id> = HashMap::new();
@@ -128,7 +133,7 @@ impl<'a> GlobalExtractor<'a> {
 
         construct_best_rec(
             &mut node_picked,
-            root,
+            self.root,
             &mut egraph_to_recexpr,
             &mut recexpr_to_egraph,
             &self.egraph,
@@ -136,6 +141,28 @@ impl<'a> GlobalExtractor<'a> {
         );
 
         (expr, recexpr_to_egraph)
+    }
+}
+
+
+pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationMethod) -> Candidate {
+    match method {
+        OptimizationMethod::SimulatedAnnealing => {
+            let init_temp = 0.5f64;
+            let sa = SimulatedAnnealing::new(init_temp)
+                .unwrap()
+                .with_stall_best(1000)
+                .with_stall_accepted(1000)
+                .with_reannealing_fixed(2000)
+                .with_reannealing_accepted(500)
+                .with_reannealing_best(800);
+
+            let default: HashMap<Id, usize> = HashMap::new();
+            let solver = Executor::new(extractor, sa)
+                .configure(|state| state.param(default).max_iters(50000))
+                .add_observer(SlogLogger::term(), observers::ObserverMode::Always);
+            solver.run().unwrap().state.param.unwrap()
+        }
     }
 }
 

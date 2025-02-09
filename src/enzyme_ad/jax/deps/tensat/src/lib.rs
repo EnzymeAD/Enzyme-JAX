@@ -5,4 +5,5 @@ pub mod optimize;
 pub mod parse;
 pub mod rewrites;
 pub mod verify;
+pub mod simulated_annealing;
 
