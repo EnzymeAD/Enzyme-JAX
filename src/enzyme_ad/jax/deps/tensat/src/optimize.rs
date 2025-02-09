@@ -153,12 +153,12 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let init_temp = 0.1f64;
             let sa = SimulatedAnnealing::new(init_temp)
                 .unwrap()
-                .with_temp_func(SATempFunc::Boltzmann)
+                .with_temp_func(SATempFunc::Exponential(0.95))
                 .with_stall_best(1000)
                 .with_stall_accepted(1000)
                 .with_reannealing_fixed(1000)
-                .with_reannealing_accepted(500)
-                .with_reannealing_best(200);
+                .with_reannealing_accepted(400)
+                .with_reannealing_best(100);
 
             let default: HashMap<Id, usize> = HashMap::new();
             let solver = Executor::new(extractor, sa)
