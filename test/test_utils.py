@@ -351,9 +351,18 @@ def pipelines():
     )
 
     return [
-        # ("JaX  ", None, CurBackends),
+        ("JaX  ", None, CurBackends),
         # ("JaXPipe", JaXPipeline(), CurBackends),
         # ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
+        # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        (
+            "HLOOpt",
+            JaXPipeline(
+                "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
+                + "canonicalize,cse,enzyme-hlo-opt,cse"
+            ),
+            CurBackends,
+        ),
         (
             "EqSat",
             JaXPipeline(
@@ -362,15 +371,6 @@ def pipelines():
             ),
             CurBackends,
         ),
-        # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-        # (
-        #     "HLOOpt",
-        #     JaXPipeline(
-        #         "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
-        #         + "canonicalize,cse,enzyme-hlo-opt,cse"
-        #     ),
-        #     CurBackends,
-        # ),
         # (
         #     "IPartOpt",
         #     JaXPipeline(
