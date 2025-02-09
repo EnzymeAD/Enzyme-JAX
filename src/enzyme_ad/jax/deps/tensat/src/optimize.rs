@@ -105,43 +105,45 @@ impl<'a> GlobalExtractor<'a> {
     }
 
     pub fn cost(&self, candidate: &Candidate) -> f64 {
-        let (rec_expr, to_egraph) = self.candidate_to_recexpr(&candidate);
+        let (rec_expr, to_egraph) = candidate_to_recexpr(&candidate, &self.egraph, self.root);
         let cost = CppGraphConverter::get_end_to_end_cost(self.egraph, &to_egraph, &rec_expr);
         cost as f64 // Return the computed cost
     }
+}
 
-    /// Starting at the root, convert the Candidate into a RecExpr, and also return a
-    /// mapping from the RecExpr Id to the EGraph Id
-    pub fn candidate_to_recexpr(
-        &self,
-        candidate: &Candidate,
-    ) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
-        // TODO: untested
-        let mut node_picked: HashMap<Id, Mdl> = HashMap::new();
-        for eclass in self.egraph.classes() {
-            let eclass_id = self.egraph.find(eclass.id);
-            let enodes = &self.egraph[eclass_id].nodes;
-            // We treat the default state as 0. TODO: improve (maybe initialise with input graph)
-            let node_idx = candidate.get(&eclass_id).or(Some(&0)).unwrap();
-            let enode = enodes[*node_idx].clone();
-            assert!(node_picked.insert(eclass_id.clone(), enode).is_none());
-        }
 
-        let mut egraph_to_recexpr: HashMap<Id, Id> = HashMap::new();
-        let mut recexpr_to_egraph: HashMap<Id, Id> = HashMap::new();
-        let mut expr: RecExpr<Mdl> = RecExpr::default();
-
-        construct_best_rec(
-            &mut node_picked,
-            self.root,
-            &mut egraph_to_recexpr,
-            &mut recexpr_to_egraph,
-            &self.egraph,
-            &mut expr,
-        );
-
-        (expr, recexpr_to_egraph)
+/// Starting at the root, convert the Candidate into a RecExpr, and also return a
+/// mapping from the RecExpr Id to the EGraph Id
+pub fn candidate_to_recexpr(
+    candidate: &Candidate,
+    egraph: &EGraph<Mdl, TensorAnalysis>,
+    root: Id,
+) -> (RecExpr<Mdl>, HashMap<Id, Id>) {
+    // TODO: untested
+    let mut node_picked: HashMap<Id, Mdl> = HashMap::new();
+    for eclass in egraph.classes() {
+        let eclass_id = egraph.find(eclass.id);
+        let enodes = &egraph[eclass_id].nodes;
+        // We treat the default state as 0. TODO: improve (maybe initialise with input graph)
+        let node_idx = candidate.get(&eclass_id).or(Some(&0)).unwrap();
+        let enode = enodes[*node_idx].clone();
+        assert!(node_picked.insert(eclass_id.clone(), enode).is_none());
     }
+
+    let mut egraph_to_recexpr: HashMap<Id, Id> = HashMap::new();
+    let mut recexpr_to_egraph: HashMap<Id, Id> = HashMap::new();
+    let mut expr: RecExpr<Mdl> = RecExpr::default();
+
+    construct_best_rec(
+        &mut node_picked,
+        root,
+        &mut egraph_to_recexpr,
+        &mut recexpr_to_egraph,
+        &egraph,
+        &mut expr,
+    );
+
+    (expr, recexpr_to_egraph)
 }
 
 

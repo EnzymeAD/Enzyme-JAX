@@ -1287,7 +1287,9 @@ impl CppGraphConverter {
         //     CppGraphConverter::get_end_to_end_cost(&egraph, &to_egraph, &best),
         // );
 
-        let (best, ext_secs, to_egraph) = extract_by_ilp(&egraph, root, &cost_model);
+        // let (best, ext_secs, to_egraph) = extract_by_ilp(&egraph, root, &cost_model);
+        let (best, to_egraph) = candidate_to_recexpr(&candidate, &egraph, root);
+
         CppGraphConverter::convert_to_node(&egraph, &to_egraph, &best)
     }
 }
