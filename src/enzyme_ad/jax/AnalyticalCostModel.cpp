@@ -52,7 +52,7 @@ uint64_t AnalyticalCostModel::getAnalyticalCost(ModuleOp &wrapperModule) {
 
   assert(hloModule->computation_count() == 1);
 
-  std::cout << hloModule->ToString() << std::endl;
+  // std::cout << hloModule->ToString() << std::endl;
 
   uint64_t cost = 0;
 
@@ -65,11 +65,11 @@ uint64_t AnalyticalCostModel::getAnalyticalCost(ModuleOp &wrapperModule) {
   // Sum up the costs for all the ops (assume additivity post-fusion and
   // optimisation)
   for (auto op : computation->instructions()) {
-    std::cout << "measuring " << op->ToString() << std::endl;
+    // std::cout << "measuring " << op->ToString() << std::endl;
     auto runtime = xla::gpu::GpuPerformanceModel::EstimateRunTimeForInstruction(
         op, *deviceDescription, &costAnalysis, options);
 
-    std::cout << runtime.ToString() << std::endl;
+    // std::cout << runtime.ToString() << std::endl;
     cost += absl::ToInt64Nanoseconds(runtime.exec_time);
   }
 

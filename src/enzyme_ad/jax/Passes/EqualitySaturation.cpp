@@ -255,10 +255,11 @@ public:
     ModuleOp wrapperModule =
         createModuleFromOperation(context, opForMeasurement);
 
-    auto empirical_cost = getEmpiricalCost(wrapperModule);
+    // auto empirical_cost = getEmpiricalCost(wrapperModule);
 
     switch (getPlatform()) {
     case CPU: {
+      auto empirical_cost = getEmpiricalCost(wrapperModule);
       cost = empirical_cost;
       fus_cost = empirical_cost;
       break;
@@ -266,8 +267,9 @@ public:
     case GPU: {
       cost = AnalyticalCostModel::getAnalyticalCost(wrapperModule);
 
-      std::cout << "Empirical: " << empirical_cost * 1000
-                << ", modelled: " << cost << std::endl;
+      // std::cout << "Empirical: " << empirical_cost * 1000
+      //           << ", modelled: " << cost << std::endl;
+      fus_cost = cost;
       break;
     }
     }
