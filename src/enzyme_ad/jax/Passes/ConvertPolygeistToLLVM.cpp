@@ -176,6 +176,7 @@ struct Pointer2MemrefOpLowering
       }
       return stride == ShapedType::kDynamic;
     }) && "expected static strides except first element");
+    (void)first;
 
     descr.setAllocatedPtr(rewriter, loc, ptr);
     descr.setAlignedPtr(rewriter, loc, ptr);
