@@ -150,12 +150,12 @@ pub fn candidate_to_recexpr(
 pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationMethod) -> Candidate {
     match method {
         OptimizationMethod::SimulatedAnnealing => {
-            let init_temp = 0.9f64;
+            let init_temp = 0.6f64;
             let sa = SimulatedAnnealing::new(init_temp)
                 .unwrap()
                 .with_temp_func(SATempFunc::Boltzmann)
-                .with_stall_best(1000)
-                .with_stall_accepted(1000)
+                .with_stall_best(30000)
+                .with_stall_accepted(10000)
                 .with_reannealing_fixed(1000)
                 .with_reannealing_accepted(400)
                 .with_reannealing_best(600);
@@ -163,7 +163,7 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let default: HashMap<Id, usize> = HashMap::new();
             let solver = Executor::new(extractor, sa)
                 .configure(|state| state.param(default).max_iters(50000))
-                .add_observer(SlogLogger::term(), observers::ObserverMode::Every(50));
+                .add_observer(SlogLogger::term(), observers::ObserverMode::Every(10));
             solver.run().unwrap().state.param.unwrap()
         }
     }
