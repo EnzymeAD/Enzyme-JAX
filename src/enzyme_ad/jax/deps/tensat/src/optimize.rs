@@ -148,14 +148,15 @@ impl<'a> GlobalExtractor<'a> {
 pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationMethod) -> Candidate {
     match method {
         OptimizationMethod::SimulatedAnnealing => {
-            let init_temp = 0.5f64;
+            let init_temp = 0.9f64;
             let sa = SimulatedAnnealing::new(init_temp)
                 .unwrap()
+                .with_temp_func(SATempFunc::Boltzmann)
                 .with_stall_best(1000)
                 .with_stall_accepted(1000)
-                .with_reannealing_fixed(2000)
-                .with_reannealing_accepted(500)
-                .with_reannealing_best(800);
+                .with_reannealing_fixed(1000)
+                .with_reannealing_accepted(400)
+                .with_reannealing_best(600);
 
             let default: HashMap<Id, usize> = HashMap::new();
             let solver = Executor::new(extractor, sa)
