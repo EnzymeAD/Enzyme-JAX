@@ -5,6 +5,7 @@ use crate::{
 use argmin::{core::*, solver::simulatedannealing::*};
 use rand::prelude::*;
 use rand::seq::index::sample;
+use std::collections::HashMap;
 
 impl<'a> Anneal for GlobalExtractor<'a> {
   type Param = Candidate;

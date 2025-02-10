@@ -152,8 +152,60 @@ pub fn candidate_to_recexpr(
 pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationMethod) -> Candidate {
     match method {
         OptimizationMethod::SimulatedAnnealing => {
-            let greedy_candidate = compute_greedy_candidate(&extractor.egraph, &extractor.cost_model);
-            let sa = SimulatedAnnealing::new(0.05f64)
+            // compute m_id_map and id_m_map like in prep_ilp_data
+            let m_id_map: Vec<Id> = extractor.egraph.classes()
+                .map(|c| extractor.egraph.find(c.id))
+                .collect();
+            let id_m_map: HashMap<Id, usize> = m_id_map
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i))
+                .collect();
+
+            // build g_i mapping by iterating through all nodes
+            let mut g_i = Vec::new();
+            let mut nodes = Vec::new();
+            for class in extractor.egraph.classes() {
+                let m = id_m_map[&extractor.egraph.find(class.id)];
+                for node in class.iter() {
+                    nodes.push(node.clone());
+                    g_i.push(m);
+                }
+            }
+            let mut e_m: Vec<Vec<usize>> = vec![Vec::new(); m_id_map.len()];
+            for (i, &m) in g_i.iter().enumerate() {
+                e_m[m].push(i);
+            }
+
+            let node_to_i: HashMap<_, _> = nodes
+                .iter()
+                .enumerate()
+                .map(|(i, node)| (node.clone(), i))
+                .collect();
+
+            let tnsr_cost = TensorCost {
+                egraph: extractor.egraph,
+                cost_model: extractor.cost_model,
+            };
+            let mut greedy_extractor = Extractor::new(extractor.egraph, tnsr_cost);
+            let _ = greedy_extractor.find_best(extractor.root);
+
+            let (i_list, m_list) = get_init_solution(
+                extractor.egraph,
+                extractor.root,
+                &greedy_extractor.costs,
+                &g_i,
+                &node_to_i
+            );
+
+            let mut greedy_candidate = HashMap::new();
+            for (i, m) in i_list.iter().zip(m_list.iter()) {
+                let eclass_id = m_id_map[*m];
+                let local_idx = e_m[*m].iter().position(|x| x == i).expect("Node not found in eclass");
+                greedy_candidate.insert(eclass_id, *i);
+            }
+
+            let sa = SimulatedAnnealing::new(0.1)
                 .unwrap()
                 .with_temp_func(SATempFunc::Boltzmann)
                 .with_stall_best(1000)
@@ -165,6 +217,7 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let solver = Executor::new(extractor, sa)
                 .configure(|state| state.param(greedy_candidate).max_iters(1000))
                 .add_observer(SlogLogger::term(), observers::ObserverMode::Every(10));
+                
             solver.run().unwrap().state.param.unwrap()
         }
     }
