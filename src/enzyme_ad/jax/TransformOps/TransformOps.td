@@ -878,6 +878,11 @@ def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterIndicesAreUnique"];
 }
 
+def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
+    "transpose_reduce_simplify"> {
+  let patterns = ["TransposeReduceSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
