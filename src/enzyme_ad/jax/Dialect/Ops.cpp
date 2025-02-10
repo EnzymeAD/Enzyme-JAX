@@ -57,7 +57,7 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-void KernelCallOp::setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
+void KernelCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
   auto symbol = cast<SymbolRefAttr>(callee);
   setFnAttr(cast<FlatSymbolRefAttr>(symbol));
 }
@@ -68,34 +68,21 @@ CallInterfaceCallable KernelCallOp::getCallableForCallee() {
 
 Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
 
-mlir::MutableOperandRange KernelCallOp::getArgOperandsMutable() {
-  MutableOperandRange range(*this);
-  return range;
+MutableOperandRange KernelCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
 }
 
-mlir::ArrayAttr KernelCallOp::getArgAttrsAttr() {
-  mlir::ArrayAttr arr;
-  return arr;
-}
+ArrayAttr KernelCallOp::getArgAttrsAttr() { return nullptr; }
 
-void KernelCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+void KernelCallOp::setArgAttrsAttr(ArrayAttr attr) { (void)attr; }
 
-mlir::ArrayAttr KernelCallOp::getResAttrsAttr() {
-  mlir::ArrayAttr arr;
-  return arr;
-}
+ArrayAttr KernelCallOp::getResAttrsAttr() { return nullptr; }
 
-void KernelCallOp::setResAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+void KernelCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
 
-mlir::Attribute KernelCallOp::removeArgAttrsAttr() {
-  mlir::Attribute attr;
-  return attr;
-}
+Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
 
-mlir::Attribute KernelCallOp::removeResAttrsAttr() {
-  mlir::Attribute attr;
-  return attr;
-}
+Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -109,7 +96,7 @@ LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-void JITCallOp::setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
+void JITCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
   auto symbol = cast<SymbolRefAttr>(callee);
   setFnAttr(cast<FlatSymbolRefAttr>(symbol));
 }
@@ -118,36 +105,23 @@ CallInterfaceCallable JITCallOp::getCallableForCallee() {
   return SymbolRefAttr::get(getContext(), getFn());
 }
 
-mlir::MutableOperandRange JITCallOp::getArgOperandsMutable() {
-  MutableOperandRange range(*this);
-  return range;
+MutableOperandRange JITCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
 }
 
 Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
 
-mlir::ArrayAttr JITCallOp::getArgAttrsAttr() {
-  mlir::ArrayAttr arr;
-  return arr;
-}
+ArrayAttr JITCallOp::getArgAttrsAttr() { return nullptr; }
 
 void JITCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
 
-mlir::ArrayAttr JITCallOp::getResAttrsAttr() {
-  mlir::ArrayAttr arr;
-  return arr;
-}
+ArrayAttr JITCallOp::getResAttrsAttr() { return nullptr; }
 
-void JITCallOp::setResAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
 
-mlir::Attribute JITCallOp::removeArgAttrsAttr() {
-  mlir::Attribute attr;
-  return attr;
-}
+Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
 
-mlir::Attribute JITCallOp::removeResAttrsAttr() {
-  mlir::Attribute attr;
-  return attr;
-}
+Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
