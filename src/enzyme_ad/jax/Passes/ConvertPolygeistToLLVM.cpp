@@ -156,7 +156,7 @@ struct Pointer2MemrefOpLowering
       return success();
     }
 
-    auto descr = MemRefDescriptor::undef(rewriter, loc, convertedType);
+    auto descr = MemRefDescriptor::poison(rewriter, loc, convertedType);
     auto ptr = rewriter.create<LLVM::BitcastOp>(
         op.getLoc(), descr.getElementPtrType(), adaptor.getSource());
 
@@ -176,6 +176,7 @@ struct Pointer2MemrefOpLowering
       }
       return stride == ShapedType::kDynamic;
     }) && "expected static strides except first element");
+    (void)first;
 
     descr.setAllocatedPtr(rewriter, loc, ptr);
     descr.setAlignedPtr(rewriter, loc, ptr);
@@ -423,7 +424,6 @@ public:
           createIndexAttrConstant(rewriter, loc, rewriter.getIndexType(),
                                   innerSizes));
     }
-    Value null = rewriter.create<LLVM::ZeroOp>(loc, convertedType);
     assert(0 && "todo alloc lower");
     Value elementSize;
     // = rewriter.create<enzymexla::TypeSizeOp>(
@@ -1114,7 +1114,6 @@ struct ConvertPolygeistToLLVMPass
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
 
-    bool kernelBarePtrCallConv = false;
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
       // patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(

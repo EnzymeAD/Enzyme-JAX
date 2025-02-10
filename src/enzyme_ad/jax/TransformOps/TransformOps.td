@@ -430,6 +430,16 @@ def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
   let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
 }
 
+def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
+    "associative_binary_op_reordering"> {
+  let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MulOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MinOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::AndOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::OrOp>"];
+}
+
 def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
     "transpose_unary_transpose_abs"> {
   let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::AbsOp>"];
@@ -856,6 +866,16 @@ def NotSelectSimplifyPatterns : EnzymeHLOPatternOp<
 def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
     "common_compare_expression_rewrite"> {
   let patterns = ["CommonCompareExpressionRewrite"];
+}
+
+def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
+    "scatter_update_computation_const_prop"> {
+  let patterns = ["ScatterUpdateComputationConstProp"];
+}
+
+def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
+    "scatter_indices_are_unique"> {
+  let patterns = ["ScatterIndicesAreUnique"];
 }
 
 // TODO: better naming for parameters requires a static interface for
