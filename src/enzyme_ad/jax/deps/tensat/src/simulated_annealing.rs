@@ -16,7 +16,7 @@ impl<'a> Anneal for GlobalExtractor<'a> {
       param: &Candidate,
       temp: f64,
   ) -> Result<Candidate, Error> {
-      let mut rng = rand::thread_rng();
+      let mut rng = rand::rng();
       // Start from the current candidate.
       let mut new_candidate = param.clone();
 
@@ -51,4 +51,13 @@ impl<'a> Anneal for GlobalExtractor<'a> {
 
       Ok(new_candidate)
   }
+}
+
+impl<'a> argmin::core::CostFunction for GlobalExtractor<'a> {
+    type Param = Candidate;
+    type Output = f64;
+
+    fn cost(&self, param: &Candidate) -> Result<f64, Error> {
+        Ok(self.cost(param))
+    }
 }
