@@ -57,11 +57,45 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+void KernelCallOp::setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
 CallInterfaceCallable KernelCallOp::getCallableForCallee() {
   return SymbolRefAttr::get(getContext(), getFn());
 }
 
 Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
+
+mlir::MutableOperandRange KernelCallOp::getArgOperandsMutable() {
+  MutableOperandRange range(*this);
+  return range;
+}
+
+mlir::ArrayAttr KernelCallOp::getArgAttrsAttr() {
+  mlir::ArrayAttr arr;
+  return arr;
+}
+
+void KernelCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+mlir::ArrayAttr KernelCallOp::getResAttrsAttr() {
+  mlir::ArrayAttr arr;
+  return arr;
+}
+
+void KernelCallOp::setResAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+mlir::Attribute KernelCallOp::removeArgAttrsAttr() {
+  mlir::Attribute attr;
+  return attr;
+}
+
+mlir::Attribute KernelCallOp::removeResAttrsAttr() {
+  mlir::Attribute attr;
+  return attr;
+}
 
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -75,11 +109,45 @@ LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+void JITCallOp::setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
 CallInterfaceCallable JITCallOp::getCallableForCallee() {
   return SymbolRefAttr::get(getContext(), getFn());
 }
 
+mlir::MutableOperandRange JITCallOp::getArgOperandsMutable() {
+  MutableOperandRange range(*this);
+  return range;
+}
+
 Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
+
+mlir::ArrayAttr JITCallOp::getArgAttrsAttr() {
+  mlir::ArrayAttr arr;
+  return arr;
+}
+
+void JITCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+mlir::ArrayAttr JITCallOp::getResAttrsAttr() {
+  mlir::ArrayAttr arr;
+  return arr;
+}
+
+void JITCallOp::setResAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+mlir::Attribute JITCallOp::removeArgAttrsAttr() {
+  mlir::Attribute attr;
+  return attr;
+}
+
+mlir::Attribute JITCallOp::removeResAttrsAttr() {
+  mlir::Attribute attr;
+  return attr;
+}
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
