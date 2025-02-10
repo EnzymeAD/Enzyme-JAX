@@ -595,6 +595,7 @@ pybind_extension(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":cpu",
         ":gpu",
         ":clang_compile",
         ":compile_with_xla",

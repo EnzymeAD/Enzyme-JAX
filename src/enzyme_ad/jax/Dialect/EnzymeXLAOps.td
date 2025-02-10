@@ -11,32 +11,26 @@
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
+
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
-
 include "mlir/IR/OpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
-
 include "mlir/IR/AttrTypeBase.td"
-
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-
-//include "stablehlo/dialect/Base.td"
-//include "stablehlo/dialect/StablehloAttrs.td"
+include "mlir/Interfaces/CallInterfaces.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
-def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
   let summary = "Kernel Call operation";
-  let description = [{
-  }];
 
   let arguments = (ins
     FlatSymbolRefAttr:$fn, 
@@ -65,10 +59,8 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let hasCanonicalizer = 1;
 }
 
-def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
   let summary = "JIT Call operation";
-  let description = [{
-  }];
 
   let arguments = (ins
     FlatSymbolRefAttr:$fn, 

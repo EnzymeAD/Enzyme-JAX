@@ -220,9 +220,9 @@ struct ConvertToTypedMemref
         rewriter.setInsertionPoint(store);
         auto newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
                                      {expr.floorDiv(size)}, store.getContext());
-        auto newStore = rewriter.create<affine::AffineStoreOp>(
-            store.getLoc(), value, getNewMemref(), newMap,
-            store.getMapOperands());
+        rewriter.create<affine::AffineStoreOp>(store.getLoc(), value,
+                                               getNewMemref(), newMap,
+                                               store.getMapOperands());
         toErase.push_back(store);
         toErase.push_back(user);
       } else {

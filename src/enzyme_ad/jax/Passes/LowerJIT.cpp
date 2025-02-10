@@ -649,7 +649,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     }
     newParams.push_back(p);
   }
-  FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
   auto submod = builder.create<ModuleOp>(loc);
 
@@ -722,9 +721,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   builder.setInsertionPointToStart(&entryBlock);
 
   mlir::Value buffers = entryBlock.getArgument(0);
-
-  auto idx = builder.getIntegerType(64);
-  auto i32 = builder.getIntegerType(32);
 
   SmallVector<mlir::Value> arguments;
   for (auto arg : op.getArguments()) {
@@ -937,8 +933,6 @@ struct LowerJITPass
           op.getResultLayouts() ? cast<mlir::ArrayAttr>(*op.getResultLayouts())
                                 : nullptr;
       mlir::ArrayAttr output_operand_aliases = op.getOutputOperandAliases();
-
-      size_t data[8];
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
