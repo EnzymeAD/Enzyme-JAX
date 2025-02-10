@@ -312,6 +312,7 @@ td_library(
     ],
     includes = ["."],
     deps = [
+        "@llvm-project//mlir:CallInterfacesTdFiles",
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:LoopLikeInterfaceTdFiles",
@@ -420,6 +421,7 @@ cc_library(
         "@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",

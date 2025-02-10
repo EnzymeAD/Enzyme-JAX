@@ -57,6 +57,35 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   }];
 
   let hasCanonicalizer = 1;
+
+  // Provide default implementations for ArgumentAttributesMethods
+  let extraClassDefinition = [{
+    ::mlir::ArrayAttr $cppClass::getArgAttrsAttr() {
+      return ::mlir::ArrayAttr::get(getContext(), {});
+    }
+
+    ::mlir::ArrayAttr $cppClass::getResAttrsAttr() {
+      return ::mlir::ArrayAttr::get(getContext(), {});
+    }
+
+    void $cppClass::setArgAttrsAttr(::mlir::ArrayAttr attrs) {}
+
+    void $cppClass::setResAttrsAttr(::mlir::ArrayAttr attrs) {}
+
+    ::mlir::Attribute $cppClass::removeArgAttrsAttr() {
+      return ::mlir::Attribute();
+    }
+
+    ::mlir::Attribute $cppClass::removeResAttrsAttr() {
+      return ::mlir::Attribute();
+    }
+
+    void $cppClass::setCalleeFromCallable(::mlir::CallInterfaceCallable callee) {}
+
+    ::mlir::MutableOperandRange $cppClass::getArgOperandsMutable() {
+      return ::mlir::MutableOperandRange(*this, 0, 0);
+    }
+  }];
 }
 
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
@@ -79,6 +108,35 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   }];
 
   let hasCanonicalizer = 1;
+
+  // Provide default implementations for ArgumentAttributesMethods
+  let extraClassDefinition = [{
+    ::mlir::ArrayAttr $cppClass::getArgAttrsAttr() {
+      return ::mlir::ArrayAttr::get(getContext(), {});
+    }
+
+    ::mlir::ArrayAttr $cppClass::getResAttrsAttr() {
+      return ::mlir::ArrayAttr::get(getContext(), {});
+    }
+
+    void $cppClass::setArgAttrsAttr(::mlir::ArrayAttr attrs) {}
+
+    void $cppClass::setResAttrsAttr(::mlir::ArrayAttr attrs) {}
+
+    ::mlir::Attribute $cppClass::removeArgAttrsAttr() {
+      return ::mlir::Attribute();
+    }
+
+    ::mlir::Attribute $cppClass::removeResAttrsAttr() {
+      return ::mlir::Attribute();
+    }
+
+    void $cppClass::setCalleeFromCallable(::mlir::CallInterfaceCallable callee) {}
+
+    ::mlir::MutableOperandRange $cppClass::getArgOperandsMutable() {
+      return ::mlir::MutableOperandRange(*this, 0, 0);
+    }
+  }];
 }
 
 def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
