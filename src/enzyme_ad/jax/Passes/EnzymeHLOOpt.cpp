@@ -2779,6 +2779,14 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
+  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
+  for (int64_t i = 0; i < perm.size(); ++i) {
+    inversePerm[perm[i]] = i;
+  }
+  return inversePerm;
+}
+
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
@@ -2800,7 +2808,8 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
-          rhsConstOp.getLoc(), rhsConstOp, lhsOp.getPermutation());
+          rhsConstOp.getLoc(), rhsConstOp,
+          getInversePermutation(lhsOp.getPermutation()));
       auto newOp = rewriter.create<OpType>(op.getLoc(), lhsOp.getOperand(),
                                            transposedConstOp);
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
@@ -2816,7 +2825,8 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
       // This will be eliminated by a transpose(constant) -> constant
       // optimization
       auto transposedConstOp = rewriter.create<stablehlo::TransposeOp>(
-          lhsConstOp.getLoc(), lhsConstOp, rhsOp.getPermutation());
+          lhsConstOp.getLoc(), lhsConstOp,
+          getInversePermutation(rhsOp.getPermutation()));
       auto newOp = rewriter.create<OpType>(op.getLoc(), transposedConstOp,
                                            rhsOp.getOperand());
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
@@ -7672,6 +7682,79 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
   }
 };
 
+struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
+  using OpRewritePattern<stablehlo::ReduceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1) // TODO: support for multiple inputs
+      return failure();
+
+    auto input = op.getInputs()[0];
+    auto transposeOp = input.getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    auto transposeInput = transposeOp.getOperand();
+    auto transposeInputType = transposeInput.getType().cast<ShapedType>();
+    auto transposePermutation = transposeOp.getPermutation();
+    auto reduceDimensions = op.getDimensions();
+
+    SmallVector<int64_t> newReduceDimensions;
+    for (auto dim : reduceDimensions) {
+      int64_t newDim = transposePermutation[dim];
+      newReduceDimensions.push_back(newDim);
+    }
+
+    // Calculate result shape after reduction
+    SmallVector<int64_t> resultShape;
+    for (int64_t i = 0; i < transposeInputType.getRank(); ++i) {
+      if (!llvm::is_contained(newReduceDimensions, i)) {
+        resultShape.push_back(transposeInputType.getDimSize(i));
+      }
+    }
+    auto elementType = op.getType(0).cast<ShapedType>().getElementType();
+    auto newResultType = RankedTensorType::get(resultShape, elementType);
+
+    // Create a new reduce operation with the adjusted dimensions
+    auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), TypeRange(newResultType), ValueRange(transposeInput),
+        op.getInitValues(), newReduceDimensions);
+    newReduceOp.getRegion().takeBody(op.getRegion());
+
+    // Map non-reduced dimensions
+    SmallVector<bool> isReduced(transposeInputType.getRank(), false);
+    for (auto dim : reduceDimensions) {
+      isReduced[dim] = true;
+    }
+
+    SmallVector<int64_t> oldDims, newDims;
+    for (int64_t i = 0; i < transposePermutation.size(); ++i) {
+      if (!isReduced[transposePermutation[i]]) {
+        oldDims.push_back(transposePermutation[i]);
+      }
+      if (!isReduced[i]) {
+        newDims.push_back(i);
+      }
+    }
+
+    // Create final permutation
+    SmallVector<int64_t> finalPermutation(newDims.size());
+    for (int64_t i = 0; i < newDims.size(); ++i) {
+      for (int64_t j = 0; j < oldDims.size(); ++j) {
+        if (newDims[i] == oldDims[j]) {
+          finalPermutation[j] = i;
+          break;
+        }
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+        op, newReduceOp.getResult(0), finalPermutation);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -7910,7 +7993,8 @@ struct EnzymeHLOOptPass
         NotSelectSimplify,
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
-        ScatterIndicesAreUnique
+        ScatterIndicesAreUnique,
+        TransposeReduceSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

@@ -57,11 +57,32 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+void KernelCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
 CallInterfaceCallable KernelCallOp::getCallableForCallee() {
   return SymbolRefAttr::get(getContext(), getFn());
 }
 
 Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
+
+MutableOperandRange KernelCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
+ArrayAttr KernelCallOp::getArgAttrsAttr() { return nullptr; }
+
+void KernelCallOp::setArgAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+ArrayAttr KernelCallOp::getResAttrsAttr() { return nullptr; }
+
+void KernelCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -75,11 +96,32 @@ LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+void JITCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
 CallInterfaceCallable JITCallOp::getCallableForCallee() {
   return SymbolRefAttr::get(getContext(), getFn());
 }
 
+MutableOperandRange JITCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
 Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
+
+ArrayAttr JITCallOp::getArgAttrsAttr() { return nullptr; }
+
+void JITCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+ArrayAttr JITCallOp::getResAttrsAttr() { return nullptr; }
+
+void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
