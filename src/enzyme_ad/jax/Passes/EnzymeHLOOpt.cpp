@@ -7455,6 +7455,9 @@ struct ScatterUpdateComputationConstProp
 
   LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const final {
+    if (!op.getUniqueIndices())
+      return failure();
+
     auto &region = op.getUpdateComputation();
     auto &block = region.front();
 
@@ -7534,6 +7537,139 @@ private:
     }
     return std::make_tuple(isConstant, splatAttr);
   };
+};
+
+struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
+  using OpRewritePattern<stablehlo::ScatterOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op.getUniqueIndices())
+      return failure(); // already unique, no need to do anything
+
+    auto scatterIndices = op.getScatterIndices();
+    Attribute scatterIndicesAttr;
+    if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
+      auto denseAttr = scatterIndicesAttr.dyn_cast<DenseIntElementsAttr>();
+
+      auto shape = scatterIndices.getType().cast<ShapedType>().getShape();
+      if (shape.empty())
+        return failure();
+
+      int64_t numTuples = 1;
+      for (int64_t i = 0; i < shape.size() - 1; ++i) {
+        numTuples *= shape[i];
+      }
+      int64_t tupleSize = shape.back();
+
+      // Iterate over the scatter indices tensor to extract tuples
+      SmallVector<SmallVector<int64_t>> indexTuples;
+      auto values = denseAttr.getValues<APInt>();
+      auto it = values.begin();
+      for (int64_t i = 0; i < numTuples; ++i) {
+        SmallVector<int64_t> indexTuple;
+        for (int64_t j = 0; j < tupleSize; ++j) {
+          if (it == values.end()) {
+            return failure(); // Unexpected end of values
+          }
+          indexTuple.push_back((*it).getSExtValue());
+          ++it;
+        }
+        indexTuples.push_back(indexTuple);
+      }
+
+      if (areIndexTuplesUnique(indexTuples)) {
+        auto newOp = rewriter.create<stablehlo::ScatterOp>(
+            op.getLoc(), op.getResultTypes(), op.getInputs(),
+            op.getScatterIndices(), op.getUpdates(),
+            op.getScatterDimensionNumbers(), op.getIndicesAreSortedAttr(),
+            rewriter.getBoolAttr(true));
+        newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+        rewriter.replaceOp(op, newOp);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+
+private:
+  bool areIndexTuplesUnique(
+      const SmallVector<SmallVector<int64_t>> &indexTuples) const {
+    bool hasUnique = true;
+    for (int64_t i = 0; i < indexTuples.size() && hasUnique; ++i) {
+      for (int64_t j = i + 1; j < indexTuples.size() && hasUnique; ++j) {
+        if (std::equal(indexTuples[i].begin(), indexTuples[i].end(),
+                       indexTuples[j].begin(), indexTuples[j].end())) {
+          hasUnique = false;
+          break;
+        }
+      }
+    }
+    return hasUnique;
+  }
+};
+
+// This lets us reorder the following
+// Case 1: (op x (op (op y x) y)) -> (op (op x y) (op x y))
+// Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
+// Case 3: (op x (op y (op x y))) -> (op (op x y) (op x y))
+// Case 4: (op x (op y (op y x))) -> (op (op x y) (op x y))
+template <typename Op>
+struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhsOp = op.getRhs().template getDefiningOp<Op>();
+    if (!rhsOp)
+      return failure();
+
+    auto rhslhs = rhsOp.getLhs();
+    auto rhsrhs = rhsOp.getRhs();
+
+    auto rhslhsOp = rhslhs.template getDefiningOp<Op>();
+    if (rhslhsOp) {
+      auto rhslhslhs = rhslhsOp.getLhs();
+      auto rhslhsrhs = rhslhsOp.getRhs();
+
+      // Case 1
+      if (lhs == rhslhsrhs && rhslhslhs == rhsrhs) {
+        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
+                                        rhslhsOp.getResult());
+        return success();
+      }
+
+      // Case 2
+      if (lhs == rhslhslhs && rhslhsrhs == rhsrhs) {
+        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
+                                        rhslhsOp.getResult());
+        return success();
+      }
+    }
+
+    auto rhsrhsOp = rhsrhs.template getDefiningOp<Op>();
+    if (rhsrhsOp) {
+      auto rhsrhslhs = rhsrhsOp.getLhs();
+      auto rhsrhsrhs = rhsrhsOp.getRhs();
+
+      // Case 3
+      if (lhs == rhsrhslhs && rhslhs == rhsrhsrhs) {
+        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
+                                        rhsrhsOp.getResult());
+        return success();
+      }
+
+      // Case 4
+      if (lhs == rhsrhsrhs && rhslhs == rhsrhslhs) {
+        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
+                                        rhsrhsOp.getResult());
+        return success();
+      }
+    }
+
+    return failure();
+  }
 };
 
 ///////////////  End Imported from stablehlo
@@ -7645,7 +7781,13 @@ struct EnzymeHLOOptPass
                  TransposeUnaryTransposeSimplify<stablehlo::SignOp>,
                  TransposeUnaryTransposeSimplify<stablehlo::SineOp>,
                  TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>>(context);
+                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>,
+                 AssociativeBinaryOpReordering<stablehlo::AddOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MulOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MinOp>,
+                 AssociativeBinaryOpReordering<stablehlo::MaxOp>,
+                 AssociativeBinaryOpReordering<stablehlo::AndOp>,
+                 AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
@@ -7767,7 +7909,8 @@ struct EnzymeHLOOptPass
         CompareSelectSimplify,
         NotSelectSimplify,
         CommonCompareExpressionRewrite,
-        ScatterUpdateComputationConstProp
+        ScatterUpdateComputationConstProp,
+        ScatterIndicesAreUnique
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
