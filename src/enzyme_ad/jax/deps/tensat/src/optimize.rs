@@ -153,7 +153,7 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let init_temp = 0.1f64;
             let sa = SimulatedAnnealing::new(init_temp)
                 .unwrap()
-                .with_temp_func(SATempFunc::Exponential(0.95))
+                .with_temp_func(SATempFunc::Boltzmann)
                 .with_stall_best(1000)
                 .with_stall_accepted(1000)
                 .with_reannealing_fixed(1000)
