@@ -123,7 +123,18 @@ struct PropagateConstantBoundsPass
     SymbolTable symTable(moduleOp);
 
     DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
-    moduleOp->walk([&](CallOpInterface callOp) {
+    moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
+      auto symbolName =
+          dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
+      if (!symbolName)
+        return;
+      auto callee =
+          symTable.lookup<FunctionOpInterface>(symbolName.getLeafReference());
+      if (!callee)
+        return;
+      funcToKernelMap[callee].insert(callOp);
+    });
+    moduleOp->walk([&](enzymexla::JITCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
       if (!symbolName)
@@ -179,6 +190,7 @@ struct PropagateConstantBoundsPass
         }
       }
       Region *reg = callee.getCallableRegion();
+      assert(reg);
       std::string constantRangeAttrName = "range";
 
       auto setConstantRangeAttrIfConstant = [&](auto op, int64_t maxValue) {
