@@ -7792,12 +7792,92 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
-// TODO: This needs to be behind a no-nan flag for floats
 // (x > or >= 0 ? z : -z) -> sign(x) * z
 // (x < or <= 0 ? z : -z) -> sign(x) * (-z)
-// struct PositiveNegativeSelectSimplify : public OpRewritePattern<SelectOp> {
-//   using OpRewritePattern<SelectOp>::OpRewritePattern;
-// };
+struct PositiveNegativeSelectSimplify
+    : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    auto cond = op.getPred();
+    auto trueValue = op.getOnTrue();
+    auto falseValue = op.getOnFalse();
+
+    Value rhs = nullptr;
+    bool lhspositive = true;
+    if (trueValue.getDefiningOp<stablehlo::NegOp>()) {
+      if (trueValue.getDefiningOp<stablehlo::NegOp>().getOperand() !=
+          falseValue)
+        return failure();
+
+      rhs = falseValue; // cond ? -z : z
+      lhspositive = false;
+    } else if (falseValue.getDefiningOp<stablehlo::NegOp>()) {
+      if (falseValue.getDefiningOp<stablehlo::NegOp>().getOperand() !=
+          trueValue)
+        return failure();
+
+      rhs = trueValue; // cond ? z : -z
+    } else {
+      return failure();
+    }
+
+    llvm::errs() << "trueValue: " << trueValue << "\n";
+    llvm::errs() << "falseValue: " << falseValue << "\n";
+    llvm::errs() << "rhs: " << rhs << "\n";
+
+    auto compareOp = cond.getDefiningOp<stablehlo::CompareOp>();
+    if (!compareOp)
+      return failure();
+
+    if (compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::EQ ||
+        compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE)
+      return failure();
+
+    Value condValue = nullptr;
+    bool positive = true;
+    auto lhsCompareOp = compareOp.getLhs();
+    auto rhsCompareOp = compareOp.getRhs();
+    if (matchPattern(lhsCompareOp, m_AnyZeroFloat()) ||
+        matchPattern(lhsCompareOp, m_Zero())) {
+      condValue = compareOp.getRhs();
+      positive =
+          compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT ||
+          compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::GE;
+    } else if (matchPattern(rhsCompareOp, m_AnyZeroFloat()) ||
+               matchPattern(rhsCompareOp, m_Zero())) {
+      condValue = compareOp.getLhs();
+      positive =
+          compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT ||
+          compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::LE;
+    } else {
+      return failure();
+    }
+
+    llvm::errs() << "condValue: " << condValue << "\n";
+    llvm::errs() << "positive: " << positive << "\n";
+
+    auto newOp = rewriter.create<stablehlo::SignOp>(op.getLoc(), condValue);
+    if (positive) {  // cond > or >= 0
+      if (lhspositive) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, rhs);
+      } else {
+        auto negRhs = rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, negRhs);
+      }
+    } else {  // cond < or <= 0
+      if (lhspositive) {
+        auto negRhs = rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, negRhs);
+      } else {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, rhs);
+      }
+    }
+
+    return success();
+  }
+};
 
 // sign(x) * abs(x) -> x
 // abs(x) * sign(x) -> x
@@ -8080,7 +8160,8 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         TransposeReduceSimplify,
-        SignAbsSimplify
+        SignAbsSimplify,
+        PositiveNegativeSelectSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
