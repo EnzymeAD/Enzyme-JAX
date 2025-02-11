@@ -888,6 +888,11 @@ def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduceSimplify"];
 }
 
+def ApplySignAbsSimplifyPatterns : EnzymeHLOPatternOp<
+    "sign_abs_simplify"> {
+  let patterns = ["SignAbsSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

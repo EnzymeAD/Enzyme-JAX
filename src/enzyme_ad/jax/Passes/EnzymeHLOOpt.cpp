@@ -7792,6 +7792,53 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+// TODO: This needs to be behind a no-nan flag for floats
+// (x > or >= 0 ? z : -z) -> sign(x) * z
+// (x < or <= 0 ? z : -z) -> sign(x) * (-z)
+// struct PositiveNegativeSelectSimplify : public OpRewritePattern<SelectOp> {
+//   using OpRewritePattern<SelectOp>::OpRewritePattern;
+// };
+
+// sign(x) * abs(x) -> x
+// abs(x) * sign(x) -> x
+struct SignAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    auto lhsSignOp = lhs.getDefiningOp<stablehlo::SignOp>();
+    if (lhsSignOp) {
+      auto rhsAbsOp = rhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!rhsAbsOp)
+        return failure();
+
+      if (lhsSignOp.getOperand() != rhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, lhsSignOp.getOperand());
+      return success();
+    }
+
+    auto rhsSignOp = rhs.getDefiningOp<stablehlo::SignOp>();
+    if (rhsSignOp) {
+      auto lhsAbsOp = lhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!lhsAbsOp)
+        return failure();
+
+      if (rhsSignOp.getOperand() != lhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, rhsSignOp.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
@@ -8032,7 +8079,8 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
-        TransposeReduceSimplify
+        TransposeReduceSimplify,
+        SignAbsSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
