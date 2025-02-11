@@ -1234,5 +1234,3 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     ],
                     (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
-
-def : HLOInactiveOp<"BatchNormInferenceOp">;
