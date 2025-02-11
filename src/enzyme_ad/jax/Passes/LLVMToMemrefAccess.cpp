@@ -48,7 +48,16 @@ struct LLVMToMemrefAccessPass
     // Find all kernels and their enzymexla.kernel_call and enzymexla.jit_call
     // callers
     DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
-    moduleOp->walk([&](CallOpInterface callOp) {
+    moduleOp->walk([&](enzymexla::JITCallOp callOp) {
+      auto symbolName =
+          dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
+      auto callee =
+          symTable.lookup<FunctionOpInterface>(symbolName.getLeafReference());
+      if (!callee)
+        return;
+      funcToKernelMap[callee].insert(callOp);
+    });
+    moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
       auto callee =
