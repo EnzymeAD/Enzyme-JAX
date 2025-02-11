@@ -7964,8 +7964,58 @@ struct MultiplyNegateSimplify : public OpRewritePattern<stablehlo::MulOp> {
   }
 };
 
-// (mul (sign x) (add (abs x) y)) -> (add x (mul y (sign x)))
-// (mul (sign x) (add y (abs x))) -> (add (mul y (sign x)) x)
+// This pattern only does partially the following. We rely on transforming the op to a
+// pattern which further uses the above pattern.
+// (mul (sign x) (add (abs x) (abs x))) -> (mul x x)
+// TODO: We can simplify for cases where only one of the add operands is abs.
+struct MultiplySignAddSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    stablehlo::SignOp signOp = nullptr;
+    stablehlo::AddOp addOp = nullptr;
+    if (lhs.getDefiningOp<stablehlo::SignOp>()) {
+      signOp = lhs.getDefiningOp<stablehlo::SignOp>();
+      if (rhs.getDefiningOp<stablehlo::AddOp>()) {
+        addOp = rhs.getDefiningOp<stablehlo::AddOp>();
+      } else {
+        return failure();
+      }
+    } else if (rhs.getDefiningOp<stablehlo::SignOp>()) {
+      signOp = rhs.getDefiningOp<stablehlo::SignOp>();
+      if (lhs.getDefiningOp<stablehlo::AddOp>()) {
+        addOp = lhs.getDefiningOp<stablehlo::AddOp>();
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+
+    auto signOperand = signOp.getOperand();
+
+    auto lhsAddOp = addOp.getOperand(0);
+    auto rhsAddOp = addOp.getOperand(1);
+
+    if (lhsAddOp != rhsAddOp)
+      return failure(); // TODO: Can support more cases.
+
+    auto lhsAddAbsOp = lhsAddOp.getDefiningOp<stablehlo::AbsOp>();
+    auto rhsAddAbsOp = rhsAddOp.getDefiningOp<stablehlo::AbsOp>();
+    if (!lhsAddAbsOp || !rhsAddAbsOp)
+      return failure();
+
+    if (signOperand != lhsAddAbsOp.getOperand() || signOperand != rhsAddAbsOp.getOperand())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, signOperand, signOperand);
+    return success();
+  }
+};
 
 ///////////////  End Imported from stablehlo
 
@@ -8210,7 +8260,8 @@ struct EnzymeHLOOptPass
         TransposeReduceSimplify,
         SignAbsSimplify,
         PositiveNegativeSelectSimplify,
-        MultiplyNegateSimplify
+        MultiplyNegateSimplify,
+        MultiplySignAddSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

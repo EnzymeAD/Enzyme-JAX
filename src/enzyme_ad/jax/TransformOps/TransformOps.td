@@ -903,6 +903,11 @@ def ApplyMultiplyNegateSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["MultiplyNegateSimplify"];
 }
 
+def ApplyMultiplySignAddSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_sign_add_simplify"> {
+  let patterns = ["MultiplySignAddSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
