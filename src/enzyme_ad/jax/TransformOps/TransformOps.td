@@ -898,6 +898,11 @@ def ApplyPositiveNegativeSelectSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["PositiveNegativeSelectSimplify"];
 }
 
+def ApplyMultiplyNegateSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negate_simplify"> {
+  let patterns = ["MultiplyNegateSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
