@@ -1840,6 +1840,74 @@ public:
   }
 };
 
+class AutoDiffBatchNormTrainingRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AutoDiffBatchNormTrainingRev, BatchNormTrainingOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<BatchNormTrainingOp>(orig);
+
+    if (!gutils->isConstantValue(op->getResult(0)) ||
+        !gutils->isConstantValue(op->getResult(1)) ||
+        !gutils->isConstantValue(op->getResult(2))) {
+      gutils->zeroDiffe(op->getResult(0), builder);
+
+      auto opOperand0 = gutils->popCache(caches[0], builder);
+      auto opOperand1 = gutils->popCache(caches[1], builder);
+      auto opResult1 = gutils->getNewFromOriginal(op->getResult(1));
+      auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
+
+      auto gradOp = builder.create<BatchNormGradOp>(
+          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
+          gutils->diffe(op->getOperand(0), builder), op.getEpsilonAttr(),
+          op.getFeatureIndexAttr());
+
+      if (!gutils->isConstantValue(op->getOperand(0))) {
+        gutils->addToDiffe(op->getOperand(0), gradOp.getResult(0), builder);
+      }
+      if (!gutils->isConstantValue(op->getOperand(1))) {
+        gutils->addToDiffe(op->getOperand(1), gradOp.getResult(1), builder);
+      }
+      if (!gutils->isConstantValue(op->getOperand(2))) {
+        gutils->addToDiffe(op->getOperand(2), gradOp.getResult(2), builder);
+      }
+    }
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<BatchNormTrainingOp>(orig);
+
+    if (!gutils->isConstantValue(op->getOperand(0)) ||
+        !gutils->isConstantValue(op->getOperand(1)) ||
+        !gutils->isConstantValue(op->getOperand(2))) {
+      SmallVector<Value> caches;
+
+      Operation *newOp = gutils->getNewFromOriginal(op);
+      OpBuilder cacheBuilder(newOp);
+
+      auto initCacheOperand0 = gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getOperand(0)), cacheBuilder);
+      caches.push_back(initCacheOperand0);
+
+      auto initCacheOperand1 = gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getOperand(1)), cacheBuilder);
+      caches.push_back(initCacheOperand1);
+
+      return caches;
+    }
+
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -2438,6 +2506,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+    BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
+        *context);
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
