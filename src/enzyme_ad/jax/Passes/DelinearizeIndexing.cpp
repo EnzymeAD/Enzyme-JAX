@@ -171,7 +171,7 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                      toReplace.insert({expr, simplified});
                      return WalkResult::interrupt();
                    } else if (binexpr.getKind() == AffineExprKind::Mod) {
-                     AffineExpr simplified = lhs - (ub / cst);
+                     AffineExpr simplified = lhs - ((ub / cst) * cst);
                      toReplace.insert({expr, simplified});
                      return WalkResult::interrupt();
                    } else {
@@ -192,9 +192,13 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                  }
                  return WalkResult::advance();
                })
-               .wasInterrupted())
+               .wasInterrupted()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "REPLACING " << toReplace.begin()->getFirst() << " WITH "
+                 << toReplace.begin()->getSecond() << "\n");
       expr = simplifyAffineExpr(expr.replace(toReplace), accessAvm.getNumDims(),
                                 accessAvm.getNumSymbols());
+    }
     LLVM_DEBUG(llvm::dbgs() << "Simplified expr: " << expr << "\n");
     exprs.push_back(expr);
   }

@@ -31,3 +31,15 @@ func.func private @kern$par0(%memref_arg: memref<?x5x3xi64, 1>) {
   }
   return
 }
+
+// -----
+
+func.func private @kern$par0(%memref_arg: memref<?x5x3xi64, 1>) {
+  %arg0 = "enzymexla.memref2pointer"(%memref_arg) : (memref<?x5x3xi64, 1>) -> !llvm.ptr<1>
+  %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
+  affine.parallel (%arg1, %arg2, %arg3) = (14, 15, 12) to (21, 20, 15) {
+    %2 = arith.constant 1 : i64
+    affine.store %2, %0[%arg3 + %arg2 * 3 + %arg1 * 3 * 5] : memref<?xi64, 1>
+  }
+  return
+}
