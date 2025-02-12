@@ -135,6 +135,14 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                      /*pos=*/1,
                      /*num=*/domain.getNumDimAndSymbolVars() - 1);
                  domain.removeTrivialRedundancy();
+                 if (domain.getNumLocalVars() > 0) {
+                   LLVM_DEBUG(
+                       llvm::dbgs()
+                       << "We don't know what to do with local vars yet.\n");
+                   // TODO they need to be passed into the getLowerAndUpperBound
+                   // call
+                   return WalkResult::advance();
+                 }
                  auto bounds = domain.getLowerAndUpperBound(
                      0, 0, 1, domain.getNumDimVars(), {}, ctx);
                  auto lbExpr = bounds.first.getResult(0);
