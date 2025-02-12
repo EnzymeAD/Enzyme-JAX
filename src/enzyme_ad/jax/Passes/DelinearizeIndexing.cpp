@@ -1,14 +1,13 @@
 
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/IR/AffineExpr.h"
@@ -23,6 +22,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/DynamicAPInt.h"
@@ -51,7 +51,8 @@ struct AccessInfo {
   affine::MemRefAccess access;
   AffineMap map;
 
-  AccessInfo(affine::MemRefAccess access, AffineMap map = AffineMap()) : access(access), map(map) {}
+  AccessInfo(affine::MemRefAccess access, AffineMap map = AffineMap())
+      : access(access), map(map) {}
 };
 
 LogicalResult getOpIndexSet(Operation *op,
@@ -61,211 +62,151 @@ LogicalResult getOpIndexSet(Operation *op,
   return getIndexSet(ops, indexSet);
 }
 
-// TODO This code needs to be adapted to do analysis on the ranges of the dims
-// in the affine expressions so that we can simplify the floordiv/mod by
-// constants
-LogicalResult
-reshapeMemref(Value memref,
-              std::function<void(RewriterBase &, unsigned, unsigned)>
-                  rewriteMemrefCallback) {
+static int64_t ceilDiv(int64_t a, int64_t b) { return ((a - 1) / b) + 1; }
 
-  MLIRContext *ctx = memref.getContext();
-  using namespace mlir::affine;
+AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
+                        affine::MemRefAccess access) {
+  using namespace affine;
+  auto ctx = access.opInst->getContext();
 
-  SmallVector<AccessInfo> accesses;
-  bool foundAllUses = true;
-  for (auto user : memref.getUsers()) {
-    if (auto load = dyn_cast<AffineLoadOp>(user)) {
-      accesses.push_back({MemRefAccess(load)});
-    } else if (auto store = dyn_cast<AffineStoreOp>(user)) {
-      accesses.push_back({MemRefAccess(store)});
-    } else {
-      foundAllUses = false;
-      break;
-    }
+  SmallVector<AffineExpr> exprs;
+  for (auto resultId : llvm::seq<unsigned>(accessAvm.getNumResults())) {
+    AffineExpr expr = accessAvm.getResult(resultId);
+    LLVM_DEBUG(llvm::dbgs() << "Simplifying expr " << expr << "\n");
+
+    DenseMap<AffineExpr, AffineExpr> toReplace;
+    while (expr.walk([&](AffineExpr expr) {
+                 LLVM_DEBUG(llvm::dbgs() << "Walking expr " << expr << "\n");
+                 AffineBinaryOpExpr binexpr =
+                     dyn_cast<AffineBinaryOpExpr>(expr);
+                 if (!binexpr) {
+                   LLVM_DEBUG(llvm::dbgs() << "Not binexpr\n");
+                   return WalkResult::advance();
+                 }
+                 if (binexpr.getKind() != AffineExprKind::Mod &&
+                     binexpr.getKind() != AffineExprKind::FloorDiv &&
+                     binexpr.getKind() != AffineExprKind::CeilDiv) {
+                   LLVM_DEBUG(llvm::dbgs() << (unsigned)binexpr.getKind()
+                                           << " not mod or div\n");
+                   return WalkResult::advance();
+                 }
+
+                 auto rhs = binexpr.getRHS();
+                 auto rhsMap = AffineMap::get(accessAvm.getNumDims(),
+                                              accessAvm.getNumSymbols(), rhs);
+
+                 auto rhsCstExpr = dyn_cast<AffineConstantExpr>(rhs);
+                 if (!rhsCstExpr) {
+                   LLVM_DEBUG(llvm::dbgs() << "RHS not const\n");
+                   return WalkResult::advance();
+                 }
+                 int64_t cst = rhsCstExpr.getValue();
+                 LLVM_DEBUG(llvm::dbgs() << "RHS cst " << cst << "\n");
+
+                 auto lhs = binexpr.getLHS();
+                 auto lhsMap = AffineMap::get(accessAvm.getNumDims(),
+                                              accessAvm.getNumSymbols(), lhs);
+
+                 AffineValueMap lhsAvm(lhsMap, accessAvm.getOperands());
+                 lhsAvm.composeSimplifyAndCanonicalize();
+                 LLVM_DEBUG(llvm::dbgs()
+                            << "Nested mod: " << lhsAvm.getAffineMap() << "\n");
+                 affine::FlatAffineValueConstraints domain;
+                 if (failed(getOpIndexSet(access.opInst, &domain))) {
+                   LLVM_DEBUG(llvm::dbgs() << "Could not get op index set\n");
+                   return WalkResult::advance();
+                 }
+                 if (failed(domain.composeMap(&lhsAvm))) {
+                   LLVM_DEBUG(llvm::dbgs() << "Could compose map\n");
+                   return WalkResult::advance();
+                 }
+                 LLVM_DEBUG(llvm::dbgs() << "Composed domain: ");
+                 LLVM_DEBUG(domain.dump());
+                 domain.setDimSymbolSeparation(domain.getNumDimAndSymbolVars() -
+                                               1);
+                 domain.simplify();
+                 SmallVector<Value, 4> vars;
+                 domain.getValues(domain.getNumDimVars(),
+                                  domain.getNumDimAndSymbolVars(), &vars);
+                 for (Value var : vars)
+                   if ((affine::isAffineInductionVar(var)))
+                     domain.projectOut(var);
+                 domain.constantFoldVarRange(
+                     /*pos=*/1,
+                     /*num=*/domain.getNumDimAndSymbolVars() - 1);
+                 domain.removeTrivialRedundancy();
+                 auto bounds = domain.getLowerAndUpperBound(
+                     0, 0, 1, domain.getNumDimVars(), {}, ctx);
+                 auto lbExpr = bounds.first.getResult(0);
+                 auto ubExpr = bounds.second.getResult(0);
+                 LLVM_DEBUG(llvm::dbgs() << "LB: " << lbExpr << "\n");
+                 LLVM_DEBUG(llvm::dbgs() << "UB: " << ubExpr << "\n");
+                 auto cLb = dyn_cast<AffineConstantExpr>(lbExpr);
+                 auto cUb = dyn_cast<AffineConstantExpr>(ubExpr);
+                 if (!cLb || !cUb) {
+                   LLVM_DEBUG(llvm::dbgs() << "Could not get cLb cUb\n");
+                   return WalkResult::advance();
+                 }
+                 // Get the range [lb, ub] from [cLb, cUb)
+                 auto lb = cLb.getValue();
+                 auto ub = cUb.getValue() - 1;
+
+                 if (ub - lb >= cst) {
+                   LLVM_DEBUG(llvm::dbgs() << "Range bigger than cst\n");
+                   return WalkResult::advance();
+                 }
+
+                 if (binexpr.getKind() == AffineExprKind::Mod ||
+                     binexpr.getKind() == AffineExprKind::FloorDiv) {
+                   // TODO need to check whether the C++ floordiv rounds the
+                   // same way as the affine floordiv for negative numbers
+                   if (ub / cst != lb / cst) {
+                     LLVM_DEBUG(llvm::dbgs() << "Unequal div\n");
+                     return WalkResult::advance();
+                   }
+
+                   if (binexpr.getKind() == AffineExprKind::FloorDiv) {
+                     AffineExpr simplified =
+                         getAffineConstantExpr(ub / cst, ctx);
+                     toReplace.insert({expr, simplified});
+                     return WalkResult::interrupt();
+                   } else if (binexpr.getKind() == AffineExprKind::Mod) {
+                     AffineExpr simplified = lhs - (ub / cst);
+                     toReplace.insert({expr, simplified});
+                     return WalkResult::interrupt();
+                   } else {
+                     llvm_unreachable("?");
+                   }
+
+                 } else if (binexpr.getKind() == AffineExprKind::CeilDiv) {
+                   if (ceilDiv(ub, cst) != ceilDiv(lb, cst)) {
+                     LLVM_DEBUG(llvm::dbgs() << "Unequal ceil\n");
+                     return WalkResult::advance();
+                   }
+                   AffineExpr simplified =
+                       getAffineConstantExpr(ceilDiv(ub, cst), ctx);
+                   toReplace.insert({expr, simplified});
+                   return WalkResult::interrupt();
+                 } else {
+                   llvm_unreachable("?");
+                 }
+                 return WalkResult::advance();
+               })
+               .wasInterrupted())
+      expr = simplifyAffineExpr(expr.replace(toReplace), accessAvm.getNumDims(),
+                                accessAvm.getNumSymbols());
+    LLVM_DEBUG(llvm::dbgs() << "Simplified expr: " << expr << "\n");
+    exprs.push_back(expr);
   }
-
-  if (!foundAllUses)
-    return failure();
-
-  llvm::SmallSetVector<int64_t, 16> constantsSet;
-  llvm::SmallSetVector<Value, 16> symbols;
-  for (auto ainfo : accesses) {
-    auto access = ainfo.access;
-    AffineValueMap valueMap;
-    access.getAccessMap(&valueMap);
-    AffineMap map = valueMap.getAffineMap();
-    for (AffineExpr result : map.getResults()) {
-      result.walk([&](AffineExpr expr) {
-        if (auto cst = dyn_cast<AffineConstantExpr>(expr)) {
-          if (cst.getValue() > 0)
-            constantsSet.insert(cst.getValue());
-          else
-            constantsSet.insert(-cst.getValue());
-        }
-        if (auto sym = dyn_cast<AffineSymbolExpr>(expr))
-          symbols.insert(
-              valueMap.getOperand(valueMap.getNumDims() + sym.getPosition()));
-      });
-    }
-  }
-
-  SmallVector<int64_t> constants(constantsSet.begin(), constantsSet.end());
-  llvm::sort(constants);
-
-  auto checkShapeCandidate = [&](int64_t cst, unsigned resultId) {
-    LLVM_DEBUG(llvm::dbgs() << "Checking shape candidate " << cst << " at "
-                            << resultId << "\n");
-    bool allValid = true;
-    for (auto &ainfo : accesses) {
-      auto access = ainfo.access;
-      AffineValueMap accessAvm;
-      access.getAccessMap(&accessAvm);
-      AffineExpr expr = accessAvm.getResult(resultId);
-      LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
-                              << " with expr " << expr << "\n");
-      auto mod = expr % cst;
-      auto floor = expr.floorDiv(cst);
-      LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
-
-      DenseMap<AffineExpr, AffineExpr> toReplace;
-      auto res = mod.walk([&](AffineExpr expr) {
-        AffineBinaryOpExpr binexpr = dyn_cast<AffineBinaryOpExpr>(expr);
-        if (!binexpr)
-          return WalkResult::advance();
-        if (binexpr.getKind() != AffineExprKind::Mod)
-          return WalkResult::advance();
-        if (binexpr.getRHS() != getAffineConstantExpr(cst, ctx))
-          return WalkResult::advance();
-        auto lhs = binexpr.getLHS();
-        auto lhsMap = AffineMap::get(accessAvm.getNumDims(),
-                                     accessAvm.getNumSymbols(), lhs);
-        AffineValueMap lhsAvm(lhsMap, accessAvm.getOperands());
-        lhsAvm.composeSimplifyAndCanonicalize();
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Nested mod: " << lhsAvm.getAffineMap() << "\n");
-        affine::FlatAffineValueConstraints domain;
-        if (failed(getOpIndexSet(access.opInst, &domain)))
-          return WalkResult::interrupt();
-        if (failed(domain.composeMap(&lhsAvm)))
-          return WalkResult::interrupt();
-        LLVM_DEBUG(llvm::dbgs() << "Composed domain: ");
-        LLVM_DEBUG(domain.dump());
-        domain.setDimSymbolSeparation(domain.getNumDimAndSymbolVars() - 1);
-        domain.simplify();
-        SmallVector<Value, 4> vars;
-        domain.getValues(domain.getNumDimVars(),
-                         domain.getNumDimAndSymbolVars(), &vars);
-        for (Value var : vars)
-          if ((affine::isAffineInductionVar(var)))
-            domain.projectOut(var);
-        domain.constantFoldVarRange(
-            /*pos=*/1,
-            /*num=*/domain.getNumDimAndSymbolVars() - 1);
-        domain.removeTrivialRedundancy();
-        auto bounds = domain.getLowerAndUpperBound(
-            0, 0, 1, domain.getNumDimVars(), {}, ctx);
-        auto lbExpr = bounds.first.getResult(0);
-        auto ubExpr = bounds.second.getResult(0);
-        LLVM_DEBUG(llvm::dbgs() << "LB: " << lbExpr << "\n");
-        LLVM_DEBUG(llvm::dbgs() << "UB: " << ubExpr << "\n");
-        auto cLb = dyn_cast<AffineConstantExpr>(lbExpr);
-        auto cUb = dyn_cast<AffineConstantExpr>(ubExpr);
-        if (!cLb || !cUb)
-          return WalkResult::interrupt();
-        auto lb = cLb.getValue();
-        auto ub = cUb.getValue();
-
-        if (!(lb >= 0 && lb <= cst && ub >= 0 && ub <= cst))
-          return WalkResult::interrupt();
-
-        toReplace.insert({expr, lhs});
-        return WalkResult::advance();
-      });
-
-      bool isValid = !res.wasInterrupted();
-
-      if (!isValid) {
-        allValid = false;
-        break;
-      }
-
-      mod = simplifyAffineExpr(mod.replace(toReplace), accessAvm.getNumDims(),
-                               accessAvm.getNumSymbols());
-
-      toReplace.clear();
-      auto zero = getAffineConstantExpr(0, ctx);
-      floor.walk([&](AffineExpr expr) {
-        AffineBinaryOpExpr binexpr = dyn_cast<AffineBinaryOpExpr>(expr);
-        if (!binexpr)
-          return;
-        if (binexpr.getKind() != AffineExprKind::FloorDiv)
-          return;
-        if (binexpr.getRHS() != getAffineConstantExpr(cst, ctx))
-          return;
-
-        // Theoretically all the checks above for the `mod` should succeed
-        // here too.
-        toReplace.insert({expr, zero});
-      });
-
-      floor =
-          simplifyAffineExpr(floor.replace(toReplace), accessAvm.getNumDims(),
-                             accessAvm.getNumSymbols());
-
-      SmallVector<AffineExpr> exprs(
-          accessAvm.getAffineMap().getResults().begin(),
-          accessAvm.getAffineMap().getResults().end());
-      exprs.erase(std::next(exprs.begin(), resultId));
-      exprs.insert(std::next(exprs.begin(), resultId), mod);
-      exprs.insert(std::next(exprs.begin(), resultId), floor);
-      ainfo.map = AffineMap::get(accessAvm.getNumDims(),
+  AffineMap map = AffineMap::get(accessAvm.getNumDims(),
                                  accessAvm.getNumSymbols(), exprs, ctx);
-      LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
-    }
-
-    if (!allValid)
-      return false;
-
-    LLVM_DEBUG(llvm::dbgs() << "Found valid shape candidate " << cst << "\n");
-
-    IRRewriter rewriter(ctx);
-
-    rewriteMemrefCallback(rewriter, resultId, cst);
-
-    for (auto &ainfo : accesses) {
-      if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
-        rewriter.setInsertionPoint(load);
-        rewriter.replaceOpWithNewOp<AffineLoadOp>(
-            load, load.getMemref(), ainfo.map, load.getMapOperands());
-      } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
-        rewriter.setInsertionPoint(store);
-        rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
-                                                   store.getMemref(), ainfo.map,
-                                                   store.getMapOperands());
-      } else {
-        llvm_unreachable("unexpected");
-      }
-    }
-
-    return true;
-  };
-
-  for (auto cst : constants) {
-    if (cst == 1 || cst == 0)
-      continue;
-    assert(cst > 0);
-    if (checkShapeCandidate(cst, 0))
-      return success();
-  }
-  return failure();
+  LLVM_DEBUG(llvm::dbgs() << "New map: " << map << "\n");
+  return map;
 }
 
 LogicalResult
 reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
-              std::function<void(RewriterBase &)>
-                  rewriteMemrefCallback) {
+               std::function<void(RewriterBase &)> rewriteMemrefCallback) {
 
   MLIRContext *ctx = memref.getContext();
   using namespace mlir::affine;
@@ -288,7 +229,8 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
 
   IRRewriter rewriter(ctx);
 
-  for (unsigned shapeIdx : llvm::reverse(llvm::seq<unsigned>(1, shape.size()))) {
+  for (unsigned shapeIdx :
+       llvm::reverse(llvm::seq<unsigned>(1, shape.size()))) {
     int64_t cst = shape[shapeIdx];
     unsigned resultId = 0;
     for (auto &ainfo : accesses) {
@@ -296,58 +238,61 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       AffineMap map = ainfo.map;
       AffineExpr expr = map.getResult(resultId);
       LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
-                 << " with expr " << expr << "\n");
+                              << " with expr " << expr << "\n");
       auto mod = expr % cst;
       auto floor = expr.floorDiv(cst);
       LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
       LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
 
-      SmallVector<AffineExpr> exprs(
-          map.getResults().begin(),
-          map.getResults().end());
+      SmallVector<AffineExpr> exprs(map.getResults().begin(),
+                                    map.getResults().end());
       exprs.erase(std::next(exprs.begin(), resultId));
       exprs.insert(std::next(exprs.begin(), resultId), mod);
       exprs.insert(std::next(exprs.begin(), resultId), floor);
-      ainfo.map = AffineMap::get(map.getNumDims(),
-                                 map.getNumSymbols(), exprs, ctx);
+      ainfo.map =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
       LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
+      AffineValueMap avm;
+      access.getAccessMap(&avm);
+      avm.reset(ainfo.map, avm.getOperands());
+      ainfo.map = simplifyExprs(avm, ainfo.access);
     }
   }
 
   rewriteMemrefCallback(rewriter);
 
   for (auto &ainfo : accesses) {
-      if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
-          rewriter.setInsertionPoint(load);
-          rewriter.replaceOpWithNewOp<AffineLoadOp>(
-              load, load.getMemref(), ainfo.map, load.getMapOperands());
-      } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
-          rewriter.setInsertionPoint(store);
-          rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
-                                                     store.getMemref(), ainfo.map,
-                                                     store.getMapOperands());
-      } else {
-          llvm_unreachable("unexpected");
-      }
+    if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
+      rewriter.setInsertionPoint(load);
+      rewriter.replaceOpWithNewOp<AffineLoadOp>(
+          load, load.getMemref(), ainfo.map, load.getMapOperands());
+    } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
+      rewriter.setInsertionPoint(store);
+      rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
+                                                 store.getMemref(), ainfo.map,
+                                                 store.getMapOperands());
+    } else {
+      llvm_unreachable("unexpected");
+    }
   }
   return success();
 }
 
 LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
-    auto source = atAddr.getSource();
-    auto m2p = source.getDefiningOp<enzymexla::Memref2PointerOp>();
-    if (!m2p)
-        return failure();
-    MemRefType newMt = m2p.getSource().getType();
-    auto shape = newMt.getShape();
+  auto source = atAddr.getSource();
+  auto m2p = source.getDefiningOp<enzymexla::Memref2PointerOp>();
+  if (!m2p)
+    return failure();
+  MemRefType newMt = m2p.getSource().getType();
+  auto shape = newMt.getShape();
 
-    // Only the first rank can be dynamic
-    if (llvm::any_of(llvm::drop_begin(shape),
-                     [](int64_t size) { return size == ShapedType::kDynamic; }))
-        return failure();
+  // Only the first rank can be dynamic
+  if (llvm::any_of(llvm::drop_begin(shape),
+                   [](int64_t size) { return size == ShapedType::kDynamic; }))
+    return failure();
 
-    if (shape.size() <= 1)
-      return failure();
+  if (shape.size() <= 1)
+    return failure();
 
   auto memref = atAddr.getResult();
   return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
@@ -362,7 +307,8 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
 } // namespace
 
 struct DelinearizeIndexingPass
-    : public enzyme::impl::DelinearizeIndexingPassBase<DelinearizeIndexingPass> {
+    : public enzyme::impl::DelinearizeIndexingPassBase<
+          DelinearizeIndexingPass> {
   using Base::Base;
   void runOnOperation() override {
     Operation *op = getOperation();
