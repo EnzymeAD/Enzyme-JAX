@@ -62,7 +62,16 @@ LogicalResult getOpIndexSet(Operation *op,
   return getIndexSet(ops, indexSet);
 }
 
-static int64_t ceilDiv(int64_t a, int64_t b) { return ((a - 1) / b) + 1; }
+static int64_t floorDiv(int64_t a, int64_t b) {
+  int div = a / b;
+  if (a % b != 0 && (a < 0) != (b < 0))
+    return div - 1;
+  return div;
+}
+
+static int64_t ceilDiv(int64_t a, int64_t b) {
+  return floorDiv((a - 1), b) + 1;
+}
 
 AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                         affine::MemRefAccess access) {
@@ -156,8 +165,10 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                    return WalkResult::advance();
                  }
                  // Get the range [lb, ub] from [cLb, cUb)
-                 auto lb = cLb.getValue();
-                 auto ub = cUb.getValue() - 1;
+                 int64_t lb = cLb.getValue();
+                 int64_t ub = cUb.getValue() - 1;
+                 LLVM_DEBUG(llvm::dbgs() << "LB: " << lb << "\n");
+                 LLVM_DEBUG(llvm::dbgs() << "UB: " << ub << "\n");
 
                  if (ub - lb >= cst) {
                    LLVM_DEBUG(llvm::dbgs() << "Range bigger than cst\n");
@@ -166,20 +177,21 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
 
                  if (binexpr.getKind() == AffineExprKind::Mod ||
                      binexpr.getKind() == AffineExprKind::FloorDiv) {
-                   // TODO need to check whether the C++ floordiv rounds the
-                   // same way as the affine floordiv for negative numbers
-                   if (ub / cst != lb / cst) {
-                     LLVM_DEBUG(llvm::dbgs() << "Unequal div\n");
+                   int64_t ubd = floorDiv(ub, cst);
+                   int64_t lbd = floorDiv(lb, cst);
+                   if (ubd != lbd) {
+                     LLVM_DEBUG(llvm::dbgs()
+                                << "Unequal div " << lbd << " " << ubd << "\n");
                      return WalkResult::advance();
                    }
 
                    if (binexpr.getKind() == AffineExprKind::FloorDiv) {
                      AffineExpr simplified =
-                         getAffineConstantExpr(ub / cst, ctx);
+                         getAffineConstantExpr(floorDiv(ub, cst), ctx);
                      toReplace.insert({expr, simplified});
                      return WalkResult::interrupt();
                    } else if (binexpr.getKind() == AffineExprKind::Mod) {
-                     AffineExpr simplified = lhs - ((ub / cst) * cst);
+                     AffineExpr simplified = lhs - (floorDiv(ub, cst) * cst);
                      toReplace.insert({expr, simplified});
                      return WalkResult::interrupt();
                    } else {
@@ -187,8 +199,11 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                    }
 
                  } else if (binexpr.getKind() == AffineExprKind::CeilDiv) {
-                   if (ceilDiv(ub, cst) != ceilDiv(lb, cst)) {
-                     LLVM_DEBUG(llvm::dbgs() << "Unequal ceil\n");
+                   int64_t ubd = ceilDiv(ub, cst);
+                   int64_t lbd = ceilDiv(lb, cst);
+                   if (ubd != lbd) {
+                     LLVM_DEBUG(llvm::dbgs() << "Unequal cdiv " << lbd << " "
+                                             << ubd << "\n");
                      return WalkResult::advance();
                    }
                    AffineExpr simplified =
@@ -334,7 +349,3 @@ struct DelinearizeIndexingPass
     }
   }
 };
-
-// std::unique_ptr<Pass> mlir::enzyme::impl::createDelinearizeIndexingPass() {
-//   return std::make_unique<DelinearizeIndexingPass>();
-// }
