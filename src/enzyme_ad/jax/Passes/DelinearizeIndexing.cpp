@@ -30,6 +30,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
+#include <cstdint>
 
 #include "mlir/IR/Region.h"
 
@@ -63,7 +64,7 @@ LogicalResult getOpIndexSet(Operation *op,
 }
 
 static int64_t floorDiv(int64_t a, int64_t b) {
-  int div = a / b;
+  int64_t div = a / b;
   if (a % b != 0 && (a < 0) != (b < 0))
     return div - 1;
   return div;
