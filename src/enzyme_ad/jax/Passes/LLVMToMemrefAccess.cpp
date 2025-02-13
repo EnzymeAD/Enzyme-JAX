@@ -138,7 +138,7 @@ struct LLVMToMemrefAccessPass
 
       // Rewrite function signatures and body operations for all affected
       // kernels
-      FunctionType newFuncTy;
+      FunctionType newFuncTy = nullptr;
       if (auto fty =
               dyn_cast<LLVM::LLVMFunctionType>(callee.getFunctionType())) {
         if (fty.getReturnType() == LLVM::LLVMVoidType::get(ctx) &&
@@ -174,7 +174,8 @@ struct LLVMToMemrefAccessPass
         for (auto attr : callee->getAttrs()) {
           newFunc->setAttr(attr.getName(), attr.getValue());
         }
-        // Update function_type attr
+        // Fix function_type attr because the above copying overwrote it with
+        // the old one
         newFunc->setAttr("function_type", TypeAttr::get(newFuncTy));
 
         callee->erase();
