@@ -11,6 +11,11 @@
 
 include "mlir/Pass/PassBase.td"
 
+def CanonicalizeLoopsPass : Pass<"canonicalize-loops"> {
+  let summary = "Canonicalize loops";
+  let dependentDialects = ["affine::AffineDialect"];
+}
+
 def RemoveDuplicateFuncDefPass
     : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
   let summary = "Remove duplicate function definitions";
@@ -39,8 +44,11 @@ def PropagateConstantBoundsPass
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
-    "arith::ArithDialect", "mhlo::MhloDialect", "stablehlo::StablehloDialect",
-    "chlo::ChloDialect", "enzyme::EnzymeDialect"
+    "arith::ArithDialect", 
+    "mhlo::MhloDialect", 
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect", 
+    "enzyme::EnzymeDialect"
   ];
   let options = [Option<
       /*C++ variable name=*/"use_stablehlo",
@@ -272,12 +280,19 @@ def LowerKernelPass : Pass<"lower-kernel"> {
 
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
-  let dependentDialects = [];
   let dependentDialects = [
-    "stablehlo::StablehloDialect", "gpu::GPUDialect", "func::FuncDialect",
-    "math::MathDialect", "memref::MemRefDialect", "scf::SCFDialect",
-    "vector::VectorDialect", "nvgpu::NVGPUDialect", "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", "arith::ArithDialect", "tensor::TensorDialect"
+    "stablehlo::StablehloDialect", 
+    "gpu::GPUDialect", 
+    "func::FuncDialect",
+    "math::MathDialect", 
+    "memref::MemRefDialect", 
+    "scf::SCFDialect",
+    "vector::VectorDialect", 
+    "nvgpu::NVGPUDialect", 
+    "NVVM::NVVMDialect",
+    "LLVM::LLVMDialect", 
+    "arith::ArithDialect", 
+    "tensor::TensorDialect"
   ];
 
   let options = [
