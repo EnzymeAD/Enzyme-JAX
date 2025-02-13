@@ -888,6 +888,26 @@ def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduceSimplify"];
 }
 
+def ApplySignAbsSimplifyPatterns : EnzymeHLOPatternOp<
+    "sign_abs_simplify"> {
+  let patterns = ["SignAbsSimplify"];
+}
+
+def ApplyPositiveNegativeSelectSimplifyPatterns : EnzymeHLOPatternOp<
+    "positive_negative_select_simplify"> {
+  let patterns = ["PositiveNegativeSelectSimplify"];
+}
+
+def ApplyMultiplyNegateSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negate_simplify"> {
+  let patterns = ["MultiplyNegateSimplify"];
+}
+
+def ApplyMultiplySignAddSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_sign_add_simplify"> {
+  let patterns = ["MultiplySignAddSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
