@@ -123,12 +123,8 @@ pub fn candidate_to_recexpr(
     for eclass in egraph.classes() {
         let eclass_id = egraph.find(eclass.id);
         let enodes = &egraph[eclass_id].nodes;
-        // Check if the candidate mapping is valid; if not, use 0 as default.
-        let node_idx = match candidate.get(&eclass_id) {
-            Some(&i) if i < enodes.len() => i,
-            _ => 0,
-        };
-        let enode = enodes[node_idx].clone();
+        let node_idx = candidate.get(&eclass_id).unwrap();
+        let enode = enodes[*node_idx].clone();
         node_picked.insert(eclass_id.clone(), enode);
     }
 
@@ -198,11 +194,16 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
                 &node_to_i
             );
 
-            let mut greedy_candidate = HashMap::new();
+            // Choose index 0 for all the eclasses not picked by greedy
+            let mut greedy_candidate: HashMap<_, _> = m_id_map
+                .iter()
+                .map(|i| (*i, 0))
+                .collect();
+
             for (i, m) in i_list.iter().zip(m_list.iter()) {
                 let eclass_id = m_id_map[*m];
                 let local_idx = e_m[*m].iter().position(|x| x == i).expect("Node not found in eclass");
-                greedy_candidate.insert(eclass_id, *i);
+                greedy_candidate.insert(eclass_id, local_idx);
             }
 
             let sa = SimulatedAnnealing::new(0.1)
@@ -217,7 +218,7 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
             let solver = Executor::new(extractor, sa)
                 .configure(|state| state.param(greedy_candidate).max_iters(1000))
                 .add_observer(SlogLogger::term(), observers::ObserverMode::Every(10));
-                
+
             solver.run().unwrap().state.param.unwrap()
         }
     }
