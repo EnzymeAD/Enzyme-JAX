@@ -397,3 +397,27 @@ module {
 // CHECK-SAME:  %[[ARG:.*]]: memref<8x8xi64, 1>
 // CHECK:       %[[ADDR:.*]] = "enzymexla.memref2pointer"(%[[ARG]]) : (memref<8x8xi64, 1>) -> !llvm.ptr<1>
 // CHECK:       llvm.getelementptr {{.*}} %[[ADDR]]
+
+// -----
+
+module {
+  func.func @jitcall(%arg0: !llvm.ptr<1>) {
+    %0 = llvm.mlir.constant(63 : i32) : i32
+    %1 = nvvm.read.ptx.sreg.tid.x : i32
+    %4 = llvm.zext %1 : i32 to i64
+    %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
+    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %7 = llvm.mul %6, %6 : i64
+    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.return
+  }
+  func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
+    %0 = enzymexla.jit_call @jitcall (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<8x8xi64>
+    return %0 : tensor<8x8xi64>
+  }
+}
+
+// CHECK-LABEL: func.func @jitcall
+// CHECK-SAME:  %[[ARG:.*]]: memref<8x8xi64, 1>
+// CHECK:       %[[ADDR:.*]] = "enzymexla.memref2pointer"(%[[ARG]]) : (memref<8x8xi64, 1>) -> !llvm.ptr<1>
+// CHECK:       llvm.getelementptr {{.*}} %[[ADDR]]
