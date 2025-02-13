@@ -473,6 +473,22 @@ struct AffineExprBuilder {
     return failure();
   }
 
+  inline FailureOr<AffineExpr> buildOriAddOne(Operation *op) {
+    auto ori = dyn_cast<arith::OrIOp>(op);
+    if (!ori)
+      return failure();
+    auto lhs = buildExpr(op->getOperand(0));
+    auto rhs = buildExpr(op->getOperand(1));
+    if (failed(lhs) || failed(rhs))
+      return failure();
+    if (!lhs->isMultipleOf(2))
+      return failure();
+    auto cstExpr = dyn_cast<AffineConstantExpr>(*rhs);
+    if (!cstExpr || cstExpr.getValue() != 1)
+      return failure();
+    return *lhs + 1;
+  }
+
   // TODO test this
   FailureOr<AffineExpr> buildShift(Operation *op) {
     if (op->getNumOperands() != 2)
@@ -533,6 +549,7 @@ struct AffineExprBuilder {
            arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
            arith::IndexCastOp, arith::IndexCastUIOp>(op)));
       RIS((buildShift(op)));
+      RIS((buildOriAddOne(op)));
 #undef RIS
       // clang-format on
     }
