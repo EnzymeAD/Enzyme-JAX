@@ -138,45 +138,46 @@ struct LLVMToMemrefAccessPass
 
       // Rewrite function signatures and body operations for all affected
       // kernels
-      SmallVector<Type> newFtyArgs;
+      FunctionType newFuncTy;
       if (auto fty =
               dyn_cast<LLVM::LLVMFunctionType>(callee.getFunctionType())) {
         if (fty.getReturnType() == LLVM::LLVMVoidType::get(ctx) &&
             !fty.isVarArg()) {
-          auto newLLVMFty = LLVM::LLVMFunctionType::get(
-              fty.getReturnType(), newTypes, fty.isVarArg());
-
-          // Update entry block's argument types
-          Block *entry = &callee.getFunctionBody().front();
-          builder.setInsertionPointToStart(entry);
-          for (auto index : indices) {
-            auto newType = newTypes[index];
-            auto oldArg = callee.getArgument(index);
-            auto newArg =
-                entry->insertArgument(index, newType, oldArg.getLoc());
-            auto newPtr = builder.create<enzymexla::Memref2PointerOp>(
-                newArg.getLoc(), oldArg.getType(), newArg);
-            oldArg.replaceAllUsesWith(newPtr);
-            entry->eraseArgument(index + 1);
-          }
-
-          builder.setInsertionPoint(callee);
-          auto newFuncTy =
-              FunctionType::get(ctx, newTypes, fty.getReturnType());
-          auto newFunc = builder.create<func::FuncOp>(
-              callee.getLoc(), callee.getName(), newFuncTy);
-          newFunc.getBlocks().splice(newFunc.getBlocks().begin(),
-                                     callee.getFunctionBody().getBlocks());
-
-          // Copy attributes from the old function to the new one
-          for (auto attr : callee->getAttrs()) {
-            newFunc->setAttr(attr.getName(), attr.getValue());
-          }
-          // Update function_type attr
-          newFunc->setAttr("function_type", TypeAttr::get(newFuncTy));
-
-          callee->erase();
+          newFuncTy = FunctionType::get(ctx, newTypes, fty.getReturnType());
         }
+      } else if (auto fty = dyn_cast<FunctionType>(callee.getFunctionType())) {
+        if (fty.getResults().empty()) {
+          newFuncTy = FunctionType::get(ctx, newTypes, {});
+        }
+      }
+      if (newFuncTy) {
+        // Update entry block's argument types
+        Block *entry = &callee.getFunctionBody().front();
+        builder.setInsertionPointToStart(entry);
+        for (auto index : indices) {
+          auto newType = newTypes[index];
+          auto oldArg = callee.getArgument(index);
+          auto newArg = entry->insertArgument(index, newType, oldArg.getLoc());
+          auto newPtr = builder.create<enzymexla::Memref2PointerOp>(
+              newArg.getLoc(), oldArg.getType(), newArg);
+          oldArg.replaceAllUsesWith(newPtr);
+          entry->eraseArgument(index + 1);
+        }
+
+        builder.setInsertionPoint(callee);
+        auto newFunc = builder.create<func::FuncOp>(
+            callee.getLoc(), callee.getName(), newFuncTy);
+        newFunc.getBlocks().splice(newFunc.getBlocks().begin(),
+                                   callee.getFunctionBody().getBlocks());
+
+        // Copy attributes from the old function to the new one
+        for (auto attr : callee->getAttrs()) {
+          newFunc->setAttr(attr.getName(), attr.getValue());
+        }
+        // Update function_type attr
+        newFunc->setAttr("function_type", TypeAttr::get(newFuncTy));
+
+        callee->erase();
       }
     }
   }
