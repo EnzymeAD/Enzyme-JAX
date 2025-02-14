@@ -33,7 +33,7 @@ module {
 // CHECK-NEXT:     %0 = llvm.mlir.constant(63 : i32) : i32
 // CHECK-NEXT:     affine.parallel (%arg1, %arg2, %arg3, %arg4, %arg5, %arg6) = (0, 0, 0, 0, 0, 0) to (1, 1, 1, 1, 1, 40) {
 // CHECK-NEXT:       scf.execute_region {
-// CHECK-NEXT:         %1 = arith.index_cast %arg4 : index to i32
+// CHECK-NEXT:         %1 = arith.index_castui %arg4 : index to i32
 // CHECK-NEXT:         %2 = llvm.icmp "ugt" %1, %0 : i32
 // CHECK-NEXT:         llvm.cond_br %2, ^bb2, ^bb1
 // CHECK-NEXT:       ^bb1:  // pred: ^bb0

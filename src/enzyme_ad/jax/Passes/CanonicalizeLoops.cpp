@@ -12,6 +12,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include <numeric>
@@ -139,12 +140,110 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
+std::optional<int64_t> maxSize(mlir::Value v) {
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    if (auto par =
+            dyn_cast<affine::AffineParallelOp>(ba.getOwner()->getParentOp())) {
+      // Reductions are not supported yet.
+      if (!par.getReductions().empty())
+        return {};
+
+      auto idx = ba.getArgNumber();
+      SmallVector<int32_t> uboundGroup;
+      for (auto ub : par.getUpperBoundsGroups())
+        uboundGroup.push_back(ub.getZExtValue());
+
+      if (uboundGroup[idx] != 1)
+        return {};
+
+      size_t uoff = 0;
+      for (size_t i = 0; i < idx; i++)
+        uoff += uboundGroup[i];
+
+      SmallVector<AffineExpr> ubounds(
+          par.getUpperBoundsMap().getResults().begin(),
+          par.getUpperBoundsMap().getResults().end());
+
+      auto ub = ubounds[uoff].dyn_cast<AffineConstantExpr>();
+      if (!ub)
+        return {};
+      return ub.getValue() - 1;
+    }
+  }
+  if (auto shr = v.getDefiningOp<arith::ShRUIOp>()) {
+    auto lhs = maxSize(shr.getLhs());
+    if (!lhs)
+      return {};
+
+    IntegerAttr constValue;
+    if (!matchPattern(shr.getRhs(), m_Constant(&constValue)))
+      return lhs;
+
+    return (*lhs) >> constValue.getValue().getZExtValue();
+  }
+  return {};
+}
+
+class ExtUIOfIndexUI final : public OpRewritePattern<arith::ExtUIOp> {
+public:
+  using OpRewritePattern<arith::ExtUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ExtUIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getOperand().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      operand.getOperand());
+    return success();
+  }
+};
+
+class ShrUIOfIndexUI final : public OpRewritePattern<arith::ShRUIOp> {
+public:
+  using OpRewritePattern<arith::ShRUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    IntegerAttr constValue;
+    if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
+      return failure();
+
+    auto rhs = rewriter.create<arith::ConstantIndexOp>(
+        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = rewriter.create<arith::ShRUIOp>(ext.getLoc(),
+                                                  operand.getOperand(), rhs);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      idxshr);
+    return success();
+  }
+};
+
 struct CanonicalizeLoopsPass
     : public enzyme::impl::CanonicalizeLoopsPassBase<CanonicalizeLoopsPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
 
-    patterns.add<RemoveAffineParallelSingleIter>(&getContext());
+    patterns
+        .add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, ShrUIOfIndexUI>(
+            &getContext());
 
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
