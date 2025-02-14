@@ -462,5 +462,13 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
   ];
 }
 
+def PromoteWhile : Pass<"promote-while"> {
+  let summary = "";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+  ];
+}
+
 
 #endif
