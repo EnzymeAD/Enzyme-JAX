@@ -439,4 +439,13 @@ def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
   ];
 }
 
+def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
+  let summary = "Run some additional canonicalization for scf::for";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "math::MathDialect",
+  ];
+}
+
+
 #endif
