@@ -58,13 +58,13 @@ struct RemoveAffineParallelSingleIter
 
     Block *tmpBlk = new Block();
     SmallVector<Value> replacements;
-    
+
     bool changed = false;
     for (ssize_t idx = steps.size() - 1; idx >= 0; idx--) {
       replacements.insert(replacements.begin(),
                           tmpBlk->insertArgument((unsigned)0,
-                                              op.getIVs()[idx].getType(),
-                                              op.getIVs()[idx].getLoc()));
+                                                 op.getIVs()[idx].getType(),
+                                                 op.getIVs()[idx].getLoc()));
       if (lboundGroup[idx] != 1)
         continue;
       if (uboundGroup[idx] != 1)
@@ -116,8 +116,7 @@ struct RemoveAffineParallelSingleIter
 
       affine::AffineParallelOp affineLoop =
           rewriter.create<affine::AffineParallelOp>(
-              op.getLoc(), op.getResultTypes(),
-              op.getReductions(),
+              op.getLoc(), op.getResultTypes(), op.getReductions(),
               AffineMapAttr::get(
                   AffineMap::get(op.getLowerBoundsMap().getNumDims(),
                                  op.getLowerBoundsMap().getNumSymbols(),
@@ -245,7 +244,8 @@ struct CanonicalizeLoopsPass
         .add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, ShrUIOfIndexUI>(
             &getContext());
 
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(getOperation(),
+                                            std::move(patterns)))) {
       signalPassFailure();
     }
   }
