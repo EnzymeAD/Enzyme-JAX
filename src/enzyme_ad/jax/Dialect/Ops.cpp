@@ -257,6 +257,20 @@ public:
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
 
+    // Early error if no arg is read none
+    {
+      bool potentialReadNone = false;
+      for (auto arg : fn.front().getArguments()) {
+        auto operandIndex = arg.getArgNumber();
+        bool readnone = arg.use_empty();
+        if (!readnone)
+          continue;
+        potentialReadNone = true;
+        break;
+      }
+      if (!potentialReadNone)
+        return failure();
+    }
     bool changed = false;
 
     SmallVector<OpTy> calls;
@@ -277,7 +291,6 @@ public:
     for (auto arg : fn.front().getArguments()) {
       auto operandIndex = arg.getArgNumber();
       bool readnone = arg.use_empty();
-      //    fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
       if (!readnone)
         continue;
 
