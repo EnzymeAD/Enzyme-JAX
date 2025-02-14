@@ -325,22 +325,22 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   // block idx
   executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[0]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[0]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[1]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[1]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[2]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[2]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
@@ -348,22 +348,22 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   // thread idx
   executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[3]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[3]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[4]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[4]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastOp>(op.getLoc(), idxOp.getType(),
-                                                   par.getIVs()[5]);
+    auto rep = rewriter.create<arith::IndexCastUIOp>(
+        op.getLoc(), idxOp.getType(), par.getIVs()[5]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
