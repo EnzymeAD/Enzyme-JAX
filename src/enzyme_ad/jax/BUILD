@@ -216,6 +216,7 @@ cc_library(
         ":TransformOpsIncGen",
         ":TransformOpsImplIncGen",
         ":XLADerivatives",
+        "//src/external/isl:Isl",
     ],
 )
 
