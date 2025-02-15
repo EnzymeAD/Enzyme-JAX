@@ -234,12 +234,10 @@ public:
 
     std::string opName = op->getName().getStringRef().str();
 
-    /*
-    // TODO: Have a whitelist instead?
-    if (op->getDialect()->getNamespace() != "stablehlo" ||
-        zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
-      return {0, 0};
-    */
+    // // TODO: Have a whitelist instead?
+    // if (op->getDialect()->getNamespace() != "stablehlo" ||
+    //     zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
+    //   return {0, 0};
 
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];

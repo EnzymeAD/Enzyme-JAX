@@ -88,7 +88,7 @@ pub enum OptimizationMethod {
 pub struct GlobalExtractor<'a> {
     pub egraph: &'a EGraph<Mdl, TensorAnalysis>,
     cost_model: &'a CostModel,
-    root: Id,
+    pub root: Id,
 }
 
 impl<'a> GlobalExtractor<'a> {
@@ -206,14 +206,14 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
                 greedy_candidate.insert(eclass_id, local_idx);
             }
 
-            let sa = SimulatedAnnealing::new(0.1)
+            let sa = SimulatedAnnealing::new(10.0)
                 .unwrap()
                 .with_temp_func(SATempFunc::Boltzmann)
                 .with_stall_best(1000)
                 .with_stall_accepted(1000)
                 .with_reannealing_fixed(1000)
                 .with_reannealing_accepted(400)
-                .with_reannealing_best(400);
+                .with_reannealing_best(300);
 
             let solver = Executor::new(extractor, sa)
                 .configure(|state| state.param(greedy_candidate).max_iters(1000))
