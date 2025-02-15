@@ -458,6 +458,7 @@ cc_library(
         "@llvm-project//mlir:ReconcileUnrealizedCasts",
         "@llvm-project//mlir:SCFToControlFlow",
         "@llvm-project//mlir:MathToLLVM",
+        "@llvm-project//mlir:MathToLibm",
         "@llvm-project//mlir:VectorToLLVM",
         "@llvm-project//mlir:VectorToSCF",
         "@llvm-project//mlir:OpenMPDialect",

@@ -24,6 +24,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MathToLibm/MathToLibm.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
@@ -1110,7 +1111,11 @@ struct ConvertPolygeistToLLVMPass
       populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
       populateFuncToLLVMConversionPatterns(converter, patterns);
     }
+    
+    // TODO use lower priority for libm pending https://github.com/llvm/llvm-project/pull/127291
     populateMathToLLVMConversionPatterns(converter, patterns);
+    populateMathToLibmConversionPatterns(converter, patterns);
+    
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
 
