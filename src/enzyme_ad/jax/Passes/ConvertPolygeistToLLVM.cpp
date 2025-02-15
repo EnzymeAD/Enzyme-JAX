@@ -1114,7 +1114,7 @@ struct ConvertPolygeistToLLVMPass
     
     // TODO use lower priority for libm pending https://github.com/llvm/llvm-project/pull/127291
     populateMathToLLVMConversionPatterns(converter, patterns);
-    populateMathToLibmConversionPatterns(converter, patterns);
+    populateMathToLibmConversionPatterns(patterns);
     
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
