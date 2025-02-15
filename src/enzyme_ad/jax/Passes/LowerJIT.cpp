@@ -924,6 +924,7 @@ struct LowerJITPass
         parseLinkFilesString(linkFiles.getValue());
 
     SetVector<FunctionOpInterface> callees;
+    bool failed = false;
     getOperation()->walk([&](JITCallOp op) {
       mlir::ArrayAttr operand_layouts =
           op.getOperandLayouts()
@@ -950,7 +951,12 @@ struct LowerJITPass
                       cuOptLevel, toolkitPath, linkFilesArray, debug);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
-
+      if (jit) {
+        if (!cdata.run) {
+          failed = true;
+          return;
+        }
+      }
       OpBuilder rewriter(op);
 
       auto backendstr = rewriter.getStringAttr(backendinfo);
@@ -993,6 +999,8 @@ struct LowerJITPass
     for (auto callee : callees)
       callee.erase();
     getOperation()->walk([&](gpu::GPUModuleOp op) { op.erase(); });
+    if (failed)
+      return signalPassFailure();
   }
 };
 
