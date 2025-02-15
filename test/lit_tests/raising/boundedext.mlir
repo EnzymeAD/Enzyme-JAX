@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --canonicalize-loops --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(func.func(canonicalize-loops))" --split-input-file | FileCheck %s
 
 func.func private @bar(i64)
 

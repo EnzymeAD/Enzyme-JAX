@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --canonicalize-loops %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(func.func(canonicalize-loops))" %s | FileCheck %s
 
 #map31 = affine_map<(d0, d1) -> (d0 + d1 * 16 - (d0 floordiv 16) * 16 + 2625)>  
 #map32 = affine_map<(d0, d1) -> (d0 + d1 * 16 - (d0 floordiv 16) * 16 + 2251)>

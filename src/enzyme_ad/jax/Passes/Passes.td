@@ -11,7 +11,8 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CanonicalizeLoopsPass : Pass<"canonicalize-loops"> {
+def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
+                                          "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
 }
