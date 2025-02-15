@@ -671,10 +671,16 @@ module {
 
   gpu.module @test_module_47 {
     llvm.func @__nv_abs(i32) -> i32
+    llvm.func @__nv_llabs(i64) -> i64
     llvm.func @gpu_abs(%arg0: i32) -> i32 attributes {llvm.emit_c_interface} {
       // CHECK: math.absi
       %0 = llvm.call @__nv_abs(%arg0) : (i32) -> i32
       llvm.return %0 : i32
+    }
+    llvm.func @gpu_llabs(%arg0: i64) -> i64 attributes {llvm.emit_c_interface} {
+      // CHECK: math.absi
+      %0 = llvm.call @__nv_llabs(%arg0) : (i64) -> i64
+      llvm.return %0 : i64
     }
     llvm.func @_mlir_ciface_gpu_abs(%arg0 : !llvm.ptr, %arg1: i32) attributes {llvm.emit_c_interface} {
       %0 = llvm.call @gpu_abs(%arg1) : (i32) -> i32

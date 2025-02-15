@@ -425,7 +425,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_tanh");
   populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
                                     "__nv_powi");
-  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs");
+  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs",
+                                   "__nv_llabs");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
