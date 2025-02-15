@@ -283,7 +283,8 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       AffineValueMap avm;
       access.getAccessMap(&avm);
       avm.reset(ainfo.map, avm.getOperands());
-      ainfo.map = simplifyExprs(avm, ainfo.access);
+      avm.composeSimplifyAndCanonicalize();
+      ainfo.map = simplifyAffineMap(simplifyExprs(avm, ainfo.access));
     }
   }
 
@@ -296,9 +297,9 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
           load, load.getMemref(), ainfo.map, load.getMapOperands());
     } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
       rewriter.setInsertionPoint(store);
-      rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
-                                                 store.getMemref(), ainfo.map,
-                                                 store.getMapOperands());
+      auto newOp = rewriter.replaceOpWithNewOp<AffineStoreOp>(
+          store, store.getValue(), store.getMemref(), ainfo.map,
+          store.getMapOperands());
     } else {
       llvm_unreachable("unexpected");
     }
