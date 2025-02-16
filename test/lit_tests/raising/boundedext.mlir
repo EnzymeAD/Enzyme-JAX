@@ -19,6 +19,48 @@ func.func private @extcast() {
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
 
+func.func private @divcast() {
+    %c23_i32 = arith.constant 23 : i32
+    affine.parallel (%arg2) = (0) to (256) {
+      %0 = arith.index_castui %arg2 : index to i32
+      %4 = arith.divui %0, %c23_i32 : i32
+      %5 = arith.extui %4 : i32 to i64
+      func.call @bar(%5) : (i64) -> ()
+    }
+    return
+}
+
+// CHECK:  func.func private @divcast() {
+// CHECK-NEXT:    %c23 = arith.constant 23 : index
+// CHECK-NEXT:    affine.parallel (%arg0) = (0) to (256) {
+// CHECK-NEXT:      %0 = arith.divui %arg0, %c23 : index 
+// CHECK-NEXT:      %1 = arith.index_castui %0 : index to i64 
+// CHECK-NEXT:      func.call @bar(%1) : (i64) -> ()
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
+
+func.func private @addcast() {
+    %c23_i32 = arith.constant 23 : i32
+    affine.parallel (%arg2) = (0) to (256) {
+      %0 = arith.index_castui %arg2 : index to i32
+      %4 = arith.addi %0, %c23_i32 : i32
+      %5 = arith.extui %4 : i32 to i64
+      func.call @bar(%5) : (i64) -> ()
+    }
+    return
+}
+
+// CHECK:  func.func private @addcast() {
+// CHECK-NEXT:    %c23 = arith.constant 23 : index
+// CHECK-NEXT:    affine.parallel (%arg0) = (0) to (256) {
+// CHECK-NEXT:      %0 = arith.addi %arg0, %c23 : index 
+// CHECK-NEXT:      %1 = arith.index_castui %0 : index to i64 
+// CHECK-NEXT:      func.call @bar(%1) : (i64) -> ()
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
+
 func.func private @bigger(%arg0: memref<1x134x374xf64, 1>) {
     %c1_i32 = arith.constant 1 : i32
     %c-2_i64 = arith.constant -2 : i64

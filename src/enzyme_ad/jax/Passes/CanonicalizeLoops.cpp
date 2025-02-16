@@ -378,6 +378,30 @@ std::optional<int64_t> maxSize(mlir::Value v) {
 
     return (*lhs) >> constValue.getValue().getZExtValue();
   }
+  if (auto shr = v.getDefiningOp<arith::DivUIOp>()) {
+    auto lhs = maxSize(shr.getLhs());
+    if (!lhs)
+      return {};
+
+    IntegerAttr constValue;
+    if (!matchPattern(shr.getRhs(), m_Constant(&constValue)))
+      return lhs;
+
+    if (constValue.getValue().isNonNegative())
+      return (*lhs) >> constValue.getValue().getZExtValue();
+  }
+  if (auto shr = v.getDefiningOp<arith::AddIOp>()) {
+    auto lhs = maxSize(shr.getLhs());
+    if (!lhs)
+      return {};
+
+    IntegerAttr constValue;
+    if (!matchPattern(shr.getRhs(), m_Constant(&constValue)))
+      return {};
+
+    if (constValue.getValue().isNonNegative())
+      return (*lhs) + constValue.getValue().getZExtValue();
+  }
   return {};
 }
 
@@ -427,6 +451,72 @@ public:
         ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
     auto idxshr = rewriter.create<arith::ShRUIOp>(ext.getLoc(),
                                                   operand.getOperand(), rhs);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      idxshr);
+    return success();
+  }
+};
+
+class DivUIOfIndexUI final : public OpRewritePattern<arith::DivUIOp> {
+public:
+  using OpRewritePattern<arith::DivUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::DivUIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    IntegerAttr constValue;
+    if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
+      return failure();
+
+    if (constValue.getValue().isNegative())
+      return failure();
+
+    auto rhs = rewriter.create<arith::ConstantIndexOp>(
+        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = rewriter.create<arith::DivUIOp>(ext.getLoc(),
+                                                  operand.getOperand(), rhs);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      idxshr);
+    return success();
+  }
+};
+
+class AddIOfIndexUI final : public OpRewritePattern<arith::AddIOp> {
+public:
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    IntegerAttr constValue;
+    if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
+      return failure();
+
+    if (constValue.getValue().isNegative())
+      return failure();
+
+    auto rhs = rewriter.create<arith::ConstantIndexOp>(
+        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr =
+        rewriter.create<arith::AddIOp>(ext.getLoc(), operand.getOperand(), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
@@ -539,7 +629,9 @@ struct CanonicalizeLoopsPass
 
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<ExtUIOfIndexUI, ShrUIOfIndexUI>(&getContext());
+      patterns
+          .add<ExtUIOfIndexUI, ShrUIOfIndexUI, DivUIOfIndexUI, AddIOfIndexUI>(
+              &getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {
