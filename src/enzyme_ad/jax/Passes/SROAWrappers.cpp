@@ -159,6 +159,8 @@ struct SROAWrappersPass
           assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
           if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
             func.setVisibility(mlir::SymbolTable::Visibility::Private);
+          } else if (auto glob = llvm::dyn_cast<mlir::LLVM::GlobalOp>(op)) {
+            glob.setVisibility(mlir::SymbolTable::Visibility::Private);
           }
           // There should be no need for mapping because all top level
           // operations in the module should be isolated from above
