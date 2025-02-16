@@ -907,6 +907,7 @@ public:
     auto newCallOp = rewriter.create<LLVM::CallOp>(
         callOp->getLoc(), callResultTypes, callOp.getCallee(),
         adaptor.getOperands());
+    newCallOp->setAttrs(callOp->getAttrs());
 
     if (numResults <= 1) {
       rewriter.replaceOp(callOp, newCallOp->getResults());
