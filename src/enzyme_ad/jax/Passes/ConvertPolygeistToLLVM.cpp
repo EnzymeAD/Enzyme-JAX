@@ -908,6 +908,15 @@ public:
         callOp->getLoc(), callResultTypes, adaptor.getOperands(),
         callOp->getAttrs());
 
+    // TODO: this is cargo-culted from upstream, FuncToLLVM.cpp:551-554 at
+    // 963ff1c3051a8c413a04fff27ba60cf93e48f310. Unclear why it would be
+    // necessary to modify segment sizes manually, but it seems to fix the
+    // problem for now.
+    newCallOp.getProperties().operandSegmentSizes = {
+        static_cast<int32_t>(adaptor.getOperands().size()), 0};
+    newCallOp.getProperties().op_bundle_sizes =
+        rewriter.getDenseI32ArrayAttr({});
+
     if (numResults <= 1) {
       rewriter.replaceOp(callOp, newCallOp->getResults());
       return success();
