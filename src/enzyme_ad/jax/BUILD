@@ -460,6 +460,7 @@ cc_library(
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
         "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:UBToLLVM",
         "@llvm-project//mlir:VectorToSCF",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:MemRefToLLVM",

@@ -28,6 +28,7 @@
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1112,6 +1113,8 @@ struct ConvertPolygeistToLLVMPass
       populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
       populateFuncToLLVMConversionPatterns(converter, patterns);
     }
+
+    ub::populateUBToLLVMConversionPatterns(converter, patterns);
 
     // TODO use lower priority for libm pending
     // https://github.com/llvm/llvm-project/pull/127291
