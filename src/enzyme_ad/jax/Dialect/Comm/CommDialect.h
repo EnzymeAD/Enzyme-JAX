@@ -5,7 +5,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/Support/TypeID.h"
 #include "mlir/include/mlir/IR/DialectImplementation.h"
-#include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h.inc"
 
 #include "mlir/include/mlir/IR/BuiltinOps.h"
 #include "mlir/include/mlir/IR/BuiltinTypes.h"
@@ -20,15 +20,15 @@ public:
 } // namespace mlir::comm
 
 #define GET_TYPEDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialects/Comm/CommTypes.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommTypes.h.inc"
 
-#include "src/enzyme_ad/jax/Dialects/Comm/CommInterfaces.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommInterfaces.h.inc"
 
 #define GET_ATTRDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialects/Comm/CommAttrs.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommAttrs.h.inc"
 
 #define GET_OP_CLASSES
-#include "src/enzyme_ad/jax/Dialects/Comm/CommOps.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommOps.h.inc"
 
 template <typename ConcreteType>
 mlir::LogicalResult mlir::comm::SplitMemberOp<ConcreteType>::verifyTrait(Operation *op) {

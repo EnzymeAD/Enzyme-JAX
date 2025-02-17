@@ -12,7 +12,7 @@
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
-#include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
 
 
 namespace mlir {

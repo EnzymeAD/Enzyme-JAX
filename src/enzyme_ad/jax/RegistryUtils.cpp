@@ -52,7 +52,7 @@
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 
-#include "Dialects/Comm/CommDialect.h"
+#include "Dialect/Comm/CommDialect.h"
 namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);

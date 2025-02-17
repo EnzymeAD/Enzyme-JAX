@@ -1,5 +1,5 @@
 #include "mlir/Support/LogicalResult.h"
-#include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
 
 #include "llvm/ADT/DenseSet.h"
 
@@ -75,4 +75,4 @@ mlir::Type CommMultiplexMessage::getOutputType() {
 }
 
 #define GET_OP_CLASSES
-#include "src/enzyme_ad/jax/Dialects/Comm/CommOps.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommOps.cpp.inc"

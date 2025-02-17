@@ -112,7 +112,7 @@ gentbl_cc_library(
 td_library(
     name = "CommDialectFiles",
     srcs = [
-        "Dialects/Comm/CommDialect.td",
+        "Dialect/Comm/CommDialect.td",
     ],
     deps = [
         "@llvm-project//mlir:OpBaseTdFiles"
@@ -124,37 +124,37 @@ gentbl_cc_library(
     name = "CommDialectIncGen",
     tbl_outs = [(
             ["-gen-dialect-decls", "-dialect=comm"],
-            "Dialects/Comm/CommDialect.h.inc",
+            "Dialect/Comm/CommDialect.h.inc",
         ), (
             ["-gen-dialect-defs", "-dialect=comm"],
-            "Dialects/Comm/CommDialect.cpp.inc",
+            "Dialect/Comm/CommDialect.cpp.inc",
         ),(
             ["-gen-op-decls", "-dialect=comm"],
-            "Dialects/Comm/CommOps.h.inc",
+            "Dialect/Comm/CommOps.h.inc",
         ), (
             ["-gen-op-defs", "-dialect=comm"],
-            "Dialects/Comm/CommOps.cpp.inc",
+            "Dialect/Comm/CommOps.cpp.inc",
         ),(
             ["-gen-attrdef-decls", "-attrdefs-dialect=comm"],
-            "Dialects/Comm/CommAttrs.h.inc",
+            "Dialect/Comm/CommAttrs.h.inc",
         ),(
             ["-gen-attrdef-defs", "-attrdefs-dialect=comm"],
-            "Dialects/Comm/CommAttrs.cpp.inc",
+            "Dialect/Comm/CommAttrs.cpp.inc",
         ),(
             ["-gen-typedef-decls", "-typedefs-dialect=comm"],
-            "Dialects/Comm/CommTypes.h.inc",
+            "Dialect/Comm/CommTypes.h.inc",
         ), (
             ["-gen-typedef-defs", "-typedefs-dialect=comm"],
-            "Dialects/Comm/CommTypes.cpp.inc",
+            "Dialect/Comm/CommTypes.cpp.inc",
         ),(
             ["-gen-op-interface-decls"],
-            "Dialects/Comm/CommInterfaces.h.inc",
+            "Dialect/Comm/CommInterfaces.h.inc",
         ), (
             ["-gen-op-interface-defs"],
-            "Dialects/Comm/CommInterfaces.cpp.inc",
+            "Dialect/Comm/CommInterfaces.cpp.inc",
         ),
     ],
-    td_file = "Dialects/Comm/CommDialect.td",
+    td_file = "Dialect/Comm/CommDialect.td",
     deps = [
         ":CommDialectFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
@@ -278,8 +278,8 @@ cc_library(
 
 cc_library(
     name = "CommDialect",
-    srcs = glob(["Dialects/*.cpp", "Dialects/Comm/*.cpp"]),
-    hdrs = glob(["Dialects/*.h", "Dialects/Comm/*.h"]),
+    srcs = glob(["Dialects/*.cpp", "Dialect/Comm/*.cpp"]),
+    hdrs = glob(["Dialects/*.h", "Dialect/Comm/*.h"]),
     deps = [
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",

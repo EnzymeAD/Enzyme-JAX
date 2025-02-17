@@ -60,7 +60,7 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
-#include "Dialects/Comm/CommDialect.h"
+#include "Dialect/Comm/CommDialect.h"
 
 
 
