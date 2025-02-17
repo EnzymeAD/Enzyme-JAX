@@ -175,6 +175,71 @@ public:
 private:
   StringAttr funcName;
 };
+
+class IsFPClassRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  IsFPClassRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_isnand" ||
+        callee.getLeafReference() == "__nv_isnan") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
+                                           op->getOperands()[0], 3));
+      return success();
+    }
+
+    // https://llvm.org/docs/LangRef.html#llvm-is-fpclass
+    /*
+     *
+Bit #
+
+floating-point class
+
+0 Signaling NaN
+
+1 Quiet NaN
+
+2 Negative infinity
+
+3 Negative normal
+
+4 Negative subnormal
+
+5 Negative zero
+
+6 Positive zero
+
+7 Positive subnormal
+
+8 Positive normal
+
+9 Positive infinity
+
+2**3 + 2**4 + 2**5 + 2**6 + 2**7 + 2**8
+*/
+    if (callee.getLeafReference() == "__nv_isfinited" ||
+        callee.getLeafReference() == "__nv_isfinite") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
+                                           op->getOperands()[0],
+                                           ((1 << 3) | (1 << 4) | (1 << 5) |
+                                            (1 << 6) | (1 << 7) | (1 << 8))));
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -359,6 +424,9 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   // mlir/lib/Conversion/GPUToNVVM/LowerGpuOpsToNVVMOps.cpp.
 
   auto *converter = context;
+
+  patterns.add<IsFPClassRaising>(context);
+
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
                                     "__nv_fmod");
   populateOpPatterns<math::AbsFOp>(converter, patterns, "__nv_fabsf",
@@ -425,7 +493,12 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_tanh");
   populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
                                     "__nv_powi");
-  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs");
+  populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs",
+                                   "__nv_llabs");
+  populateOpPatterns<arith::MaxNumFOp>(converter, patterns, "__nv_fmax",
+                                       "__nv_fmaxf");
+  populateOpPatterns<arith::MinNumFOp>(converter, patterns, "__nv_fmin",
+                                       "__nv_fminf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,

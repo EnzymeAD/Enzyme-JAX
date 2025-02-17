@@ -24,9 +24,11 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MathToLibm/MathToLibm.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -156,7 +158,7 @@ struct Pointer2MemrefOpLowering
       return success();
     }
 
-    auto descr = MemRefDescriptor::undef(rewriter, loc, convertedType);
+    auto descr = MemRefDescriptor::poison(rewriter, loc, convertedType);
     auto ptr = rewriter.create<LLVM::BitcastOp>(
         op.getLoc(), descr.getElementPtrType(), adaptor.getSource());
 
@@ -176,6 +178,7 @@ struct Pointer2MemrefOpLowering
       }
       return stride == ShapedType::kDynamic;
     }) && "expected static strides except first element");
+    (void)first;
 
     descr.setAllocatedPtr(rewriter, loc, ptr);
     descr.setAlignedPtr(rewriter, loc, ptr);
@@ -423,7 +426,6 @@ public:
           createIndexAttrConstant(rewriter, loc, rewriter.getIndexType(),
                                   innerSizes));
     }
-    Value null = rewriter.create<LLVM::ZeroOp>(loc, convertedType);
     assert(0 && "todo alloc lower");
     Value elementSize;
     // = rewriter.create<enzymexla::TypeSizeOp>(
@@ -437,12 +439,15 @@ public:
       rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
           allocOp, convertedType, allocated);
     } else {
-      LLVM::LLVMFuncOp mallocFunc =
+      FailureOr<LLVM::LLVMFuncOp> mallocFunc =
           getTypeConverter()->getOptions().useGenericFunctions
               ? LLVM::lookupOrCreateGenericAllocFn(module, getIndexType())
               : LLVM::lookupOrCreateMallocFn(module, getIndexType());
+      if (failed(mallocFunc))
+        return failure();
       Value allocated =
-          rewriter.create<LLVM::CallOp>(loc, mallocFunc, size).getResult();
+          rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), size)
+              .getResult();
       rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(allocOp, convertedType,
                                                    allocated);
     }
@@ -465,11 +470,13 @@ public:
           adaptor.getMemref());
       rewriter.replaceOpWithNewOp<func::CallOp>(deallocOp, F, casted);
     } else {
-      LLVM::LLVMFuncOp freeFunc =
+      FailureOr<LLVM::LLVMFuncOp> freeFunc =
           getTypeConverter()->getOptions().useGenericFunctions
               ? LLVM::lookupOrCreateGenericFreeFn(module)
               : LLVM::lookupOrCreateFreeFn(module);
-      rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc,
+      if (failed(freeFunc))
+        return failure();
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc.value(),
                                                 adaptor.getMemref());
     }
     return success();
@@ -899,8 +906,9 @@ public:
     }
 
     auto newCallOp = rewriter.create<LLVM::CallOp>(
-        callOp->getLoc(), callResultTypes, adaptor.getOperands(),
-        callOp->getAttrs());
+        callOp->getLoc(), callResultTypes, callOp.getCallee(),
+        adaptor.getOperands());
+    newCallOp->setAttrs(callOp->getAttrs());
 
     if (numResults <= 1) {
       rewriter.replaceOp(callOp, newCallOp->getResults());
@@ -1105,11 +1113,17 @@ struct ConvertPolygeistToLLVMPass
       populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
       populateFuncToLLVMConversionPatterns(converter, patterns);
     }
+
+    ub::populateUBToLLVMConversionPatterns(converter, patterns);
+
+    // TODO use lower priority for libm pending
+    // https://github.com/llvm/llvm-project/pull/127291
     populateMathToLLVMConversionPatterns(converter, patterns);
+    populateMathToLibmConversionPatterns(patterns);
+
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
 
-    bool kernelBarePtrCallConv = false;
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
       // patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(

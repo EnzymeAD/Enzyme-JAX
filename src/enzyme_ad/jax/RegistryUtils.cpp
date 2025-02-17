@@ -21,6 +21,7 @@
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
@@ -122,6 +123,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::registerOpenMPDialectTranslation(registry);
 
   mlir::registerConvertOpenMPToLLVMInterface(registry);
+  mlir::vector::registerConvertVectorToLLVMInterface(registry);
 
   // Register the autodiff interface implementations for upstream dialects.
   mlir::enzyme::registerCoreDialectAutodiffInterfaces(registry);

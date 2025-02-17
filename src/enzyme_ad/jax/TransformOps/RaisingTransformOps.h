@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
@@ -19,4 +20,23 @@ namespace enzyme {
 void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
 
 } // namespace enzyme
+} // namespace mlir
+
+namespace mlir {
+namespace transform {
+struct RemoveIVs : public mlir::OpRewritePattern<mlir::scf::ForOp> {
+  using mlir::OpRewritePattern<mlir::scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::scf::ForOp forOp,
+                                mlir::PatternRewriter &rewriter) const override;
+};
+
+struct NormalizeLoop : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp op,
+                                PatternRewriter &rewriter) const override;
+};
+
+} // namespace transform
 } // namespace mlir

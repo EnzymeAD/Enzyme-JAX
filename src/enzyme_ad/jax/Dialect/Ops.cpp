@@ -57,17 +57,86 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+void KernelCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
+CallInterfaceCallable KernelCallOp::getCallableForCallee() {
+  return SymbolRefAttr::get(getContext(), getFn());
+}
+
+Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
+
+MutableOperandRange KernelCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
+ArrayAttr KernelCallOp::getArgAttrsAttr() { return nullptr; }
+
+void KernelCallOp::setArgAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+ArrayAttr KernelCallOp::getResAttrsAttr() { return nullptr; }
+
+void KernelCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
+
+LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // TODO: Verify that the result type is same as the type of the referenced
+  // func.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
+void JITCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
+CallInterfaceCallable JITCallOp::getCallableForCallee() {
+  return SymbolRefAttr::get(getContext(), getFn());
+}
+
+MutableOperandRange JITCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
+Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
+
+ArrayAttr JITCallOp::getArgAttrsAttr() { return nullptr; }
+
+void JITCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+ArrayAttr JITCallOp::getResAttrsAttr() { return nullptr; }
+
+void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
+
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
-class ReadOnlyKernelArg final
-    : public OpRewritePattern<enzymexla::KernelCallOp> {
+template <typename OpTy>
+class ReadOnlyArg final : public OpRewritePattern<OpTy> {
 public:
-  using OpRewritePattern<enzymexla::KernelCallOp>::OpRewritePattern;
+  using OpRewritePattern<OpTy>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::KernelCallOp launchOp,
+  OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys,
+              ArrayAttr outputAliases) const;
+  LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    symbolTable.getSymbolTable(launchOp->getParentOfType<ModuleOp>());
+    symbolTable.getSymbolTable(
+        ((Operation *)launchOp)->getParentOfType<ModuleOp>());
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
 
@@ -123,13 +192,8 @@ public:
       out_idx++;
     }
 
-    auto newOp = rewriter.create<enzymexla::KernelCallOp>(
-        launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
-        launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
-        launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
-        launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-        launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-        ArrayAttr::get(launchOp->getContext(), outputAliases));
+    auto newOp = create(rewriter, launchOp, resTys,
+                        ArrayAttr::get(launchOp->getContext(), outputAliases));
 
     assert(outputAliases.size() == newOp.getNumResults());
     SmallVector<Value> replacements;
@@ -157,27 +221,64 @@ public:
   }
 };
 
-class ReadNoneKernelArg final
-    : public OpRewritePattern<enzymexla::KernelCallOp> {
-public:
-  using OpRewritePattern<enzymexla::KernelCallOp>::OpRewritePattern;
+template <>
+enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
+    PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+  return rewriter.create<enzymexla::KernelCallOp>(
+      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
+      launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
+      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
+      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+      launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
+      outputAliases);
+}
 
-  LogicalResult matchAndRewrite(enzymexla::KernelCallOp launchOp,
+template <>
+enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
+    PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+  return rewriter.create<enzymexla::JITCallOp>(
+      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
+      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+      /*resultLayouts*/ nullptr, outputAliases);
+}
+
+template <typename OpTy>
+class ReadNoneArg final : public OpRewritePattern<OpTy> {
+public:
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
-    auto mod = launchOp->getParentOfType<ModuleOp>();
+    auto mod = ((Operation *)launchOp)->getParentOfType<ModuleOp>();
     symbolTable.getSymbolTable(mod);
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
 
+    // Early error if no arg is read none
+    {
+      bool potentialReadNone = false;
+      for (auto arg : fn.front().getArguments()) {
+        auto operandIndex = arg.getArgNumber();
+        bool readnone = arg.use_empty();
+        if (!readnone)
+          continue;
+        potentialReadNone = true;
+        break;
+      }
+      if (!potentialReadNone)
+        return failure();
+    }
     bool changed = false;
 
-    SmallVector<enzymexla::KernelCallOp> calls;
+    SmallVector<OpTy> calls;
     auto use_opt = symbolTable.getSymbolTable(mod).getSymbolUses(fn, mod);
     if (!use_opt)
       return failure();
     for (auto u : *use_opt) {
-      auto launch2 = dyn_cast<enzymexla::KernelCallOp>(u.getUser());
+      auto launch2 = dyn_cast<OpTy>(u.getUser());
       if (!launch2)
         return failure();
       calls.push_back(launch2);
@@ -190,7 +291,6 @@ public:
     for (auto arg : fn.front().getArguments()) {
       auto operandIndex = arg.getArgNumber();
       bool readnone = arg.use_empty();
-      //    fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
       if (!readnone)
         continue;
 
@@ -259,7 +359,12 @@ public:
 
 void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {
-  results.insert<ReadOnlyKernelArg, ReadNoneKernelArg>(context);
+  results.insert<ReadOnlyArg<KernelCallOp>, ReadNoneArg<KernelCallOp>>(context);
+}
+
+void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
 /// Simplify pointer2memref(memref2pointer(x)) to cast(x)
@@ -660,7 +765,7 @@ public:
 
   Value computeIndex(Op op, size_t idx, PatternRewriter &rewriter) const;
 
-  void rewrite(Op op, Value ptr, PatternRewriter &rewriter) const;
+  void rewriteInternal(Op op, Value ptr, PatternRewriter &rewriter) const;
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
@@ -724,7 +829,7 @@ public:
       val = rewriter.create<LLVM::GEPOp>(op.getLoc(), val.getType(),
                                          mt.getElementType(), val, idxs);
     }
-    rewrite(op, val, rewriter);
+    rewriteInternal(op, val, rewriter);
     return success();
   }
 };
@@ -736,7 +841,7 @@ Value MetaPointer2Memref<memref::LoadOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<memref::LoadOp>::rewrite(
+void MetaPointer2Memref<memref::LoadOp>::rewriteInternal(
     memref::LoadOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getType(), ptr);
 }
@@ -748,7 +853,7 @@ Value MetaPointer2Memref<memref::StoreOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<memref::StoreOp>::rewrite(
+void MetaPointer2Memref<memref::StoreOp>::rewriteInternal(
     memref::StoreOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
@@ -763,7 +868,7 @@ Value MetaPointer2Memref<affine::AffineLoadOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<affine::AffineLoadOp>::rewrite(
+void MetaPointer2Memref<affine::AffineLoadOp>::rewriteInternal(
     affine::AffineLoadOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getType(), ptr);
 }
@@ -778,7 +883,7 @@ Value MetaPointer2Memref<affine::AffineStoreOp>::computeIndex(
 }
 
 template <>
-void MetaPointer2Memref<affine::AffineStoreOp>::rewrite(
+void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
     affine::AffineStoreOp op, Value ptr, PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }

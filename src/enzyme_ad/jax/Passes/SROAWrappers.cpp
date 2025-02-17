@@ -26,6 +26,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/InstSimplifyPass.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -50,6 +51,7 @@ namespace enzyme {
 using namespace mlir::enzyme;
 
 namespace {
+
 struct SROAWrappersPass
     : public mlir::enzyme::impl::SROAWrappersPassBase<SROAWrappersPass> {
   using SROAWrappersPassBase::SROAWrappersPassBase;
@@ -124,11 +126,15 @@ struct SROAWrappersPass
 
       ModulePassManager MPM;
       FunctionPassManager FPM;
-      MPM.addPass(
-          createModuleToFunctionPassAdaptor(SROAPass(SROAOptions::ModifyCFG)));
-      MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
-      MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
-      MPM.addPass(llvm::AttributorPass());
+      if (sroa)
+        MPM.addPass(createModuleToFunctionPassAdaptor(
+            SROAPass(SROAOptions::ModifyCFG)));
+      if (instcombine)
+        MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+      if (instsimplify)
+        MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
+      if (attributor)
+        MPM.addPass(llvm::AttributorPass());
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)
@@ -151,6 +157,11 @@ struct SROAWrappersPass
         for (auto &op : newBlock) {
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
           assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
+          if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
+            func.setVisibility(mlir::SymbolTable::Visibility::Private);
+          } else if (auto glob = llvm::dyn_cast<mlir::LLVM::GlobalOp>(op)) {
+            glob.setVisibility(mlir::SymbolTable::Visibility::Private);
+          }
           // There should be no need for mapping because all top level
           // operations in the module should be isolated from above
           b.clone(op);

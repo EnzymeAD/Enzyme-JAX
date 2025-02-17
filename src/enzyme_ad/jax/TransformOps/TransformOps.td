@@ -430,6 +430,16 @@ def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
   let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
 }
 
+def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
+    "associative_binary_op_reordering"> {
+  let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MulOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MinOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::AndOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::OrOp>"];
+}
+
 def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
     "transpose_unary_transpose_abs"> {
   let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::AbsOp>"];
@@ -551,6 +561,13 @@ def ApplyBinopPadPadMinPatterns : EnzymeHLOPatternOp<
 def ApplyBinopPadPadMaxPatterns : EnzymeHLOPatternOp<
     "binop_pad_pad_max"> {
   let patterns = ["BinopPadPad<stablehlo::MaxOp>"];
+}
+def ApplyBinopConstSimplify : EnzymeHLOPatternOp<
+    "binop_const_simplify"> {
+  let patterns = [
+    "BinOpConstSimplify<stablehlo::AddOp>",
+    "BinOpConstSimplify<stablehlo::MulOp>"
+  ];
 }
 def ApplyUnaryPadPushConvertPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_convert"> {
@@ -711,6 +728,11 @@ def TransposeIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeIsReshape"];
 }
 
+def IfRemoveUnused : EnzymeHLOPatternOp<
+    "if_remove_unused"> {
+  let patterns = ["IfRemoveUnused"];
+}
+
 def IfInline : EnzymeHLOPatternOp<
     "if_inline"> {
   let patterns = ["IfInline"];
@@ -719,6 +741,11 @@ def IfInline : EnzymeHLOPatternOp<
 def IfToSelect : EnzymeHLOPatternOp<
     "if_to_select"> {
   let patterns = ["IfToSelect"];
+}
+
+def IfPredPropagation : EnzymeHLOPatternOp<
+    "if_pred_propagation"> {
+  let patterns = ["IfPredPropagation"];
 }
 
 def WhileSimplify : EnzymeHLOPatternOp<
@@ -844,6 +871,21 @@ def NotSelectSimplifyPatterns : EnzymeHLOPatternOp<
 def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
     "common_compare_expression_rewrite"> {
   let patterns = ["CommonCompareExpressionRewrite"];
+}
+
+def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
+    "scatter_update_computation_const_prop"> {
+  let patterns = ["ScatterUpdateComputationConstProp"];
+}
+
+def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
+    "scatter_indices_are_unique"> {
+  let patterns = ["ScatterIndicesAreUnique"];
+}
+
+def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
+    "transpose_reduce_simplify"> {
+  let patterns = ["TransposeReduceSimplify"];
 }
 
 // TODO: better naming for parameters requires a static interface for

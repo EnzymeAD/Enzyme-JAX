@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-kernel{jit=false backend=cpu})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-kernel{backend=cpu},canonicalize)" | FileCheck %s
 
 module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
@@ -29,11 +29,29 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT: stablehlo.constant
-// CHECK-NEXT: stablehlo.constant
-// CHECK-NEXT: stablehlo.constant
-// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_cpu(%arg0) {api_version = 3 : i32, backend_config = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00", output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK:   func.func private @kern$par0(%arg0: !llvm.ptr<1>) {
+// CHECK-NEXT:     %0 = llvm.mlir.constant(63 : i32) : i32
+// CHECK-NEXT:     affine.parallel (%arg1, %arg2, %arg3, %arg4, %arg5, %arg6) = (0, 0, 0, 0, 0, 0) to (1, 1, 1, 1, 1, 40) {
+// CHECK-NEXT:       scf.execute_region {
+// CHECK-NEXT:         %1 = arith.index_castui %arg4 : index to i32
+// CHECK-NEXT:         %2 = llvm.icmp "ugt" %1, %0 : i32
+// CHECK-NEXT:         llvm.cond_br %2, ^bb2, ^bb1
+// CHECK-NEXT:       ^bb1:  // pred: ^bb0
+// CHECK-NEXT:         %3 = llvm.zext %1 : i32 to i64
+// CHECK-NEXT:         %4 = llvm.getelementptr inbounds %arg0[%3] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
+// CHECK-NEXT:         %5 = llvm.load %4 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:         %6 = llvm.mul %5, %5 : i64
+// CHECK-NEXT:         llvm.store %6, %4 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:         scf.yield
+// CHECK-NEXT:       ^bb2:  // pred: ^bb0
+// CHECK-NEXT:         llvm.call fastcc @throw_boundserror_2676() : () -> ()
+// CHECK-NEXT:         scf.yield
+// CHECK-NEXT:       }
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return
+// CHECK-NEXT:   }
+
+// CHECK:  func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
+// CHECK-NEXT:    %0 = enzymexla.jit_call @kern$par0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }
-// CHECK-NEXT:}

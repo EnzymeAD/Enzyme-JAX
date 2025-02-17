@@ -82,7 +82,6 @@ def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
 def Round : HLOInst<"RoundOp">; // round_nearest_afz
 def RoundNearestEven : HLOInst<"RoundNearestEvenOp">;
 def Rsqrt : HLOInst<"RsqrtOp">;
-def Scatter : HLOInst<"ScatterOp">;
 def Select : HLOInst<"SelectOp">;
 def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
 def Send : HLOInst<"SendOp">;
@@ -920,7 +919,71 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
-def : HLOReadOnlyIdentityOp<"GatherOp", [0]>;
+// Gather Adjoint
+def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getDimensionNumbers();
+}]>;
+
+def ResultSliceSizes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getSliceSizes();
+}]>;
+
+def GatherToScatterDimNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto gatherDims = op.getDimensionNumbers();
+  
+  auto updateWindowDims = gatherDims.getOffsetDims();
+  auto insertedWindowDims = gatherDims.getCollapsedSliceDims();
+  auto inputBatchingDims = gatherDims.getOperandBatchingDims();
+  auto indicesBatchingDims = gatherDims.getStartIndicesBatchingDims();
+  auto scatterDimsToOperandDims = gatherDims.getStartIndexMap();
+  auto indexVectorDim = gatherDims.getIndexVectorDim();
+  
+  ScatterDimensionNumbersAttr::get(
+    op.getContext(),
+    updateWindowDims,
+    insertedWindowDims,
+    inputBatchingDims,
+    indicesBatchingDims,
+    scatterDimsToOperandDims,
+    indexVectorDim
+  );
+}]>;
+
+def GatherScatterInputData : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto operand = op->getOperand(0);
+  auto operandType = operand.getType();
+  cast<AutoDiffTypeInterface>(operandType).createNullValue(builder, op.getLoc()); 
+}]>;
+
+def GatherScatterResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op->getOperand(0).getType();
+}]>;
+
+def ScatterAdd : HLOInst<"ScatterOp", ")->getResult(0)", "createAddRegion(">;
+
+def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
+                    [
+                      (ScatterAdd
+                        (GatherScatterResultType),
+                        (GatherScatterInputData),
+                        $start_indices,
+                        (DiffeRet),
+                        (GatherToScatterDimNumbers)
+                      ),
+                      (InactiveArg)
+                    ],
+                    // Forward shadow rule
+                    (SelectIfActive $operand,
+                      (Gather 
+                        (ResultTypes),
+                        (Shadow $operand),
+                        $start_indices,
+                        (ResultDimensionNumbers),
+                        (ResultSliceSizes)
+                      ),
+                      (HLOConstantFP<"0">)
+                    )
+                  >;
 
 def : HLOInactiveOp<"CeilOp">;
 

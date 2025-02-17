@@ -72,6 +72,11 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
   return (*limitAttr.begin()).getSExtValue();
 }
 
+int64_t WhileLoopInfo::getConstantNumIters() {
+  return (getConstantLimit().value() - getConstantStart().value()) /
+         getConstantStep().value();
+}
+
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   auto opReg = op->getParentRegion();
   if (!opReg->isAncestor(limit.getParentRegion()) ||
