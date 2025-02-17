@@ -3481,6 +3481,61 @@ struct ConcatToPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
+// reduce_window(pad(x, lo, hi, 0)) -> reduce_window(x, pad_lo=lo, pad_hi=hi)
+struct PadReduceWindow
+    : public OpRewritePattern<mlir::stablehlo::ReduceWindowOp> {
+  using OpRewritePattern<mlir::stablehlo::ReduceWindowOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceWindowOp op,
+                                PatternRewriter &rewriter) const final {
+    if (op->getNumOperands() != 2)
+      return failure();
+
+    if (op.getPadding().has_value() &&
+        !llvm::all_of(op.getPadding().value(),
+                      [](auto pad) { return pad.isZero(); }))
+      return failure();
+
+    Value operand = op->getOperand(0), initValue = op->getOperand(1);
+
+    auto padOp = operand.getDefiningOp<mlir::stablehlo::PadOp>();
+    if (!padOp || !llvm::all_of(padOp.getInteriorPadding(),
+                                [](int64_t pad) { return pad == 0; }))
+      return failure();
+
+    if (padOp.getPaddingValue() != initValue)
+      return failure();
+
+    auto highValues = padOp.getEdgePaddingHigh();
+    auto lowValues = padOp.getEdgePaddingLow();
+
+    int64_t N = highValues.size();
+
+    SmallVector<int64_t> newPaddingValues(2 * N, 0);
+
+    for (int i = 0; i < N; ++i) {
+      newPaddingValues[2 * i] = lowValues[i];
+      newPaddingValues[2 * i + 1] = highValues[i];
+    }
+
+    auto paddingType =
+        mlir::RankedTensorType::get({N, 2}, rewriter.getI64Type());
+    auto newPaddingAttr =
+        mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+
+    auto newOp = rewriter.create<mlir::stablehlo::ReduceWindowOp>(
+        op.getLoc(), op.getResult(0).getType(), padOp.getOperand(), initValue,
+        op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
+        op.getBaseDilationsAttr(), op.getWindowDilationsAttr(), newPaddingAttr);
+    newOp.getRegion().takeBody(op.getRegion());
+
+    rewriter.replaceAllUsesWith(op.getResult(0), newOp.getResult(0));
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct ConcatPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
 
@@ -7909,8 +7964,10 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering<stablehlo::AndOp>,
                  AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
 
-    patterns.add<BinopPadToConcat<stablehlo::AddOp>,
-                 BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
+    patterns
+        .add<BinopPadToConcat<stablehlo::AddOp>,
+             BinopPadToConcat<stablehlo::MulOp>, ConcatPad, PadReduceWindow>(
+            context);
 
     if (passses & 512)
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,

@@ -73,14 +73,13 @@ module {
 // REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // REVERSE-NEXT:    %0 = "stablehlo.reduce_window"(%arg0, %cst) <{padding = dense<0> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
 // REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %3 = stablehlo.add %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %3 : tensor<f32>
+// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
 // REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<f32>) -> tensor<1xf32>
-// REVERSE-NEXT:    %1 = stablehlo.pad %arg1, %cst, low = [2], high = [2], interior = [0] : (tensor<1xf32>, tensor<f32>) -> tensor<5xf32>
-// REVERSE-NEXT:    %2 = "stablehlo.reduce_window"(%1, %cst) <{base_dilations = array<i64: 1>, padding = dense<0> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>}> ({
+// REVERSE-NEXT:    %1 = "stablehlo.reduce_window"(%arg1, %cst) <{base_dilations = array<i64: 1>, padding = dense<2> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>}> ({
 // REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %3 = stablehlo.add %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %3 : tensor<f32>
-// REVERSE-NEXT:    }) : (tensor<5xf32>, tensor<f32>) -> tensor<3xf32>
-// REVERSE-NEXT:    return %0, %2 : tensor<1xf32>, tensor<3xf32>
+// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
+// REVERSE-NEXT:    }) : (tensor<1xf32>, tensor<f32>) -> tensor<3xf32>
+// REVERSE-NEXT:    return %0, %1 : tensor<1xf32>, tensor<3xf32>
 // REVERSE-NEXT:  }
