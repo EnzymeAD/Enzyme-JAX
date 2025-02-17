@@ -89,21 +89,6 @@ llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 flatbuffers()
 
-load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
-jax_python_wheel_repository(
-    name = "jax_wheel",
-    version_key = "_version",
-    version_source = "@jax//jax:version.py",
-)
-
-load(
-    "@tsl//third_party/py:python_wheel.bzl",
-    "python_wheel_version_suffix_repository",
-)
-python_wheel_version_suffix_repository(
-    name = "jax_wheel_version_suffix",
-)
-
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()
 
@@ -118,6 +103,21 @@ xla_workspace1()
 
 load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
+
+load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
+jax_python_wheel_repository(
+    name = "jax_wheel",
+    version_key = "_version",
+    version_source = "@jax//jax:version.py",
+)
+
+load(
+    "@tsl//third_party/py:python_wheel.bzl",
+    "python_wheel_version_suffix_repository",
+)
+python_wheel_version_suffix_repository(
+    name = "jax_wheel_version_suffix",
+)
 
 load(
     "@tsl//third_party/gpus/cuda/hermetic:cuda_json_init_repository.bzl",
