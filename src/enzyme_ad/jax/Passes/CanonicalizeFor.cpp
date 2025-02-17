@@ -689,7 +689,7 @@ struct WhileToForHelper {
   AddIOp addIOp;
   BlockArgument indVar;
   size_t afterArgIdx;
-    
+
   bool checkPredicate() {
     auto cmpRhs = cmpIOp.getRhs();
     if (dominateWhile(cmpRhs, loop)) {
@@ -733,7 +733,6 @@ struct WhileToForHelper {
     }
 
     return lb && ub;
-
   }
 
   void checkNegativeStep() {
@@ -766,7 +765,7 @@ struct WhileToForHelper {
   }
 
   bool computeLegality(bool sizeCheck, Value lookThrough = nullptr) {
-    
+
     initVariables();
 
     auto condOp = loop.getConditionOp();
@@ -906,32 +905,34 @@ struct WhileToForHelper {
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
     }
     auto modifyTypeToIndex = true;
-    if ((step.getType()==lb.getType()) && (ub.getType()==lb.getType()) && !isa<ConstantIndexOp>(step.getDefiningOp())) {
+    if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType()) &&
+        !isa<ConstantIndexOp>(step.getDefiningOp())) {
       modifyTypeToIndex = false;
     }
 
     if (negativeStep) {
       if (modifyTypeToIndex) {
-      if (auto cop = step.getDefiningOp<ConstantIntOp>()) {
+        if (auto cop = step.getDefiningOp<ConstantIntOp>()) {
           step = rewriter.create<ConstantIndexOp>(cop.getLoc(), -cop.value());
-      } else {
-        auto cop2 = step.getDefiningOp<ConstantIndexOp>();
-        step = rewriter.create<ConstantIndexOp>(cop2.getLoc(), -cop2.value());
+        } else {
+          auto cop2 = step.getDefiningOp<ConstantIndexOp>();
+          step = rewriter.create<ConstantIndexOp>(cop2.getLoc(), -cop2.value());
         }
       } else {
         auto cop = step.getDefiningOp<ConstantIntOp>();
-        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(), cop.getType());
+        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(),
+                                              cop.getType());
       }
     }
 
-    //Only cast if the types of step, ub and lb are different
+    // Only cast if the types of step, ub and lb are different
     if (modifyTypeToIndex) {
-    ub = rewriter.create<IndexCastOp>(loop.getLoc(),
-                                      IndexType::get(loop.getContext()), ub);
-    lb = rewriter.create<IndexCastOp>(loop.getLoc(),
-                                      IndexType::get(loop.getContext()), lb);
-    step = rewriter.create<IndexCastOp>(
-        loop.getLoc(), IndexType::get(loop.getContext()), step);
+      ub = rewriter.create<IndexCastOp>(loop.getLoc(),
+                                        IndexType::get(loop.getContext()), ub);
+      lb = rewriter.create<IndexCastOp>(loop.getLoc(),
+                                        IndexType::get(loop.getContext()), lb);
+      step = rewriter.create<IndexCastOp>(
+          loop.getLoc(), IndexType::get(loop.getContext()), step);
     }
   }
 };
@@ -1008,7 +1009,6 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     Block &beforeBlock = whileOp.getBefore().front();
     auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
     Value conditionValue = conditionOp.getCondition();
-
 
     Value upperBound;
     Value compareValue;
@@ -1088,10 +1088,10 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     int ub = static_cast<int>(*ubInt);
     int step = static_cast<int>(*stepInt);
 
-    //Uinsg WhileToForHelper to set up for loop structure
+    // Uinsg WhileToForHelper to set up for loop structure
     WhileToForHelper helper;
     helper.initVariables();
-    
+
     helper.loop = whileOp;
     helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
     helper.step = stepSize;
@@ -1099,7 +1099,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     helper.ub = upperBound;
     helper.indVar = mlir::cast<mlir::BlockArgument>(IV);
     helper.negativeStep = step < 0;
-    
+
     if (!helper.checkPredicate())
       return failure();
     helper.checkNegativeStep();
@@ -1123,8 +1123,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
       // Copy from before region to for body
       IRMapping mappingBeforeBlock;
-      for (auto [arg, init] :
-           llvm::zip(beforeBlock.getArguments(), newBlock.getArguments().drop_front())) {
+      for (auto [arg, init] : llvm::zip(beforeBlock.getArguments(),
+                                        newBlock.getArguments().drop_front())) {
         mappingBeforeBlock.map(arg, init);
       }
       for (Operation &op : beforeBlock.without_terminator()) {
@@ -2522,7 +2522,7 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   rpl.add<PropagateInLoopBody, ForOpInductionReplacement, RemoveUnusedArgs,
-           MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+          MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
 
           MoveWhileDown, MoveWhileDown2,
 
