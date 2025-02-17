@@ -6,9 +6,9 @@
 // CHECK:           %[[VAL_2:.*]] = "enzymexla.pointer2memref"(%[[VAL_0]]) : (!llvm.ptr<1>) -> memref<?xi64, 1>
 // CHECK:           %[[VAL_3:.*]] = arith.index_cast %[[VAL_1]] : i64 to index
 // CHECK:           %[[VAL_4:.*]] = arith.index_cast %[[VAL_1]] : i64 to index
-// CHECK:           %[[VAL_5:.*]] = affine.load %[[VAL_2]][symbol(%[[VAL_3]])] : memref<?xi64, 1>
+// CHECK:           %[[VAL_5:.*]] = affine.load %[[VAL_2]][symbol(%[[VAL_3]]) * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK:           %[[VAL_6:.*]] = llvm.mul %[[VAL_5]], %[[VAL_5]] : i64
-// CHECK:           affine.store %[[VAL_6]], %[[VAL_2]][symbol(%[[VAL_4]])] : memref<?xi64, 1>
+// CHECK:           affine.store %[[VAL_6]], %[[VAL_2]][symbol(%[[VAL_4]]) * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK:           return
 // CHECK:         }
 func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
@@ -32,12 +32,12 @@ func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
 // CHECK:           %[[VAL_4:.*]] = "enzymexla.pointer2memref"(%[[VAL_0]]) : (!llvm.ptr<1>) -> memref<?xi64, 1>
 // CHECK:           %[[VAL_5:.*]] = arith.index_cast %[[VAL_2]] : i64 to index
 // CHECK:           %[[VAL_6:.*]] = arith.index_cast %[[VAL_1]] : i64 to index
-// CHECK:           %[[VAL_7:.*]] = affine.load %[[VAL_4]][symbol(%[[VAL_6]]) * 8 + symbol(%[[VAL_5]])] : memref<?xi64, 1>
+// CHECK:           %[[VAL_7:.*]] = affine.load %[[VAL_4]][symbol(%[[VAL_6]]) * 64 + symbol(%[[VAL_5]]) * 8] {ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK:           %[[VAL_8:.*]] = llvm.add %[[VAL_1]], %[[VAL_3]] : i64
 // CHECK:           %[[VAL_9:.*]] = arith.index_cast %[[VAL_8]] : i64 to index
 // CHECK:           %[[VAL_10:.*]] = llvm.add %[[VAL_2]], %[[VAL_3]] : i64
 // CHECK:           %[[VAL_11:.*]] = arith.index_cast %[[VAL_10]] : i64 to index
-// CHECK:           affine.store %[[VAL_7]], %[[VAL_4]][symbol(%[[VAL_9]]) * 8 + symbol(%[[VAL_11]])] : memref<?xi64, 1>
+// CHECK:           affine.store %[[VAL_7]], %[[VAL_4]][symbol(%[[VAL_9]]) * 64 + symbol(%[[VAL_11]]) * 8] {ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK:           return
 // CHECK:         }
 func.func @test_multidim_load_store(%arg0: !llvm.ptr<1>, %idx1: i64, %idx2: i64) {
@@ -60,8 +60,8 @@ func.func @test_multidim_load_store(%arg0: !llvm.ptr<1>, %idx1: i64, %idx2: i64)
 // CHECK-LABEL:   func.func @test_struct_access(
 // CHECK-SAME:                                  %[[VAL_0:[^:]*]]: !llvm.ptr) {
 // CHECK:           %[[VAL_1:.*]] = "enzymexla.pointer2memref"(%[[VAL_0]]) : (!llvm.ptr) -> memref<?xi64>
-// CHECK:           %[[VAL_2:.*]] = affine.load %[[VAL_1]][0] : memref<?xi64>
-// CHECK:           affine.store %[[VAL_2]], %[[VAL_1]][0] : memref<?xi64>
+// CHECK:           %[[VAL_2:.*]] = affine.load %[[VAL_1]][0] {ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64>
+// CHECK:           affine.store %[[VAL_2]], %[[VAL_1]][0] {ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64>
 // CHECK:           return
 // CHECK:         }
 func.func @test_struct_access(%arg0: !llvm.ptr) {

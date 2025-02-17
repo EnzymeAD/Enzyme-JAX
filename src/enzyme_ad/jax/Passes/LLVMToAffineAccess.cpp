@@ -202,6 +202,10 @@ struct ConvertToTypedMemref
                                      {expr.floorDiv(size)}, load.getContext());
         auto newLoad = rewriter.create<affine::AffineLoadOp>(
             load.getLoc(), getNewMemref(), newMap, load.getMapOperands());
+        // Copy attributes from the old load to the new one
+        for (auto attr : load->getAttrs()) {
+          newLoad->setAttr(attr.getName(), attr.getValue());
+        }
         mapping.map(value, newLoad.getValue());
         toErase.push_back(user);
         toErase.push_back(load);
@@ -220,9 +224,13 @@ struct ConvertToTypedMemref
         rewriter.setInsertionPoint(store);
         auto newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
                                      {expr.floorDiv(size)}, store.getContext());
-        rewriter.create<affine::AffineStoreOp>(store.getLoc(), value,
-                                               getNewMemref(), newMap,
-                                               store.getMapOperands());
+        auto newStore = rewriter.create<affine::AffineStoreOp>(
+            store.getLoc(), value, getNewMemref(), newMap,
+            store.getMapOperands());
+        // Copy attributes from the old store to the new one
+        for (auto attr : store->getAttrs()) {
+          newStore->setAttr(attr.getName(), attr.getValue());
+        }
         toErase.push_back(store);
         toErase.push_back(user);
       } else {
@@ -1244,6 +1252,10 @@ convertLLVMToAffineAccess(Operation *op,
       auto vecLoad =
           createVectorLoad(rewriter, load.getLoc(), load.getType(), vty,
                            mc(aab.getBase()), mao.map, ic(mao.operands));
+      // Copy attributes from the old load to the new one
+      for (auto attr : load->getAttrs()) {
+        vecLoad.getDefiningOp()->setAttr(attr.getName(), attr.getValue());
+      }
       Operation *newLoad;
       if (isa<LLVM::LLVMPointerType>(load.getType())) {
         Type intTy = rewriter.getIntegerType(
@@ -1275,6 +1287,10 @@ convertLLVMToAffineAccess(Operation *op,
       Operation *newStore = createVectorStore(
           rewriter, store.getLoc(), ty, cast<TypedValue<VectorType>>(v),
           mc(aab.base), mao.map, ic(mao.operands));
+      // Copy attributes from the old store to the new one
+      for (auto attr : store->getAttrs()) {
+        newStore->setAttr(attr.getName(), attr.getValue());
+      }
       mapping.map(store.getOperation(), newStore);
     } else {
       llvm_unreachable("");
