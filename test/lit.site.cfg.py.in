@@ -11,7 +11,5 @@ config.enzymexla_tools_dir = "@ENZYMEXLA_BINARY_DIR@"
 if len(config.enzymexla_tools_dir) == 0:
   config.enzymexla_tools_dir = os.getcwd()
 
-config.substitutions.append(("%stablehlo-translate", config.enzymexla_tools_dir + "/external/stablehlo/stablehlo-translate"))
-
 cfgfile = os.path.dirname(os.path.abspath(__file__)) + "/lit.cfg.py"
 lit_config.load_config(config, cfgfile)

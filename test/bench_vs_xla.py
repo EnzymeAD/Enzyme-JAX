@@ -1,13 +1,11 @@
-import jax
-import jax.numpy as jnp
-from enzyme_ad.jax import enzyme_jax_ir, NewXLAPipeline, OldXLAPipeline, JaXPipeline
 from absl.testing import absltest
-import timeit
 from test_utils import *
 
 
 class AddOne(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         self.ins = [
             jnp.array([1.0, 2.0, 3.0]),
             jnp.array([10.0, 20.0, 30.0]),
@@ -16,7 +14,7 @@ class AddOne(EnzymeJaxTest):
             jnp.array([0.1, 0.2, 0.3]),
             jnp.array([50.0, 70.0, 110.0]),
         ]
-        self.douts = [jnp.array([500.0, 700.0, 110.0])]
+        self.douts = jnp.array([500.0, 700.0, 110.0])
 
         def add_one(x, y):
             return x + 1 + y
@@ -32,6 +30,8 @@ class AddOne(EnzymeJaxTest):
 
 class AddTwo(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         self.ins = [
             jnp.array([1.0, 2.0, 3.0]),
             jnp.array([10.0, 20.0, 30.0]),
@@ -42,7 +42,7 @@ class AddTwo(EnzymeJaxTest):
             jnp.array([50.0, 70.0, 110.0]),
             jnp.array([1300.0, 1700.0, 1900.0]),
         ]
-        self.douts = [jnp.array([500.0, 700.0, 110.0])]
+        self.douts = jnp.array([500.0, 700.0, 110.0])
 
         def add_two(x, z, y):
             return x + y
@@ -53,9 +53,11 @@ class AddTwo(EnzymeJaxTest):
 
 class Sum(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         self.ins = [jnp.array(range(50), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(50)], dtype=jnp.float32)]
-        self.douts = [1.0]
+        self.douts = jnp.array(1.0)
 
         def sum(x):
             return jnp.sum(x)
@@ -66,10 +68,12 @@ class Sum(EnzymeJaxTest):
 
 class Cache(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         dim = 288
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -84,12 +88,14 @@ class Cache(EnzymeJaxTest):
 
 class Slicing(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         dim = 3
         self.ins = [jnp.array(range(dim), dtype=jnp.float32).reshape(1, dim, 1)]
         self.dins = [
             jnp.array([i * i for i in range(dim)], dtype=jnp.float32).reshape(1, dim, 1)
         ]
-        self.douts = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(dim)], dtype=jnp.float32)
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -104,14 +110,14 @@ class Slicing(EnzymeJaxTest):
 
 class ActivityMismatch(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [
-            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
-                (2, dim)
-            )
-        ]
+        self.douts = jnp.array(
+            [i * i for i in range(2 * dim)], dtype=jnp.float32
+        ).reshape((2, dim))
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -131,14 +137,14 @@ class ActivityMismatch(EnzymeJaxTest):
 
 class GenDot(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         dim = 12
         self.ins = [jnp.array(range(dim), dtype=jnp.float32)]
         self.dins = [jnp.array([i * i for i in range(dim)], dtype=jnp.float32)]
-        self.douts = [
-            jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32).reshape(
-                (2, dim)
-            )
-        ]
+        self.douts = jnp.array(
+            [i * i for i in range(2 * dim)], dtype=jnp.float32
+        ).reshape((2, dim))
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla
@@ -165,6 +171,8 @@ class GenDot(EnzymeJaxTest):
 
 class Concat(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         dim = 12
         self.ins = [
             jnp.array(range(dim), dtype=jnp.float32),
@@ -174,10 +182,9 @@ class Concat(EnzymeJaxTest):
             jnp.array([i * i for i in range(dim)], dtype=jnp.float32),
             jnp.array([i * i * i / 3.0 for i in range(dim)], dtype=jnp.float32),
         ]
-        self.douts = [jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)]
+        self.douts = jnp.array([i * i for i in range(2 * dim)], dtype=jnp.float32)
 
         self.revfilter = justjax
-        # self.revfilter = nomlir
 
         def f(x, y):
             return jnp.concat([x, y], axis=None)
@@ -191,15 +198,18 @@ class ValueAndGrad(absltest.TestCase):
         pass
 
     def test(self):
+        from enzyme_ad.jax import enzyme_jax_ir
+        import jax.numpy as jnp
+
         def f(x, y):
             return (jnp.sum(x * y[0] + y[1]), y)
 
         filt = justjax
 
-        for pname, pipeline, backends in AllPipelines:
+        for pname, pipeline, backends in AllPipelines():
             prevres = None
             for backend in backends:
-                if (pname, pipeline) in filt(AllPipelines):
+                if (pname, pipeline) in filt(AllPipelines()):
                     args = (
                         to_backend(3 * jnp.ones((1,), dtype=jnp.float32), backend),
                         (
@@ -260,6 +270,8 @@ class ValueAndGrad(absltest.TestCase):
 
 class ConstScatter(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         def forward(c_tau):
             Q = c_tau
             Q = Q.at[0].multiply(3)
@@ -274,7 +286,7 @@ class ConstScatter(EnzymeJaxTest):
             jnp.array([2.7, 2.7, 2.7]),
         ]
         self.dins = [jnp.array([3.1, 3.1, 3.1])]
-        self.douts = self.dins
+        self.douts = (self.dins[0],)
         self.revfilter = lambda _: []
         # No support for stablehlo.while atm
         # self.revfilter = justjax
@@ -283,6 +295,9 @@ class ConstScatter(EnzymeJaxTest):
 
 class ScatterSum(EnzymeJaxTest):
     def setUp(self):
+        import jax
+        import jax.numpy as jnp
+
         def energy_fn(R, neighbor):
             dR = R[neighbor[0]]
             return jnp.sum(jnp.sin(dR))
@@ -298,11 +313,15 @@ class ScatterSum(EnzymeJaxTest):
 
         self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
         self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
-        self.douts = []
+        self.douts = self.fn(*self.ins)
         self.revfilter = lambda _: []
         # No support for stablehlo.scatter atm
         self.mlirad_rev = False
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+
+    fix_paths()
+
     absltest.main()

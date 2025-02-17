@@ -491,7 +491,7 @@ struct tensor<T, n0, N...>
         CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
 
   // Create the actual diagnostics engine.
-  Clang->createDiagnostics();
+  Clang->createDiagnostics(*fuseFS);
   if (!Clang->hasDiagnostics()) {
     llvm::errs() << " failed create diag\n";
     return {};
@@ -571,7 +571,11 @@ struct tensor<T, n0, N...>
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-  PB.parsePassPipeline(MPM, "default<O3>");
+  if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
+    throw pybind11::value_error(
+        (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
+            .str());
+  }
   MPM.run(*mod, MAM);
 
   auto F = mod->getFunction("prevent_stores");

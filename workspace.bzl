@@ -1,8 +1,14 @@
-JAX_COMMIT = "81a31f6adf453b2afc39936e15c15d8ad327bf6e"
+JAX_COMMIT = "e56c7dc50257c52e71a05e0567c15d9fdb9765b1"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "192d9231aaa5415fa135ffb3568cc8eceef512d5"
+ENZYME_COMMIT = "1c66ea6e68f0f61d519153c78c0cd5f8e4cf69ac"
 ENZYME_SHA256 = ""
+# If the empty string this will automatically use the commit above
+# otherwise this should be a path to the folder containing the BUILD file for enzyme
+OVERRIDE_ENZYME_PATH = ""
+
+HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
+HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
@@ -26,7 +32,9 @@ XLA_PATCHES = [
     """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
-    "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +", 
+    "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
-    "find xla/mlir -type f -name BUILD -exec sed -i.bak3 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +"
+    "find xla/mlir -type f -name BUILD -exec sed -i.bak3 's/\\/\\/xla:internal/\\/\\/\\/\\/visibility:public/g' {} +",
 ]
+
+LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]

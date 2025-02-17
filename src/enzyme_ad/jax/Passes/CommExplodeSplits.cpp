@@ -1,15 +1,21 @@
 #include "src/enzyme_ad/jax/Dialects/Comm/CommDialect.h"
-#include "src/enzyme_ad/jax/Passes/PassDetails.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/IR/Builders.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <utility>
 
 #define DEBUG_TYPE "enzyme"
+
+namespace mlir {
+namespace enzyme {
+#define GEN_PASS_DEF_COMMEXPLODESPLITS
+#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::comm;
@@ -18,22 +24,23 @@ using namespace mlir::enzyme; // one of the upstream includes we need is wrapped
                               // in this namespace
 
 namespace {
-struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
+struct CommExplodeSplits : public  enzyme::impl::CommExplodeSplitsBase<CommExplodeSplits> {
 
   /**
-   * Creates a multiplexmessage wrapping this one and sets all recieves from this
-   * message to the multiplex.
+   * Creates a multiplexmessage wrapping this one and sets all recieves from
+   * this message to the multiplex.
    *
    */
-  static CommMultiplexMessage createMultiplex(OpBuilder &builder, CommMessage msg) { 
+  static CommMultiplexMessage createMultiplex(OpBuilder &builder,
+                                              CommMessage msg) {
     OpBuilder::InsertionGuard insert_guard(builder);
 
     // Find all recieve points
-    llvm::SmallVector<OpOperand*> receiving_uses;
-    for(auto &use : msg->getUses()) {
-      Operation* user = use.getOwner();
-     
-      if (!isa<CommSend>(user)){
+    llvm::SmallVector<OpOperand *> receiving_uses;
+    for (auto &use : msg->getUses()) {
+      Operation *user = use.getOwner();
+
+      if (!isa<CommSend>(user)) {
         // Complex messages count as receivers too, not just recv statements
         receiving_uses.push_back(&use);
       }
@@ -45,14 +52,14 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
     Type out_tok_type = MessageTokenType::get(msg.getContext());
     ValueRange in_tokens = (ValueRange({msg->getOpResult(0)}));
     TypeAttr out_data_type = TypeAttr::get(msg.getOutputType());
-    CommMultiplexMessage plex = builder.create<CommMultiplexMessage>(msg.getLoc(), out_tok_type, out_data_type, in_tokens);
+    CommMultiplexMessage plex = builder.create<CommMultiplexMessage>(
+        msg.getLoc(), out_tok_type, out_data_type, in_tokens);
 
-    for(auto use : receiving_uses){
+    for (auto use : receiving_uses) {
       use->assign(plex.getToken());
     }
     return plex;
   }
-
 
   /**
    * After a branch is split and contains only one device, look through it for
@@ -89,7 +96,8 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
 
         } else {
           assert(0 && "TODO inline multiple blocks");
-          // TODO split the basic block, add a jump to entry, and link joins to next statement.
+          // TODO split the basic block, add a jump to entry, and link joins to
+          // next statement.
         }
 
         break;
@@ -115,26 +123,28 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
       });
 
       // Don't care about branches with only one device
-      if(n_clones == 1) {
+      if (n_clones == 1) {
         inlineSplits(branch);
         continue;
       }
 
-      // Look for any send statements that appear in this branch in a multi-device
-      // context. When we clone the branches, we will want to transform their simple messages
-      // into multiplex messages. Since sub branches have already been exploded they can be
-      // excluded from consideration.
-      // mapping of tokens to their multiplex op
+      // Look for any send statements that appear in this branch in a
+      // multi-device context. When we clone the branches, we will want to
+      // transform their simple messages into multiplex messages. Since sub
+      // branches have already been exploded they can be excluded from
+      // consideration. mapping of tokens to their multiplex op
       OpBuilder builder(branch->getContext());
-      llvm::DenseMap<TypedValue<MessageTokenType>, CommMultiplexMessage> tok_to_plex;
-      split->walk<WalkOrder::PreOrder>([&](Operation *op){
-        if(isa<CommSplit>(op) && op != split) {
+      llvm::DenseMap<TypedValue<MessageTokenType>, CommMultiplexMessage>
+          tok_to_plex;
+      split->walk<WalkOrder::PreOrder>([&](Operation *op) {
+        if (isa<CommSplit>(op) && op != split) {
           // sub branches exploded already
           return WalkResult::skip();
-        } 
-        if(CommSend send = dyn_cast<CommSend>(op)){
-          if(!tok_to_plex.contains(send.getToken())){
-            CommMultiplexMessage multiplex = createMultiplex(builder, send.getMessage());
+        }
+        if (CommSend send = dyn_cast<CommSend>(op)) {
+          if (!tok_to_plex.contains(send.getToken())) {
+            CommMultiplexMessage multiplex =
+                createMultiplex(builder, send.getMessage());
             tok_to_plex.insert(std::make_pair(send.getToken(), multiplex));
           }
         }
@@ -148,21 +158,25 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
 
         cloned.setDeviceIds({branch.getDeviceIds()[i]});
 
-        // can't use insertBefore/After immediately since it segfaults trying to unlink- need to add to a block first
+        // can't use insertBefore/After immediately since it segfaults trying to
+        // unlink- need to add to a block first
         branch->getBlock()->push_back(cloned);
         cloned->moveBefore(branch);
         inlineSplits(cloned);
 
-        // Walk over all sends and if they have been mapped to a multiplex replace them
-        llvm::DenseMap<TypedValue<MessageTokenType>, TypedValue<MessageTokenType>> token_replacements;
+        // Walk over all sends and if they have been mapped to a multiplex
+        // replace them
+        llvm::DenseMap<TypedValue<MessageTokenType>,
+                       TypedValue<MessageTokenType>>
+            token_replacements;
         cloned.walk([&](CommSend send) {
           auto orig_token = send.getToken();
-          if(token_replacements.contains(orig_token)){
+          if (token_replacements.contains(orig_token)) {
             // if we've already cloned the message for this branch use the clone
             send.getTokenMutable().assign(token_replacements[orig_token]);
-          } else if (tok_to_plex.contains(orig_token)){
-            // if this token needs to be multiplexed, create a clone of its message
-            // and add to the multiplex
+          } else if (tok_to_plex.contains(orig_token)) {
+            // if this token needs to be multiplexed, create a clone of its
+            // message and add to the multiplex
 
             auto orig_msg = orig_token.getDefiningOp();
             auto cloned_msg = llvm::cast<CommSimpleMessage>(orig_msg->clone());
@@ -181,17 +195,7 @@ struct CommExplodeSplits : public CommExplodeSplitsBase<CommExplodeSplits> {
     }
   }
 
-  void runOnOperation() override {
-    getOperation()->walk(explodeSplit);
-  }
+  void runOnOperation() override { getOperation()->walk(explodeSplit); }
 };
 
 } // end anonymous namespace
-
-namespace mlir {
-namespace comm {
-std::unique_ptr<Pass> createCommExplodeSplitsPass() {
-  return std::make_unique<CommExplodeSplits>();
-}
-} // namespace comm
-} // namespace mlir

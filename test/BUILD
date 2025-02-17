@@ -23,27 +23,6 @@ exports_files(
     visibility = [":__subpackages__"],
 )
 
-[
-    lit_test(
-        name = "%s.test" % src,
-        srcs = [src],
-        data = [
-            ":lit.cfg.py",
-            ":lit_site_cfg_py",
-            "//:enzymexlamlir-opt",
-            "@llvm-project//llvm:FileCheck",
-            "@llvm-project//llvm:count",
-            "@llvm-project//llvm:not",
-            "@stablehlo//:stablehlo-translate"
-        ] + glob(["**/*.h"]),
-    )
-    for src in glob(
-        [
-            "**/*.mlir",
-        ],
-    )
-]
-
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 
 string_flag(
@@ -109,6 +88,18 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "testffi",
+    srcs = [
+        "testffi.py",
+        "test_utils.py"
+    ],
+    imports = ["."],
+    deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -119,7 +110,8 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS,
-    timeout='long'
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -129,8 +121,48 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    deps = TEST_DEPS + ["@pypi_jax_md//:pkg"],
-    timeout='long'
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
+        "//conditions:default": []
+    }),
+    timeout='long',
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "neuralgcm_test",
+    srcs = [
+        "neuralgcm_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+        "//conditions:default": [],
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
+)
+
+py_test(
+    name = "keras_test",
+    srcs = [
+        "keras_test.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 # py_test(
@@ -141,4 +173,5 @@ py_test(
 #     imports = ["."],
 #     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
 #     timeout='long'
+#     tags = ["exclusive"]
 # )

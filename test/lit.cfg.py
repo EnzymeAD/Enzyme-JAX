@@ -36,6 +36,7 @@ config.test_exec_root = os.path.dirname(__file__)
 base_paths = [
     config.llvm_tools_dir,
     config.enzymexla_tools_dir,
+    config.enzymexla_tools_dir + "/external/stablehlo",
     config.environment["PATH"],
 ]
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)

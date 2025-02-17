@@ -6,52 +6,64 @@ steps:
       cuda: "*"
     if: build.message !~ /\[skip tests\]/
     timeout_in_minutes: 180
+    if: build.tag == null
+    plugins:
+      # - cache#v1.3.0:
+      #     manifest: .buildkite/pipeline.yml
+      #     path: .local/bin/bazel
+      #     restore: file
+      #     save: file
+      # - cache#v1.3.0:
+      #     manifest: workspace.bzl
+      #     path: .baztmp
+      #     restore: file
+      #     save: file
     commands: |
       pwd
       env
       echo "--- Setup :python: Dependencies"
       mkdir -p .local/bin
-      export PATH="`pwd`/.local/bin:`pwd`/conda/bin:\$PATH"
+      export PATH="`pwd`/.local/bin:\$PATH"
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
-      # No one tells us what to do
-      unset NV_LIBCUBLAS_VERSION
-      unset NVIDIA_VISIBLE_DEVICES
-      unset NV_NVML_DEV_VERSION
-      unset NV_LIBNCCL_DEV_PACKAGE
-      unset NV_LIBNCCL_DEV_PACKAGE_VERSION
-      unset NVIDIA_REQUIRE_CUDA
-      unset NV_LIBCUBLAS_DEV_PACKAGE
-      unset NV_NVTX_VERSION
-      
-      curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
+      if [ ! -f ".local/bin/bazel" ]; then
+        curl -fLO https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64
+        mv bazel* .local/bin/bazel
+        chmod +x .local/bin/bazel
+      fi
 
-      mv bazel* .local/bin/bazel
-      chmod +x .local/bin/bazel
       export PATH="`pwd`/.local/bin:\$PATH"
 
       mkdir -p .baztmp
 
       echo "--- :python: Test"
+      BAZEL_BUILD_FLAGS=()
+      GCC_VERSION=\$(gcc --version | head -1 | awk '{ print \$3 }' | cut -d. -f1)
 
-      export CUDA_DIR=`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc
-      export XLA_FLAGS=--xla_gpu_cuda_data_dir=\$CUDA_DIR
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cusolver_cu12/site-packages/nvidia/cusolver:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cudnn_cu12/site-packages/nvidia/cudnn/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/test.runfiles/pypi_nvidia_cublas_cu12/site-packages/nvidia/cublas/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_cupti_cu12/site-packages/nvidia/cuda_cupti/lib:\$LD_LIBRARY_PATH"
-      export LD_LIBRARY_PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_runtime_cu12/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
-      export PATH="`pwd`/bazel-bin/test/llama.runfiles/pypi_nvidia_cuda_nvcc_cu12/site-packages/nvidia/cuda_nvcc/bin:\$PATH"
-      export TF_CPP_MIN_LOG_LEVEL=0
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp run --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL //builddeps:requirements.update || echo "no req update"
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --test_output=errors //test/... || echo "fail1"
-      find `pwd`/bazel-bin/test/llama.runfiles > finds.txt
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:bench_vs_xla || echo "fail2"
-      HERMETIC_PYTHON_VERSION="3.12" .local/bin/bazel --output_user_root=`pwd`/.baztmp test --repo_env CUDA_DIR --repo_env XLA_FLAGS --action_env XLA_FLAGS --repo_env TF_CPP_MIN_LOG_LEVEL --action_env TF_CPP_MIN_LOG_LEVEL --cache_test_results=no -s //test:llama || echo "fail3"
-      HERMETIC_PYTHON_VERSION="3.12" bazel-bin/test/llama
-      cat bazel-out/*/testlogs/test/llama/test.log
+      echo "GCC VERSION: \${GCC_VERSION}"
+
+      if [[ "\${GCC_VERSION}" -le 12 ]]; then
+        # Someone wants to compile some code which requires flags not understood by GCC 12.
+        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avxvnniint8=false)
+      fi
+      if [[ "\${GCC_VERSION}" -le 11 ]]; then
+        # Someone wants to compile some code which requires flags not understood by GCC 11.
+        BAZEL_BUILD_FLAGS+=(--define=xnn_enable_avx512fp16=false)
+      fi
+      if [[ "\${GCC_VERSION}" -le 10 ]]; then
+        # Someone wants to compile some code which requires flags not understood by GCC 10.
+        BAZEL_BUILD_FLAGS+=(--define xnn_enable_avxvnni=false)
+        BAZEL_BUILD_FLAGS+=(--define xnn_enable_avx512amx=false)
+      fi
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp run //builddeps:requirements.update
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp build \${BAZEL_BUILD_FLAGS[@]} --test_output=errors //:wheel
+      HERMETIC_PYTHON_VERSION="3.11" .local/bin/bazel --output_user_root=`pwd`/.baztmp test \${BAZEL_BUILD_FLAGS[@]} --test_output=errors //test/...
+
     artifact_paths:
-      - "finds.txt"
       - "bazel-out/*/testlogs/test/llama/test.log"
-      - "bazel-out/*/testlogs/test/llama/bench_vs_xla.log"
+      - "bazel-out/*/testlogs/test/bench_vs_xla/test.log"
+      - "bazel-out/*/testlogs/test/jaxmd/test.log"
+      - "bazel-out/*/testlogs/test/neuralgcm_test/test.log"
+      - "bazel-out/*/testlogs/test/keras_test/test.log"
+      - "maxtext.log"
