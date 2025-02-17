@@ -29,7 +29,8 @@ jobs:
           - macOS-latest
         python:
           - '3.12'
-    timeout-minutes: 180
+    env:
+      HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,12 +44,21 @@ jobs:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow.
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}-${{ hashFiles('.github/workflows/build.yml') }}
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
       - name: Build enzymexlamlir-opt
+        timeout-minutes: 180
         run: |
           bazel build --color=yes //:enzymexlamlir-opt --test_output=errors
-        env:
-          HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
+      - name: Build wheel
+        timeout-minutes: 240
+        run: |
+          bazel build --color=yes :wheel --test_output=errors
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/*.whl"
+          retention-days: 90
