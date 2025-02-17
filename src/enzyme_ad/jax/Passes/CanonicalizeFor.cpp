@@ -905,18 +905,27 @@ struct WhileToForHelper {
           rewriter.create<ConstantIntOp>(loop.getLoc(), 1, ub.getType());
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
     }
+    auto modifyTypeToIndex = true;
+    if ((step.getType()==lb.getType()) && (ub.getType()==lb.getType()) && !isa<ConstantIndexOp>(step.getDefiningOp())) {
+      modifyTypeToIndex = false;
+    }
 
     if (negativeStep) {
+      if (modifyTypeToIndex) {
       if (auto cop = step.getDefiningOp<ConstantIntOp>()) {
-        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(), cop.getType());
+          step = rewriter.create<ConstantIndexOp>(cop.getLoc(), -cop.value());
       } else {
         auto cop2 = step.getDefiningOp<ConstantIndexOp>();
         step = rewriter.create<ConstantIndexOp>(cop2.getLoc(), -cop2.value());
+        }
+      } else {
+        auto cop = step.getDefiningOp<ConstantIntOp>();
+        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(), cop.getType());
       }
     }
 
-    //Only cast if step was Index type already   
-    if (isa<ConstantIndexOp>(step.getDefiningOp())) {
+    //Only cast if the types of step, ub and lb are different
+    if (modifyTypeToIndex) {
     ub = rewriter.create<IndexCastOp>(loop.getLoc(),
                                       IndexType::get(loop.getContext()), ub);
     lb = rewriter.create<IndexCastOp>(loop.getLoc(),
@@ -1000,14 +1009,6 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
     Value conditionValue = conditionOp.getCondition();
 
-    ////Uinsg WhileToForHelper to set up for loop strcuture
-    // WhileToForHelper helper;
-    // helper.loop = whileOp;
-    // helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
-
-    // if (!helper.computeLegality(/*sizeCheck*/ true))
-    //  return failure();
-    // helper.prepareFor(rewriter);
 
     Value upperBound;
     Value compareValue;
