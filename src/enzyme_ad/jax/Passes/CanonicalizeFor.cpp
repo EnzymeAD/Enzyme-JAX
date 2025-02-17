@@ -908,6 +908,43 @@ struct WhileToForHelper {
   }
 };
 
+std::optional<int64_t> getConstantInt(Value operand) {
+  if (operand) {
+    if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
+      if (auto attr = constOp.getValue()) {
+        if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
+          return intAttr.getInt();
+        }
+      }
+    }
+  }
+  return std::optional<int64_t>{}; // Non-constant case
+}
+
+// Checks to see if values are connected using use-def chain
+bool areValuesConnected(Value startVal, Value endVal,
+                        llvm::SmallPtrSetImpl<Value> &visited) {
+  if (startVal == endVal)
+    return true;
+
+  if (!visited.insert(endVal).second)
+    return false;
+
+  if (auto blockArg = endVal.dyn_cast<BlockArgument>()) {
+    return false;
+  }
+  if (Operation *defOp = endVal.getDefiningOp()) {
+    // Check all operands of defining operation
+    for (Value operand : defOp->getOperands()) {
+      if (areValuesConnected(startVal, operand, visited)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 // This works for any doWhile loop with any number of iter_args
 // Checks to see if loop iter_count > 1 for do_while
 struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
@@ -933,27 +970,26 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     // 9. Check to see if LB, UB and STEP are constant.
     // 10.Transfer before and after region to a new for loop.
     // 11.Replace all uses of while loop with for loop.
-    
-    //Check to see if doBlock just has yield op
+
+    // Check to see if doBlock just has yield op
     Block &doBlock = whileOp.getAfter().front();
     if (!isa<scf::YieldOp>(doBlock.front()))
       return failure();
-    
+
     // Before block analysis
     Block &beforeBlock = whileOp.getBefore().front();
     auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
     Value conditionValue = conditionOp.getCondition();
 
-    
     ////Uinsg WhileToForHelper to set up for loop strcuture
-    //WhileToForHelper helper;
-    //helper.loop = whileOp;
-    //helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
-    
-    //if (!helper.computeLegality(/*sizeCheck*/ true))
+    // WhileToForHelper helper;
+    // helper.loop = whileOp;
+    // helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
+
+    // if (!helper.computeLegality(/*sizeCheck*/ true))
     //  return failure();
-    //helper.prepareFor(rewriter);
-    
+    // helper.prepareFor(rewriter);
+
     Value upperBound;
     Value compareValue;
     if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
@@ -1110,7 +1146,6 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     return success();
   }
 };
-
 
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
