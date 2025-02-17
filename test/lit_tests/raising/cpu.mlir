@@ -36,9 +36,9 @@ module {
 // CHECK-NEXT:       affine.if #set(%arg4) {
 // CHECK-NEXT:         llvm.call fastcc @throw_boundserror_2676() : () -> ()
 // CHECK-NEXT:       } else {
-// CHECK-NEXT:         %1 = affine.load %0[%arg4] : memref<?xi64, 1>
+// CHECK-NEXT:         %1 = affine.load %0[%arg4 * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK-NEXT:         %2 = arith.muli %1, %1 : i64
-// CHECK-NEXT:         affine.store %2, %0[%arg4] : memref<?xi64, 1>
+// CHECK-NEXT:         affine.store %2, %0[%arg4 * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
 // CHECK-NEXT:       }
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
