@@ -8,12 +8,12 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include <deque>
-#include "mlir/Interfaces/FunctionInterfaces.h"
 
 #define DEBUG_TYPE "affine-cfg"
 

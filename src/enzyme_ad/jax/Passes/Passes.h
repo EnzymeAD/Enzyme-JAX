@@ -9,9 +9,9 @@
 #define ENZYMEXLA_PASSES_H
 
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Pass/Pass.h"
 
 #include <memory>
 
@@ -43,7 +43,6 @@ void fully2ComposeAffineMapAndOperands(
     mlir::PatternRewriter &rewriter, mlir::AffineMap *map,
     llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI);
 bool isValidIndex(mlir::Value val);
-
 
 struct ValueOrInt {
   bool isValue;
@@ -119,7 +118,6 @@ struct ValueOrInt {
   }
 };
 
-
 enum class Cmp { EQ, LT, LE, GT, GE };
 
 bool valueCmp(Cmp cmp, mlir::AffineExpr expr, size_t numDim,
@@ -127,7 +125,7 @@ bool valueCmp(Cmp cmp, mlir::AffineExpr expr, size_t numDim,
 
 bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
 
-bool isReadOnly(mlir::Operation*);
-bool isReadNone(mlir::Operation*);
+bool isReadOnly(mlir::Operation *);
+bool isReadNone(mlir::Operation *);
 
 #endif // ENZYMEXLA_PASSES_H
