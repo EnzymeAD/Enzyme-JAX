@@ -18,8 +18,11 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/MPI/IR/MPI.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+
 
 namespace mlir {
 namespace enzyme {
@@ -31,39 +34,44 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::mpi;
 using namespace stablehlo;
+using namespace mlir::enzymexla;
 
 namespace {
 struct InitOpLowering : public OpRewritePattern<mpi::InitOp> {
-    using OpRewritePattern<mpi::InitOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::InitOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_init"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // ::mlir::ValueRange inputs{};
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op.getResultTypes(), inputs,
+        //     rewriter.getStringAttr("mpi_init"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
 struct FinalizeOpLowering : public OpRewritePattern<mpi::FinalizeOp> {
-    using OpRewritePattern<mpi::FinalizeOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::FinalizeOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_finalize"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // ::mlir::ValueRange inputs{};
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op.getResultTypes(), inputs,
+        //     rewriter.getStringAttr("mpi_finalize"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
@@ -85,19 +93,21 @@ struct FinalizeOpLowering : public OpRewritePattern<mpi::FinalizeOp> {
 // };
 
 struct CommRankOpLowering : public OpRewritePattern<mpi::CommRankOp> {
-    using OpRewritePattern<mpi::CommRankOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::CommRankOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_comm_rank"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // ::mlir::ValueRange inputs{};
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op.getResultTypes(), inputs,
+        //     rewriter.getStringAttr("mpi_comm_rank"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
@@ -136,36 +146,38 @@ struct CommRankOpLowering : public OpRewritePattern<mpi::CommRankOp> {
 // };
 
 struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
-    using OpRewritePattern<mpi::SendOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::SendOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_send"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op.getResultTypes(), op.getOperands(),
+        //     rewriter.getStringAttr("mpi_send"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
 struct RecvOpLowering : public OpRewritePattern<mpi::RecvOp> {
-    using OpRewritePattern<mpi::RecvOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::RecvOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_recv"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op.getResultTypes(), op.getOperands(),
+        //     rewriter.getStringAttr("mpi_recv"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
@@ -255,36 +267,40 @@ struct RecvOpLowering : public OpRewritePattern<mpi::RecvOp> {
 // };
 
 struct RetvalCheckOpLowering : public OpRewritePattern<mpi::RetvalCheckOp> {
-    using OpRewritePattern<mpi::RetvalCheckOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::RetvalCheckOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_retval_check"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // ::mlir::ValueRange inputs{};
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op->getResultTypes(), inputs,
+        //     rewriter.getStringAttr("mpi_retval_check"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
 struct ErrorClassOpLowering : public OpRewritePattern<mpi::ErrorClassOp> {
-    using OpRewritePattern<mpi::ErrorClassOp>::OpRewritePattern;
+    using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::ErrorClassOp op, PatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-            op, op.getResultTypes(), op.getOperands(),
-            rewriter.getStringAttr("mpi_error_class"),
-            rewriter.getBoolAttr(false),
-            rewriter.getDictionaryAttr({}),
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            nullptr, ValueRange(), ValueRange(), ValueRange());
-        return success();
+        return failure();
+        // ::mlir::ValueRange inputs{};
+        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        //     op, op->getResultTypes(), inputs,
+        //     rewriter.getStringAttr("mpi_error_class"),
+        //     rewriter.getBoolAttr(false),
+        //     rewriter.getDictionaryAttr({}),
+        //     CustomCallApiVersionAttr::get(
+        //         rewriter.getContext(),
+        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        //     nullptr, ValueRange(), ValueRange(), ValueRange());
+        // return success();
     }
 };
 
@@ -295,13 +311,14 @@ struct ErrorClassOpLowering : public OpRewritePattern<mpi::ErrorClassOp> {
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct LowerMPIToStableHLOPass : public LowerMPIToStableHLOPassBase<LowerMPIToStableHLOPass> {
+struct LowerMPIToStableHLOPass : public mlir::enzyme::impl::LowerMPIToStableHLOPassBase<LowerMPIToStableHLOPass> {
 using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
     void runOnOperation() override {
-        ConversionTarget target(getContext());
+        using namespace mlir::enzyme::impl;
+        mlir::ConversionTarget target(getContext());
 
         // XLA can't handle MPI ops, so we must convert all MPI ops to `stablehlo.custom_call` ops
-        target.addIllegalDialect<MPI::MPIDialect>();
+        target.template addIllegalDialect<mpi::MPIDialect>();
 
         RewritePatternSet patterns(&getContext());
         patterns.add<
@@ -318,5 +335,5 @@ using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
             signalPassFailure();
         }
     }
-}
+};
 } // namespace
