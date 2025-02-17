@@ -908,119 +908,209 @@ struct WhileToForHelper {
   }
 };
 
-//This works fine for doWhile with no iter_args case only as of now
-//A more proper approach: copy before region to outside for loop, and copy both before and after region to inside for loop ?
+// This works for any doWhile loop with any number of iter_args
+// Checks to see if loop iter_count > 1 for do_while
 struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-      auto module = whileOp->getParentOfType<ModuleOp>();
-      // 1. Trace scf.condition to get condition -> condition is arith.cmpi -> From condition get UB.
-      // 2. Second input of arith.cmpi must be yield value for IV.
-      // 3. From yield value of IV, get the step.
-      // 4. From IV init arg in region get LB
-      // 5. Check after region is just yield of IV for correctness.
-      // 6. Copy region of before body into new created for loop as well as before the for loop.
-      // 7. For outside copy replace uses of inducion var with LB.
-      // 8. Create for loop with for (i=LB+step;i<UB;i+=step)
-      // 9. Replace all uses of 
+    auto module = whileOp->getParentOfType<ModuleOp>();
+    // 1. Analyze before region and extract scf.condition
+    // 2. From scf.condition obtain compareOp
+    // 3. Assumption that one of the values in compareOp is constant i.e is
+    // upperbound, and the other value (compareValue) is related to Induction
+    // Variable(IV)
+    // 4. Find index for IV from the iter_args based on use-def chain going from
+    //    iter_args of before region to the compareValue.
+    // 5. After IV index is found, use that to extract lowerBound from init
+    // values of before region, and IV itself from arg list.
+    // 6. Now from the use def chain connecting compareValue to yield of before
+    // region, we find the updatedIV index in scf.condition.
+    // 7. From the index we obtain the updated IV passed to after region.
+    // 8. We see the def of updatedIV to find the step size.
+    //    Currently only supporting AddIOp.
+    // 9. Check to see if LB, UB and STEP are constant.
+    // 10.Transfer before and after region to a new for loop.
+    // 11.Replace all uses of while loop with for loop.
+    
+    //Check to see if doBlock just has yield op
+    Block &doBlock = whileOp.getAfter().front();
+    if (!isa<scf::YieldOp>(doBlock.front()))
+      return failure();
+    
+    // Before block analysis
+    Block &beforeBlock = whileOp.getBefore().front();
+    auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
+    Value conditionValue = conditionOp.getCondition();
 
-      //Before block analysis
-      Block &beforeBlock = whileOp.getBefore().front();
-      Value IV = beforeBlock.getArgument(0);
-      auto conditionOp = 
-          dyn_cast<ConditionOp>(beforeBlock.getTerminator());
-      Value loopCondition = conditionOp.getCondition();
-      Value updatedIV = conditionOp.getArgs()[0];
-      Value stepSize;
-      if(auto addOp = updatedIV.getDefiningOp<arith::AddIOp>()){
-        if(addOp.getLhs() == IV) {
-          stepSize = addOp.getRhs(); 
-        }
-        else if(addOp.getRhs() == IV) {
-          stepSize = addOp.getLhs(); 
-        }
-        //Expect atleast one of the updatedIV fields to be IV
-        else 
-          return failure();
-      }
-      Value conditionValue = conditionOp.getCondition();
-      Value lowerBound = whileOp.getOperand(0);
-      
-
-      Value upperBound;
-      if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
-        arith::CmpIPredicate predicate = cmpOp.getPredicate();
-        // Expect one of lhs or rhs to be IV or updatedIV : This is incorrect assumption
-        // It can be something else as well.
-        // What we need to check for is that one of the lhs or rhs is a constant, and extract the value as upper bound.
-        if(cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
-          upperBound = cmpOp.getRhs();
-        }
-        else if(cmpOp.getLhs().getDefiningOp<arith::ConstantOp>()) {
-          upperBound = cmpOp.getLhs();
-        }
-      }
-      else {
-        // Currently only supporting arith.cmpIOp   
+    
+    ////Uinsg WhileToForHelper to set up for loop strcuture
+    //WhileToForHelper helper;
+    //helper.loop = whileOp;
+    //helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
+    
+    //if (!helper.computeLegality(/*sizeCheck*/ true))
+    //  return failure();
+    //helper.prepareFor(rewriter);
+    
+    Value upperBound;
+    Value compareValue;
+    if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
+      arith::CmpIPredicate predicate = cmpOp.getPredicate();
+      // We need to check for is that one of the lhs or rhs is a constant, and
+      // extract the value as upper bound.
+      if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+        upperBound = cmpOp.getRhs();
+        compareValue = cmpOp.getLhs();
+      } else if (cmpOp.getLhs().getDefiningOp<arith::ConstantOp>()) {
+        upperBound = cmpOp.getLhs();
+        compareValue = cmpOp.getRhs();
+      } else
         return failure();
+    } else {
+      // Currently only supporting arith.cmpIOp
+      return failure();
+    }
+
+    // Get condition op args and find IV index
+    int IVIndex = 0;
+    bool indexFound = false;
+    for (auto arg : beforeBlock.getArguments()) {
+      llvm::SmallPtrSet<Value, 8> visited;
+      if (areValuesConnected(arg, compareValue, visited)) {
+        indexFound = true;
+        break;
       }
-      
-      //Getting yield op from after block
-      Block &doBlock = whileOp.getAfter().front();
-      if (!isa<scf::YieldOp>(doBlock.front()))
+      IVIndex++;
+    }
+    if (!indexFound)
+      return failure();
+
+    // Extract IV and lowerBound based on IVIndex
+    Value IV = beforeBlock.getArgument(IVIndex);
+    Value lowerBound = whileOp.getOperand(IVIndex);
+
+    // UpdatedIV index
+    int updatedIVIndex = 0;
+    indexFound = false;
+    for (auto arg : conditionOp.getArgs()) {
+      llvm::SmallPtrSet<Value, 8> visited;
+      if (areValuesConnected(compareValue, arg, visited)) {
+        indexFound = true;
+        break;
+      }
+      updatedIVIndex++;
+    }
+    if (!indexFound)
+      return failure();
+
+    // Extract updated IV and stepSize
+    Value updatedIV = conditionOp.getArgs()[updatedIVIndex];
+    Value stepSize;
+    if (auto addOp = updatedIV.getDefiningOp<arith::AddIOp>()) {
+      if (addOp.getLhs() == IV) {
+        stepSize = addOp.getRhs();
+      } else if (addOp.getRhs() == IV) {
+        stepSize = addOp.getLhs();
+      }
+      // Expect atleast one of the updatedIV fields to be IV
+      else
         return failure();
+    }
 
+    // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
+    auto lbInt = getConstantInt(lowerBound);
+    auto ubInt = getConstantInt(upperBound);
+    auto stepInt = getConstantInt(stepSize);
 
-      //Copy region from while body to before forbody
-      rewriter.setInsertionPoint(whileOp);
-      IRMapping mapping;
-      for (auto [arg, init] : llvm::zip(beforeBlock.getArguments(), whileOp.getOperands())) {
-          mapping.map(arg, init);
-      }
-      for (Operation &op : beforeBlock.without_terminator()) {
-          rewriter.clone(op, mapping);
-      } 
-      Value updatedIVfromInit = mapping.lookup(updatedIV);
-      //Copy region from while body to for body
+    if (!lbInt || !ubInt || !stepInt || stepInt == 0) {
+      return failure();
+    }
+
+    int lb = static_cast<int>(*lbInt);
+    int ub = static_cast<int>(*ubInt);
+    int step = static_cast<int>(*stepInt);
+
+    rewriter.setInsertionPoint(whileOp);
+    // If case: The do while loop executes more than once
+    if ((lb + step < ub) && (step > 0) || (lb + step > ub) && (step < 0)) {
+      // Copy region from while body to for body
       SmallVector<Value> newInitOperands;
-      newInitOperands.push_back(updatedIVfromInit);
+      int numOfConditionArgs = conditionOp.getArgs().size();
+      for (auto operand : whileOp.getOperands())
+        newInitOperands.push_back(operand);
 
       scf::ForOp newLoop = rewriter.create<scf::ForOp>(
-          whileOp.getLoc(),
-          //Might have to change these to constantIndexOps
-          updatedIVfromInit, //Change to lowerBound + step
-          upperBound,
-          stepSize,
-          newInitOperands);
+          whileOp.getLoc(), lowerBound, upperBound, stepSize, newInitOperands);
       newLoop->setAttrs(whileOp.getOperation()->getAttrs());
-      //Operation *yieldOp = newLoop.getBody()->getTerminator();
-      //rewriter.eraseOp(yieldOp);
-      
-      Block *newBlock = &newLoop.getRegion().front();
-      newBlock->getOperations().splice(
-          newBlock->end(),
-          beforeBlock.getOperations()
-      );
-      rewriter.setInsertionPoint(conditionOp);
-      rewriter.replaceOpWithNewOp<scf::YieldOp>(conditionOp, updatedIV);
-      // Replace uses of original block arguments with new ones
-      for (unsigned i = 0; i < beforeBlock.getNumArguments()-1; ++i) {
-          beforeBlock.getArgument(i + 1)  // +1 for IV
-              .replaceAllUsesWith(newBlock->getArgument(i + 1));
-      }
-      //Replace uses of original IV with new one
-      IV.replaceAllUsesWith(newBlock->getArgument(0));
 
-      //Replace uses of while op
-      for (auto [oldResult, newResult] : llvm::zip(whileOp.getResults(), newLoop.getResults())) {
+      Block &newBlock = newLoop.getRegion().front();
+      rewriter.setInsertionPointToStart(&newBlock);
+
+      // Copy from before region to for body
+      IRMapping mappingBeforeBlock;
+      for (auto [arg, init] :
+           llvm::zip(beforeBlock.getArguments(), newBlock.getArguments())) {
+        mappingBeforeBlock.map(arg, init);
+      }
+      for (Operation &op : beforeBlock.without_terminator()) {
+        rewriter.clone(op, mappingBeforeBlock);
+      }
+
+      // Extract conditionOp args to be used for after region
+      SmallVector<Value> remappedConditionOpArgs;
+      for (auto arg : conditionOp.getArgs()) {
+        remappedConditionOpArgs.push_back(mappingBeforeBlock.lookup(arg));
+      }
+
+      // Copy from after region to for body
+      Block &afterBlock = whileOp.getAfter().front();
+      IRMapping mappingAfterBlock;
+      for (auto [arg, init] :
+           llvm::zip(afterBlock.getArguments(), remappedConditionOpArgs)) {
+        mappingAfterBlock.map(arg, init);
+      }
+      for (Operation &op : afterBlock) {
+        rewriter.clone(op, mappingAfterBlock);
+      }
+
+      // Replace uses of while op
+      for (auto [oldResult, newResult] :
+           llvm::zip(whileOp.getResults(), newLoop.getResults())) {
         oldResult.replaceAllUsesWith(newResult);
       }
-      rewriter.eraseOp(whileOp);
-      return success();
+
+      // Else case: The do while loop only executes once to before region.
+    } else {
+      // Copy region from while body to before forbody
+      IRMapping mapping;
+      for (auto [arg, init] :
+           llvm::zip(beforeBlock.getArguments(), whileOp.getOperands())) {
+        mapping.map(arg, init);
+      }
+      for (Operation &op : beforeBlock.without_terminator()) {
+        rewriter.clone(op, mapping);
+      }
+
+      // Extract conditionOp args to be used as results
+      SmallVector<Value> remappedConditionOpArgs;
+      for (auto arg : conditionOp.getArgs()) {
+        remappedConditionOpArgs.push_back(mapping.lookup(arg));
+      }
+
+      // Replace uses of while op
+      for (auto [oldResult, newResult] :
+           llvm::zip(whileOp.getResults(), remappedConditionOpArgs)) {
+        oldResult.replaceAllUsesWith(newResult);
+      }
+    }
+
+    rewriter.eraseOp(whileOp);
+    return success();
   }
 };
+
 
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
