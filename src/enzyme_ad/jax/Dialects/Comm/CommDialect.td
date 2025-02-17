@@ -71,15 +71,6 @@ def CommMessage : OpInterface<"CommMessage"> {
 * Dialect Ops
 */
 
-def CommFoo : CommOp<"foo"> {
-  let summary = "do-nothing test op";
-  let arguments = (ins );
-  let results = (outs );
-  let assemblyFormat = [{
-    attr-dict
-  }];
-}
-
 // Return, for end of split blocks. We may just be able to use return- lets see if there's any special
 // semantics we want join to have
 def CommJoin : CommOp<"join", traits = [Terminator]> {

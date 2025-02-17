@@ -1,15 +1,13 @@
-// RUN: enzymexlamlir-opt --remove-comm-foo --enzyme-hlo-unroll %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-unroll %s | FileCheck %s
 
 module {
 
   func.func @main(%a : tensor<2x2xf32>) -> tensor<2x2xf32> {
-    comm.foo
 
     %msg = comm.simple_msg tensor<2x2xf32>
     comm.split {} {
       branch (1, 4) {
         ^start:
-        comm.foo
         comm.join
       }
       branch (2) {

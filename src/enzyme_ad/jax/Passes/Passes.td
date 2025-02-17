@@ -11,13 +11,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CommRemoveFoo : Pass<"comm-remove-foo"> {
-  let summary = "Removes all comm foo operations";
-  let dependentDialects = [
-    "comm::CommunicationDialect"
-  ];
-}
-
 def CommExplodeSplits : Pass<"comm-explode-splits"> {
   let summary = "Converts a (nested) split into a non-nested split with one branch per device";
   let dependentDialects = [
