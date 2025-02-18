@@ -624,5 +624,6 @@ pybind_extension(
         "@xla//xla/stream_executor:stream_executor_impl",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
     ],
 )
