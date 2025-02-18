@@ -981,7 +981,6 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
   LogicalResult matchAndRewrite(WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-    auto module = whileOp->getParentOfType<ModuleOp>();
     // 1. Analyze before region and extract scf.condition
     // 2. From scf.condition obtain compareOp
     // 3. Assumption that one of the values in compareOp is constant i.e is
