@@ -91,7 +91,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
 
   registry.insert<mlir::sdy::SdyDialect>();
 
-  registry.insert<mlir::comm::CommunicationDialect>();
+  registry.insert<mlir::comm::CommDialect>();
 
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 

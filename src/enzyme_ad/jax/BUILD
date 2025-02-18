@@ -135,12 +135,6 @@ gentbl_cc_library(
             ["-gen-op-defs", "-dialect=comm"],
             "Dialect/Comm/CommOps.cpp.inc",
         ),(
-            ["-gen-attrdef-decls", "-attrdefs-dialect=comm"],
-            "Dialect/Comm/CommAttrs.h.inc",
-        ),(
-            ["-gen-attrdef-defs", "-attrdefs-dialect=comm"],
-            "Dialect/Comm/CommAttrs.cpp.inc",
-        ),(
             ["-gen-typedef-decls", "-typedefs-dialect=comm"],
             "Dialect/Comm/CommTypes.h.inc",
         ), (
@@ -278,8 +272,8 @@ cc_library(
 
 cc_library(
     name = "CommDialect",
-    srcs = glob(["Dialects/*.cpp", "Dialect/Comm/*.cpp"]),
-    hdrs = glob(["Dialects/*.h", "Dialect/Comm/*.h"]),
+    srcs = glob(["Dialect/Comm/*.cpp"]),
+    hdrs = glob(["Dialect/Comm/*.h"]),
     deps = [
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",

@@ -4,7 +4,7 @@ include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/Traits.td"
 
-def CommunicationDialect : Dialect {
+def CommDialect : Dialect {
   let name = "comm";
   let summary = "A prototype dialect for various communication ops";
   let description = [{}];
@@ -13,22 +13,15 @@ def CommunicationDialect : Dialect {
 }
 
 // Dialect inheritence shortcuts
-class CommOp<string name, list<Trait> traits = []> : Op<CommunicationDialect, name, traits>;
-class CommAttr<string name, string mnemomic, list<Trait> traits = []> : AttrDef<CommunicationDialect, name, traits>{
-  let mnemonic = mnemomic;
-}
-class CommType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<CommunicationDialect, name, traits> {
+class CommOp<string name, list<Trait> traits = []> : Op<CommDialect, name, traits>;
+
+class CommType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<CommDialect, name, traits> {
   let mnemonic = type_mnemonic;
 }
 
 /*
 * Dialect Types
 */
-def DeviceIdType : CommType<"DeviceId", "device_id"> {
-  let summary="Wrapper around int to specify a device from our device set";
-  let parameters=(ins "unsigned":$id);
-  let assemblyFormat=[{`d` $id }];
-}
 def MessageTokenType : CommType<"MessageToken", "token"> {
   let summary = "Represents a consumable message token";
   let mnemonic = "msg_token";

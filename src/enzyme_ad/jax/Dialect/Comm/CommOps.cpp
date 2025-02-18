@@ -1,5 +1,5 @@
 #include "mlir/Support/LogicalResult.h"
-#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/CommOps.h"
 
 #include "llvm/ADT/DenseSet.h"
 

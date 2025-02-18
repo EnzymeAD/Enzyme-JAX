@@ -1,4 +1,4 @@
-#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/Comm.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/IR/Builders.h"
