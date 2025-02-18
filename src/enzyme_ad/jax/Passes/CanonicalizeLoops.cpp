@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -523,6 +524,43 @@ public:
   }
 };
 
+class SwitchToIf final : public OpRewritePattern<scf::IndexSwitchOp> {
+public:
+  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IndexSwitchOp switchOp,
+                                PatternRewriter &rewriter) const override {
+    if (switchOp.getNumCases() != 1)
+      return failure();
+
+    ArrayRef<int64_t> cases = switchOp.getCases();
+    Value caseValue = rewriter.create<arith::ConstantIndexOp>(switchOp.getLoc(),
+                                                              cases.front());
+
+    Value cmpResult = rewriter.create<arith::CmpIOp>(
+        switchOp.getLoc(), arith::CmpIPredicate::eq, switchOp.getArg(),
+        caseValue);
+
+    scf::IfOp ifOp =
+        rewriter.create<scf::IfOp>(switchOp.getLoc(), switchOp.getResultTypes(),
+                                   cmpResult, /*withElseRegion=*/true);
+
+    // Move the first case block into the then region
+    Block &firstBlock = switchOp.getCaseBlock(cases.front());
+    rewriter.mergeBlocks(&firstBlock, ifOp.thenBlock(),
+                         firstBlock.getArguments());
+
+    // Move the second case block into the else region
+    Block &secondBlock = switchOp.getDefaultBlock();
+    rewriter.mergeBlocks(&secondBlock, ifOp.elseBlock(),
+                         secondBlock.getArguments());
+
+    // Replace the switch with the if
+    rewriter.replaceOp(switchOp, ifOp.getResults());
+    return success();
+  }
+};
+
 } // end namespace
 
 struct CanonicalizeLoopsPass
@@ -532,7 +570,7 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter>(&getContext());
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf>(&getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {
