@@ -178,6 +178,10 @@ struct LLVMToMemrefAccessPass
         // the old one
         newFunc->setAttr("function_type", TypeAttr::get(newFuncTy));
 
+        // Iterate over each argument and copy its attributes
+        for (unsigned i = 0; i < callee.getNumArguments(); ++i) {
+          newFunc.setArgAttrs(i, callee.getArgAttrs(i));
+        }
         callee->erase();
       }
     }
