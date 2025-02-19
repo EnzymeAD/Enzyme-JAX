@@ -819,6 +819,19 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+static void makeAddBlock(Region &region, Location loc,
+                         Type unrankedTensorType) {
+  auto block = new Block();
+  region.push_back(block);
+
+  auto a = block->addArgument(unrankedTensorType, loc);
+  auto b = block->addArgument(unrankedTensorType, loc);
+
+  OpBuilder builder(block, block->end());
+  auto addOp = builder.create<AddOp>(loc, a, b);
+  builder.create<stablehlo::ReturnOp>(loc, addOp.getResult());
+}
+
 class AutoDiffReduceWindowRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceWindowRev,
                                                        ReduceWindowOp> {
@@ -855,9 +868,11 @@ public:
     }
 
     Operation &innerOp = *block.begin();
-    bool ismin = isa<MinOp>(innerOp), ismax = isa<MaxOp>(innerOp);
+    bool ismin = isa<MinOp>(innerOp), ismax = isa<MaxOp>(innerOp),
+         isadd = isa<AddOp>(innerOp);
 
-    if (!(ismin || ismax) || innerOp.getOperand(0) != block.getArgument(0) ||
+    if (!(ismin || ismax || isadd) ||
+        innerOp.getOperand(0) != block.getArgument(0) ||
         innerOp.getOperand(1) != block.getArgument(1)) {
       orig->emitError() << "Unsupported reduce window rev autodiff(1): "
                         << *orig << "\n";
@@ -868,44 +883,121 @@ public:
         {},
         op.getResult(0).getType().cast<RankedTensorType>().getElementType());
 
-    auto select = new Block();
-    select->addArgument(unrankedTensorType, op.getLoc());
-    select->addArgument(unrankedTensorType, op.getLoc());
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToEnd(select);
+    Value inDiffe = gutils->diffe(op->getResult(0), builder);
+    gutils->zeroDiffe(op->getResult(0), builder);
 
-      auto cmpOp = builder.create<CompareOp>(
-          op.getLoc(), select->getArgument(0), select->getArgument(1),
-          ismax ? ComparisonDirection::GE : ComparisonDirection::LE);
-      builder.create<ReturnOp>(op.getLoc(), cmpOp.getResult());
+    if (isadd) {
+      auto operandType = op->getOperand(0).getType().cast<RankedTensorType>();
+      auto outputType = op->getResult(0).getType().cast<RankedTensorType>();
+
+      // Compute padding similarly to conv lhs grad.
+      int64_t N = operandType.cast<RankedTensorType>().getShape().size();
+
+      SmallVector<int64_t> paddingValues(2 * N, 0);
+
+      SmallVector<int64_t> paddingHigh(N, 0);
+      SmallVector<int64_t> paddingLow(N, 0);
+      SmallVector<int64_t> paddingInterior(N, 0);
+
+      auto initialPadding = op.getPadding();
+      if (initialPadding.has_value()) {
+        paddingValues.assign(initialPadding.value().value_begin<int64_t>(),
+                             initialPadding.value().value_end<int64_t>());
+      }
+
+      auto dilateShape = [](int64_t shape, int64_t dilation) {
+        if (dilation == 1)
+          return shape;
+        int64_t dilated = 1 + dilation * (shape - 1);
+        return dilated < 0 ? 0 : dilated;
+      };
+
+      auto lhsDilations = op.getBaseDilations();
+      auto rhsDilations = op.getWindowDilations();
+      auto windowStrides = op.getWindowStrides();
+      auto windowDimensions = op.getWindowDimensions();
+
+      for (int i = 0; i < N; ++i) {
+        auto padBefore = paddingValues[2 * i];
+        auto padAfter = paddingValues[2 * i + 1];
+
+        auto lhsDilation =
+            lhsDilations.has_value() ? getI64Value(lhsDilations.value(), i) : 1;
+        auto rhsDilation =
+            rhsDilations.has_value() ? getI64Value(rhsDilations.value(), i) : 1;
+        auto windowStride = windowStrides.has_value()
+                                ? getI64Value(windowStrides.value(), i)
+                                : 1;
+
+        auto lhsShape = dilateShape(operandType.getShape()[i], lhsDilation);
+        auto rhsShape = dilateShape(windowDimensions[i], rhsDilation);
+        auto outShape = dilateShape(outputType.getShape()[i], windowStride);
+
+        auto newPadBefore = rhsShape - padBefore - 1;
+
+        paddingHigh[i] = newPadBefore;
+        paddingLow[i] = lhsShape + rhsShape - 1 - outShape - newPadBefore;
+        paddingInterior[i] = windowStride - 1;
+      }
+
+      auto paddingType = RankedTensorType::get({N, 2}, builder.getI64Type());
+
+      SmallVector<int64_t> zeroPadding(2 * N, 0);
+      auto newPaddingAttr =
+          mlir::DenseIntElementsAttr::get(paddingType, zeroPadding);
+
+      SmallVector<int64_t> newBaseDilation(N, 1);
+
+      auto zero =
+          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
+              builder, op.getLoc());
+
+      auto paddedIndiffe =
+          builder
+              .create<stablehlo::PadOp>(op.getLoc(), inDiffe, zero,
+                                        getI64Attr(builder, paddingHigh),
+                                        getI64Attr(builder, paddingLow),
+                                        getI64Attr(builder, paddingInterior))
+              .getResult();
+
+      auto revOp = builder.create<stablehlo::ReduceWindowOp>(
+          op.getLoc(), operandType, paddedIndiffe,
+          /*init_value*/ zero,
+          /*window_dimensions*/ op.getWindowDimensionsAttr(),
+          /*window_strides*/ op.getBaseDilationsAttr(),
+          /*base_dilations*/ getI64Attr(builder, newBaseDilation),
+          /*window_dilations*/ op.getWindowDilationsAttr(),
+          /*padding*/ newPaddingAttr);
+
+      makeAddBlock(revOp.getBody(), op.getLoc(), unrankedTensorType);
+      gutils->addToDiffe(op.getOperand(0), revOp.getResult(0), builder);
+    } else if (ismax || ismin) {
+      auto select = new Block();
+      select->addArgument(unrankedTensorType, op.getLoc());
+      select->addArgument(unrankedTensorType, op.getLoc());
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToEnd(select);
+
+        auto cmpOp = builder.create<CompareOp>(
+            op.getLoc(), select->getArgument(0), select->getArgument(1),
+            ismax ? ComparisonDirection::GE : ComparisonDirection::LE);
+        builder.create<ReturnOp>(op.getLoc(), cmpOp.getResult());
+      }
+
+      auto revOp = builder.create<SelectAndScatterOp>(
+          op.getLoc(), op.getOperand(0).getType(),
+          gutils->popCache(caches[0], builder), inDiffe,
+          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
+              builder, op.getLoc()),
+          op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
+          op.getPaddingAttr());
+
+      revOp.getSelect().push_back(select);
+      makeAddBlock(revOp.getScatter(), op.getLoc(), unrankedTensorType);
+
+      gutils->addToDiffe(op.getOperand(0), revOp.getResult(), builder);
     }
-
-    auto scatter = new Block();
-    scatter->addArgument(unrankedTensorType, op.getLoc());
-    scatter->addArgument(unrankedTensorType, op.getLoc());
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToEnd(scatter);
-
-      auto addOp = builder.create<AddOp>(op.getLoc(), scatter->getArgument(0),
-                                         scatter->getArgument(1));
-      builder.create<ReturnOp>(op.getLoc(), addOp.getResult());
-    }
-
-    auto inDiffe = gutils->diffe(op->getResult(0), builder);
-    auto revOp = builder.create<SelectAndScatterOp>(
-        op.getLoc(), op.getOperand(0).getType(),
-        gutils->popCache(caches[0], builder), inDiffe,
-        unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
-            builder, op.getLoc()),
-        op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
-        op.getPaddingAttr());
-
-    revOp.getSelect().push_back(select);
-    revOp.getScatter().push_back(scatter);
-
-    gutils->addToDiffe(op.getOperand(0), revOp.getResult(), builder);
 
     return success();
   }

@@ -2259,7 +2259,7 @@ void CanonicalizeFor::runOnOperation() {
           MoveWhileAndDown, MoveWhileDown3, MoveWhileInvariantIfResult,
           WhileLogicalNegation, SubToAdd, WhileCmpOffset, RemoveUnusedCondVar,
           ReturnSq, MoveSideEffectFreeWhile>(getOperation()->getContext());
-  // WhileLICM,
+  //	 WhileLICM,
   GreedyRewriteConfig config;
   config.maxIterations = 247;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);

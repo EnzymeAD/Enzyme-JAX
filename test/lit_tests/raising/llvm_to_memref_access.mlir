@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s -split-input-file --pass-pipeline="builtin.module(llvm-to-memref-access)" | FileCheck %s
 
 module {
-  llvm.func internal ptx_kernelcc @single_block_kern(%arg0: !llvm.ptr<1>) {
+  llvm.func internal ptx_kernelcc @single_block_kern(%arg0: !llvm.ptr<1> {llvm.nonnull, llvm.noundef}) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -21,7 +21,7 @@ module {
 }
 
 // CHECK-LABEL: func.func @single_block_kern
-// CHECK-SAME:  %[[ARG:.*]]: memref<64xi64, 1>
+// CHECK-SAME:  %[[ARG:.*]]: memref<64xi64, 1> {llvm.nonnull, llvm.noundef}
 // CHECK:       %[[ADDR:.*]] = "enzymexla.memref2pointer"(%[[ARG]]) : (memref<64xi64, 1>) -> !llvm.ptr<1>
 // CHECK:       llvm.getelementptr {{.*}} %[[ADDR]]
 
@@ -130,10 +130,10 @@ module {
 }
 
 // CHECK-LABEL: func.func @multi_args_kern
-// CHECK-SAME:  %[[ARG0:.*]]: memref<1x134x374xf64, 1>
-// CHECK-SAME:  %[[ARG1:.*]]: memref<1x135x374xf64, 1>
-// CHECK-SAME:  %[[ARG2:.*]]: memref<114x134x374xf64, 1>
-// CHECK-SAME:  %[[ARG3:.*]]: memref<114x135x374xf64, 1>
+// CHECK-SAME:  %[[ARG0:.*]]: memref<1x134x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree}
+// CHECK-SAME:  %[[ARG1:.*]]: memref<1x135x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree}
+// CHECK-SAME:  %[[ARG2:.*]]: memref<114x134x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}
+// CHECK-SAME:  %[[ARG3:.*]]: memref<114x135x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}
 // CHECK-SAME:  CConv = #llvm.cconv<ptx_kernelcc>
 // CHECK-SAME:  linkage = #llvm.linkage<external>
 // CHECK-SAME:  memory_effects = #llvm.memory_effects<other = none, argMem = readwrite, inaccessibleMem = none>

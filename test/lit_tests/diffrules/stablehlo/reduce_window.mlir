@@ -24,7 +24,28 @@ module {
     check.expect_eq_const %result_diff#0, dense<[42.0]> : tensor<1xf32>
     check.expect_eq_const %result_diff#1, dense<[1.0, 0.0, 0.0]> : tensor<3xf32>
 
+    %result_meanpool_diff:2 = enzyme.autodiff @meanpool(%value, %diff_result) {
+      activity = [#enzyme<activity enzyme_active>],
+      ret_activity = [#enzyme<activity enzyme_active>]
+    } : (tensor<3xf32>, tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>)
+
+    check.expect_eq_const %result_meanpool_diff#0, dense<[84.0]> : tensor<1xf32>
+    check.expect_eq_const %result_meanpool_diff#1, dense<[1.0, 1.0, 1.0]> : tensor<3xf32>
+
     func.return
+  }
+
+  func.func @meanpool(%arg0: tensor<3xf32>) -> tensor<1xf32> {
+    %cst = stablehlo.constant dense<0.0> : tensor<f32>
+    %0 = "stablehlo.reduce_window"(%arg0, %cst) <{padding = dense<0> : tensor<1x2xi64>,
+                                                  window_dilations = array<i64: 1>,
+                                                  window_dimensions = array<i64: 3>,
+                                                  window_strides = array<i64: 1>}> ({
+    ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
+      %3 = stablehlo.add %arg1, %arg2 : tensor<f32>
+      stablehlo.return %3 : tensor<f32>
+    }) : (tensor<3xf32>, tensor<f32>) -> tensor<1xf32>
+    return %0 : tensor<1xf32>
   }
 }
 
@@ -45,5 +66,20 @@ module {
 // REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
 // REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
 // REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<1xf32>, tensor<f32>) -> tensor<3xf32>
+// REVERSE-NEXT:    return %0, %1 : tensor<1xf32>, tensor<3xf32>
+// REVERSE-NEXT:  }
+
+// REVERSE:  func.func private @diffemeanpool(%arg0: tensor<3xf32>, %arg1: tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>) {
+// REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// REVERSE-NEXT:    %0 = "stablehlo.reduce_window"(%arg0, %cst) <{padding = dense<0> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
+// REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
+// REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<f32>) -> tensor<1xf32>
+// REVERSE-NEXT:    %1 = "stablehlo.reduce_window"(%arg1, %cst) <{base_dilations = array<i64: 1>, padding = dense<2> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>}> ({
+// REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
+// REVERSE-NEXT:    }) : (tensor<1xf32>, tensor<f32>) -> tensor<3xf32>
 // REVERSE-NEXT:    return %0, %1 : tensor<1xf32>, tensor<3xf32>
 // REVERSE-NEXT:  }
