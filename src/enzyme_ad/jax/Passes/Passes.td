@@ -34,6 +34,16 @@ def CommRemoveDeadMessages : Pass<"comm-remove-dead-messages"> {
   ];
 }
 
+def CommLower : Pass<"comm-lower"> {
+  let summary ="Lowers to the MPI dialect";
+  let dependentDialects = [
+    "comm::CommDialect",
+    "mpi::MPIDialect",
+    "enzymexla::EnzymeXLADialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
