@@ -108,6 +108,56 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
 
+
+td_library(
+    name = "CommDialectFiles",
+    srcs = [
+        "Dialect/Comm/CommDialect.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:OpBaseTdFiles"
+    ]
+)
+
+
+gentbl_cc_library(
+    name = "CommDialectIncGen",
+    tbl_outs = [(
+            ["-gen-dialect-decls", "-dialect=comm"],
+            "Dialect/Comm/CommDialect.h.inc",
+        ), (
+            ["-gen-dialect-defs", "-dialect=comm"],
+            "Dialect/Comm/CommDialect.cpp.inc",
+        ),(
+            ["-gen-op-decls", "-dialect=comm"],
+            "Dialect/Comm/CommOps.h.inc",
+        ), (
+            ["-gen-op-defs", "-dialect=comm"],
+            "Dialect/Comm/CommOps.cpp.inc",
+        ),(
+            ["-gen-typedef-decls", "-typedefs-dialect=comm"],
+            "Dialect/Comm/CommTypes.h.inc",
+        ), (
+            ["-gen-typedef-defs", "-typedefs-dialect=comm"],
+            "Dialect/Comm/CommTypes.cpp.inc",
+        ),(
+            ["-gen-op-interface-decls"],
+            "Dialect/Comm/CommInterfaces.h.inc",
+        ), (
+            ["-gen-op-interface-defs"],
+            "Dialect/Comm/CommInterfaces.cpp.inc",
+        ),
+    ],
+    td_file = "Dialect/Comm/CommDialect.td",
+    deps = [
+        ":CommDialectFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:AttrTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles"
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
 gentbl_cc_library(
     name = "TransformOpsImplIncGen",
     tbl_outs = [(
@@ -215,7 +265,19 @@ cc_library(
         "@llvm-project//mlir:TransformDialectInterfaces",
         ":TransformOpsIncGen",
         ":TransformOpsImplIncGen",
+        ":CommDialectIncGen",
         ":XLADerivatives",
+    ],
+)
+
+cc_library(
+    name = "CommDialect",
+    srcs = glob(["Dialect/Comm/*.cpp"]),
+    hdrs = glob(["Dialect/Comm/*.h"]),
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        ":CommDialectIncGen",
     ],
 )
 
@@ -392,6 +454,7 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":CommDialect",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":EnzymeHLOPatternsIncGen",

@@ -15,6 +15,9 @@
 
 #include <memory>
 
+#include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
+
+
 namespace mlir {
 class PatternRewriter;
 class AffineMap;
