@@ -32,12 +32,11 @@ jobs:
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
+      - name: Make space on disk
+        run: sudo rm -rf /opt/*
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
       - uses: bazel-contrib/setup-bazel@0.13.0
         name: Set up Bazel
         with:
