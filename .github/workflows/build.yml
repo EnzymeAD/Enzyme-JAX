@@ -62,3 +62,16 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
+      - name: Update Python requirements files
+        run: |
+          bazel run --color=yes //builddeps:requirements.update
+      - name: Run tests
+        run: |
+          bazel test --color=yes --test_output=errors //test/...
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            "bazel-out/**/test.log"
+          retention-days: 90
