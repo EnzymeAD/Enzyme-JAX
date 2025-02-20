@@ -1050,6 +1050,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::enzyme::registerenzymexlaPasses();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
+  mlir::enzyme::registerLowerMPIToStableHLOPassHere();
   mlir::stablehlo::registerPasses();
 
   pybind11::enum_<Language>(m, "Language")

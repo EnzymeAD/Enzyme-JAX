@@ -20,8 +20,10 @@
 
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/MPI/IR/MPI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 
 namespace mlir {
@@ -37,6 +39,9 @@ using namespace stablehlo;
 using namespace mlir::enzymexla;
 
 namespace {
+
+
+
 struct InitOpLowering : public OpRewritePattern<mpi::InitOp> {
     using OpRewritePattern::OpRewritePattern;
 
@@ -149,17 +154,46 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
     using OpRewritePattern::OpRewritePattern;
 
     LogicalResult matchAndRewrite(mpi::SendOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op.getResultTypes(), op.getOperands(),
-        //     rewriter.getStringAttr("mpi_send"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
+        auto jit_op = rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(op, op.getResultTypes(),
+            rewriter.getStringAttr("mpi_send_func"),
+            op.getOperands(),
+            "",
+            ::mlir::Attribute{},
+            ::mlir::Attribute{},
+            ::mlir::ArrayAttr{});
+        // assert(jit_op && "jit op created successfully");
+        // llvm::errs() << *jit_op->getBlock() << "\n";
+        return success();
+
+        const auto func_type = FunctionType::get(rewriter.getContext(),
+            op.getOperandTypes(),
+            op->getResultTypes()
+        );
+        
+        auto func_op = mlir::func::FuncOp::create(
+            op.getLoc(),
+            "mpi_send_func",
+            func_type
+        );
+        
+        auto ctx = rewriter.getContext();
+
+        auto entry_block = func_op.addEntryBlock();
+        assert(entry_block);
+        rewriter.setInsertionPoint(entry_block, entry_block->begin());
+        auto const_op = rewriter.create<LLVM::ConstantOp>(UnknownLoc{}, 
+            mlir::IntegerType::get(ctx, 64),
+            0xffff
+        );
+        auto ptr_op = rewriter.create<LLVM::IntToPtrOp>(UnknownLoc{}, 
+            mlir::LLVM::LLVMPointerType::get(ctx),
+            const_op);
+            
+        rewriter.create<LLVM::CallOp>(UnknownLoc{}, 
+            mlir::TypeRange{}, 
+            mlir::ValueRange{ptr_op});
+
+        return success();
     }
 };
 
@@ -315,10 +349,14 @@ struct LowerMPIToStableHLOPass : public mlir::enzyme::impl::LowerMPIToStableHLOP
 using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
     void runOnOperation() override {
         using namespace mlir::enzyme::impl;
-        mlir::ConversionTarget target(getContext());
+        auto& ctx = getContext();
+        ctx.loadDialect<mpi::MPIDialect>();
+        ctx.loadDialect<enzymexla::EnzymeXLADialect>();
 
+        mlir::ConversionTarget target(getContext());
         // XLA can't handle MPI ops, so we must convert all MPI ops to `stablehlo.custom_call` ops
         target.template addIllegalDialect<mpi::MPIDialect>();
+        target.addLegalDialect("enzymexla");
 
         RewritePatternSet patterns(&getContext());
         patterns.add<
@@ -336,4 +374,9 @@ using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
         }
     }
 };
+  
 } // namespace
+
+void mlir::enzyme::registerLowerMPIToStableHLOPassHere() {
+    PassRegistration<LowerMPIToStableHLOPass>();
+}

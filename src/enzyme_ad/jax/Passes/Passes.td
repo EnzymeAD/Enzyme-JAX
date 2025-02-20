@@ -444,6 +444,7 @@ def LowerMPIToStableHLOPass : Pass<"convert-mpi-to-stablehlo"> {
   let summary = "Lower MPI ops to the StableHLO custom calls";
   let dependentDialects = [
     "mpi::MPIDialect",
+    "enzymexla::EnzymeXLADialect",
     "stablehlo::StablehloDialect"
   ];
 

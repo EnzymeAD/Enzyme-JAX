@@ -11,10 +11,10 @@
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 
 namespace mlir {
 namespace enzyme {
-
 #define GEN_PASS_DECL
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
@@ -23,7 +23,7 @@ namespace enzyme {
 
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
-
+void registerLowerMPIToStableHLOPassHere();
 } // namespace enzyme
 
 namespace cf {
