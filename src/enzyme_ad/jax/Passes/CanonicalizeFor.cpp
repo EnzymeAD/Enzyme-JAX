@@ -1012,7 +1012,6 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     Value upperBound;
     Value compareValue;
     if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
-      arith::CmpIPredicate predicate = cmpOp.getPredicate();
       // We need to check for is that one of the lhs or rhs is a constant, and
       // extract the value as upper bound.
       if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
