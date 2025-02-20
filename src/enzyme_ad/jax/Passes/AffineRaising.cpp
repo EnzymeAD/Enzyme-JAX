@@ -403,11 +403,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           b = mapping.lookup(op->getOperand(1));
 
     auto mapA = maps[a], mapB = maps[b];
+    auto outputMap = mapA;
 
     auto newA = alignMemoryAccess(a, mapA, mapB, builder);
-    if (newA == a)
+    if (newA == a) {
       b = alignMemoryAccess(b, mapB, mapA, builder);
-    else
+      outputMap = mapB;
+    } else
       a = newA;
 
     assert(a.getType() == b.getType());
@@ -425,7 +427,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = maps[mapping.lookup(op->getOperand(0))];
+      maps[newRes] = outputMap;
     }
 
     return success();

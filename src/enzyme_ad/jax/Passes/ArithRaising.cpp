@@ -45,19 +45,23 @@ struct ArithRaisingPass
     auto op = getOperation();
 
 #define RAISE_BINARY(BinaryOp, StableHLOOp, MHLOOp)                            \
-  op->walk([=](BinaryOp addOp) {                                               \
-    if (!addOp.getType().isa<RankedTensorType>())                              \
+  op->walk([=](BinaryOp origOp) {                                              \
+    if (!origOp->getResult(0).getType().isa<RankedTensorType>())               \
       return;                                                                  \
-    OpBuilder builder(addOp);                                                  \
-    Value newAddOp;                                                            \
+    OpBuilder builder(origOp);                                                 \
+    Value newOp;                                                               \
     if (use_stablehlo)                                                         \
-      newAddOp = builder.create<StableHLOOp>(                                  \
-          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));         \
+      newOp = builder                                                          \
+                  .create<StableHLOOp>(origOp.getLoc(), origOp->getOperand(0), \
+                                       origOp->getOperand(1))                  \
+                  .getResult();                                                \
     else                                                                       \
-      newAddOp = builder.create<MHLOOp>(addOp.getLoc(), addOp->getOperand(0),  \
-                                        addOp->getOperand(1));                 \
-    addOp.replaceAllUsesWith(newAddOp);                                        \
-    addOp.erase();                                                             \
+      newOp = builder                                                          \
+                  .create<MHLOOp>(origOp.getLoc(), origOp->getOperand(0),      \
+                                  origOp->getOperand(1))                       \
+                  .getResult();                                                \
+    origOp.replaceAllUsesWith(newOp);                                          \
+    origOp.erase();                                                            \
   });
 
     RAISE_BINARY(arith::AddFOp, stablehlo::AddOp, mhlo::AddOp);
