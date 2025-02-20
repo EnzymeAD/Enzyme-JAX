@@ -408,9 +408,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto newA = alignMemoryAccess(a, mapA, mapB, builder);
     if (newA == a) {
       b = alignMemoryAccess(b, mapB, mapA, builder);
+    } else {
       outputMap = mapB;
-    } else
       a = newA;
+    }
 
     assert(a.getType() == b.getType());
 
