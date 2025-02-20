@@ -44,34 +44,72 @@ struct ArithRaisingPass
   void runOnOperation() override {
     auto op = getOperation();
 
-    op->walk([=](arith::AddFOp addOp) {
-      if (!addOp.getType().isa<RankedTensorType>())
-        return;
-      OpBuilder builder(addOp);
-      Value newAddOp;
-      if (use_stablehlo)
-        newAddOp = builder.create<stablehlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
-      else
-        newAddOp = builder.create<mhlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
-      addOp.replaceAllUsesWith(newAddOp);
-      addOp.erase();
-    });
-    op->walk([=](complex::AddOp addOp) {
-      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
-        return;
-      OpBuilder builder(addOp);
-      Value newAddOp;
-      if (use_stablehlo)
-        newAddOp = builder.create<stablehlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
-      else
-        newAddOp = builder.create<mhlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
-      addOp.replaceAllUsesWith(newAddOp);
-      addOp.erase();
-    });
+#define RAISE_BINARY(BinaryOp, StableHLOOp, MHLOOp)                            \
+  op->walk([=](BinaryOp addOp) {                                               \
+    if (!addOp.getType().isa<RankedTensorType>())                              \
+      return;                                                                  \
+    OpBuilder builder(addOp);                                                  \
+    Value newAddOp;                                                            \
+    if (use_stablehlo)                                                         \
+      newAddOp = builder.create<StableHLOOp>(                                  \
+          addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));         \
+    else                                                                       \
+      newAddOp = builder.create<MHLOOp>(addOp.getLoc(), addOp->getOperand(0),  \
+                                        addOp->getOperand(1));                 \
+    addOp.replaceAllUsesWith(newAddOp);                                        \
+    addOp.erase();                                                             \
+  });
+
+    RAISE_BINARY(arith::AddFOp, stablehlo::AddOp, mhlo::AddOp);
+    RAISE_BINARY(arith::AddIOp, stablehlo::AddOp, mhlo::AddOp);
+    RAISE_BINARY(arith::SubFOp, stablehlo::SubtractOp, mhlo::SubtractOp);
+    RAISE_BINARY(arith::SubIOp, stablehlo::SubtractOp, mhlo::SubtractOp);
+    RAISE_BINARY(arith::MulFOp, stablehlo::MulOp, mhlo::MulOp);
+    RAISE_BINARY(arith::MulIOp, stablehlo::MulOp, mhlo::MulOp);
+    RAISE_BINARY(arith::DivFOp, stablehlo::DivOp, mhlo::DivOp);
+    RAISE_BINARY(arith::DivSIOp, stablehlo::DivOp, mhlo::DivOp);
+    RAISE_BINARY(arith::DivUIOp, stablehlo::DivOp, mhlo::DivOp);
+    RAISE_BINARY(arith::MaximumFOp, stablehlo::MaxOp, mhlo::MaxOp);
+    RAISE_BINARY(arith::MaxSIOp, stablehlo::MaxOp, mhlo::MaxOp);
+    RAISE_BINARY(arith::MaxUIOp, stablehlo::MaxOp, mhlo::MaxOp);
+    RAISE_BINARY(arith::MinimumFOp, stablehlo::MinOp, mhlo::MinOp);
+    RAISE_BINARY(arith::MinSIOp, stablehlo::MinOp, mhlo::MinOp);
+    RAISE_BINARY(arith::MinUIOp, stablehlo::MinOp, mhlo::MinOp);
+    RAISE_BINARY(arith::ShLIOp, stablehlo::ShiftLeftOp, mhlo::ShiftLeftOp);
+    RAISE_BINARY(arith::ShRSIOp, stablehlo::ShiftRightArithmeticOp,
+                 mhlo::ShiftRightArithmeticOp);
+    RAISE_BINARY(arith::ShRUIOp, stablehlo::ShiftRightLogicalOp,
+                 mhlo::ShiftRightLogicalOp);
+    RAISE_BINARY(complex::AddOp, stablehlo::AddOp, mhlo::AddOp);
+
+#undef RAISE_BINARY
+
+#define RAISE_UNARY(InputOp, StableHLOOp, MHLOOp)                              \
+  op->walk([=](InputOp inpOp) {                                                \
+    if (!inpOp.getType().isa<RankedTensorType>())                              \
+      return;                                                                  \
+    OpBuilder builder(inpOp);                                                  \
+    Value newAddOp;                                                            \
+    if (use_stablehlo)                                                         \
+      newAddOp =                                                               \
+          builder.create<StableHLOOp>(inpOp.getLoc(), inpOp->getOperand(0));   \
+    else                                                                       \
+      newAddOp = builder.create<MHLOOp>(inpOp.getLoc(), inpOp->getOperand(0)); \
+    inpOp.replaceAllUsesWith(newAddOp);                                        \
+    inpOp.erase();                                                             \
+  });
+
+    RAISE_UNARY(math::SinOp, stablehlo::SineOp, mhlo::SineOp);
+    RAISE_UNARY(math::CosOp, stablehlo::CosineOp, mhlo::CosineOp);
+    RAISE_UNARY(math::LogOp, stablehlo::LogOp, mhlo::LogOp);
+    RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
+    RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
+    RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
+    RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
+    RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
+
+#undef RAISE_UNARY
+
     op->walk([=](complex::ConjOp addOp) {
       if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
@@ -79,20 +117,6 @@ struct ArithRaisingPass
       Value newAddOp;
       newAddOp =
           builder.create<chlo::ConjOp>(addOp.getLoc(), addOp->getOperand(0));
-      addOp.replaceAllUsesWith(newAddOp);
-      addOp.erase();
-    });
-    op->walk([=](arith::AddIOp addOp) {
-      if (!addOp.getType().isa<RankedTensorType>())
-        return;
-      OpBuilder builder(addOp);
-      Value newAddOp;
-      if (use_stablehlo)
-        newAddOp = builder.create<stablehlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
-      else
-        newAddOp = builder.create<mhlo::AddOp>(
-            addOp.getLoc(), addOp->getOperand(0), addOp->getOperand(1));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
@@ -127,31 +151,6 @@ struct ArithRaisingPass
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
-
-#define RAISE_UNARY(InputOp, StableHLOOp, MHLOOP)                              \
-  op->walk([=](InputOp inpOp) {                                                \
-    if (!inpOp.getType().isa<RankedTensorType>())                              \
-      return;                                                                  \
-    OpBuilder builder(inpOp);                                                  \
-    Value newAddOp;                                                            \
-    if (use_stablehlo)                                                         \
-      newAddOp =                                                               \
-          builder.create<StableHLOOp>(inpOp.getLoc(), inpOp->getOperand(0));   \
-    else                                                                       \
-      newAddOp = builder.create<MHLOOP>(inpOp.getLoc(), inpOp->getOperand(0)); \
-    inpOp.replaceAllUsesWith(newAddOp);                                        \
-    inpOp.erase();                                                             \
-  });
-
-    RAISE_UNARY(math::SinOp, stablehlo::SineOp, mhlo::SineOp);
-    RAISE_UNARY(math::CosOp, stablehlo::CosineOp, mhlo::CosineOp);
-    RAISE_UNARY(math::LogOp, stablehlo::LogOp, mhlo::LogOp);
-    RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
-    RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
-    RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
-    RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
-
-#undef RAISE_UNARY
   }
 }; // namespace
 
