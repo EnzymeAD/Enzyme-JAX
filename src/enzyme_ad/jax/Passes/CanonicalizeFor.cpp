@@ -667,6 +667,19 @@ bool dominateWhile(Value value, WhileOp loop) {
   }
 }
 
+std::optional<int64_t> getConstantInt(Value operand) {
+  if (operand) {
+    if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
+      if (auto attr = constOp.getValue()) {
+        if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
+          return intAttr.getInt();
+        }
+      }
+    }
+  }
+  return std::optional<int64_t>{}; // Non-constant case
+}
+
 bool canMoveOpOutsideWhile(Operation *op, WhileOp loop) {
   DominanceInfo dom(loop);
   for (auto operand : op->getOperands()) {
@@ -689,6 +702,7 @@ struct WhileToForHelper {
   AddIOp addIOp;
   BlockArgument indVar;
   size_t afterArgIdx;
+  int updateCmpNeOp; // 0: no update, 1: update to SGT, 2: update to SLT
 
   bool checkPredicate() {
     auto cmpRhs = cmpIOp.getRhs();
@@ -717,8 +731,36 @@ struct WhileToForHelper {
         lb_addOne = true;
         break;
       }
-      case CmpIPredicate::eq:
       case CmpIPredicate::ne: {
+        // Transform arith.cmpi NE to SLT /SGT
+        // 1. Check to see if step size is negative or positive to decide
+        // between SLT and SGT
+        // 2. Check to see if linearly scaling IV from init with step size can
+        // be equal to upperbound
+        // 3. If yes and step size is negative, then we need to transform the
+        // condition to SGT
+        // 4. If yes and step size is positive, then we need to transform the
+        // condition to SLT
+        auto lbInt = static_cast<int>(*getConstantInt(lb));
+        auto ubInt = static_cast<int>(*getConstantInt(ub));
+        auto stepInt = static_cast<int>(*getConstantInt(step));
+
+        if ((ubInt - lbInt) % stepInt == 0) {
+          if ((stepInt < 0) && (ubInt < lbInt)) {
+            updateCmpNeOp = 1; // update to SGT
+            lb = cmpRhs;
+            lb_addOne = true;
+          } else if ((stepInt > 0) && (lbInt < ubInt)) {
+            updateCmpNeOp = 2; // update to SLT
+            ub = cmpRhs;
+          } else
+            return false;
+        } else
+          return false; // If upperbound - lowerbound is not divisible by step
+                        // size, then we cannot transform the condition
+        break;
+      }
+      case CmpIPredicate::eq: {
         return false;
       }
       }
@@ -887,6 +929,23 @@ struct WhileToForHelper {
 
   void prepareFor(PatternRewriter &rewriter) {
     Value one;
+
+    if (updateCmpNeOp == 1) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(cmpIOp);
+      Value newCmp = rewriter.create<arith::CmpIOp>(
+          cmpIOp.getLoc(), arith::CmpIPredicate::sgt, cmpIOp.getLhs(),
+          cmpIOp.getRhs());
+      rewriter.replaceOp(cmpIOp, newCmp);
+    } else if (updateCmpNeOp == 2) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(cmpIOp);
+      Value newCmp = rewriter.create<arith::CmpIOp>(
+          cmpIOp.getLoc(), arith::CmpIPredicate::slt, cmpIOp.getLhs(),
+          cmpIOp.getRhs());
+      rewriter.replaceOp(cmpIOp, newCmp);
+    }
+
     if (lb_addOne) {
       Value one =
           rewriter.create<ConstantIntOp>(loop.getLoc(), 1, lb.getType());
@@ -905,8 +964,7 @@ struct WhileToForHelper {
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
     }
     auto modifyTypeToIndex = true;
-    if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType()) &&
-        !isa<ConstantIndexOp>(step.getDefiningOp())) {
+    if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType())) {
       modifyTypeToIndex = false;
     }
 
@@ -936,19 +994,6 @@ struct WhileToForHelper {
     }
   }
 };
-
-std::optional<int64_t> getConstantInt(Value operand) {
-  if (operand) {
-    if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
-      if (auto attr = constOp.getValue()) {
-        if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
-          return intAttr.getInt();
-        }
-      }
-    }
-  }
-  return std::optional<int64_t>{}; // Non-constant case
-}
 
 // Checks to see if values are connected using use-def chain
 bool areValuesConnected(Value startVal, Value endVal,
@@ -1011,8 +1056,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
     Value upperBound;
     Value compareValue;
-    if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
-      arith::CmpIPredicate predicate = cmpOp.getPredicate();
+    arith::CmpIOp cmpOp;
+    if (cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
       // We need to check for is that one of the lhs or rhs is a constant, and
       // extract the value as upper bound.
       if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
