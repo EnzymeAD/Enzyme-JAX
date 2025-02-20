@@ -181,3 +181,24 @@ func.func @do_while() -> index {
 // CHECK:             "test.test4"(%[[VAL_3]], %[[VAL_4]], %[[VAL_6]]) : (index, index, index) -> ()
 // CHECK:           }
 // CHECK:           return %[[VAL_1]] : index
+
+// -----
+
+  func.func @do_while() -> index {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c5 = arith.constant 5 : index
+
+    %result = scf.while (%i = %c0) : (index) -> index {
+      "before.keepalive"(%i) : (index) -> ()
+      %updated = arith.addi %i, %c1 : index
+      %cond = arith.cmpi ne, %updated, %c5 : index
+      scf.condition(%cond) %updated : index
+    } do {
+    ^bb0(%new_i: index):
+      scf.yield %new_i : index
+    }
+
+    return %result : index
+  }
+// CHECK:           TODO
