@@ -34,9 +34,116 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+// This represents the values taken from an induction variable with the
+// following syntax: [lb:ub:step]. ub is non-inclusive.
+struct InductionVariableRange {
+  int64_t lb;
+  int64_t ub;
+  int64_t step;
+};
+
+// Assumes a single IV per Expr. (i) -> (i * 3 + 2)
+static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
+  Value iv = nullptr;
+
+  expr.walk([&](AffineExpr expr) {
+    if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+      iv = map.getOperand(dimExpr.getPosition());
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
+  return iv;
+}
+
+static std::optional<InductionVariableRange> getIVRange(Value iv) {
+  assert(affine::isAffineInductionVar(iv));
+
+  auto owner = affine::getAffineParallelInductionVarOwner(iv);
+
+  if (owner.hasMinMaxBounds()) // Non-constant ranges.
+    return std::nullopt;
+
+  auto ivPos = cast<BlockArgument>(iv).getArgNumber();
+  auto lb = owner.getLowerBoundMap(ivPos)
+                .getResult(0)
+                .cast<AffineConstantExpr>()
+                .getValue();
+  auto ub = owner.getUpperBoundMap(ivPos)
+                .getResult(0)
+                .cast<AffineConstantExpr>()
+                .getValue();
+  auto step = owner.getSteps()[ivPos];
+
+  InductionVariableRange range;
+  range.lb = lb;
+  range.ub = ub;
+  range.step = step;
+
+  return std::optional<InductionVariableRange>{range};
+}
+
+static std::optional<InductionVariableRange>
+computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
+  InductionVariableRange range;
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value iv = map.getOperand(dimExpr.getPosition());
+    auto range_ = getIVRange(iv);
+
+    if (!range_.has_value())
+      return std::nullopt;
+
+    range = *range_;
+  } else if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    auto rhs = binExpr.getRHS();
+    auto lhs = binExpr.getLHS();
+
+    auto rhsConst = rhs.dyn_cast<AffineConstantExpr>();
+    auto constantSide =
+        rhsConst ? rhsConst : lhs.dyn_cast<AffineConstantExpr>();
+    auto dynSide = rhsConst ? lhs : rhs;
+
+    auto rangeDyn = computeExprRange(map, dynSide);
+
+    if (!rangeDyn.has_value() || !constantSide)
+      return std::nullopt;
+
+    auto const_ = constantSide.getValue();
+
+    auto kind = expr.getKind();
+    switch (kind) {
+    case AffineExprKind::Add:
+      range.lb = rangeDyn->lb + const_;
+      range.ub = rangeDyn->ub + const_;
+      range.step = rangeDyn->step;
+      break;
+    case AffineExprKind::Mul:
+      range.lb = rangeDyn->lb * const_;
+      range.ub = rangeDyn->ub * const_;
+      range.step = rangeDyn->step * const_;
+      break;
+    default:
+      // unsupported
+      return std::nullopt;
+    }
+  } else {
+    return std::nullopt;
+  }
+
+  return std::optional<InductionVariableRange>{range};
+}
+
 // Given an affine map for a load/store operation, compute the startIndices,
 // limitIndices and strides corresponding in the memref based on the loop
-// induction variables. (i) -> (0, i, 10) will give [0:1:1, 0:end:1, 10:11:1]
+// induction variables.
+//
+// (i) -> (0, i, 10) will give [0:1:1, begin:end:step, 10:11:1]
+// (i) -> (2 * i, i + 2, 10) will give [begin*2:end*2:2*step,
+// begin+2:end+2:step, 10:11:1]
+//
+// with begin:end:step corresponding to the range of the iv i.
 static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
                                       SmallVectorImpl<int64_t> &startIndices,
                                       SmallVectorImpl<int64_t> &limitIndices,
@@ -49,37 +156,23 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
 
   for (unsigned i = 0; i < rank; i++) {
     auto expr = accessValueMap.getResult(i);
+
     if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
       auto const_ = constExpr.getValue();
       startIndices.push_back(const_);
       limitIndices.push_back(const_ + 1);
       strides.push_back(1);
-    } else if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
-      Value iv = accessValueMap.getOperand(dimExpr.getPosition());
-      assert(affine::isAffineInductionVar(iv));
-
-      auto owner = affine::getAffineParallelInductionVarOwner(iv);
-
-      if (!owner.getConstantRanges().has_value()) // Non-constant ranges.
-        return failure();
-
-      auto ivPos = cast<BlockArgument>(iv).getArgNumber();
-      auto lb = owner.getLowerBoundMap(ivPos)
-                    .getResult(0)
-                    .cast<AffineConstantExpr>()
-                    .getValue();
-      auto ub = owner.getUpperBoundMap(ivPos)
-                    .getResult(0)
-                    .cast<AffineConstantExpr>()
-                    .getValue();
-      auto step = owner.getSteps()[ivPos];
-
-      startIndices.push_back(lb);
-      limitIndices.push_back(ub);
-      strides.push_back(step);
-    } else {
-      return failure();
+      continue;
     }
+
+    auto range = computeExprRange(accessValueMap, expr);
+
+    if (!range.has_value())
+      return failure();
+
+    startIndices.push_back(range->lb);
+    limitIndices.push_back(range->ub);
+    strides.push_back(range->step);
   }
 
   return success();
@@ -98,8 +191,8 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
   SmallVector<int64_t> shape;
   shape.reserve(startIndices.size());
 
-  for (size_t i = 0, e = startIndices.size(); i < e; ++i) {
-    int64_t lb = startIndices[i], ub = limitIndices[i], step = strides[i];
+  for (auto [lb, ub, step] :
+       llvm::zip_equal(startIndices, limitIndices, strides)) {
     shape.push_back((ub - lb) / step);
   }
 
@@ -137,16 +230,19 @@ static Value alignMemoryAccess(Value val, affine::AffineValueMap src,
 
   for (unsigned i = 0; i < rank; ++i) {
     auto srcExpr = src.getResult(i);
-    if (srcExpr.getKind() == AffineExprKind::Constant) {
+    if (srcExpr.isSymbolicOrConstant()) {
       perm.push_back(i);
       continue;
     }
 
-    auto iv = src.getOperand(srcExpr.cast<AffineDimExpr>().getPosition());
+    auto iv = getIVForExpr(
+        src,
+        srcExpr); // src.getOperand(srcExpr.cast<AffineDimExpr>().getPosition());
     for (unsigned j = 0, e = dst.getNumResults(); j < e; ++j) {
       auto dstExpr = dst.getResult(j);
-      if (auto dstDim = dstExpr.dyn_cast<AffineDimExpr>()) {
-        auto dstIv = dst.getOperand(dstDim.getPosition());
+      if (!dstExpr.isSymbolicOrConstant()) {
+        auto dstIv =
+            getIVForExpr(dst, dstExpr); // dst.getOperand(dstDim.getPosition());
         if (iv == dstIv) {
           perm.push_back(j);
           break;
@@ -282,8 +378,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto mapA = maps[a], mapB = maps[b];
 
-    a = alignMemoryAccess(a, mapA, mapB, builder);
-    b = alignMemoryAccess(b, mapB, mapA, builder);
+    auto newA = alignMemoryAccess(a, mapA, mapB, builder);
+    if (newA == a)
+      b = alignMemoryAccess(b, mapB, mapA, builder);
+    else
+      a = newA;
 
     assert(a.getType() == b.getType());
 
@@ -452,10 +551,15 @@ struct AffineRaisePass : public enzyme::impl::AffineRaiseBase<AffineRaisePass> {
       }
     });
 
+    bool anyRaised = false;
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
-      tryRaisingToStableHLO(kernelFunc);
+      anyRaised |= tryRaisingToStableHLO(kernelFunc);
       funcs.pop_back();
+    }
+
+    if (!anyRaised) {
+      markAllAnalysesPreserved();
     }
   }
 };
