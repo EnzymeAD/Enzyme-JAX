@@ -38,6 +38,7 @@
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
@@ -84,6 +85,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
+  registry.insert<mlir::ub::UBDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
