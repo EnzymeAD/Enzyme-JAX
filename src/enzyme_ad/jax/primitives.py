@@ -12,7 +12,6 @@ from jax.interpreters import mlir as jax_mlir
 from jax.interpreters import ad
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import stablehlo, func
-from jax.lib import xla_client
 import jax.numpy as jnp
 
 from . import enzyme_call
@@ -28,6 +27,13 @@ from enum import Enum
 import jax.extend
 
 Primitive = jax.extend.core.Primitive
+
+try:
+    register_custom_call_target = partial(jax.ffi.register_ffi_target, api_version=0)
+except AttributeError:
+    from jax.lib import xla_client
+
+    register_custom_call_target = xla_client.register_custom_call_target
 
 
 class PipelineConfig:
@@ -1153,7 +1159,7 @@ _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
 jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
-xla_client.register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
+register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
 
 _enzyme_fwd_p = Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
@@ -1161,7 +1167,7 @@ _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
 jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering)
 
-xla_client.register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
+register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
@@ -1267,18 +1273,10 @@ _enzyme_aug_p.def_impl(_enzyme_aug_impl)
 _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
 jax_mlir.register_lowering(_enzyme_aug_p, _enzyme_aug_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="cpu"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="CUDA"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="ROCM"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="tpu"
-)
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="cpu")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="CUDA")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="ROCM")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="tpu")
 
 _enzyme_shadow_aug_p = Primitive("enzyme_shadow_aug")
 _enzyme_shadow_aug_p.multiple_results = True
@@ -1291,18 +1289,10 @@ _enzyme_rev_p.def_impl(_enzyme_rev_impl)
 _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)
 jax_mlir.register_lowering(_enzyme_rev_p, _enzyme_rev_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="cpu"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="tpu"
-)
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="cpu")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="tpu")
 
 
 from jax._src.interpreters import partial_eval as pe
