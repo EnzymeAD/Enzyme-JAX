@@ -105,7 +105,7 @@ void buildCommonPassPipeline(
   pm.addPass(createConvertNVGPUToNVVMPass());
   pm.addPass(createGpuKernelOutliningPass());
   pm.addPass(createConvertVectorToSCFPass());
-  pm.addPass(createConvertSCFToCFPass());
+  pm.addPass(createSCFToControlFlowPass());
   pm.addPass(createConvertNVVMToLLVMPass());
   pm.addPass(createConvertFuncToLLVMPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
@@ -799,7 +799,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       if (openmp)
         pm.addPass(createConvertSCFToOpenMPPass());
       else
-        pm.addPass(createConvertSCFToCFPass());
+        pm.addPass(createSCFToControlFlowPass());
 
       buildLowerToCPUPassPipeline(pm);
       auto subres = pm.run(submod);

@@ -192,48 +192,23 @@ public:
         callee.getLeafReference() == "__nv_isnan") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
-                                           op->getOperands()[0], 3));
+          rewriter.create<math::IsNaNOp>(op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
-    // https://llvm.org/docs/LangRef.html#llvm-is-fpclass
-    /*
-     *
-Bit #
-
-floating-point class
-
-0 Signaling NaN
-
-1 Quiet NaN
-
-2 Negative infinity
-
-3 Negative normal
-
-4 Negative subnormal
-
-5 Negative zero
-
-6 Positive zero
-
-7 Positive subnormal
-
-8 Positive normal
-
-9 Positive infinity
-
-2**3 + 2**4 + 2**5 + 2**6 + 2**7 + 2**8
-*/
     if (callee.getLeafReference() == "__nv_isfinited" ||
         callee.getLeafReference() == "__nv_isfinite") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
-                                           op->getOperands()[0],
-                                           ((1 << 3) | (1 << 4) | (1 << 5) |
-                                            (1 << 6) | (1 << 7) | (1 << 8))));
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+      return success();
+    }
+
+    if (callee.getLeafReference() == "__nv_isinfd" ||
+        callee.getLeafReference() == "__nv_isinf") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
       return success();
     }
 

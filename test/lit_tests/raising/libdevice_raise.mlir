@@ -698,12 +698,12 @@ module {
       llvm.return %0 : f64
     }
     llvm.func @gpu_isnan(%arg0: f64) -> i32 {
-      // CHECK: "llvm.intr.is.fpclass"(%arg0) <{bit = 3 : i32}> : (f64) -> i1
+      // CHECK: math.isnan
       %0 = llvm.call @__nv_isnand(%arg0) : (f64) -> i32
       llvm.return %0 : i32
     }
     llvm.func @gpu_isfinite(%arg0: f64) -> i32 {
-      // CHECK: "llvm.intr.is.fpclass"(%arg0) <{bit = 504 : i32}> : (f64) -> i1
+      // CHECK: math.isfinite
       %0 = llvm.call @__nv_isfinited(%arg0) : (f64) -> i32
       llvm.return %0 : i32
     }
