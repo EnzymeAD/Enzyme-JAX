@@ -18,7 +18,9 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/IRMapping.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -44,17 +46,18 @@ struct InductionVariableRange {
 
 // Assumes a single IV per Expr. (i) -> (i * 3 + 2)
 static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
-  Value iv = nullptr;
+  assert(!expr.isSymbolicOrConstant());
+  unsigned pos;
 
-  expr.walk([&](AffineExpr expr) {
+  expr.walk([&pos](AffineExpr expr) {
     if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
-      iv = map.getOperand(dimExpr.getPosition());
+      pos = dimExpr.getPosition();
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
   });
 
-  return iv;
+  return map.getOperand(pos);
 }
 
 static std::optional<InductionVariableRange> getIVRange(Value iv) {
@@ -226,8 +229,6 @@ static Value alignMemoryAccess(Value val, affine::AffineValueMap src,
   SmallVector<int64_t> perm;
   perm.reserve(rank);
 
-  AffineMap srcMap = src.getAffineMap(), dstMap = dst.getAffineMap();
-
   for (unsigned i = 0; i < rank; ++i) {
     auto srcExpr = src.getResult(i);
     if (srcExpr.isSymbolicOrConstant()) {
@@ -235,14 +236,11 @@ static Value alignMemoryAccess(Value val, affine::AffineValueMap src,
       continue;
     }
 
-    auto iv = getIVForExpr(
-        src,
-        srcExpr); // src.getOperand(srcExpr.cast<AffineDimExpr>().getPosition());
+    auto iv = getIVForExpr(src, srcExpr);
     for (unsigned j = 0, e = dst.getNumResults(); j < e; ++j) {
       auto dstExpr = dst.getResult(j);
       if (!dstExpr.isSymbolicOrConstant()) {
-        auto dstIv =
-            getIVForExpr(dst, dstExpr); // dst.getOperand(dstDim.getPosition());
+        auto dstIv = getIVForExpr(dst, dstExpr);
         if (iv == dstIv) {
           perm.push_back(j);
           break;
@@ -337,7 +335,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
               .getResult());
     }
 
-    // TODO: here we need to make sure that the actual saved value has the right
+    // here we need to make sure that the actual saved value has the right
     // transpose. consider the following kernel:
     //
     // affine.parallel (%arg1, %arg2) = (0, 0) to (100, 100) {
@@ -346,7 +344,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // }
     //
     // in this case, we want to transpose on the store (or read) to emit a
-    // stablehlo.transpose.
+    // stablehlo.transpose. For each value, maps contains the access map.
+    // `alignMemoryAccess` tries to update val to the right size.
     update = alignMemoryAccess(update, maps[update], accessValueMap, builder);
 
     auto newOperand = builder.create<stablehlo::DynamicUpdateSliceOp>(
@@ -369,8 +368,35 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  // TODO: needs broadcasting for arguments
-  if (isa<arith::MulIOp, arith::MulFOp, arith::AddIOp, arith::AddFOp>(op)) {
+  // unary ops
+  if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
+          arith::ExtUIOp, math::SqrtOp, math::RsqrtOp, math::LogOp, math::ExpOp,
+          math::AbsFOp, math::AbsIOp>(op)) {
+    assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
+
+    auto operand = op->getOperand(0);
+    auto newOperand = mapping.lookup(operand);
+
+    auto IT = newOperand.getType().cast<RankedTensorType>();
+    auto T = RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
+
+    auto newOp =
+        Operation::create(op->getLoc(), op->getName(), {T}, {newOperand},
+                          op->getAttrs(), OpaqueProperties(nullptr), {}, 0);
+    mapping.map(op->getResult(0), newOp->getResult(0));
+    maps[newOp->getResult(0)] = maps[newOperand];
+
+    builder.insert(newOp);
+    return success();
+  }
+
+  // binary ops
+  if (isa<arith::MulIOp, arith::MulFOp, arith::AddIOp, arith::AddFOp,
+          arith::SubIOp, arith::SubFOp, arith::DivFOp, arith::DivSIOp,
+          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::CmpIOp,
+          arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp, arith::ShLIOp,
+          arith::MinimumFOp, arith::MaximumFOp, arith::MinUIOp, arith::MinSIOp,
+          arith::MaxUIOp, arith::MaxSIOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -386,7 +412,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     assert(a.getType() == b.getType());
 
-    Type result = a.getType();
+    auto IT = a.getType().cast<RankedTensorType>();
+    Type result =
+        RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
 
     auto newOp =
         Operation::create(op->getLoc(), op->getName(), {result}, {a, b},

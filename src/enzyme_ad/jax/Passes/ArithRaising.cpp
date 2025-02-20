@@ -13,6 +13,7 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -126,7 +127,32 @@ struct ArithRaisingPass
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
+
+#define RAISE_UNARY(InputOp, StableHLOOp, MHLOOP)                              \
+  op->walk([=](InputOp inpOp) {                                                \
+    if (!inpOp.getType().isa<RankedTensorType>())                              \
+      return;                                                                  \
+    OpBuilder builder(inpOp);                                                  \
+    Value newAddOp;                                                            \
+    if (use_stablehlo)                                                         \
+      newAddOp =                                                               \
+          builder.create<StableHLOOp>(inpOp.getLoc(), inpOp->getOperand(0));   \
+    else                                                                       \
+      newAddOp = builder.create<MHLOOP>(inpOp.getLoc(), inpOp->getOperand(0)); \
+    inpOp.replaceAllUsesWith(newAddOp);                                        \
+    inpOp.erase();                                                             \
+  });
+
+    RAISE_UNARY(math::SinOp, stablehlo::SineOp, mhlo::SineOp);
+    RAISE_UNARY(math::CosOp, stablehlo::CosineOp, mhlo::CosineOp);
+    RAISE_UNARY(math::LogOp, stablehlo::LogOp, mhlo::LogOp);
+    RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
+    RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
+    RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
+    RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
+
+#undef RAISE_UNARY
   }
-};
+}; // namespace
 
 } // end anonymous namespace
