@@ -66,9 +66,10 @@ jobs:
           bazel run --color=yes //builddeps:requirements.update
       - name: Run tests
         run: |
-          bazel test --color=yes --test_output=errors //test/...
+          bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
       - name: Upload test results
         uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }} 
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |
