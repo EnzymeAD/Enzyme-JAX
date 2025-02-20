@@ -445,7 +445,8 @@ def LowerMPIToStableHLOPass : Pass<"convert-mpi-to-stablehlo"> {
   let dependentDialects = [
     "mpi::MPIDialect",
     "enzymexla::EnzymeXLADialect",
-    "stablehlo::StablehloDialect"
+    "memref::MemRefDialect",
+    "LLVM::LLVMDialect",
   ];
 
   // TODO do we need to add options for getting libmpi path?

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/MPI/IR/MPI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
@@ -152,6 +153,7 @@ struct CommRankOpLowering : public OpRewritePattern<mpi::CommRankOp> {
 
 struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
     using OpRewritePattern::OpRewritePattern;
+    mutable bool func_written = false;
 
     LogicalResult matchAndRewrite(mpi::SendOp op, PatternRewriter &rewriter) const override {
         auto jit_op = rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(op, op.getResultTypes(),
@@ -161,37 +163,60 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             ::mlir::Attribute{},
             ::mlir::Attribute{},
             ::mlir::ArrayAttr{});
-        // assert(jit_op && "jit op created successfully");
-        // llvm::errs() << *jit_op->getBlock() << "\n";
-        return success();
 
-        const auto func_type = FunctionType::get(rewriter.getContext(),
-            op.getOperandTypes(),
-            op->getResultTypes()
-        );
-        
-        auto func_op = mlir::func::FuncOp::create(
-            op.getLoc(),
-            "mpi_send_func",
-            func_type
-        );
-        
-        auto ctx = rewriter.getContext();
-
-        auto entry_block = func_op.addEntryBlock();
-        assert(entry_block);
-        rewriter.setInsertionPoint(entry_block, entry_block->begin());
-        auto const_op = rewriter.create<LLVM::ConstantOp>(UnknownLoc{}, 
-            mlir::IntegerType::get(ctx, 64),
-            0xffff
-        );
-        auto ptr_op = rewriter.create<LLVM::IntToPtrOp>(UnknownLoc{}, 
-            mlir::LLVM::LLVMPointerType::get(ctx),
-            const_op);
+        if (!func_written) {
+            auto ctx = rewriter.getContext();
+            const auto func_type = FunctionType::get(ctx,
+                op.getOperandTypes(),
+                op->getResultTypes()
+            );
             
-        rewriter.create<LLVM::CallOp>(UnknownLoc{}, 
-            mlir::TypeRange{}, 
-            mlir::ValueRange{ptr_op});
+            auto module = ([op]() {
+                auto h = op->getParentOp();
+                while (auto parent = h->getParentOp())
+                    h = parent;
+                return llvm::dyn_cast<ModuleOp>(h);
+            })();
+            assert(module);
+            auto module_block = &module.getBodyRegion().getBlocks().front();
+
+            rewriter.setInsertionPoint( module_block, module_block->end());
+            auto func_op = rewriter.create<func::FuncOp>(op.getLoc(),
+                "mpi_send_func",
+                func_type);
+
+            auto entry_block = func_op.addEntryBlock();
+            assert(entry_block);
+            rewriter.setInsertionPoint(entry_block, entry_block->begin());
+            auto const_op = rewriter.create<LLVM::ConstantOp>(op.getLoc(), 
+                mlir::IntegerType::get(ctx, 64),
+                0xffff
+            );
+            auto function_ptr_op = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), 
+                mlir::LLVM::LLVMPointerType::get(ctx),
+                const_op);
+
+            auto operands = entry_block->getArguments();
+            auto extract_op = rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(op.getLoc(),
+                operands[0]);
+            auto cast_op = rewriter.create<arith::IndexCastOp>(op.getLoc(), mlir::IntegerType::get(ctx, 64), extract_op);
+            auto memref_ptr_op = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), mlir::LLVM::LLVMPointerType::get(ctx), cast_op);
+
+            SmallVector<mlir::Value> values;
+            values.push_back(function_ptr_op);
+            values.push_back(memref_ptr_op);
+            values.insert(values.end(), operands.begin()+1, operands.end());
+            
+            rewriter.create<LLVM::CallOp>(op.getLoc(), 
+                mlir::TypeRange{}, 
+                mlir::ValueRange{values},
+                ArrayRef<NamedAttribute>{
+                    rewriter.getNamedAttr(LLVM::CallOp::getOperandSegmentSizeAttr(), rewriter.getDenseI32ArrayAttr({3,1})), 
+                    rewriter.getNamedAttr("op_bundle_sizes", rewriter.getDenseI32ArrayAttr({1, 1}))}
+            );
+
+            func_written = true;
+        }
 
         return success();
     }
@@ -350,13 +375,19 @@ using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
     void runOnOperation() override {
         using namespace mlir::enzyme::impl;
         auto& ctx = getContext();
+        ctx.loadDialect<mlir::LLVM::LLVMDialect>();
         ctx.loadDialect<mpi::MPIDialect>();
         ctx.loadDialect<enzymexla::EnzymeXLADialect>();
+        ctx.loadDialect<memref::MemRefDialect>();
 
         mlir::ConversionTarget target(getContext());
         // XLA can't handle MPI ops, so we must convert all MPI ops to `stablehlo.custom_call` ops
         target.template addIllegalDialect<mpi::MPIDialect>();
         target.addLegalDialect("enzymexla");
+        target.addLegalDialect("llvm");
+        target.addLegalDialect("memref");
+        target.addLegalDialect("arith");
+        target.addLegalDialect("func");
 
         RewritePatternSet patterns(&getContext());
         patterns.add<

@@ -11,6 +11,7 @@
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 
 namespace mlir {
