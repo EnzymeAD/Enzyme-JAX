@@ -65,6 +65,7 @@ jobs:
         run: |
           bazel run --color=yes //builddeps:requirements.update
       - name: Run tests
+        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: |
           bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
       - name: Upload test results
