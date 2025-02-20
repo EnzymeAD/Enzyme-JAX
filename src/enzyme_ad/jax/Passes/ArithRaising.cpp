@@ -151,6 +151,72 @@ struct ArithRaisingPass
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
+    op->walk([=](arith::CmpFOp cmpOp) {
+      if (!isa<TensorType>(cmpOp.getType()))
+        return;
+
+      // TODO: check fast math flags?
+      OpBuilder builder(cmpOp);
+
+      Value newCmpOp;
+      if (use_stablehlo) {
+        stablehlo::ComparisonDirection direction;
+        switch (cmpOp.getPredicate()) {
+        case arith::CmpFPredicate::OEQ:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpFPredicate::OGT:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpFPredicate::OGE:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpFPredicate::OLT:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpFPredicate::OLE:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        case arith::CmpFPredicate::ONE:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        default:
+          return;
+        }
+        newCmpOp = builder.create<stablehlo::CompareOp>(
+            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
+            direction, stablehlo::ComparisonType::FLOAT);
+      } else {
+        mhlo::ComparisonDirection direction;
+        switch (cmpOp.getPredicate()) {
+        case arith::CmpFPredicate::OEQ:
+          direction = mhlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpFPredicate::OGT:
+          direction = mhlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpFPredicate::OGE:
+          direction = mhlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpFPredicate::OLT:
+          direction = mhlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpFPredicate::OLE:
+          direction = mhlo::ComparisonDirection::LE;
+          break;
+        case arith::CmpFPredicate::ONE:
+          direction = mhlo::ComparisonDirection::NE;
+          break;
+        default:
+          return;
+        }
+        newCmpOp = builder.create<mhlo::CompareOp>(
+            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
+            direction);
+      }
+      cmpOp.replaceAllUsesWith(newCmpOp);
+      cmpOp.erase();
+    });
   }
 }; // namespace
 
