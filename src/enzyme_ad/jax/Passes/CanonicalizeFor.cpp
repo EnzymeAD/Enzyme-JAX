@@ -667,19 +667,6 @@ bool dominateWhile(Value value, WhileOp loop) {
   }
 }
 
-std::optional<int64_t> getConstantInt(Value operand) {
-  if (operand) {
-    if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
-      if (auto attr = constOp.getValue()) {
-        if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
-          return intAttr.getInt();
-        }
-      }
-    }
-  }
-  return std::optional<int64_t>{}; // Non-constant case
-}
-
 bool canMoveOpOutsideWhile(Operation *op, WhileOp loop) {
   DominanceInfo dom(loop);
   for (auto operand : op->getOperands()) {
@@ -741,9 +728,15 @@ struct WhileToForHelper {
         // condition to SGT
         // 4. If yes and step size is positive, then we need to transform the
         // condition to SLT
-        auto lbInt = static_cast<int>(*getConstantInt(lb));
-        auto ubInt = static_cast<int>(*getConstantInt(ub));
-        auto stepInt = static_cast<int>(*getConstantInt(step));
+        APInt lbConstInt, ubConstInt, stepConstInt;
+        int lbInt, ubInt, stepInt;
+        if (matchPattern(lb, m_ConstantInt(&lbConstInt)) &&
+            matchPattern(ub, m_ConstantInt(&ubConstInt)) &&
+            matchPattern(step, m_ConstantInt(&stepConstInt))) {
+          lbInt = lbConstInt.getSExtValue();
+          ubInt = ubConstInt.getSExtValue();
+          stepInt = stepConstInt.getSExtValue();
+        }
 
         if ((ubInt - lbInt) % stepInt == 0) {
           if ((stepInt < 0) && (ubInt < lbInt)) {
@@ -1120,17 +1113,19 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     }
 
     // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
-    auto lbInt = getConstantInt(lowerBound);
-    auto ubInt = getConstantInt(upperBound);
-    auto stepInt = getConstantInt(stepSize);
-
-    if (!lbInt || !ubInt || !stepInt || stepInt == 0) {
+    APInt lbConstInt, ubConstInt, stepConstInt;
+    int lb, ub, step;
+    if (matchPattern(lowerBound, m_ConstantInt(&lbConstInt)) &&
+        matchPattern(upperBound, m_ConstantInt(&ubConstInt)) &&
+        matchPattern(stepSize, m_ConstantInt(&stepConstInt))) {
+      lb = lbConstInt.getSExtValue();
+      ub = ubConstInt.getSExtValue();
+      step = stepConstInt.getSExtValue();
+      if (step == 0)
+        return failure();
+    } else {
       return failure();
     }
-
-    int lb = static_cast<int>(*lbInt);
-    int ub = static_cast<int>(*ubInt);
-    int step = static_cast<int>(*stepInt);
 
     // Uinsg WhileToForHelper to set up for loop structure
     WhileToForHelper helper;
