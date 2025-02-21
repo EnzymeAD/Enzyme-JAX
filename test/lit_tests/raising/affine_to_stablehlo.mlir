@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --affine-raise --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --enzyme-hlo-opt | FileCheck %s
 
 module {
 

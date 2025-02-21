@@ -471,7 +471,7 @@ def AffineCFG : Pass<"affine-cfg"> {
   ];
 }
 
-def AffineRaise : Pass<"affine-raise"> {
+def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
     "affine::AffineDialect",

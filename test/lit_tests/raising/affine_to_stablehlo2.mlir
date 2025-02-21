@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --affine-raise --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --enzyme-hlo-opt | FileCheck %s
 
 module {
   func.func @transpose_kernel(%arg0: memref<100x100xf32, 1>, %arg1: memref<100x100xf32, 1>) {

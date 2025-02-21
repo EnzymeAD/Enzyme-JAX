@@ -1,4 +1,4 @@
-//===- AffineRaising.cpp - Raise affine loops to stablehlo ----------------===//
+//===- AffineToStableHLORaising.cpp - Raise affine loops to stablehlo -----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -28,7 +28,7 @@
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_AFFINERAISE
+#define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -562,8 +562,10 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
 }
 
 namespace {
-struct AffineRaisePass : public enzyme::impl::AffineRaiseBase<AffineRaisePass> {
-  using AffineRaiseBase::AffineRaiseBase;
+struct AffineToStableHLORaisingPass
+    : public enzyme::impl::AffineToStableHLORaisingBase<
+          AffineToStableHLORaisingPass> {
+  using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
   void runOnOperation() override {
     std::vector<func::FuncOp> funcs;

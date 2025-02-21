@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --affine-raise --arith-raise --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --arith-raise --enzyme-hlo-opt | FileCheck %s
 
 module {
   func.func private @myfunc(%arg0: memref<204xf64, 1>, %arg1: memref<100xf64, 1>) {
