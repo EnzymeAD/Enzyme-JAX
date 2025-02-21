@@ -689,6 +689,7 @@ struct WhileToForHelper {
   AddIOp addIOp;
   BlockArgument indVar;
   size_t afterArgIdx;
+  int updateCmpNeOp; // 0: no update, 1: update to SGT, 2: update to SLT
 
   bool checkPredicate() {
     auto cmpRhs = cmpIOp.getRhs();
@@ -717,8 +718,42 @@ struct WhileToForHelper {
         lb_addOne = true;
         break;
       }
-      case CmpIPredicate::eq:
       case CmpIPredicate::ne: {
+        // Transform arith.cmpi NE to SLT /SGT
+        // 1. Check to see if step size is negative or positive to decide
+        // between SLT and SGT
+        // 2. Check to see if linearly scaling IV from init with step size can
+        // be equal to upperbound
+        // 3. If yes and step size is negative, then we need to transform the
+        // condition to SGT
+        // 4. If yes and step size is positive, then we need to transform the
+        // condition to SLT
+        APInt lbConstInt, ubConstInt, stepConstInt;
+        int lbInt, ubInt, stepInt;
+        if (matchPattern(lb, m_ConstantInt(&lbConstInt)) &&
+            matchPattern(ub, m_ConstantInt(&ubConstInt)) &&
+            matchPattern(step, m_ConstantInt(&stepConstInt))) {
+          lbInt = lbConstInt.getSExtValue();
+          ubInt = ubConstInt.getSExtValue();
+          stepInt = stepConstInt.getSExtValue();
+        }
+
+        if ((ubInt - lbInt) % stepInt == 0) {
+          if ((stepInt < 0) && (ubInt < lbInt)) {
+            updateCmpNeOp = 1; // update to SGT
+            lb = cmpRhs;
+            lb_addOne = true;
+          } else if ((stepInt > 0) && (lbInt < ubInt)) {
+            updateCmpNeOp = 2; // update to SLT
+            ub = cmpRhs;
+          } else
+            return false;
+        } else
+          return false; // If upperbound - lowerbound is not divisible by step
+                        // size, then we cannot transform the condition
+        break;
+      }
+      case CmpIPredicate::eq: {
         return false;
       }
       }
@@ -887,6 +922,23 @@ struct WhileToForHelper {
 
   void prepareFor(PatternRewriter &rewriter) {
     Value one;
+
+    if (updateCmpNeOp == 1) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(cmpIOp);
+      Value newCmp = rewriter.create<arith::CmpIOp>(
+          cmpIOp.getLoc(), arith::CmpIPredicate::sgt, cmpIOp.getLhs(),
+          cmpIOp.getRhs());
+      rewriter.replaceOp(cmpIOp, newCmp);
+    } else if (updateCmpNeOp == 2) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(cmpIOp);
+      Value newCmp = rewriter.create<arith::CmpIOp>(
+          cmpIOp.getLoc(), arith::CmpIPredicate::slt, cmpIOp.getLhs(),
+          cmpIOp.getRhs());
+      rewriter.replaceOp(cmpIOp, newCmp);
+    }
+
     if (lb_addOne) {
       Value one =
           rewriter.create<ConstantIntOp>(loop.getLoc(), 1, lb.getType());
@@ -905,8 +957,7 @@ struct WhileToForHelper {
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
     }
     auto modifyTypeToIndex = true;
-    if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType()) &&
-        !isa<ConstantIndexOp>(step.getDefiningOp())) {
+    if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType())) {
       modifyTypeToIndex = false;
     }
 
@@ -936,19 +987,6 @@ struct WhileToForHelper {
     }
   }
 };
-
-std::optional<int64_t> getConstantInt(Value operand) {
-  if (operand) {
-    if (auto constOp = operand.getDefiningOp<arith::ConstantOp>()) {
-      if (auto attr = constOp.getValue()) {
-        if (auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()) {
-          return intAttr.getInt();
-        }
-      }
-    }
-  }
-  return std::optional<int64_t>{}; // Non-constant case
-}
 
 // Checks to see if values are connected using use-def chain
 bool areValuesConnected(Value startVal, Value endVal,
@@ -1011,8 +1049,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
     Value upperBound;
     Value compareValue;
-    if (auto cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
-      arith::CmpIPredicate predicate = cmpOp.getPredicate();
+    arith::CmpIOp cmpOp;
+    if (cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
       // We need to check for is that one of the lhs or rhs is a constant, and
       // extract the value as upper bound.
       if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
@@ -1075,17 +1113,19 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     }
 
     // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
-    auto lbInt = getConstantInt(lowerBound);
-    auto ubInt = getConstantInt(upperBound);
-    auto stepInt = getConstantInt(stepSize);
-
-    if (!lbInt || !ubInt || !stepInt || stepInt == 0) {
+    APInt lbConstInt, ubConstInt, stepConstInt;
+    int lb, ub, step;
+    if (matchPattern(lowerBound, m_ConstantInt(&lbConstInt)) &&
+        matchPattern(upperBound, m_ConstantInt(&ubConstInt)) &&
+        matchPattern(stepSize, m_ConstantInt(&stepConstInt))) {
+      lb = lbConstInt.getSExtValue();
+      ub = ubConstInt.getSExtValue();
+      step = stepConstInt.getSExtValue();
+      if (step == 0)
+        return failure();
+    } else {
       return failure();
     }
-
-    int lb = static_cast<int>(*lbInt);
-    int ub = static_cast<int>(*ubInt);
-    int step = static_cast<int>(*stepInt);
 
     // Uinsg WhileToForHelper to set up for loop structure
     WhileToForHelper helper;
