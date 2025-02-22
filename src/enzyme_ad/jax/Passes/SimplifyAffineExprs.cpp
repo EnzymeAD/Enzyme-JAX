@@ -389,6 +389,14 @@ template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
     }
   }
 
+  if (avm.getNumSymbols() != 0 || cst.getNumSymbolVars() != 0) {
+    // TODO While the fact that all dims from the map _must_ appear in the cst,
+    // this is not the case for symbols. We do not handle that case correctly
+    // currently, thus we abort early.
+    domain = isl_set_free(domain);
+    return;
+  }
+
   LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
   PosMapTy symPosMap;
   PosMapTy symPosMapReverse;
