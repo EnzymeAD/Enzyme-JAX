@@ -121,13 +121,17 @@ std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
 }
 
 using PosMapTy = llvm::MapVector<unsigned, unsigned>;
+
 struct AffineExprToIslAffConverter {
   PosMapTy dimPosMap;
   PosMapTy symPosMap;
-  isl_aff *getIslAff(AffineExpr expr, isl_local_space *ls, isl_ctx *ctx) {
+  isl_local_space *ls;
+  isl_ctx *ctx;
+
+  isl_aff *getIslAff(AffineExpr expr) {
     if (auto bo = dyn_cast<AffineBinaryOpExpr>(expr)) {
-      isl_aff *lhs = getIslAff(bo.getLHS(), ls, ctx);
-      isl_aff *rhs = getIslAff(bo.getRHS(), ls, ctx);
+      isl_aff *lhs = getIslAff(bo.getLHS());
+      isl_aff *rhs = getIslAff(bo.getRHS());
       switch (bo.getKind()) {
       case mlir::AffineExprKind::Add:
         return isl_aff_add(lhs, rhs);
@@ -359,84 +363,110 @@ struct IslToAffineExprConverter {
   }
 };
 
+template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
+  LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
+  auto [domain, cst] = getDomain(ctx, load);
+  LLVM_DEBUG(isl_set_dump(domain));
+  LLVM_DEBUG(cst.dump());
+  AffineMap map = load.getMap();
+  AffineValueMap avm(map, load.getMapOperands(), {});
+
+  LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
+  PosMapTy dimPosMap;
+  PosMapTy dimPosMapReverse;
+  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
+    Value cstVal = cst.getValue(i);
+    LLVM_DEBUG(llvm::dbgs() << "cstVal " << cstVal << "\n");
+    for (unsigned origDim = 0; origDim < map.getNumDims(); origDim++) {
+      Value dim = avm.getOperand(origDim);
+      LLVM_DEBUG(llvm::dbgs() << "dim " << dim << "\n");
+      if (cstVal == dim) {
+        LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << i << "\n");
+        dimPosMap[origDim] = i;
+        dimPosMapReverse[i] = origDim;
+        break;
+      }
+    }
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
+  PosMapTy symPosMap;
+  PosMapTy symPosMapReverse;
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
+    for (unsigned origSym = 0; origSym < map.getNumSymbols(); origSym++) {
+      Value dim = avm.getOperand(origSym + map.getNumDims());
+      if (cst.getValue(i + cst.getNumDimVars()) == dim) {
+        LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << i << "\n");
+        symPosMap[origSym] = i;
+        symPosMapReverse[i] = origSym;
+        break;
+      }
+    }
+  }
+
+  isl_space *space =
+      isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
+  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "dim", (void *)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+  unsigned symOffset = cst.getNumDimVars();
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(symOffset + i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+
+  isl_ast_build *build =
+      isl_ast_build_from_context(isl_set_universe(isl_space_copy(space)));
+  isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
+  space = isl_space_free(space);
+  AffineExprToIslAffConverter m2i{dimPosMap, symPosMap, ls, ctx};
+  IslToAffineExprConverter i2m{load->getContext(), symOffset, dimPosMapReverse,
+                               symPosMapReverse};
+  SmallVector<AffineExpr> newExprs;
+  for (unsigned i = 0; i < map.getNumResults(); i++) {
+    AffineExpr mlirExpr = map.getResult(i);
+    LLVM_DEBUG(llvm::dbgs() << "Handling AffineExpr\n" << mlirExpr << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Got aff\n");
+    isl_aff *aff = m2i.getIslAff(mlirExpr);
+    LLVM_DEBUG(isl_aff_dump(aff));
+    aff = isl_aff_gist(aff, isl_set_copy(domain));
+    LLVM_DEBUG(llvm::dbgs() << "Gisted aff\n");
+    LLVM_DEBUG(isl_aff_dump(aff));
+    isl_ast_expr *expr = isl_ast_expr_from_aff(aff, build);
+    LLVM_DEBUG(llvm::dbgs() << "ast expr\n");
+    LLVM_DEBUG(isl_ast_expr_dump(expr));
+    LLVM_DEBUG(llvm::dbgs() << "Back to AffineExpr\n");
+    AffineExpr newMlirExpr = i2m.create(expr);
+    LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
+    newExprs.push_back(newMlirExpr);
+  }
+  ls = isl_local_space_free(ls);
+  domain = isl_set_free(domain);
+  build = isl_ast_build_free(build);
+
+  AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                    newExprs, load->getContext());
+  load.setMap(newMap);
+}
+
 struct SimplifyAffineExprsPass
     : public enzyme::impl::SimplifyAffineExprsPassBase<
           SimplifyAffineExprsPass> {
   using SimplifyAffineExprsPassBase::SimplifyAffineExprsPassBase;
   void runOnOperation() override {
     isl_ctx *ctx = isl_ctx_alloc();
-
     Operation *op = getOperation();
-
-    op->walk([&](AffineLoadOp load) {
-      LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
-      auto [domain, cst] = getDomain(ctx, load);
-      LLVM_DEBUG(isl_set_dump(domain));
-      AffineMap map = load.getMap();
-      AffineValueMap avm(map, load.getOperands(), {});
-      PosMapTy dimPosMap;
-      PosMapTy dimPosMapReverse;
-      PosMapTy symPosMap;
-      PosMapTy symPosMapReverse;
-      for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
-        for (unsigned origDim = 0; origDim < map.getNumDims(); origDim++) {
-          Value dim = avm.getOperand(origDim);
-          if (cst.getValue(i) == dim) {
-            dimPosMap[origDim] = i;
-            dimPosMapReverse[i] = origDim;
-            break;
-          }
-        }
-      }
-      for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-        for (unsigned origSym = 0; origSym < map.getNumSymbols(); origSym++) {
-          Value dim = avm.getOperand(origSym + map.getNumDims());
-          if (cst.getValue(i) == dim) {
-            symPosMap[origSym] = i;
-            symPosMapReverse[i] = origSym;
-            break;
-          }
-        }
-      }
-
-      isl_space *space =
-          isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
-      for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
-        isl_id *id = isl_id_alloc(ctx, "dim", (void *)(i + 1));
-        space = isl_space_set_dim_id(space, isl_dim_set, i, id);
-      }
-      unsigned symOffset = cst.getNumDimVars();
-      for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-        isl_id *id = isl_id_alloc(ctx, "sym", (void *)(symOffset + i + 1));
-        space = isl_space_set_dim_id(space, isl_dim_set, i, id);
-      }
-
-      isl_ast_build *build =
-          isl_ast_build_from_context(isl_set_universe(isl_space_copy(space)));
-      AffineExprToIslAffConverter m2i{dimPosMap, symPosMap};
-      IslToAffineExprConverter i2m{op->getContext(), symOffset,
-                                   dimPosMapReverse, symPosMapReverse};
-      for (unsigned i = 0; i < map.getNumResults(); i++) {
-        AffineExpr mlirExpr = map.getResult(i);
-        LLVM_DEBUG(llvm::dbgs() << "Handling AffineExpr\n" << mlirExpr << "\n");
-        isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
-        LLVM_DEBUG(llvm::dbgs() << "Got aff\n");
-        isl_aff *aff = m2i.getIslAff(mlirExpr, ls, ctx);
-        LLVM_DEBUG(isl_aff_dump(aff));
-        ls = isl_local_space_free(ls);
-        aff = isl_aff_gist(aff, isl_set_copy(domain));
-        LLVM_DEBUG(llvm::dbgs() << "Gisted aff\n");
-        LLVM_DEBUG(isl_aff_dump(aff));
-        isl_ast_expr *expr = isl_ast_expr_from_aff(aff, build);
-        LLVM_DEBUG(llvm::dbgs() << "ast expr\n");
-        LLVM_DEBUG(isl_ast_expr_dump(expr));
-        LLVM_DEBUG(llvm::dbgs() << "Back to AffineExpr\n");
-        AffineExpr newMlirExpr = i2m.create(expr);
-        LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
-      }
-      space = isl_space_free(space);
-      domain = isl_set_free(domain);
-      build = isl_ast_build_free(build);
+    op->walk([&](Operation *op) {
+      if (auto cop = dyn_cast<AffineLoadOp>(op))
+        handleAffineOp(ctx, cop);
+      else if (auto cop = dyn_cast<AffineStoreOp>(op))
+        handleAffineOp(ctx, cop);
+      else if (auto cop = dyn_cast<AffineVectorLoadOp>(op))
+        handleAffineOp(ctx, cop);
+      else if (auto cop = dyn_cast<AffineVectorStoreOp>(op))
+        handleAffineOp(ctx, cop);
     });
+    isl_ctx_free(ctx);
   }
 };
