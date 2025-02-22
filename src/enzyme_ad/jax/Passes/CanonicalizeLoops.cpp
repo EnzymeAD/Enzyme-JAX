@@ -15,8 +15,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
@@ -562,6 +564,126 @@ public:
   }
 };
 
+class SimplifyIfByRemovingEmptyThen final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() != 0)
+      return failure();
+
+    // Check if the then block is empty (contains only the terminator)
+    Block &thenBlock = ifOp.getThenRegion().front();
+    if (!llvm::hasSingleElement(thenBlock))
+      return failure();
+
+    // Check if there is an else region
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    // Get the condition and negate it
+    Value cond = ifOp.getCondition();
+    Value negatedCond = rewriter.create<arith::XOrIOp>(
+        ifOp.getLoc(), cond,
+        rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1,
+                                              rewriter.getI1Type()));
+
+    // Create new if operation with negated condition and no else region
+    auto newIf = rewriter.create<scf::IfOp>(ifOp.getLoc(),
+                                            ifOp.getResultTypes(), negatedCond,
+                                            /*withElseRegion=*/false);
+
+    // Move operations from old else block to new then block
+    Block &elseBlock = ifOp.getElseRegion().front();
+    Block &newThenBlock = newIf.getThenRegion().front();
+
+    // Move all operations except the terminator before the new block's
+    // terminator
+    auto &oldOps = elseBlock.getOperations();
+    auto &newOps = newThenBlock.getOperations();
+    auto terminator = newThenBlock.getTerminator();
+    newOps.splice(terminator->getIterator(), oldOps, oldOps.begin(),
+                  std::prev(oldOps.end()));
+
+    // Replace old if with new if
+    rewriter.replaceOp(ifOp, newIf.getResults());
+    return success();
+  }
+};
+
+class IfToSelect final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if if has both then and else regions
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    Location loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+
+    // Get the yield ops from both branches
+    Block *thenBlock = ifOp.thenBlock();
+    Block *elseBlock = ifOp.elseBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
+
+    // Check if all operations in both blocks are pure
+    if (llvm::any_of(thenBlock->getOperations(),
+                     [](Operation &op) { return !isPure(&op); }))
+      return failure();
+    if (llvm::any_of(elseBlock->getOperations(),
+                     [](Operation &op) { return !isPure(&op); }))
+      return failure();
+
+    // Clone all operations from both branches before their yields
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(ifOp);
+
+    // Clone then block operations
+    IRMapping thenMapping;
+    for (auto &op : ifOp.thenBlock()->without_terminator()) {
+      Operation *clonedOp = rewriter.clone(op, thenMapping);
+      for (auto [orig, clone] :
+           llvm::zip(op.getResults(), clonedOp->getResults())) {
+        thenMapping.map(orig, clone);
+      }
+    }
+
+    // Clone else block operations
+    IRMapping elseMapping;
+    for (auto &op : ifOp.elseBlock()->without_terminator()) {
+      Operation *clonedOp = rewriter.clone(op, elseMapping);
+      for (auto [orig, clone] :
+           llvm::zip(op.getResults(), clonedOp->getResults())) {
+        elseMapping.map(orig, clone);
+      }
+    }
+
+    // Create selects for each result
+    SmallVector<Value, 4> results;
+    for (auto [thenVal, elseVal] :
+         llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
+      // Map the yield operands through our value mappings
+      Value mappedThenVal = thenMapping.lookupOrDefault(thenVal);
+      Value mappedElseVal = elseMapping.lookupOrDefault(elseVal);
+
+      // Create select op with same attributes as original if op
+      auto select = rewriter.create<arith::SelectOp>(
+          loc, condition, mappedThenVal, mappedElseVal);
+      results.push_back(select);
+    }
+
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+};
+
 } // end namespace
 
 struct CanonicalizeLoopsPass
@@ -571,7 +693,8 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf>(&getContext());
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
+                   SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {
