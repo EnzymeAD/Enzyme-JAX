@@ -11,8 +11,10 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
@@ -675,6 +677,68 @@ bool canMoveOpOutsideWhile(Operation *op, WhileOp loop) {
   }
   return true;
 }
+
+class truncProp final : public OpRewritePattern<TruncIOp> {
+public:
+  using OpRewritePattern<TruncIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TruncIOp op,
+                                PatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<ModuleOp>();
+    auto ifOp = op.getIn().getDefiningOp<scf::IfOp>();
+    if (!ifOp)
+      return failure();
+
+    auto idx = op.getIn().cast<OpResult>().getResultNumber();
+    bool change = false;
+    for (auto v :
+         {ifOp.thenYield().getOperand(idx), ifOp.elseYield().getOperand(idx)}) {
+      change |= v.getDefiningOp<ConstantIntOp>() ||
+                v.getDefiningOp<mlir::LLVM::UndefOp>();
+      if (auto extOp = v.getDefiningOp<ExtUIOp>())
+        if (auto it = dyn_cast<IntegerType>(extOp.getIn().getType()))
+          change |= it.getWidth() == 1;
+      if (auto extOp = v.getDefiningOp<ExtSIOp>())
+        if (auto it = dyn_cast<IntegerType>(extOp.getIn().getType()))
+          change |= it.getWidth() == 1;
+    }
+    if (!change) {
+      return failure();
+    }
+
+    SmallVector<Type> resultTypes;
+    llvm::append_range(resultTypes, ifOp.getResultTypes());
+    resultTypes.push_back(op.getType());
+
+    rewriter.setInsertionPoint(ifOp);
+    auto nop = rewriter.create<scf::IfOp>(
+        ifOp.getLoc(), resultTypes, ifOp.getCondition(), /*hasElse*/ true);
+    rewriter.eraseBlock(nop.thenBlock());
+    rewriter.eraseBlock(nop.elseBlock());
+
+    rewriter.inlineRegionBefore(ifOp.getThenRegion(), nop.getThenRegion(),
+                                nop.getThenRegion().begin());
+    rewriter.inlineRegionBefore(ifOp.getElseRegion(), nop.getElseRegion(),
+                                nop.getElseRegion().begin());
+
+    SmallVector<Value> thenYields;
+    llvm::append_range(thenYields, nop.thenYield().getOperands());
+    rewriter.setInsertionPoint(nop.thenYield());
+    thenYields.push_back(
+        rewriter.create<TruncIOp>(op.getLoc(), op.getType(), thenYields[idx]));
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(nop.thenYield(), thenYields);
+
+    SmallVector<Value> elseYields;
+    llvm::append_range(elseYields, nop.elseYield().getOperands());
+    rewriter.setInsertionPoint(nop.elseYield());
+    elseYields.push_back(
+        rewriter.create<TruncIOp>(op.getLoc(), op.getType(), elseYields[idx]));
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(nop.elseYield(), elseYields);
+    rewriter.replaceOp(ifOp, nop.getResults().take_front(ifOp.getNumResults()));
+    rewriter.replaceOp(op, nop.getResults().take_back(1));
+    return success();
+  }
+};
 
 struct WhileToForHelper {
   WhileOp loop;
@@ -2560,8 +2624,8 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<PropagateInLoopBody, ForOpInductionReplacement, RemoveUnusedArgs,
-          MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+  rpl.add<truncProp, PropagateInLoopBody, ForOpInductionReplacement,
+          RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
 
           MoveWhileDown, MoveWhileDown2,
 
