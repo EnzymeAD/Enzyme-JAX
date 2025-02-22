@@ -419,6 +419,7 @@ cc_library(
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:AffineTransforms",
+        "@llvm-project//mlir:AffineUtils",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:CallOpInterfaces",
