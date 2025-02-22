@@ -1174,7 +1174,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       // Expect atleast one of the updatedIV fields to be IV
       else
         return failure();
-    }
+    } else
+      return failure();
 
     // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
     APInt lbConstInt, ubConstInt, stepConstInt;

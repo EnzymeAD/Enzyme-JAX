@@ -731,6 +731,10 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
       argTy = AT.getElementType();
     }
+    if (auto AT = dyn_cast<MemRefType>(argTy)) {
+      argTy =
+          LLVM::LLVMPointerType::get(AT.getContext(), AT.getMemorySpaceAsInt());
+    }
     auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
     arguments.push_back(ld);
   }
@@ -745,6 +749,11 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       int64_t c0[1] = {0};
       newval = builder.create<LLVM::InsertValueOp>(
           newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+    }
+
+    if (auto AT = dyn_cast<MemRefType>(oldarg.getType())) {
+      newval = builder.create<enzymexla::Pointer2MemrefOp>(
+          newarg.getLoc(), oldarg.getType(), newval);
     }
 
     map.map(oldarg, newval);

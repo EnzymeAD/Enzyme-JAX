@@ -546,7 +546,7 @@ public:
                                    cmpResult, /*withElseRegion=*/true);
 
     // Move the first case block into the then region
-    Block &firstBlock = switchOp.getCaseBlock(cases.front());
+    Block &firstBlock = switchOp.getCaseBlock(0);
     rewriter.mergeBlocks(&firstBlock, ifOp.thenBlock(),
                          firstBlock.getArguments());
 
