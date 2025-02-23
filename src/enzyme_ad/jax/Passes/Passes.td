@@ -468,6 +468,7 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "math::MathDialect",
+    "ub::UBDialect",
   ];
 }
 
