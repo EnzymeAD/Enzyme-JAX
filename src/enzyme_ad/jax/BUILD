@@ -490,6 +490,7 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@xla//xla/mlir_hlo",
+        "//src/external/isl:Isl",
     ],
 )
 
