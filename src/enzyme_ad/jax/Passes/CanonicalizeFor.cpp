@@ -2636,7 +2636,10 @@ void CanonicalizeFor::runOnOperation() {
 
           ForBreakAddUpgrade, RemoveUnusedResults,
 
-          MoveWhileAndDown, MoveWhileDown3, MoveWhileInvariantIfResult,
+          MoveWhileAndDown, 
+          // MoveWhileDown3 Infinite loops on current kernel code, disabling [and should fix]
+          // MoveWhileDown3, 
+          MoveWhileInvariantIfResult,
           WhileLogicalNegation, SubToAdd, WhileCmpOffset, RemoveUnusedCondVar,
           ReturnSq, MoveSideEffectFreeWhile>(getOperation()->getContext());
   //	 WhileLICM,
