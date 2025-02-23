@@ -800,7 +800,7 @@ struct CanonicalizeLoopsPass
         if (pred == arith::CmpIPredicate::ugt) {
           const APInt umax = cstRange.umax();
           const APInt umin = cstRange.umin();
-          if (umax.ugt(cstRhs)) {
+          if (umin.ugt(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -809,7 +809,7 @@ struct CanonicalizeLoopsPass
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
           // range > cst -> !(range <= cst)
-          if (umin.ule(cstRhs)) {
+          if (umax.ule(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -821,7 +821,7 @@ struct CanonicalizeLoopsPass
         if (pred == arith::CmpIPredicate::uge) {
           const APInt umax = cstRange.umax();
           const APInt umin = cstRange.umin();
-          if (umax.uge(cstRhs)) {
+          if (umin.uge(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -830,7 +830,7 @@ struct CanonicalizeLoopsPass
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
           // range >= cst -> !(range < cst)
-          if (umin.ult(cstRhs)) {
+          if (umax.ult(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -885,7 +885,7 @@ struct CanonicalizeLoopsPass
         if (pred == arith::CmpIPredicate::sgt) {
           const APInt smax = cstRange.smax();
           const APInt smin = cstRange.smin();
-          if (smax.sgt(cstRhs)) {
+          if (smin.sgt(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -894,7 +894,7 @@ struct CanonicalizeLoopsPass
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
           // range > cst -> !(range <= cst)
-          if (smin.sle(cstRhs)) {
+          if (smax.sle(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -906,7 +906,7 @@ struct CanonicalizeLoopsPass
         if (pred == arith::CmpIPredicate::sge) {
           const APInt smax = cstRange.smax();
           const APInt smin = cstRange.smin();
-          if (smax.sge(cstRhs)) {
+          if (smin.sge(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -915,7 +915,7 @@ struct CanonicalizeLoopsPass
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
           // range >= cst -> !(range < cst)
-          if (smin.slt(cstRhs)) {
+          if (smax.slt(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
