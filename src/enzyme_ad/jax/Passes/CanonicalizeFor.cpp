@@ -14,6 +14,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
@@ -41,33 +42,6 @@ struct CanonicalizeFor
   void runOnOperation() override;
 };
 } // namespace
-
-struct PropagateInLoopBody : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(scf::ForOp forOp,
-                                PatternRewriter &rewriter) const final {
-    if (!forOp.getInits().size())
-      return failure();
-
-    Block &block = forOp.getRegion().front();
-    auto yieldOp = cast<scf::YieldOp>(block.getTerminator());
-    bool matched = false;
-    for (auto it : llvm::zip(forOp.getInits(), forOp.getRegionIterArgs(),
-                             yieldOp.getOperands())) {
-      Value iterOperand = std::get<0>(it);
-      Value regionArg = std::get<1>(it);
-      Value yieldOperand = std::get<2>(it);
-
-      Operation *op = iterOperand.getDefiningOp();
-      if (op && (op->getNumResults() == 1) && (iterOperand == yieldOperand)) {
-        regionArg.replaceAllUsesWith(op->getResult(0));
-        matched = true;
-      }
-    }
-    return success(matched);
-  }
-};
 
 // %f = scf.for %c = true, %a = ...
 //    %r = if %c {
@@ -306,17 +280,18 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
     Block &block = forOp.getRegion().front();
     auto yieldOp = cast<scf::YieldOp>(block.getTerminator());
 
-    for (auto it : llvm::zip(forOp.getInits(),          // iter from outside
-                             forOp.getRegionIterArgs(), // iter inside region
-                             forOp.getResults(),        // op results
-                             yieldOp.getOperands()      // iter yield
-                             )) {
+    for (auto [outiter, iterarg, res, yld] :
+         llvm::zip(forOp.getInits(),          // iter from outside
+                   forOp.getRegionIterArgs(), // iter inside region
+                   forOp.getResults(),        // op results
+                   yieldOp.getOperands()      // iter yield
+                   )) {
 
-      AddIOp addOp = std::get<3>(it).getDefiningOp<AddIOp>();
+      AddIOp addOp = yld.getDefiningOp<AddIOp>();
       if (!addOp)
         continue;
 
-      if (addOp.getOperand(0) != std::get<1>(it))
+      if (addOp.getOperand(0) != iterarg)
         continue;
 
       if (!addOp.getOperand(1).getParentRegion()->isAncestor(
@@ -335,8 +310,8 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
           sameValue |= rattr.zext(maxWidth) == sattr.zext(maxWidth);
         }
 
-      if (!std::get<1>(it).use_empty()) {
-        Value init = std::get<0>(it);
+      if (!iterarg.use_empty()) {
+        Value init = outiter;
         rewriter.setInsertionPointToStart(&forOp.getRegion().front());
         Value replacement = rewriter.create<SubIOp>(
             forOp.getLoc(), forOp.getInductionVar(), forOp.getLowerBound());
@@ -357,7 +332,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (!init.getType().isa<IndexType>()) {
+        if (init.getType() != replacement.getType()) {
           init = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                               replacement.getType(), init);
         }
@@ -365,18 +340,18 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (!std::get<1>(it).getType().isa<IndexType>()) {
+        if (iterarg.getType() != replacement.getType()) {
           replacement = rewriter.create<IndexCastOp>(
-              forOp.getLoc(), std::get<1>(it).getType(), replacement);
+              forOp.getLoc(), iterarg.getType(), replacement);
         }
 
         rewriter.modifyOpInPlace(
-            forOp, [&] { std::get<1>(it).replaceAllUsesWith(replacement); });
+            forOp, [&] { iterarg.replaceAllUsesWith(replacement); });
         canonicalize = true;
       }
 
-      if (!std::get<2>(it).use_empty()) {
-        Value init = std::get<0>(it);
+      if (!res.use_empty()) {
+        Value init = outiter;
         rewriter.setInsertionPoint(forOp);
         Value replacement = rewriter.create<SubIOp>(
             forOp.getLoc(), forOp.getUpperBound(), forOp.getLowerBound());
@@ -397,7 +372,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (!init.getType().isa<IndexType>()) {
+        if (init.getType() != replacement.getType()) {
           init = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                               replacement.getType(), init);
         }
@@ -405,18 +380,58 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (!std::get<1>(it).getType().isa<IndexType>()) {
+        if (iterarg.getType() != replacement.getType()) {
           replacement = rewriter.create<IndexCastOp>(
-              forOp.getLoc(), std::get<1>(it).getType(), replacement);
+              forOp.getLoc(), iterarg.getType(), replacement);
         }
 
-        rewriter.modifyOpInPlace(
-            forOp, [&] { std::get<2>(it).replaceAllUsesWith(replacement); });
+        rewriter.modifyOpInPlace(forOp,
+                                 [&] { res.replaceAllUsesWith(replacement); });
         canonicalize = true;
       }
     }
 
     return success(canonicalize);
+  }
+};
+
+struct RemoveUnusedForResults : public OpRewritePattern<ForOp> {
+  using OpRewritePattern<ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ForOp op,
+                                PatternRewriter &rewriter) const override {
+
+    bool changed = false;
+    for (auto [iter, iterarg, yld, res] : llvm::zip(
+             op.getInitArgs(), op.getRegionIterArgs(),
+             op.getBody()->getTerminator()->getOperands(), op.getResults())) {
+      bool replacable = iter == yld;
+      Value replacement = yld;
+      if (iter.getDefiningOp<ub::PoisonOp>()) {
+        if (auto yldop = yld.getDefiningOp()) {
+          if (!op->isAncestor(yldop))
+            replacable = true;
+        } else if (auto blk = dyn_cast<BlockArgument>(yld)) {
+          if (!op->isAncestor(blk.getOwner()->getParentOp()))
+            replacable = true;
+        }
+      }
+      if (yld == iterarg) {
+        replacable = true;
+        replacement = iter;
+        if (!iterarg.use_empty()) {
+          rewriter.modifyOpInPlace(
+              op, [&] { iterarg.replaceAllUsesWith(replacement); });
+          changed = true;
+        }
+      }
+      if (!res.use_empty() && replacable) {
+        rewriter.modifyOpInPlace(op,
+                                 [&] { res.replaceAllUsesWith(replacement); });
+        changed = true;
+      }
+    }
+    return success(changed);
   }
 };
 
@@ -1221,6 +1236,10 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       int numOfConditionArgs = conditionOp.getArgs().size();
       for (auto operand : whileOp.getOperands())
         newInitOperands.push_back(operand);
+      for (auto resTy : whileOp.getResultTypes()) {
+        newInitOperands.push_back(
+            rewriter.create<ub::PoisonOp>(whileOp.getLoc(), resTy));
+      }
 
       scf::ForOp newLoop = rewriter.create<scf::ForOp>(
           whileOp.getLoc(), helper.lb, helper.ub, helper.step, newInitOperands);
@@ -1231,8 +1250,10 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
       // Copy from before region to for body
       IRMapping mappingBeforeBlock;
-      for (auto [arg, init] : llvm::zip(beforeBlock.getArguments(),
-                                        newBlock.getArguments().drop_front())) {
+      for (auto [arg, init] :
+           llvm::zip(beforeBlock.getArguments(),
+                     newBlock.getArguments().drop_front().drop_back(
+                         whileOp.getResultTypes().size()))) {
         mappingBeforeBlock.map(arg, init);
       }
       for (Operation &op : beforeBlock.without_terminator()) {
@@ -1242,7 +1263,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       // Extract conditionOp args to be used for after region
       SmallVector<Value> remappedConditionOpArgs;
       for (auto arg : conditionOp.getArgs()) {
-        remappedConditionOpArgs.push_back(mappingBeforeBlock.lookup(arg));
+        remappedConditionOpArgs.push_back(
+            mappingBeforeBlock.lookupOrDefault(arg));
       }
 
       // Copy from after region to for body
@@ -1252,15 +1274,20 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
            llvm::zip(afterBlock.getArguments(), remappedConditionOpArgs)) {
         mappingAfterBlock.map(arg, init);
       }
-      for (Operation &op : afterBlock) {
+      for (Operation &op : afterBlock.without_terminator()) {
         rewriter.clone(op, mappingAfterBlock);
       }
 
-      // Replace uses of while op
-      for (auto [oldResult, newResult] :
-           llvm::zip(whileOp.getResults(), newLoop.getResults())) {
-        oldResult.replaceAllUsesWith(newResult);
+      SmallVector<Value> toYield;
+      for (auto val : afterBlock.getTerminator()->getOperands()) {
+        toYield.push_back(mappingAfterBlock.lookupOrDefault(val));
       }
+      toYield.append(remappedConditionOpArgs);
+      rewriter.create<scf::YieldOp>(afterBlock.getTerminator()->getLoc(),
+                                    toYield);
+
+      rewriter.replaceOp(whileOp, newLoop.getResults().drop_front(
+                                      whileOp.getOperands().size()));
 
       // Else case: The do while loop only executes once to before region.
     } else {
@@ -1275,19 +1302,14 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       }
 
       // Extract conditionOp args to be used as results
-      SmallVector<Value> remappedConditionOpArgs;
+      SmallVector<Value> newResults;
       for (auto arg : conditionOp.getArgs()) {
-        remappedConditionOpArgs.push_back(mapping.lookup(arg));
+        newResults.push_back(mapping.lookupOrDefault(arg));
       }
 
-      // Replace uses of while op
-      for (auto [oldResult, newResult] :
-           llvm::zip(whileOp.getResults(), remappedConditionOpArgs)) {
-        oldResult.replaceAllUsesWith(newResult);
-      }
+      rewriter.replaceOp(whileOp, newResults);
     }
 
-    rewriter.eraseOp(whileOp);
     return success();
   }
 };
@@ -2629,7 +2651,7 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<truncProp, PropagateInLoopBody, ForOpInductionReplacement,
+  rpl.add<truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
           RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
 
           MoveWhileDown, MoveWhileDown2,
