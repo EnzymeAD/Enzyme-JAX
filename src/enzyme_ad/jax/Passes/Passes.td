@@ -185,6 +185,14 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
     "arith::ArithDialect",
     "math::MathDialect",
   ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"remove_freeze",
+        /*CLI argument=*/"remove_freeze",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to remove llvm freeze operations">,
+  ];
 }
 
 def ConvertPolygeistToLLVM

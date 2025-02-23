@@ -391,6 +391,16 @@ struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
   }
 };
 
+struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
+  using OpRewritePattern<LLVM::FreezeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::FreezeOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, op.getOperand());
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -529,6 +539,8 @@ struct LibDeviceFuncsRaisingPass
     RewritePatternSet patterns(getOperation()->getContext());
     populateLLVMToMathPatterns(getOperation()->getContext(), patterns);
     populateLibDeviceFuncsToOpsPatterns(getOperation()->getContext(), patterns);
+    if (remove_freeze)
+      patterns.add<RemoveFreeze>(getOperation()->getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();

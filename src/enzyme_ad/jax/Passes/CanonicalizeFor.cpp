@@ -706,6 +706,10 @@ public:
       return failure();
     }
 
+    // Avoid creating redundant results
+    if (!op.getOperand().hasOneUse())
+      return failure();
+
     SmallVector<Type> resultTypes;
     llvm::append_range(resultTypes, ifOp.getResultTypes());
     resultTypes.push_back(op.getType());
@@ -2670,9 +2674,12 @@ void CanonicalizeFor::runOnOperation() {
 
           ForBreakAddUpgrade, RemoveUnusedResults,
 
-          MoveWhileAndDown, MoveWhileDown3, MoveWhileInvariantIfResult,
-          WhileLogicalNegation, SubToAdd, WhileCmpOffset, RemoveUnusedCondVar,
-          ReturnSq, MoveSideEffectFreeWhile>(getOperation()->getContext());
+          MoveWhileAndDown,
+          // MoveWhileDown3 Infinite loops on current kernel code, disabling
+          // [and should fix] MoveWhileDown3,
+          MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
+          WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
+          MoveSideEffectFreeWhile>(getOperation()->getContext());
   //	 WhileLICM,
   GreedyRewriteConfig config;
   config.maxIterations = 247;

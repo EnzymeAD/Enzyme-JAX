@@ -15,8 +15,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
@@ -194,8 +196,8 @@ public:
   ///   affine.parallel (%i) = (0) to (10) {
   ///     // getBoundsFromAffineParallel(op, 0) returns {0, 9}
   ///   }
-  std::pair<APInt, APInt>
-  getBoundsFromAffineParallel(affine::AffineParallelOp loop, size_t idx) {
+  ConstantIntRanges getBoundsFromAffineParallel(affine::AffineParallelOp loop,
+                                                size_t idx) {
     SmallVector<AffineExpr> lbounds(
         loop.getLowerBoundsMap().getResults().begin(),
         loop.getLowerBoundsMap().getResults().end());
@@ -225,11 +227,12 @@ public:
 
     if (lb && ub) {
       // Create APInt values with 64 bit.
-      return {APInt(/*numBits=*/64, lb.getValue(), /*isSigned=*/true),
-              APInt(/*numBits=*/64, ub.getValue() - 1, /*isSigned=*/true)};
+      return ConstantIntRanges::fromSigned(
+          APInt(/*numBits=*/64, lb.getValue(), /*isSigned=*/true),
+          APInt(/*numBits=*/64, ub.getValue() - 1, /*isSigned=*/true));
     }
     // Return sentinel values if bounds cannot be determined
-    return {APInt::getSignedMinValue(64), APInt::getSignedMaxValue(64)};
+    return ConstantIntRanges::maxRange(64);
   }
 };
 
@@ -279,9 +282,9 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
   // not expose all the necessary interfaces/methods.
   if (auto loop = dyn_cast<affine::AffineParallelOp>(op)) {
     for (Value iv : loop.getIVs()) {
-      auto [min, max] = getBoundsFromAffineParallel(loop, 0);
+      ConstantIntRanges ivRange = getBoundsFromAffineParallel(
+          loop, cast<BlockArgument>(iv).getArgNumber());
       IntegerValueRangeLattice *ivEntry = getLatticeElement(iv);
-      auto ivRange = ConstantIntRanges::fromSigned(min, max);
       propagateIfChanged(ivEntry, ivEntry->join(IntegerValueRange{ivRange}));
     }
     return;
@@ -561,6 +564,126 @@ public:
   }
 };
 
+class SimplifyIfByRemovingEmptyThen final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() != 0)
+      return failure();
+
+    // Check if the then block is empty (contains only the terminator)
+    Block &thenBlock = ifOp.getThenRegion().front();
+    if (!llvm::hasSingleElement(thenBlock))
+      return failure();
+
+    // Check if there is an else region
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    // Get the condition and negate it
+    Value cond = ifOp.getCondition();
+    Value negatedCond = rewriter.create<arith::XOrIOp>(
+        ifOp.getLoc(), cond,
+        rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1,
+                                              rewriter.getI1Type()));
+
+    // Create new if operation with negated condition and no else region
+    auto newIf = rewriter.create<scf::IfOp>(ifOp.getLoc(),
+                                            ifOp.getResultTypes(), negatedCond,
+                                            /*withElseRegion=*/false);
+
+    // Move operations from old else block to new then block
+    Block &elseBlock = ifOp.getElseRegion().front();
+    Block &newThenBlock = newIf.getThenRegion().front();
+
+    // Move all operations except the terminator before the new block's
+    // terminator
+    auto &oldOps = elseBlock.getOperations();
+    auto &newOps = newThenBlock.getOperations();
+    auto terminator = newThenBlock.getTerminator();
+    newOps.splice(terminator->getIterator(), oldOps, oldOps.begin(),
+                  std::prev(oldOps.end()));
+
+    // Replace old if with new if
+    rewriter.replaceOp(ifOp, newIf.getResults());
+    return success();
+  }
+};
+
+class IfToSelect final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if if has both then and else regions
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    Location loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+
+    // Get the yield ops from both branches
+    Block *thenBlock = ifOp.thenBlock();
+    Block *elseBlock = ifOp.elseBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
+
+    // Check if all operations in both blocks are pure
+    if (llvm::any_of(thenBlock->getOperations(),
+                     [](Operation &op) { return !isPure(&op); }))
+      return failure();
+    if (llvm::any_of(elseBlock->getOperations(),
+                     [](Operation &op) { return !isPure(&op); }))
+      return failure();
+
+    // Clone all operations from both branches before their yields
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(ifOp);
+
+    // Clone then block operations
+    IRMapping thenMapping;
+    for (auto &op : ifOp.thenBlock()->without_terminator()) {
+      Operation *clonedOp = rewriter.clone(op, thenMapping);
+      for (auto [orig, clone] :
+           llvm::zip(op.getResults(), clonedOp->getResults())) {
+        thenMapping.map(orig, clone);
+      }
+    }
+
+    // Clone else block operations
+    IRMapping elseMapping;
+    for (auto &op : ifOp.elseBlock()->without_terminator()) {
+      Operation *clonedOp = rewriter.clone(op, elseMapping);
+      for (auto [orig, clone] :
+           llvm::zip(op.getResults(), clonedOp->getResults())) {
+        elseMapping.map(orig, clone);
+      }
+    }
+
+    // Create selects for each result
+    SmallVector<Value, 4> results;
+    for (auto [thenVal, elseVal] :
+         llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
+      // Map the yield operands through our value mappings
+      Value mappedThenVal = thenMapping.lookupOrDefault(thenVal);
+      Value mappedElseVal = elseMapping.lookupOrDefault(elseVal);
+
+      // Create select op with same attributes as original if op
+      auto select = rewriter.create<arith::SelectOp>(
+          loc, condition, mappedThenVal, mappedElseVal);
+      results.push_back(select);
+    }
+
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+};
+
 } // end namespace
 
 struct CanonicalizeLoopsPass
@@ -570,7 +693,8 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf>(&getContext());
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
+                   SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {
@@ -614,18 +738,27 @@ struct CanonicalizeLoopsPass
               range.getValue().getConstantValue();
           if (!constantRangeValue.has_value())
             return;
-          if (constantRangeValue->eq(cstRhs)) {
-            b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
-                IntegerAttr::get(b.getI1Type(), false));
-            cmpiOp.getResult().replaceAllUsesWith(cst);
-          }
+          b.setInsertionPoint(cmpiOp);
+          auto cst = b.create<arith::ConstantOp>(
+              cmpiOp.getLoc(), b.getI1Type(),
+              IntegerAttr::get(b.getI1Type(), !constantRangeValue->eq(cstRhs)));
+          cmpiOp.getResult().replaceAllUsesWith(cst);
+        }
+        if (pred == arith::CmpIPredicate::eq) {
+          std::optional<APInt> constantRangeValue =
+              range.getValue().getConstantValue();
+          if (!constantRangeValue.has_value())
+            return;
+          b.setInsertionPoint(cmpiOp);
+          auto cst = b.create<arith::ConstantOp>(
+              cmpiOp.getLoc(), b.getI1Type(),
+              IntegerAttr::get(b.getI1Type(), constantRangeValue->eq(cstRhs)));
+          cmpiOp.getResult().replaceAllUsesWith(cst);
         }
         if (pred == arith::CmpIPredicate::ult) {
           const APInt umax = cstRange.umax();
           const APInt umin = cstRange.umin();
-          if (umax.ult(cstRhs) && umin.ult(cstRhs)) {
+          if (umax.ult(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(
@@ -633,7 +766,156 @@ struct CanonicalizeLoopsPass
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
-          if (!umax.ult(cstRhs) && !umin.ult(cstRhs)) {
+          // range < cst -> !(range >= cst)
+          if (umin.uge(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::ule) {
+          const APInt umax = cstRange.umax();
+          const APInt umin = cstRange.umin();
+          if (umax.ule(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range <= cst -> !(range > cst)
+          if (umin.ugt(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::ugt) {
+          const APInt umax = cstRange.umax();
+          const APInt umin = cstRange.umin();
+          if (umin.ugt(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range > cst -> !(range <= cst)
+          if (umax.ule(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::uge) {
+          const APInt umax = cstRange.umax();
+          const APInt umin = cstRange.umin();
+          if (umin.uge(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range >= cst -> !(range < cst)
+          if (umax.ult(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+
+        if (pred == arith::CmpIPredicate::slt) {
+          const APInt smax = cstRange.smax();
+          const APInt smin = cstRange.smin();
+          if (smax.slt(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range < cst -> !(range >= cst)
+          if (smin.sge(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::sle) {
+          const APInt smax = cstRange.smax();
+          const APInt smin = cstRange.smin();
+          if (smax.sle(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range <= cst -> !(range > cst)
+          if (smin.sgt(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::sgt) {
+          const APInt smax = cstRange.smax();
+          const APInt smin = cstRange.smin();
+          if (smin.sgt(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range > cst -> !(range <= cst)
+          if (smax.sle(cstRhs)) {
+            // Condition always false.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), false));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+        }
+        if (pred == arith::CmpIPredicate::sge) {
+          const APInt smax = cstRange.smax();
+          const APInt smin = cstRange.smin();
+          if (smin.sge(cstRhs)) {
+            // Condition always true.
+            b.setInsertionPoint(cmpiOp);
+            auto cst = b.create<arith::ConstantOp>(
+                cmpiOp.getLoc(), b.getI1Type(),
+                IntegerAttr::get(b.getI1Type(), true));
+            cmpiOp.getResult().replaceAllUsesWith(cst);
+          }
+          // range >= cst -> !(range < cst)
+          if (smax.slt(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
             auto cst = b.create<arith::ConstantOp>(

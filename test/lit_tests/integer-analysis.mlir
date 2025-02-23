@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(func.func(canonicalize-loops), canonicalize)" --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(func.func(canonicalize-loops), canonicalize)" --split-input-file %s -allow-unregistered-dialect | FileCheck %s
 
 // CHECK-LABEL: foo
 // CHECK-SAME: %[[ARG0:.+]]: memref<256xi64>
@@ -171,3 +171,19 @@ func.func private @foo(%arg0: memref<1x134x374xf64, 1>) {
 // CHECK-NEXT: affine.store %[[V13]], %[[ARG0]][0, %[[ARG1]], 373] : memref<1x134x374xf64, 1>
 // CHECK-NEXT: }
 // CHECK-NEXT: return
+
+
+  func.func @argmatch() {
+    %c25 = arith.constant 25 : index
+    affine.parallel (%arg0, %arg1) = (0, 0) to (24, 256) {
+      %0 = arith.cmpi ult, %arg0, %c25 : index
+      %1 = arith.cmpi ult, %arg1, %c25 : index
+      "test.operation"(%0, %1) : (i1, i1) -> ()
+    }
+    return
+  }
+
+// CHECK-LABEL: @argmatch
+// CHECK: affine.parallel (%[[ARG0:.+]], %[[ARG1:.+]]) = (0, 0) to (24, 256)
+// CHECK: %[[CMP:.+]] = arith.cmpi ult, %[[ARG1]], %c25
+// CHECK: "test.operation"(%true, %[[CMP]])
