@@ -2526,6 +2526,39 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
   }
 };
 
+struct SelectExtractToExtractSelect
+    : public OpRewritePattern<LLVM::ExtractElementOp> {
+  using OpRewritePattern<LLVM::ExtractElementOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ExtractElementOp op,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp = op.getVector().getDefiningOp<SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    // Get select operands and extract position
+    auto cond = selectOp.getCondition();
+    auto a = selectOp.getTrueValue();
+    auto b = selectOp.getFalseValue();
+    auto idx = op.getPosition();
+
+    // Create new extract operations
+    auto aExtract =
+        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), a, idx);
+    auto bExtract =
+        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), b, idx);
+
+    // Create new select with same condition and operands
+    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
+                                               cond, aExtract, bExtract);
+
+    // Replace old extract with new select
+    rewriter.replaceOp(op, newSelect);
+
+    return success();
+  }
+};
+
 // If and and with something is preventing creating a for
 // move the and into the after body guarded by an if
 struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
@@ -2653,6 +2686,7 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   rpl.add<truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
           RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+          SelectExtractToExtractSelect,
 
           MoveWhileDown, MoveWhileDown2,
 
