@@ -9,11 +9,11 @@ on:
       - '**/BUILD'
       - '**/WORKSPACE'
       - '**/*.bzl'
-      - 'builddeps/'
-      - 'patches/'
-      - 'src/'
-      - 'test/'
-      - 'third_party/'
+      - 'builddeps/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'test/**'
+      - 'third_party/**'
   pull_request:
     branches:
     - main
@@ -22,11 +22,11 @@ on:
       - '**/BUILD'
       - '**/WORKSPACE'
       - '**/*.bzl'
-      - 'builddeps/'
-      - 'patches/'
-      - 'src/'
-      - 'test/'
-      - 'third_party/'
+      - 'builddeps/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'test/**'
+      - 'third_party/**'
 
 concurrency:
   # Skip intermediate builds: always.
