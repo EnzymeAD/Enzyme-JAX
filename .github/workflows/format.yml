@@ -2,7 +2,25 @@ name: Clang-Format
 
 on:
   push:
+    paths:
+      - '.github/workflows/format.yml'
+      - '.clang-format'
+      - 'src/**/*.c'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - 'src/**/*.td'
+      - '!src/external'
   pull_request:
+    paths:
+      - '.github/workflows/format.yml'
+      - '.clang-format'
+      - 'src/**/*.c'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - 'src/**/*.td'
+      - '!src/external'
   merge_group:
 
 jobs:
