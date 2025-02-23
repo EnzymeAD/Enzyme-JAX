@@ -1,6 +1,14 @@
 name: Python-Black
 
-on: [push, pull_request]
+on:
+  push:
+    paths:
+      - '.github/workflows/python_format.yml'
+      - '**/*.py'
+  pull_request:
+    paths:
+      - '.github/workflows/python_format.yml'
+      - '**/*.py'
 
 jobs:
   lint:
