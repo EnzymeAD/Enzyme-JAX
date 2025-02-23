@@ -706,6 +706,10 @@ public:
       return failure();
     }
 
+    // Avoid creating redundant results
+    if (!op.getOperand().hasOneUse())
+      return failure();
+
     SmallVector<Type> resultTypes;
     llvm::append_range(resultTypes, ifOp.getResultTypes());
     resultTypes.push_back(op.getType());
