@@ -81,10 +81,39 @@ enum CostModels {
     Measured,
 }
 
-pub enum OptimizationMethod {
-    SimulatedAnnealing,
+#[derive(Clone, Copy)]
+pub struct SAHyperParams {
+    pub initial_temp: f64,
+    pub temp_func: SATempFunc<f64>,
+    pub stall_best: u64,
+    pub stall_accepted: u64,
+    pub reanneal_fixed: u64,
+    pub reanneal_accepted: u64,
+    pub reanneal_best: u64,
+    pub max_iters: u64,
 }
 
+impl Default for SAHyperParams {
+    fn default() -> Self {
+        Self {
+            initial_temp: 10.0,
+            temp_func: SATempFunc::Boltzmann,
+            stall_best: 1000,
+            stall_accepted: 1000,
+            reanneal_fixed: 1000,
+            reanneal_accepted: 400,
+            reanneal_best: 300,
+            max_iters: 1000,
+        }
+    }
+}
+
+pub enum OptimizationMethod {
+    SimulatedAnnealing,
+    SimulatedAnnealingGrid,
+}
+
+#[derive(Clone)]
 pub struct GlobalExtractor<'a> {
     pub egraph: &'a EGraph<Mdl, TensorAnalysis>,
     cost_model: &'a CostModel,
@@ -220,6 +249,9 @@ pub fn extract_by_optimization(extractor: GlobalExtractor, method: OptimizationM
                 .add_observer(SlogLogger::term(), observers::ObserverMode::Every(10));
 
             solver.run().unwrap().state.param.unwrap()
+        },
+        OptimizationMethod::SimulatedAnnealingGrid => {
+            extract_with_grid_search(extractor)
         }
     }
 }
@@ -482,4 +514,56 @@ pub fn compute_greedy_candidate(
         candidate.insert(id, min_idx);
     }
     candidate
+}
+
+pub fn extract_with_grid_search(extractor: GlobalExtractor) -> Candidate {
+    let param_grid = vec![
+        SAHyperParams {
+            initial_temp: 5.0,
+            stall_best: 500,
+            reanneal_accepted: 200,
+            ..Default::default()
+        },
+        SAHyperParams {
+            initial_temp: 20.0,
+            stall_best: 2000,
+            reanneal_fixed: 500,
+            ..Default::default()
+        },
+        SAHyperParams {
+            temp_func: SATempFunc::Exponential(0.95),
+            max_iters: 2000,
+            ..Default::default()
+        },
+    ];
+
+    let mut best_cost = f64::INFINITY;
+    let mut best_candidate = Candidate::new();
+
+    for params in param_grid {
+        let start = Instant::now();
+        let sa = SimulatedAnnealing::new(params.initial_temp)
+            .unwrap()
+            .with_temp_func(params.temp_func)
+            .with_stall_best(params.stall_best)
+            .with_stall_accepted(params.stall_accepted)
+            .with_reannealing_fixed(params.reanneal_fixed)
+            .with_reannealing_accepted(params.reanneal_accepted)
+            .with_reannealing_best(params.reanneal_best);
+
+        let solver = Executor::new(extractor.clone(), sa)
+            .configure(|state| state.max_iters(params.max_iters))
+            .add_observer(SlogLogger::term(), observers::ObserverMode::Every(100));
+
+        if let Ok(result) = solver.run() {
+            let cost = result.state.best_cost;
+            if cost < best_cost {
+                best_cost = cost;
+                best_candidate = result.state.param.unwrap();
+            }
+        }
+        println!("Grid search iteration took {:?}", start.elapsed());
+    }
+
+    best_candidate
 }
