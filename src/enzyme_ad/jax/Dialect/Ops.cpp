@@ -890,11 +890,14 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
 
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
+  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast>(context);
+  /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
                  MetaPointer2Memref<memref::StoreOp>,
                  MetaPointer2Memref<affine::AffineLoadOp>,
                  MetaPointer2Memref<affine::AffineStoreOp>>(context);
+                 */
 }
 
 OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
