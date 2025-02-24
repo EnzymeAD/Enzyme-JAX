@@ -1184,24 +1184,25 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       }
     for (auto &rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
-	APInt ival;
-	if (matchPattern(rhspack, m_ConstantInt(&ival))) {
-	  assert(ival.isNegative());
-	  assert(ival.isSingleWord());
-	  // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
-	  //
-	  // if lhs >= 0, (as checked from above)
-	  // then this is correct with signed vs unsigned so long as the rhs != just the sign bit.
-	  if (ival.isMinSignedValue()) {
-            LLVM_DEBUG(llvm::dbgs() << "illegal const greater rhs icmp: " << cmpi << " - "
-                                  << rhspack << "\n");
+        APInt ival;
+        if (matchPattern(rhspack, m_ConstantInt(&ival))) {
+          assert(ival.isNegative());
+          assert(ival.isSingleWord());
+          // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
+          //
+          // if lhs >= 0, (as checked from above)
+          // then this is correct with signed vs unsigned so long as the rhs !=
+          // just the sign bit.
+          if (ival.isMinSignedValue()) {
+            LLVM_DEBUG(llvm::dbgs() << "illegal const greater rhs icmp: "
+                                    << cmpi << " - " << rhspack << "\n");
             return false;
-	  }
-	} else {
-          LLVM_DEBUG(llvm::dbgs() << "illegal greater rhs icmp: " << cmpi << " - "
-                                  << rhspack << "\n");
+          }
+        } else {
+          LLVM_DEBUG(llvm::dbgs() << "illegal greater rhs icmp: " << cmpi
+                                  << " - " << rhspack << "\n");
           return false;
-	}
+        }
       }
 
   case CmpIPredicate::sge:
