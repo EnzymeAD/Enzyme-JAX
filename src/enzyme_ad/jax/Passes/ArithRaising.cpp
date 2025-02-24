@@ -155,6 +155,71 @@ struct ArithRaisingPass
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
+    op->walk([=](arith::SelectOp selectOp) {
+      if (llvm::any_of(selectOp->getOperandTypes(),
+                       [](Type ty) { return !ty.isa<RankedTensorType>(); }))
+        return;
+
+      OpBuilder builder(selectOp);
+      auto newOp = builder.create<stablehlo::SelectOp>(
+          selectOp.getLoc(), selectOp.getType(), selectOp.getCondition(),
+          selectOp.getTrueValue(), selectOp.getFalseValue());
+      selectOp.replaceAllUsesWith(newOp.getResult());
+      selectOp.erase();
+    });
+    op->walk([=](arith::CmpIOp cmpOp) {
+      if (!isa<TensorType>(cmpOp.getType()))
+        return;
+
+      OpBuilder builder(cmpOp);
+
+      Value newCmpOp;
+      if (use_stablehlo) {
+        stablehlo::ComparisonType compType =
+            stablehlo::ComparisonType::UNSIGNED;
+        auto predicate = cmpOp.getPredicate();
+        if (predicate == arith::CmpIPredicate::sgt ||
+            predicate == arith::CmpIPredicate::sge ||
+            predicate == arith::CmpIPredicate::slt ||
+            predicate == arith::CmpIPredicate::sle)
+          compType = stablehlo::ComparisonType::SIGNED;
+
+        stablehlo::ComparisonDirection direction;
+        switch (predicate) {
+        case arith::CmpIPredicate::eq:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpIPredicate::sgt:
+        case arith::CmpIPredicate::ugt:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpIPredicate::sge:
+        case arith::CmpIPredicate::uge:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpIPredicate::slt:
+        case arith::CmpIPredicate::ult:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpIPredicate::sle:
+        case arith::CmpIPredicate::ule:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        case arith::CmpIPredicate::ne:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        default:
+          return;
+        }
+        newCmpOp = builder.create<stablehlo::CompareOp>(
+            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
+            direction, compType);
+      } else {
+        return;
+      }
+      cmpOp.replaceAllUsesWith(newCmpOp);
+      cmpOp.erase();
+    });
     op->walk([=](arith::CmpFOp cmpOp) {
       if (!isa<TensorType>(cmpOp.getType()))
         return;
