@@ -1157,11 +1157,13 @@ convertLLVMToAffineAccess(Operation *op,
                      .getResult();
       }
       auto expr = mao.map.getResult(0).floorDiv(tySize);
+      SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                        load->getAttrs().end());
       auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
           load, memref,
           AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
           ic(mao.operands));
-      for (auto attr : load->getAttrs()) {
+      for (auto attr : attrs) {
         newLoad->setAttr(attr.getName(), attr.getValue());
       }
 
@@ -1189,11 +1191,13 @@ convertLLVMToAffineAccess(Operation *op,
                      .getResult();
       }
       auto expr = mao.map.getResult(0).floorDiv(tySize);
+      SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                        store->getAttrs().end());
       auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
           store, store.getValue(), memref,
           AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
           ic(mao.operands));
-      for (auto attr : store->getAttrs()) {
+      for (auto attr : attrs) {
         newStore->setAttr(attr.getName(), attr.getValue());
       }
     } else {
