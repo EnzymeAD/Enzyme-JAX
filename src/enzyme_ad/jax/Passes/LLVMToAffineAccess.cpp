@@ -1035,18 +1035,6 @@ static enzymexla::AffineScopeOp insertAffineScope(Block *block,
 
 static constexpr bool useVectorLoadStore = true;
 
-static Operation *createVectorStore(OpBuilder &b, Location loc, Type ty,
-                                    TypedValue<VectorType> v, MemRefVal m,
-                                    AffineMap map, ValueRange mapOperands) {
-  if (useVectorLoadStore) {
-    auto vs =
-        b.create<affine::AffineVectorStoreOp>(loc, v, m, map, mapOperands);
-    vs->setAttr("polymer.access.type", TypeAttr::get(ty));
-    return vs;
-  }
-  llvm_unreachable("");
-}
-
 static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
                               VectorType vty, MemRefVal m, AffineMap map,
                               ValueRange mapOperands) {
@@ -1074,107 +1062,6 @@ convertLLVMToAffineAccess(Operation *op,
 
   MemrefConverter mc;
   IndexConverter ic;
-
-  // TODO Pretty slow but annoying to implement as we wrap the operation in
-  // the callback
-  while (true) {
-    auto res = op->walk<WalkOrder::PreOrder>([&](scf::ForOp forOp) {
-      AffineForBuilder forBuilder(forOp, legalizeSymbols);
-      if (failed(forBuilder.build()))
-        return WalkResult::advance();
-      LLVM_DEBUG(llvm::dbgs() << "Converting\n" << forOp << "\n");
-      if (legalizeSymbols) {
-        SmallPtrSet<Block *, 8> blocksToScope;
-        for (auto illegalSym : forBuilder.getIllegalSymbols())
-          blocksToScope.insert(illegalSym.getParentBlock());
-        for (Block *b : blocksToScope) {
-          SmallPtrSet<Value, 6> symbols;
-          forBuilder.collectSymbolsForScope(b->getParent(), symbols);
-          SmallVector<Value, 6> symbolsVec(symbols.begin(), symbols.end());
-          auto scope = insertAffineScope(b, symbolsVec);
-          forBuilder.rescope(scope);
-        }
-      }
-      IRRewriter rewriter(forOp);
-      auto lb = forBuilder.getLbMap();
-      auto ub = forBuilder.getUbMap();
-      auto affineForOp = rewriter.create<affine::AffineForOp>(
-          forOp.getLoc(), ic(lb.operands), lb.map, ic(ub.operands), ub.map,
-          forBuilder.getStep(), forOp.getInitArgs());
-      if (!affineForOp.getRegion().empty())
-        affineForOp.getRegion().front().erase();
-      Block *block = forOp.getBody();
-      SmallVector<Type> blockArgTypes = {rewriter.getIndexType()};
-      auto iterArgTypes = forOp.getInitArgs().getTypes();
-      blockArgTypes.insert(blockArgTypes.end(), iterArgTypes.begin(),
-                           iterArgTypes.end());
-      SmallVector<Location> blockArgLocs =
-          getLocs(forOp.getBody()->getArguments());
-      auto newBlock = rewriter.createBlock(&affineForOp.getRegion(), {},
-                                           blockArgTypes, blockArgLocs);
-      SmallVector<Value> newBlockArgs(newBlock->getArguments());
-      auto origIVType = forOp.getInductionVar().getType();
-      if (origIVType != rewriter.getIndexType()) {
-        rewriter.setInsertionPointToStart(newBlock);
-        newBlockArgs[0] = rewriter.create<arith::IndexCastOp>(
-            newBlockArgs[0].getLoc(), origIVType, newBlockArgs[0]);
-      }
-      rewriter.inlineBlockBefore(block, newBlock, newBlock->end(),
-                                 newBlockArgs);
-      rewriter.replaceOp(forOp, affineForOp);
-      auto yield = cast<scf::YieldOp>(newBlock->getTerminator());
-      rewriter.setInsertionPoint(yield);
-      rewriter.replaceOpWithNewOp<affine::AffineYieldOp>(yield,
-                                                         yield.getOperands());
-      return WalkResult::interrupt();
-    });
-    if (!res.wasInterrupted())
-      break;
-  }
-
-  while (true) {
-    auto res = op->walk<WalkOrder::PreOrder>([&](scf::IfOp ifOp) {
-      AffineIfBuilder ifBuilder(ifOp, legalizeSymbols);
-      if (failed(ifBuilder.build()))
-        return WalkResult::advance();
-      LLVM_DEBUG(llvm::dbgs() << "Converting\n" << ifOp << "\n");
-      if (legalizeSymbols) {
-        SmallPtrSet<Block *, 8> blocksToScope;
-        for (auto illegalSym : ifBuilder.getIllegalSymbols())
-          blocksToScope.insert(illegalSym.getParentBlock());
-        for (Block *b : blocksToScope) {
-          SmallPtrSet<Value, 6> symbols;
-          ifBuilder.collectSymbolsForScope(b->getParent(), symbols);
-          SmallVector<Value, 6> symbolsVec(symbols.begin(), symbols.end());
-          auto scope = insertAffineScope(b, symbolsVec);
-          ifBuilder.rescope(scope);
-        }
-      }
-      IRRewriter rewriter(ifOp);
-      auto sao = ifBuilder.getSet();
-      auto affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), ifOp.getResultTypes(), sao.set, ic(sao.operands),
-          ifOp.elseBlock());
-      for (auto [newRegion, oldRegion] :
-           llvm::zip(affineIfOp.getRegions(), ifOp.getRegions())) {
-        if (!newRegion->empty())
-          newRegion->front().erase();
-        if (oldRegion->empty())
-          continue;
-        Block *block = &oldRegion->front();
-        auto newBlock = rewriter.createBlock(newRegion);
-        rewriter.inlineBlockBefore(block, newBlock, newBlock->end(), {});
-        auto yield = cast<scf::YieldOp>(newBlock->getTerminator());
-        rewriter.setInsertionPoint(yield);
-        rewriter.replaceOpWithNewOp<affine::AffineYieldOp>(yield,
-                                                           yield.getOperands());
-      }
-      rewriter.replaceOp(ifOp, affineIfOp);
-      return WalkResult::interrupt();
-    });
-    if (!res.wasInterrupted())
-      break;
-  }
 
   SmallVector<std::unique_ptr<AffineAccessBuilder>> accessBuilders;
   auto handleOp = [&](Operation *op, PtrVal addr) {
@@ -1247,69 +1134,77 @@ convertLLVMToAffineAccess(Operation *op,
     auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
     if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
       IRRewriter rewriter(load);
-      auto vty = VectorType::get({(int64_t)dl.getTypeSize(load.getType())},
-                                 rewriter.getI8Type());
-      auto vecLoad =
-          createVectorLoad(rewriter, load.getLoc(), load.getType(), vty,
-                           mc(aab.getBase()), mao.map, ic(mao.operands));
-      // Copy attributes from the old load to the new one
-      for (auto attr : load->getAttrs()) {
-        vecLoad.getDefiningOp()->setAttr(attr.getName(), attr.getValue());
+
+      Type ty = load.getType();
+      auto tySize = dl.getTypeSize(ty);
+      auto memref0 = mc(aab.base);
+      Value memref = memref0;
+      auto memrefTy = memref0.getType();
+      if (memrefTy.getElementType() != ty) {
+        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+          memref = p2m.getOperand();
+        else
+          memref = rewriter.create<enzymexla::Memref2PointerOp>(
+              load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+              memref);
+        memref = rewriter
+                     .create<enzymexla::Pointer2MemrefOp>(
+                         load.getLoc(),
+                         MemRefType::get(memrefTy.getShape(), ty,
+                                         MemRefLayoutAttrInterface{},
+                                         memrefTy.getMemorySpace()),
+                         memref)
+                     .getResult();
       }
-      Operation *newLoad;
-      if (isa<LLVM::LLVMPointerType>(load.getType())) {
-        Type intTy = rewriter.getIntegerType(
-            (int64_t)dl.getTypeSize(load.getType()) * 8);
-        auto cast =
-            rewriter.create<LLVM::BitcastOp>(load.getLoc(), intTy, vecLoad);
-        newLoad = rewriter.create<LLVM::IntToPtrOp>(load.getLoc(),
-                                                    load.getType(), cast);
-      } else {
-        newLoad = rewriter.create<LLVM::BitcastOp>(load.getLoc(),
-                                                   load.getType(), vecLoad);
+      auto expr = mao.map.getResult(0).floorDiv(tySize);
+      SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                        load->getAttrs().end());
+      auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+          load, memref,
+          AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
+          ic(mao.operands));
+      for (auto attr : attrs) {
+        newLoad->setAttr(attr.getName(), attr.getValue());
       }
-      mapping.map(load, newLoad);
+
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
-      auto vty =
-          VectorType::get({(int64_t)dl.getTypeSize(ty)}, rewriter.getI8Type());
-      Value v;
-      if (isa<LLVM::LLVMPointerType>(ty)) {
-        Type intTy = rewriter.getIntegerType((int64_t)dl.getTypeSize(ty) * 8);
-        v = rewriter.create<LLVM::PtrToIntOp>(store.getLoc(), intTy,
-                                              store.getValue());
-        v = rewriter.create<LLVM::BitcastOp>(store.getLoc(), vty, v);
-      } else {
-        v = rewriter.create<LLVM::BitcastOp>(store.getLoc(), vty,
-                                             store.getValue());
+      auto tySize = dl.getTypeSize(ty);
+      auto memref0 = mc(aab.base);
+      Value memref = memref0;
+      auto memrefTy = memref0.getType();
+      if (memrefTy.getElementType() != ty) {
+        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+          memref = p2m.getOperand();
+        else
+          memref = rewriter.create<enzymexla::Memref2PointerOp>(
+              store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+              memref);
+        memref = rewriter
+                     .create<enzymexla::Pointer2MemrefOp>(
+                         store.getLoc(),
+                         MemRefType::get(memrefTy.getShape(), ty,
+                                         MemRefLayoutAttrInterface{},
+                                         memrefTy.getMemorySpace()),
+                         memref)
+                     .getResult();
       }
-      Operation *newStore = createVectorStore(
-          rewriter, store.getLoc(), ty, cast<TypedValue<VectorType>>(v),
-          mc(aab.base), mao.map, ic(mao.operands));
-      // Copy attributes from the old store to the new one
-      for (auto attr : store->getAttrs()) {
+      auto expr = mao.map.getResult(0).floorDiv(tySize);
+      SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                        store->getAttrs().end());
+      auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+          store, store.getValue(), memref,
+          AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
+          ic(mao.operands));
+      for (auto attr : attrs) {
         newStore->setAttr(attr.getName(), attr.getValue());
       }
-      mapping.map(store.getOperation(), newStore);
     } else {
-      llvm_unreachable("");
+      llvm_unreachable("Unknown operation to raise");
     }
   }
 
-  IRRewriter rewriter(context);
-  for (auto &&[oldOp, newOp] : mapping.getOperationMap()) {
-    rewriter.replaceOp(oldOp, newOp);
-  }
-
-  {
-    RewritePatternSet patterns(context);
-    patterns.insert<ConvertToTypedMemref>(context, dataLayoutAnalysis);
-    GreedyRewriteConfig config;
-    config.fold = false;
-    if (applyPatternsGreedily(op, std::move(patterns), config).failed())
-      return failure();
-  }
   {
     RewritePatternSet patterns(context);
     patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context,
