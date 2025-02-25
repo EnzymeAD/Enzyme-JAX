@@ -125,7 +125,7 @@ struct ArithRaisingPass
       addOp.erase();
     });
     op->walk([=](arith::ConstantOp constOp) {
-      if (!constOp.getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !constOp.getType().isa<RankedTensorType>())
         return;
       auto CT = constOp.getType();
       if (isa<TensorType>(CT)) {
@@ -137,7 +137,7 @@ struct ArithRaisingPass
       }
     });
     op->walk([=](arith::SIToFPOp addOp) {
-      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
+      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
@@ -170,7 +170,8 @@ struct ArithRaisingPass
       broadcastOp.erase();
     });
     op->walk([=](arith::SelectOp selectOp) {
-      if (llvm::any_of(selectOp->getOperandTypes(),
+      if (!use_stablehlo ||
+          llvm::any_of(selectOp->getOperandTypes(),
                        [](Type ty) { return !ty.isa<RankedTensorType>(); }))
         return;
 
