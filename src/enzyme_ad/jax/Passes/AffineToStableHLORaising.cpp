@@ -42,6 +42,8 @@ struct InductionVariableRange {
   int64_t lb;
   int64_t ub;
   int64_t step;
+
+  int64_t getNumIters() { return (ub - lb) / step; }
 };
 
 // Assumes a single IV per Expr. (i) -> (i * 3 + 2)
@@ -434,6 +436,37 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // ternary ops
+  if (isa<arith::SelectOp>(op)) {
+    assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
+
+    Value a = mapping.lookup(op->getOperand(0)),
+          b = mapping.lookup(op->getOperand(1)),
+          c = mapping.lookup(op->getOperand(2));
+
+    auto mapA = maps[a], mapB = maps[b], mapC = maps[c];
+    if (mapA != mapB || mapA != mapC)
+      return failure();
+
+    auto IT = b.getType().cast<RankedTensorType>();
+    Type result =
+        RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
+
+    auto newOp =
+        Operation::create(op->getLoc(), op->getName(), {result}, {a, b, c},
+                          op->getAttrs(), OpaqueProperties(nullptr), {}, 0);
+
+    builder.insert(newOp);
+
+    for (auto [oldRes, newRes] :
+         llvm::zip_equal(op->getResults(), newOp->getResults())) {
+      mapping.map(oldRes, newRes);
+      maps[newRes] = mapA;
+    }
+
+    return success();
+  }
+
   return failure();
 }
 
@@ -515,23 +548,63 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
         anyFailed = true;
       }
 
+      for (auto iv : loopRoot.getIVs()) {
+        auto range = getIVRange(iv);
+        if (!range.has_value())
+          anyFailed = true;
+
+        auto ET = builder.getI64Type();
+        auto Ty = RankedTensorType::get({range->getNumIters()}, ET);
+        Value iota =
+            builder.create<stablehlo::IotaOp>(iv.getLoc(), Ty, 0).getResult();
+        iota = builder.create<stablehlo::AddOp>(
+            iv.getLoc(), Ty, iota,
+            builder.create<stablehlo::ConstantOp>(
+                iv.getLoc(), Ty,
+                SplatElementsAttr::get(
+                    Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range->lb)))));
+        iota = builder.create<stablehlo::MulOp>(
+            iv.getLoc(), Ty, iota,
+            builder.create<stablehlo::ConstantOp>(
+                iv.getLoc(), Ty,
+                SplatElementsAttr::get(Ty, ArrayRef<Attribute>(IntegerAttr::get(
+                                               ET, range->step)))));
+        mapping.map(iv, iota);
+
+        // contiguous with respect to itself: (d0) -> (d0)
+        affine::AffineValueMap accessMap(
+            AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
+        maps[iota] = accessMap;
+      }
+
       if (!anyFailed) {
         auto loopBody = loopRoot.getBody();
         for (auto &it : loopBody->without_terminator()) {
           Operation *op = &it;
           anyFailed |=
               tryRaisingOpToStableHLO(op, mapping, builder, maps).failed();
+
+          if (anyFailed)
+            break;
         }
       }
     } else if (auto constOp = dyn_cast<arith::ConstantOp>(bodyOp)) {
       affine::AffineValueMap accessMap(AffineMap::get(bodyOp->getContext()),
                                        {});
 
-      auto unrankedTensorType = RankedTensorType::get({}, constOp.getType());
+      auto isIndex = constOp.getType().isa<IndexType>();
+      auto ET = isIndex ? builder.getI64Type() : constOp.getType();
+      auto unrankedTensorType = RankedTensorType::get({}, ET);
       auto newConst = builder.create<stablehlo::ConstantOp>(
           bodyOp->getLoc(), unrankedTensorType,
-          SplatElementsAttr::get(unrankedTensorType,
-                                 ArrayRef<Attribute>(constOp.getValueAttr())));
+          SplatElementsAttr::get(
+              unrankedTensorType,
+              ArrayRef<Attribute>(
+                  isIndex
+                      ? IntegerAttr::get(
+                            ET,
+                            constOp.getValue().cast<IntegerAttr>().getValue())
+                      : constOp.getValueAttr())));
       auto newVal = newConst.getResult();
       mapping.map(constOp.getResult(), newVal);
       maps[newVal] = accessMap;

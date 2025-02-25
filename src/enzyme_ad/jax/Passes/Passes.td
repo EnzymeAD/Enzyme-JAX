@@ -447,6 +447,7 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   let summary = "";
   let dependentDialects = [
+    "LLVM::LLVMDialect",
     "memref::MemRefDialect",
     "affine::AffineDialect",
     "vector::VectorDialect",
@@ -468,6 +469,7 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "math::MathDialect",
+    "ub::UBDialect",
   ];
 }
 
