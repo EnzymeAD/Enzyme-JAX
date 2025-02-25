@@ -1,5 +1,5 @@
 package(
-    default_visibility = ["//:__public__"],
+    default_visibility = ["//visibility:public"],
     features = ["layering_check"],
 )
 
