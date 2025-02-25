@@ -456,6 +456,12 @@ def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   ];
 }
 
+def SimplifyAffineExprsPass : Pass<"simplify-affine-exprs"> {
+  let summary = "";
+  let dependentDialects = [
+  ];
+}
+
 def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
   let summary = "";
   let dependentDialects = [
