@@ -136,6 +136,20 @@ struct ArithRaisingPass
         constOp.erase();
       }
     });
+    op->walk([=](arith::SIToFPOp addOp) {
+      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
+        return;
+      OpBuilder builder(addOp);
+      Value newAddOp;
+      newAddOp = builder.create<stablehlo::ConvertOp>(
+          addOp.getLoc(), addOp->getOperand(0),
+          addOp->getResult(0)
+              .getType()
+              .cast<RankedTensorType>()
+              .getElementType());
+      addOp.replaceAllUsesWith(newAddOp);
+      addOp.erase();
+    });
     op->walk([=](enzyme::BroadcastOp broadcastOp) {
       OpBuilder builder(broadcastOp);
       Value newBroadcastOp;
@@ -231,21 +245,27 @@ struct ArithRaisingPass
       if (use_stablehlo) {
         stablehlo::ComparisonDirection direction;
         switch (cmpOp.getPredicate()) {
+        case arith::CmpFPredicate::UEQ:
         case arith::CmpFPredicate::OEQ:
           direction = stablehlo::ComparisonDirection::EQ;
           break;
+        case arith::CmpFPredicate::UGT:
         case arith::CmpFPredicate::OGT:
           direction = stablehlo::ComparisonDirection::GT;
           break;
+        case arith::CmpFPredicate::UGE:
         case arith::CmpFPredicate::OGE:
           direction = stablehlo::ComparisonDirection::GE;
           break;
+        case arith::CmpFPredicate::ULT:
         case arith::CmpFPredicate::OLT:
           direction = stablehlo::ComparisonDirection::LT;
           break;
+        case arith::CmpFPredicate::ULE:
         case arith::CmpFPredicate::OLE:
           direction = stablehlo::ComparisonDirection::LE;
           break;
+        case arith::CmpFPredicate::UNE:
         case arith::CmpFPredicate::ONE:
           direction = stablehlo::ComparisonDirection::NE;
           break;
