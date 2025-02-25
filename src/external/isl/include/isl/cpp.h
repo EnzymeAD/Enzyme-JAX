@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <__exception/exception_ptr.h>
 
 #if __cplusplus >= 201703L
 #include <any>

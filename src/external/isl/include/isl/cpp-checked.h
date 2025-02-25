@@ -17,6 +17,8 @@
 #include <string>
 #include <type_traits>
 
+#include <isl/ctx.h>
+
 #if __cplusplus >= 201703L
 #include <any>
 #include <optional>

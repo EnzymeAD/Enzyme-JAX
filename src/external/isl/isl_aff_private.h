@@ -45,7 +45,7 @@ struct isl_pw_aff {
 #undef PW
 #define PW isl_pw_aff
 
-#include <isl_pw_templ.h>
+#include <isl_pw_templ.h.inc>
 
 #undef EL
 #define EL isl_pw_aff
@@ -71,7 +71,7 @@ struct isl_pw_multi_aff {
 #undef PW
 #define PW isl_pw_multi_aff
 
-#include <isl_pw_templ.h>
+#include <isl_pw_templ.h.inc>
 
 __isl_give isl_aff *isl_aff_alloc_vec(__isl_take isl_local_space *ls,
 	__isl_take isl_vec *v);
@@ -143,7 +143,7 @@ isl_stat isl_aff_check_match_domain_space(__isl_keep isl_aff *aff,
 #undef BASE
 #define BASE aff
 
-#include <isl_multi_templ.h>
+#include <isl_multi_templ.h.inc>
 
 __isl_give isl_multi_aff *isl_multi_aff_dup(__isl_keep isl_multi_aff *multi);
 
@@ -214,7 +214,7 @@ __isl_give isl_basic_set *isl_aff_pos_basic_set(__isl_take isl_aff *aff);
 #define DOMBASE set
 #define EXPLICIT_DOMAIN
 
-#include <isl_multi_templ.h>
+#include <isl_multi_templ.h.inc>
 
 #undef EXPLICIT_DOMAIN
 
@@ -232,7 +232,7 @@ __isl_give isl_map *isl_map_intersect_multi_pw_aff_explicit_domain(
 #define DOMBASE union_set
 #define EXPLICIT_DOMAIN
 
-#include <isl_multi_templ.h>
+#include <isl_multi_templ.h.inc>
 
 #undef EXPLICIT_DOMAIN
 

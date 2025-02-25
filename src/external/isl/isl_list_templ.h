@@ -3,6 +3,8 @@
 #define xLIST(EL) EL ## _list
 #define LIST(EL) xLIST(EL)
 
+#include <isl/ctx.h>
+
 struct LIST(EL) {
 	int ref;
 	isl_ctx *ctx;

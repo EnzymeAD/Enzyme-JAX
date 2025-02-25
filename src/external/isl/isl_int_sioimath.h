@@ -537,7 +537,7 @@ inline char *isl_sioimath_get_str(isl_sioimath_src val)
 	char *result;
 
 	if (isl_sioimath_is_small(val)) {
-		result = malloc(12);
+		result = (char*)malloc(12);
 		snprintf(result, 12, "%" PRIi32, isl_sioimath_get_small(val));
 		return result;
 	}

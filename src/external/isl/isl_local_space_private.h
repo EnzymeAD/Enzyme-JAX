@@ -3,7 +3,11 @@
 
 #include <isl/mat.h>
 #include <isl/set.h>
+//#include <isl/isl_reordering.h>
 #include <isl/local_space.h>
+#include <isl_int.h>
+
+struct isl_reordering;
 
 struct isl_local_space {
 	int ref;
