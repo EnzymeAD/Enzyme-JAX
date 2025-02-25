@@ -2559,6 +2559,35 @@ struct SelectExtractToExtractSelect
   }
 };
 
+struct SelectTruncToTruncSelect : public OpRewritePattern<TruncIOp> {
+  using OpRewritePattern<TruncIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TruncIOp op,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp = op.getIn().getDefiningOp<SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    // Get select operands and extract position
+    auto cond = selectOp.getCondition();
+    auto a = selectOp.getTrueValue();
+    auto b = selectOp.getFalseValue();
+
+    // Create new extract operations
+    auto aTrunc = rewriter.create<TruncIOp>(op.getLoc(), op.getType(), a);
+    auto bTrunc = rewriter.create<TruncIOp>(op.getLoc(), op.getType(), b);
+
+    // Create new select with same condition and operands
+    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
+                                               cond, aTrunc, bTrunc);
+
+    // Replace old extract with new select
+    rewriter.replaceOp(op, newSelect);
+
+    return success();
+  }
+};
+
 // If and and with something is preventing creating a for
 // move the and into the after body guarded by an if
 struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
@@ -2686,7 +2715,7 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   rpl.add<truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
           RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
-          SelectExtractToExtractSelect,
+          SelectExtractToExtractSelect, SelectTruncToTruncSelect,
 
           MoveWhileDown, MoveWhileDown2,
 
