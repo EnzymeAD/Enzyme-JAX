@@ -1,6 +1,6 @@
 load("@rules_python//python:py_test.bzl", "py_test")
-load("//third_party/bazel_skylib/rules:common_settings.bzl", "string_flag")
-load("//third_party/bazel_skylib/rules:expand_template.bzl", "expand_template")
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@llvm-project//llvm:lit_test.bzl", "lit_test", "package_path")
 
 expand_template(
