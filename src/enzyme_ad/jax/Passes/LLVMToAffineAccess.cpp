@@ -1131,6 +1131,12 @@ convertLLVMToAffineAccess(Operation *op,
 
     auto mao = aab.getMap();
 
+    auto isAligned = [&](auto op, llvm::TypeSize tySize) {
+      if (auto alignment = op.getAlignment())
+        return *alignment % tySize == 0;
+      return false;
+    };
+
     auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
     if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
       IRRewriter rewriter(load);
@@ -1156,15 +1162,18 @@ convertLLVMToAffineAccess(Operation *op,
                          memref)
                      .getResult();
       }
-      auto expr = mao.map.getResult(0).floorDiv(tySize);
-      SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
-                                        load->getAttrs().end());
-      auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
-          load, memref,
-          AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-          ic(mao.operands));
-      for (auto attr : attrs) {
-        newLoad->setAttr(attr.getName(), attr.getValue());
+      if (mao.map.getResult(0).isMultipleOf(tySize) ||
+          isAligned(load, tySize)) {
+        auto expr = mao.map.getResult(0).floorDiv(tySize);
+        SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                          load->getAttrs().end());
+        auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+            load, memref,
+            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
+            ic(mao.operands));
+        for (auto attr : attrs) {
+          newLoad->setAttr(attr.getName(), attr.getValue());
+        }
       }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
@@ -1190,15 +1199,18 @@ convertLLVMToAffineAccess(Operation *op,
                          memref)
                      .getResult();
       }
-      auto expr = mao.map.getResult(0).floorDiv(tySize);
-      SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
-                                        store->getAttrs().end());
-      auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
-          store, store.getValue(), memref,
-          AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-          ic(mao.operands));
-      for (auto attr : attrs) {
-        newStore->setAttr(attr.getName(), attr.getValue());
+      if (mao.map.getResult(0).isMultipleOf(tySize) ||
+          isAligned(store, tySize)) {
+        auto expr = mao.map.getResult(0).floorDiv(tySize);
+        SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                          store->getAttrs().end());
+        auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+            store, store.getValue(), memref,
+            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
+            ic(mao.operands));
+        for (auto attr : attrs) {
+          newStore->setAttr(attr.getName(), attr.getValue());
+        }
       }
     } else {
       llvm_unreachable("Unknown operation to raise");
