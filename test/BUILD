@@ -1,7 +1,6 @@
 load("@rules_python//python:py_test.bzl", "py_test")
-load("//third_party/bazel_skylib/rules:common_settings.bzl", "string_flag")
-load("//third_party/bazel_skylib/rules:expand_template.bzl", "expand_template")
 load("@llvm-project//llvm:lit_test.bzl", "lit_test", "package_path")
+load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 
 expand_template(
     name = "lit_site_cfg_py",
@@ -24,6 +23,8 @@ exports_files(
     visibility = [":__subpackages__"],
 )
 
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+
 string_flag(
     name = "test_tpu",
     build_setting_default = "False",
@@ -37,15 +38,15 @@ config_setting(
 )
 
 TEST_DEPS = [
-    "//:enzyme_ad",
-] + select({
-    "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
-":use_tpu": [
-        "@pypi_libtpu_nightly//:pkg",
-        "@pypi_requests//:pkg",
-    ],
-    "//conditions:default": [],
-})
+        "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_absl_py//:pkg",
+    ] + select({
+        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+        "//conditions:default": []
+    })
+
 
 [
     lit_test(
@@ -54,13 +55,13 @@ TEST_DEPS = [
         data = [
             ":lit.cfg.py",
             ":lit_site_cfg_py",
+            "//:enzyme_ad",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
-            "//third_party/py/enzyme_ad",
         ] + glob(["**/*.h"]),
-        deps = TEST_DEPS,
+        deps = TEST_DEPS
     )
     for src in glob(
         [
@@ -74,31 +75,31 @@ py_test(
     srcs = [
         "test.py",
     ],
-    imports = ["."],
-    tags = ["pypi_name=enzyme-ad"],
     deps = TEST_DEPS,
+    imports = ["site-packages"],
+    tags = ["pypi_name=enzyme-ad"]
 )
 
 py_test(
     name = "bench_vs_xla",
     srcs = [
         "bench_vs_xla.py",
-        "test_utils.py",
+        "test_utils.py"
     ],
     imports = ["."],
-    tags = ["exclusive"],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
     name = "testffi",
     srcs = [
-        "test_utils.py",
         "testffi.py",
+        "test_utils.py"
     ],
     imports = ["."],
-    tags = ["exclusive"],
     deps = TEST_DEPS,
+    tags = ["exclusive"]
 )
 
 py_test(
@@ -108,59 +109,60 @@ py_test(
         "test_utils.py",
     ],
     imports = ["."],
-    tags = ["exclusive"],
     deps = TEST_DEPS,
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
     name = "jaxmd",
-    timeout = "long",
     srcs = [
         "jaxmd.py",
         "test_utils.py",
     ],
     imports = ["."],
-    tags = ["exclusive"],
     deps = TEST_DEPS + select({
-        "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_jax_md//:pkg",
-            "@pypi_jraph//:pkg",
-        ],
-        "//conditions:default": [],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_md//:pkg", "@pypi_jraph//:pkg"],
+        "//conditions:default": []
     }),
+    timeout='long',
+    tags = ["exclusive"]
 )
 
 py_test(
     name = "neuralgcm_test",
-    timeout = "eternal",
     srcs = [
         "neuralgcm_test.py",
         "test_utils.py",
     ],
     imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + [
-        "@pypi_neuralgcm//:pkg",
-        "@pypi_gcsfs//:pkg",
-    ],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+        "//conditions:default": [],
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 py_test(
     name = "keras_test",
-    timeout = "eternal",
     srcs = [
         "keras_test.py",
         "test_utils.py",
     ],
     imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + [
-        "@pypi_benchmark//:pkg",
-        "@pypi_keras//:pkg",
-        "@pypi_keras_cv//:pkg",
-        "@pypi_keras_nlp//:pkg",
-        "@pypi_tf_keras//:pkg",
-    ],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
+    timeout='eternal',
+    tags = ["exclusive"]
 )
 
 # py_test(
