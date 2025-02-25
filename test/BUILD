@@ -37,15 +37,14 @@ config_setting(
 )
 
 TEST_DEPS = [
-    "//:enzyme_ad",
-] + select({
-    "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
-":use_tpu": [
-        "@pypi_libtpu_nightly//:pkg",
-        "@pypi_requests//:pkg",
-    ],
-    "//conditions:default": [],
-})
+        "//:enzyme_ad",
+        "@pypi_jax//:pkg",
+        "@pypi_absl_py//:pkg",
+    ] + select({
+        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+        "//conditions:default": []
+    })
 
 [
     lit_test(
@@ -54,11 +53,11 @@ TEST_DEPS = [
         data = [
             ":lit.cfg.py",
             ":lit_site_cfg_py",
+	    "//:enzyme_ad",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
-            "//third_party/py/enzyme_ad",
         ] + glob(["**/*.h"]),
         deps = TEST_DEPS,
     )
@@ -74,7 +73,7 @@ py_test(
     srcs = [
         "test.py",
     ],
-    imports = ["."],
+    imports = ["site-packages"],
     tags = ["pypi_name=enzyme-ad"],
     deps = TEST_DEPS,
 )
@@ -139,10 +138,10 @@ py_test(
     ],
     imports = ["."],
     tags = ["exclusive"],
-    deps = TEST_DEPS + [
-        "@pypi_neuralgcm//:pkg",
-        "@pypi_gcsfs//:pkg",
-    ],
+    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+        "//conditions:default": [],
+    }),
 )
 
 py_test(
@@ -154,13 +153,16 @@ py_test(
     ],
     imports = ["."],
     tags = ["exclusive"],
-    deps = TEST_DEPS + [
-        "@pypi_benchmark//:pkg",
-        "@pypi_keras//:pkg",
-        "@pypi_keras_cv//:pkg",
-        "@pypi_keras_nlp//:pkg",
-        "@pypi_tf_keras//:pkg",
-    ],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_keras//:pkg",
+            "@pypi_benchmark//:pkg",
+            "@pypi_keras_cv//:pkg",
+            "@pypi_keras_nlp//:pkg",
+            "@pypi_tf_keras//:pkg",
+        ],
+        "//conditions:default": []
+    }),
 )
 
 # py_test(
