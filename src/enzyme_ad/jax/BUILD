@@ -75,6 +75,11 @@ py_library(
         "primitives.py",
         "utils.py",
     ],
+    data = [
+        "//third_party/crosstool:clang-headers",
+        "//third_party/crosstool/google3_users:precompiled-cc-std-headers",
+        "//third_party/grte/v5_x86/release/usr/grte/v5:compile",
+    ],
     visibility = ["//visibility:public"],
 )
 
