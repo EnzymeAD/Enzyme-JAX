@@ -38,3 +38,31 @@ func.func @negative_test(%a: vector<2xf32>, %idx: i32) -> f32 {
 // Should NOT trigger the transformation
 // CHECK: llvm.extractelement {{.*}} : vector<2xf32>
 // CHECK-NOT: arith.select
+
+// ----
+
+func.func @test_select_trunc(%arg0: i1, %arg1: i32, %arg2: i32) -> i8 {
+  %select = arith.select %arg0, %arg1, %arg2 : i32
+  %trunc = arith.trunci %select : i32 to i8
+  return %trunc : i8
+}
+// CHECK-LABEL: func @test_select_trunc
+// CHECK: %[[TRUE:.*]] = arith.trunci %arg1 : i32 to i8
+// CHECK: %[[FALSE:.*]] = arith.trunci %arg2 : i32 to i8
+// CHECK: arith.select %arg0, %[[TRUE]], %[[FALSE]] : i8
+
+// ----
+
+func.func @test_extui_select_trunci(%arg0: i1, %arg1: i8, %arg2: i8) -> i8 {
+  
+  // Original operations
+  %ext1 = arith.extui %arg1 : i8 to i32
+  %ext2 = arith.extui %arg2 : i8 to i32
+  %select = arith.select %arg0, %ext1, %ext2 : i32
+  %result = arith.trunci %select : i32 to i8
+  return %result : i8
+}
+// CHECK-LABEL: func @test_extui_select_trunci
+// CHECK-NOT: arith.extui
+// CHECK-NOT: arith.trunci
+// CHECK: arith.select %arg0, %arg1, %arg2 : i8
