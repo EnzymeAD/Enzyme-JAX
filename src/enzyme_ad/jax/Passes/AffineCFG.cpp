@@ -346,6 +346,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
            (t.getDefiningOp<DivSIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0)) &&
              isValidSymbolInt(t.getDefiningOp()->getOperand(1)))) ||
+           (t.getDefiningOp<DivUIOp>() &&
+            (isValidIndex(t.getDefiningOp()->getOperand(0)) &&
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1)))) ||
            (t.getDefiningOp<RemUIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0)) &&
              isValidSymbolInt(t.getDefiningOp()->getOperand(1)))) ||
@@ -1178,9 +1181,25 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   case CmpIPredicate::uge:
     for (auto lhspack : lhs)
       if (!valueCmp(Cmp::GE, lhspack, 0)) {
-        LLVM_DEBUG(llvm::dbgs() << "illegal greater lhs icmp: " << cmpi << " - "
-                                << lhspack << "\n");
-        return false;
+        APInt ival;
+        if (matchPattern(lhspack, m_ConstantInt(&ival))) {
+          assert(ival.isNegative());
+          assert(ival.isSingleWord());
+          // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
+          //
+          // if lhs >= 0, (as checked from above)
+          // then this is correct with signed vs unsigned so long as the rhs !=
+          // just the sign bit.
+          if (ival.isMinSignedValue()) {
+            LLVM_DEBUG(llvm::dbgs() << "illegal const greater lhs icmp: "
+                                    << cmpi << " - " << lhspack << "\n");
+            return false;
+          }
+        } else {
+          LLVM_DEBUG(llvm::dbgs() << "illegal greater lhs icmp: " << cmpi
+                                  << " - " << lhspack << "\n");
+          return false;
+        }
       }
     for (auto &rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
@@ -1658,13 +1677,15 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   bool isAffine(scf::ForOp loop) const {
     // return true;
     // enforce step to be a ConstantIndexOp (maybe too restrictive).
-    return affine::isValidSymbol(loop.getStep());
+    APInt apint;
+    return affine::isValidSymbol(loop.getStep()) ||
+           matchPattern(loop.getStep(), m_ConstantInt(&apint));
   }
 
   int64_t getStep(mlir::Value value) const {
-    ConstantIndexOp cstOp = value.getDefiningOp<ConstantIndexOp>();
-    if (cstOp)
-      return cstOp.value();
+    APInt apint;
+    if (matchPattern(value, m_ConstantInt(&apint)))
+      return apint.getZExtValue();
     else
       return 1;
   }
@@ -1785,6 +1806,11 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       SmallVector<Value> vals;
       rewriter.setInsertionPointToStart(&affineLoop.getRegion().front());
       for (Value arg : affineLoop.getRegion().front().getArguments()) {
+        if (arg == affineLoop.getInductionVar() &&
+            arg.getType() != loop.getInductionVar().getType()) {
+          arg = rewriter.create<arith::IndexCastOp>(
+              loop.getLoc(), loop.getInductionVar().getType(), arg);
+        }
         if (rewrittenStep && arg == affineLoop.getInductionVar()) {
           arg = rewriter.create<AddIOp>(
               loop.getLoc(), loop.getLowerBound(),
