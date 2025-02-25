@@ -2711,26 +2711,56 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
   }
 };
 
+// Transforms a select of a boolean to arithmetic operations
+//
+//  arith.select %arg, %x, %y : i1
+//
+//  becomes
+//
+//  and(%arg, %x) or and(!%arg, %y)
+struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op.getType().isInteger(1))
+      return failure();
+
+    Value falseConstant =
+        rewriter.create<arith::ConstantIntOp>(op.getLoc(), true, 1);
+    Value notCondition = rewriter.create<arith::XOrIOp>(
+        op.getLoc(), op.getCondition(), falseConstant);
+
+    Value trueVal = rewriter.create<arith::AndIOp>(
+        op.getLoc(), op.getCondition(), op.getTrueValue());
+    Value falseVal = rewriter.create<arith::AndIOp>(op.getLoc(), notCondition,
+                                                    op.getFalseValue());
+    rewriter.replaceOpWithNewOp<arith::OrIOp>(op, trueVal, falseVal);
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
-          RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
-          SelectExtractToExtractSelect, SelectTruncToTruncSelect,
+  rpl.add<
+      truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
+      RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+      SelectExtractToExtractSelect, SelectTruncToTruncSelect, SelectI1Simplify,
 
-          MoveWhileDown, MoveWhileDown2,
+      MoveWhileDown, MoveWhileDown2,
 
-          ReplaceRedundantArgs,
+      ReplaceRedundantArgs,
 
-          WhileShiftToInduction,
+      WhileShiftToInduction,
 
-          ForBreakAddUpgrade, RemoveUnusedResults,
+      ForBreakAddUpgrade, RemoveUnusedResults,
 
-          MoveWhileAndDown,
-          // MoveWhileDown3 Infinite loops on current kernel code, disabling
-          // [and should fix] MoveWhileDown3,
-          MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
-          WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
-          MoveSideEffectFreeWhile>(getOperation()->getContext());
+      MoveWhileAndDown,
+      // MoveWhileDown3 Infinite loops on current kernel code, disabling
+      // [and should fix] MoveWhileDown3,
+      MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
+      WhileCmpOffset, RemoveUnusedCondVar, ReturnSq, MoveSideEffectFreeWhile>(
+      getOperation()->getContext());
   //	 WhileLICM,
   GreedyRewriteConfig config;
   config.maxIterations = 247;
