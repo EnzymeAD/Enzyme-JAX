@@ -2713,9 +2713,9 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<truncProp, SelectExtractToExtractSelect, SelectTruncToTruncSelect,
-          PropagateInLoopBody, ForOpInductionReplacement, RemoveUnusedArgs,
-          MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+  rpl.add<truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
+          RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
+          SelectExtractToExtractSelect, SelectTruncToTruncSelect,
 
           MoveWhileDown, MoveWhileDown2,
 
