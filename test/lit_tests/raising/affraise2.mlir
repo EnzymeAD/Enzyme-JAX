@@ -20,12 +20,9 @@ module {
 }
 
 // CHECK:   func.func @main(%[[arg0:.+]]: i1, %[[arg1:.+]]: i32, %[[arg2:.+]]: memref<?xf32>, %[[arg3:.+]]: memref<?xf32>) {
-// CHECK-NEXT:     %[[c4:.+]] = arith.constant 4 : index
 // CHECK-NEXT:     %[[V0:.+]] = arith.index_cast %[[arg1]] : i32 to index
-// CHECK-NEXT:     %[[V1:.+]] = arith.muli %[[V0]], %[[c4]] : index
 // CHECK-NEXT:     scf.if %[[arg0]] {
-// CHECK-NEXT:       %[[V2:.+]] = arith.divui %[[V1]], %[[c4]] : index
-// CHECK-NEXT:       affine.for %[[arg4:.+]] = 0 to %[[V2]] {
+// CHECK-NEXT:       affine.for %[[arg4:.+]] = 0 to %[[V0]] {
 // CHECK-NEXT:         %[[a:.+]] = affine.load %[[arg3]][%[[arg4]]] : memref<?xf32>
 // CHECK-NEXT:         affine.store %[[a]], %[[arg2]][%[[arg4]]] : memref<?xf32>
 // CHECK-NEXT:       }

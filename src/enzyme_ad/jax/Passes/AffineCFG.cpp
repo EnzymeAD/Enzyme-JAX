@@ -309,6 +309,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         decast = idx.getIn();
         continue;
       }
+      if (auto idx = decast.getDefiningOp<TruncIOp>()) {
+        decast = idx.getIn();
+        continue;
+      }
       if (auto idx = decast.getDefiningOp<ExtUIOp>()) {
         decast = idx.getIn();
         continue;
@@ -1011,6 +1015,9 @@ bool isValidIndex(Value val) {
     return isValidIndex(cast.getOperand());
 
   if (auto cast = val.getDefiningOp<IndexCastUIOp>())
+    return isValidIndex(cast.getOperand());
+
+  if (auto cast = val.getDefiningOp<TruncIOp>())
     return isValidIndex(cast.getOperand());
 
   if (auto cast = val.getDefiningOp<ExtSIOp>())
