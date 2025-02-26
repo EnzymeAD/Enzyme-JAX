@@ -125,7 +125,7 @@ struct ArithRaisingPass
       addOp.erase();
     });
     op->walk([=](arith::ConstantOp constOp) {
-      if (!use_stablehlo || !constOp.getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !constOp.getType().isa<RankedTensorType>())
         return;
       auto CT = constOp.getType();
       if (isa<TensorType>(CT)) {
