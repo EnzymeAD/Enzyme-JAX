@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -35,6 +36,17 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+
+Type makeIndexToI64(Type ty) {
+  if (ty.isa<IndexType>())
+    return IntegerType::get(ty.getContext(), 64);
+
+  if (auto tenTy = dyn_cast<RankedTensorType>(ty))
+    return RankedTensorType::get(tenTy.getShape(),
+                                 makeIndexToI64(tenTy.getElementType()));
+
+  return ty;
+}
 
 // This represents the values taken from an induction variable with the
 // following syntax: [lb:ub:step]. ub is non-inclusive.
@@ -358,29 +370,46 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
-    auto unrankedTensorType =
-        RankedTensorType::get({}, constOp.getResult().getType());
+    affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
+    auto isIndex = constOp.getType().isa<IndexType>();
+    auto ET = isIndex ? builder.getI64Type() : constOp.getType();
+    auto unrankedTensorType = RankedTensorType::get({}, ET);
     auto newConst = builder.create<stablehlo::ConstantOp>(
         op->getLoc(), unrankedTensorType,
-        SplatElementsAttr::get(unrankedTensorType,
-                               ArrayRef<Attribute>(constOp.getValueAttr())));
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(
+                isIndex
+                    ? IntegerAttr::get(
+                          ET, constOp.getValue().cast<IntegerAttr>().getValue())
+                    : constOp.getValueAttr())));
+    auto newVal = newConst.getResult();
+    mapping.map(constOp.getResult(), newVal);
+    maps[newVal] = accessMap;
 
-    mapping.map(constOp.getResult(), newConst.getResult());
+    return success();
+  }
+
+  // Identity
+  if (isa<arith::IndexCastUIOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    mapping.map(result, mapping.lookup(operand));
     return success();
   }
 
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-          arith::ExtUIOp, math::SqrtOp, math::RsqrtOp, math::LogOp, math::ExpOp,
-          math::AbsFOp, math::AbsIOp>(op)) {
+          arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
+          math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
     auto newOperand = mapping.lookup(operand);
 
     auto IT = newOperand.getType().cast<RankedTensorType>();
-    auto T = RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
+    auto T = RankedTensorType::get(IT.getShape(),
+                                   makeIndexToI64(op->getResult(0).getType()));
 
     auto newOp =
         Operation::create(op->getLoc(), op->getName(), {T}, {newOperand},
@@ -398,7 +427,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::CmpIOp,
           arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp, arith::ShLIOp,
           arith::MinimumFOp, arith::MaximumFOp, arith::MinUIOp, arith::MinSIOp,
-          arith::MaxUIOp, arith::MaxSIOp>(op)) {
+          arith::MaxUIOp, arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -418,8 +447,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     assert(a.getType() == b.getType());
 
     auto IT = a.getType().cast<RankedTensorType>();
-    Type result =
-        RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
+    Type result = RankedTensorType::get(
+        IT.getShape(), makeIndexToI64(op->getResult(0).getType()));
 
     auto newOp =
         Operation::create(op->getLoc(), op->getName(), {result}, {a, b},
@@ -445,12 +474,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           c = mapping.lookup(op->getOperand(2));
 
     auto mapA = maps[a], mapB = maps[b], mapC = maps[c];
-    if (mapA != mapB || mapA != mapC)
-      return failure();
+
+    if (mapA.getAffineMap().getNumResults() == 0)
+      a = alignMemoryAccess(a, mapA, mapB, builder);
+
+    if (mapB.getAffineMap().getNumResults() == 0)
+      b = alignMemoryAccess(b, mapB, mapA, builder);
+
+    if (mapC.getAffineMap().getNumResults() == 0)
+      c = alignMemoryAccess(c, mapC, mapA, builder);
+
+    /*if (mapA != mapB || mapA != mapC)*/
+    /*  return failure();*/
 
     auto IT = b.getType().cast<RankedTensorType>();
-    Type result =
-        RankedTensorType::get(IT.getShape(), op->getResult(0).getType());
+    Type result = RankedTensorType::get(
+        IT.getShape(), makeIndexToI64(op->getResult(0).getType()));
 
     auto newOp =
         Operation::create(op->getLoc(), op->getName(), {result}, {a, b, c},
@@ -589,26 +628,10 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
         }
       }
     } else if (auto constOp = dyn_cast<arith::ConstantOp>(bodyOp)) {
-      affine::AffineValueMap accessMap(AffineMap::get(bodyOp->getContext()),
-                                       {});
-
-      auto isIndex = constOp.getType().isa<IndexType>();
-      auto ET = isIndex ? builder.getI64Type() : constOp.getType();
-      auto unrankedTensorType = RankedTensorType::get({}, ET);
-      auto newConst = builder.create<stablehlo::ConstantOp>(
-          bodyOp->getLoc(), unrankedTensorType,
-          SplatElementsAttr::get(
-              unrankedTensorType,
-              ArrayRef<Attribute>(
-                  isIndex
-                      ? IntegerAttr::get(
-                            ET,
-                            constOp.getValue().cast<IntegerAttr>().getValue())
-                      : constOp.getValueAttr())));
-      auto newVal = newConst.getResult();
-      mapping.map(constOp.getResult(), newVal);
-      maps[newVal] = accessMap;
-
+      anyFailed =
+          tryRaisingOpToStableHLO(bodyOp, mapping, builder, maps).failed();
+      if (anyFailed)
+        break;
     } else {
       anyFailed = true;
       break;
