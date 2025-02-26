@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/IntegerSet.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include <isl/aff.h>
@@ -164,6 +165,113 @@ struct AffineExprToIslAffConverter {
   }
 };
 
+AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate = true);
+
+AffineExpr commonAddWithMul(AffineExpr LHS, AffineExpr RHS,
+                            bool allownegate = true) {
+  auto lhsD = llvm::DynamicAPInt(LHS.getLargestKnownDivisor());
+  auto rhsD = llvm::DynamicAPInt(RHS.getLargestKnownDivisor());
+  auto gcd = llvm::int64fromDynamicAPInt(llvm::gcd(abs(lhsD), abs(rhsD)));
+  SmallVector<int64_t, 2> vals;
+
+  if (gcd != 1)
+    vals.push_back(gcd);
+  bool negate = false;
+  for (auto v : {LHS, RHS})
+    if (auto bin = dyn_cast<AffineBinaryOpExpr>(v)) {
+      if (auto cst1 = dyn_cast<AffineConstantExpr>(bin.getLHS()))
+        if (cst1.getValue() < 0)
+          negate = true;
+      if (auto cst2 = dyn_cast<AffineConstantExpr>(bin.getRHS()))
+        if (cst2.getValue() < 0)
+          negate = true;
+    }
+  if (negate && allownegate)
+    vals.push_back(-gcd);
+
+  for (auto val : vals) {
+    auto LHSg = val == -1 ? (LHS * val) : LHS.floorDiv(val);
+    auto RHSg = val == -1 ? (RHS * val) : RHS.floorDiv(val);
+    auto add = internalAdd(LHSg, RHSg, val != -1);
+    auto add2 = dyn_cast<AffineBinaryOpExpr>(add);
+    if (!add2)
+      return add * val;
+    if (add2.getKind() != AffineExprKind::Add)
+      return add * val;
+    if (!((add2.getLHS() == LHSg && add2.getRHS() == RHSg) ||
+          (add2.getRHS() == LHSg && add2.getLHS() == RHSg)))
+      return add * val;
+  }
+
+  return LHS + RHS;
+}
+
+AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate) {
+  SmallVector<AffineExpr> todo[2];
+  todo[0] = {LHS};
+  todo[1] = {RHS};
+  SmallVector<AffineExpr> base[2];
+  for (int i = 0; i < 2; i++)
+    while (!todo[i].empty()) {
+      auto cur = todo[i].pop_back_val();
+      if (auto Add = dyn_cast<AffineBinaryOpExpr>(cur))
+        if (Add.getKind() == AffineExprKind::Add) {
+          todo[i].push_back(Add.getLHS());
+          todo[i].push_back(Add.getRHS());
+          continue;
+        }
+      base[i].push_back(cur);
+    }
+  if (base[0].size() == 1 && base[1].size() == 1)
+    return commonAddWithMul(LHS, RHS, allownegate);
+  for (int i = 0; i < base[0].size(); i++)
+    for (int j = 0; j < base[1].size(); j++) {
+      auto fuse = commonAddWithMul(base[0][i], base[1][j]);
+      bool simplified = false;
+      if (auto Add = dyn_cast<AffineBinaryOpExpr>(fuse)) {
+        if (Add.getLHS() == base[0][i] && Add.getRHS() == base[1][j])
+          simplified = true;
+        if (Add.getRHS() == base[0][i] && Add.getLHS() == base[1][j])
+          simplified = true;
+      }
+      if (!simplified) {
+        for (int i2 = 0; i2 < base[0].size(); i2++) {
+          if (i != i2)
+            fuse = commonAddWithMul(fuse, base[0][i2]);
+        }
+        for (int j2 = 0; j2 < base[1].size(); j2++) {
+          if (j != j2)
+            fuse = commonAddWithMul(fuse, base[1][j2]);
+        }
+        return fuse;
+      }
+    }
+  return commonAddWithMul(LHS, RHS, allownegate);
+}
+
+AffineExpr recreateExpr(AffineExpr expr) {
+  if (auto bin = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    auto lhs = recreateExpr(bin.getLHS());
+    auto rhs = recreateExpr(bin.getRHS());
+
+    switch (bin.getKind()) {
+    case AffineExprKind::Add:
+      return internalAdd(lhs, rhs);
+    case AffineExprKind::Mul:
+      return lhs * rhs;
+    case AffineExprKind::Mod:
+      return lhs % rhs;
+    case AffineExprKind::FloorDiv:
+      return lhs.floorDiv(rhs);
+    case AffineExprKind::CeilDiv:
+      return lhs.ceilDiv(rhs);
+    default:
+      return expr;
+    }
+  }
+  return expr;
+}
+
 struct IslToAffineExprConverter {
   MLIRContext *mlirContext;
   unsigned symOffset;
@@ -183,23 +291,33 @@ struct IslToAffineExprConverter {
     LHS = create(isl_ast_expr_get_op_arg(Expr, 0));
     RHS = create(isl_ast_expr_get_op_arg(Expr, 1));
 
+    isl_ast_expr_free(Expr);
+
     if (!LHS || !RHS) {
-      isl_ast_expr_free(Expr);
       return nullptr;
     }
 
+    if (OpType == isl_ast_op_sub) {
+      RHS = -1 * RHS;
+      OpType = isl_ast_op_add;
+    }
     Res = nullptr;
     switch (OpType) {
     default:
+    case isl_ast_op_sub:
       llvm_unreachable("This is no binary isl ast expression");
     case isl_ast_op_add:
-      Res = LHS + RHS;
-      break;
-    case isl_ast_op_sub:
-      Res = LHS - RHS;
+      Res = internalAdd(LHS, RHS);
       break;
     case isl_ast_op_mul:
       Res = (LHS * RHS);
+      /*
+      if (auto bin = dyn_cast<AffineBinaryOpExpr>(LHS)) {
+        if (bin.getKind() == AffineExprKind::FloorDiv && bin.getRHS() == RHS) {
+          Res = bin.getLHS() - (bin.getLHS() % RHS);
+        }
+      }
+      */
       break;
     case isl_ast_op_div:
     case isl_ast_op_pdiv_q: // Dividend is non-negative
@@ -213,7 +331,6 @@ struct IslToAffineExprConverter {
         Res = LHS % RHS;
       break;
     }
-    isl_ast_expr_free(Expr);
     return Res;
   }
 
@@ -478,5 +595,19 @@ struct SimplifyAffineExprsPass
         handleAffineOp(ctx, cop);
     });
     isl_ctx_free(ctx);
+
+    op->walk([=](AffineIfOp affineOp) {
+      auto map = affineOp.getIntegerSet();
+      bool changed = false;
+      SmallVector<AffineExpr> exprs;
+      for (auto expr : map.getConstraints()) {
+        auto expr2 = recreateExpr(expr);
+        changed |= (expr != expr2);
+        exprs.push_back(expr2);
+      }
+      if (changed)
+        affineOp.setIntegerSet(IntegerSet::get(
+            map.getNumDims(), map.getNumSymbols(), exprs, map.getEqFlags()));
+    });
   }
 };
