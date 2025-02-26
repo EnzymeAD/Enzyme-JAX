@@ -427,16 +427,14 @@ struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
 
         deadUsers.push_back(user);
       } else {
-        // Found non-write/non-lifetime user
+        // Found non-read/lifetime user
         return failure();
       }
     }
 
-    rewriter.startOpModification(alloca);
     for (Operation *user : llvm::reverse(deadUsers)) {
       rewriter.eraseOp(user);
     }
-    rewriter.finalizeOpModification(alloca);
     rewriter.eraseOp(alloca);
 
     return success();
