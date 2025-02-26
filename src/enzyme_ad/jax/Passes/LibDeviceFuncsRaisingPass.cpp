@@ -220,7 +220,7 @@ public:
 template <typename TargetOp, typename Arg, typename... Args>
 static void populateOpPatterns(MLIRContext *context,
                                RewritePatternSet &patterns, Arg &&arg,
-                               Args &&...args) {
+                               Args &&... args) {
   patterns.add<CallToOpRaising<TargetOp>>(context, std::forward<Arg>(arg));
   if constexpr (sizeof...(Args) != 0)
     populateOpPatterns<TargetOp>(context, patterns,
@@ -422,13 +422,14 @@ struct DeadAllocaPattern : public OpRewritePattern<LLVM::AllocaOp> {
 
       if (auto memcpy = dyn_cast<LLVM::MemcpyOp>(user)) {
         // If copies from allocation, keep it
-        if (memcpy.getDst() == ptr) return failure();
+        if (memcpy.getDst() == ptr)
+          return failure();
         // If doesn't copy into allocation keep it
-        if (memcpy.getSrc() != ptr) return failure();
-        
+        if (memcpy.getSrc() != ptr)
+          return failure();
+
         deadUsers.push_back(user);
-      }
-      else {
+      } else {
         // Found non-write/non-lifetime user
         return failure();
       }
@@ -444,7 +445,6 @@ struct DeadAllocaPattern : public OpRewritePattern<LLVM::AllocaOp> {
     return success();
   }
 };
-
 
 } // namespace
 
