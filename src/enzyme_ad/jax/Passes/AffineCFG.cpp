@@ -1229,7 +1229,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           return false;
         }
       }
-      LLVM_FALLTHROUGH;
+    LLVM_FALLTHROUGH;
 
   case CmpIPredicate::sge:
   case CmpIPredicate::sgt: {
@@ -1275,7 +1275,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         return false;
       }
 
-      LLVM_FALLTHROUGH;
+    LLVM_FALLTHROUGH;
   case CmpIPredicate::slt:
   case CmpIPredicate::sle: {
     if (lhs_min || rhs_max)

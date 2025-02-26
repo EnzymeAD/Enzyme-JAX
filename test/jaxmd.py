@@ -119,7 +119,7 @@ class JAXMD(EnzymeJaxTest):
 
         # TODO: Reduction-region must take 2 parameters, but takes 4 parameter(s)
         self.mlirad_fwd = False
-        
+
         self.tol = 5e-4
 
         # GPU CI reverse mode needs loose, merits future investigation
