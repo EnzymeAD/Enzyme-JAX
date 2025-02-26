@@ -90,6 +90,7 @@ std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
   // The domain constraints can then be collected from the enclosing ops.
   mlir::affine::FlatAffineValueConstraints cst;
   auto res = succeeded(getIndexSet(enclosingOps, &cst));
+  (void)res;
   assert(res);
 
   // Symbol values, which could be a BlockArgument, or the result of DimOp or
