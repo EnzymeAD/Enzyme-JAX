@@ -220,7 +220,7 @@ public:
 template <typename TargetOp, typename Arg, typename... Args>
 static void populateOpPatterns(MLIRContext *context,
                                RewritePatternSet &patterns, Arg &&arg,
-                               Args &&... args) {
+                               Args &&...args) {
   patterns.add<CallToOpRaising<TargetOp>>(context, std::forward<Arg>(arg));
   if constexpr (sizeof...(Args) != 0)
     populateOpPatterns<TargetOp>(context, patterns,
