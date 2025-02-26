@@ -31,6 +31,7 @@ namespace enzyme {
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
 
+void addSingleIter(mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 } // namespace enzyme
 
 namespace cf {

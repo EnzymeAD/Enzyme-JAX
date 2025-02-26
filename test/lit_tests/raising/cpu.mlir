@@ -31,16 +31,12 @@ module {
 }
 
 // CHECK:   func.func private @kern$par0(%arg0: !llvm.ptr<1>) {
-// CHECK-NEXT:     affine.parallel (%arg1, %arg2, %arg3, %arg4, %arg5, %arg6) = (0, 0, 0, 0, 0, 0) to (1, 1, 1, 1, 1, 40) {
-// CHECK-NEXT:       affine.if #set(%arg4) {
-// CHECK-NEXT:         llvm.call fastcc @throw_boundserror_2676() : () -> ()
-// CHECK-NEXT:       } else {
+// CHECK-NEXT:     affine.parallel (%arg1) = (0) to (40) {
 // CHECK-NEXT:         %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
-// CHECK-NEXT:         %1 = affine.load %0[%arg4] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
+// CHECK-NEXT:         %1 = affine.load %0[0] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
 // CHECK-NEXT:         %2 = arith.muli %1, %1 : i64
 // CHECK-NEXT:         %3 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
-// CHECK-NEXT:         affine.store %2, %3[%arg4] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
-// CHECK-NEXT:       }
+// CHECK-NEXT:         affine.store %2, %3[0] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }
