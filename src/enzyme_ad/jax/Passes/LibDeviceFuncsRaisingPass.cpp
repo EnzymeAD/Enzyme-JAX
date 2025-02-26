@@ -403,8 +403,8 @@ struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
   }
 };
 
-struct DeadAllocaPattern : public OpRewritePattern<LLVM::AllocaOp> {
-  DeadAllocaPattern(MLIRContext *context)
+struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
+  ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
 
   LogicalResult matchAndRewrite(LLVM::AllocaOp alloca,
@@ -421,11 +421,8 @@ struct DeadAllocaPattern : public OpRewritePattern<LLVM::AllocaOp> {
       }
 
       if (auto memcpy = dyn_cast<LLVM::MemcpyOp>(user)) {
-        // If copies from allocation, keep it
+        // If stores into allocation, keep it
         if (memcpy.getDst() == ptr)
-          return failure();
-        // If doesn't copy into allocation keep it
-        if (memcpy.getSrc() != ptr)
           return failure();
 
         deadUsers.push_back(user);
@@ -552,7 +549,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 
   patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
-  patterns.add<DeadAllocaPattern>(converter);
+  patterns.add<ReadOnlyAllocaElim>(converter);
   patterns
       .add<AddFOpLowering, AddIOpLowering, AndIOpLowering,
            // AddUIExtendedOpLowering,
