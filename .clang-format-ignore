@@ -1,0 +1,2 @@
+# We don't want to format external packages
+src/external

@@ -102,8 +102,6 @@ AffineMap simplifyExprs(affine::AffineValueMap accessAvm,
                  }
 
                  auto rhs = binexpr.getRHS();
-                 auto rhsMap = AffineMap::get(accessAvm.getNumDims(),
-                                              accessAvm.getNumSymbols(), rhs);
 
                  auto rhsCstExpr = dyn_cast<AffineConstantExpr>(rhs);
                  if (!rhsCstExpr) {
@@ -325,7 +323,6 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   auto memref = atAddr.getResult();
   return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
     rewriter.setInsertionPoint(atAddr);
-    auto oldMt = atAddr.getResult().getType();
 
     atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
         atAddr, newMt, atAddr.getSource());

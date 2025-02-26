@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/format.yml'
       - '.clang-format'
+      - '.clang-format-ignore'
       - 'src/**/*.c'
       - 'src/**/*.cc'
       - 'src/**/*.cpp'
@@ -15,6 +16,7 @@ on:
     paths:
       - '.github/workflows/format.yml'
       - '.clang-format'
+      - '.clang-format-ignore'
       - 'src/**/*.c'
       - 'src/**/*.cc'
       - 'src/**/*.cpp'

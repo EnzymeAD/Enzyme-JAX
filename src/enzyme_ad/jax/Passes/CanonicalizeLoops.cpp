@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -34,6 +35,7 @@ namespace enzyme {
 } // namespace mlir
 
 using namespace mlir;
+using namespace mlir::arith;
 using namespace mlir::affine;
 using namespace mlir::dataflow;
 using namespace mlir::enzyme;
@@ -962,3 +964,8 @@ struct CanonicalizeLoopsPass
   }
 };
 } // namespace
+
+void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
+                                 MLIRContext *ctx) {
+  patterns.add<RemoveAffineParallelSingleIter>(ctx);
+}

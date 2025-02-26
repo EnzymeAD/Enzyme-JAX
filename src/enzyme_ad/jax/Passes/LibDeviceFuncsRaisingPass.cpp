@@ -272,6 +272,8 @@ using RoundEvenOpLowering =
     ConvertFMFMathFromLLVMPattern<math::RoundEvenOp, LLVM::RoundEvenOp>;
 using RoundOpLowering =
     ConvertFMFMathFromLLVMPattern<math::RoundOp, LLVM::RoundOp>;
+using RintOpLowering =
+    ConvertFMFMathFromLLVMPattern<math::RoundEvenOp, LLVM::RintOp>;
 using SinOpLowering = ConvertFMFMathFromLLVMPattern<math::SinOp, LLVM::SinOp>;
 using SqrtOpLowering =
     ConvertFMFMathFromLLVMPattern<math::SqrtOp, LLVM::SqrtOp>;
@@ -545,7 +547,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                // ExpM1OpLowering,
                ExpOpLowering, FPowIOpLowering, FloorOpLowering, FmaOpLowering,
                Log10OpLowering, Log2OpLowering, LogOpLowering, PowFOpLowering,
-               RoundEvenOpLowering, RoundOpLowering,
+               RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 

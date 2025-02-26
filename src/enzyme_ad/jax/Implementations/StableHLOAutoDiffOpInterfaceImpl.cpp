@@ -919,7 +919,6 @@ public:
 
       for (int i = 0; i < N; ++i) {
         auto padBefore = paddingValues[2 * i];
-        auto padAfter = paddingValues[2 * i + 1];
 
         auto lhsDilation =
             lhsDilations.has_value() ? getI64Value(lhsDilations.value(), i) : 1;

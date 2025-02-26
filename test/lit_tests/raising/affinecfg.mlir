@@ -152,13 +152,10 @@ module {
   }
 }
 
-// CHECK: #set = affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>
 // CHECK:   func.func @c(%[[arg0:.+]]: memref<?xf32>, %[[arg1]]: i64) {
 // CHECK-NEXT:     %[[V0:.+]] = arith.index_cast %[[arg1]] : i64 to index
-// CHECK-NEXT:     affine.parallel (%[[arg2:.+]], %[[arg3:.+]]) = (0, 0) to (42, 512) {
-// CHECK-NEXT:       affine.if #set(%[[arg2]])[%[[V0]]] {
+// CHECK-NEXT:     affine.parallel (%[[arg2:.+]], %[[arg3:.+]]) = (0, 0) to (min(symbol(%[[V0]]), 42), 512) {
 // CHECK-NEXT:         "test.something"() : () -> ()
-// CHECK-NEXT:       }
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }
