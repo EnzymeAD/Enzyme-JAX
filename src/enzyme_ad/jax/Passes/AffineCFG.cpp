@@ -2835,6 +2835,33 @@ struct MergeParallelInductions
             break;
           } else
             idxCst = idx;
+        } else if (auto addOp = dyn_cast<arith::AddIOp>(U)) {
+          if (idxCst) {
+            legal = false;
+            break;
+          }
+
+          // AddI with constant is ignored.
+          if (!matchPattern(addOp.getLhs(), m_Constant()) &&
+              !matchPattern(addOp.getRhs(), m_Constant())) {
+            legal = false;
+            break;
+          }
+
+          auto result = addOp.getResult();
+          if (!result.hasOneUse()) {
+            legal = false;
+            break;
+          }
+
+          if (auto idx = dyn_cast<IndexCastUIOp>(*result.user_begin())) {
+            idxCst = idx;
+          } else if (auto idx = dyn_cast<IndexCastOp>(*result.user_begin())) {
+            idxCst = idx;
+          } else {
+            legal = false;
+            break;
+          }
         } else {
           legal = false;
           break;
@@ -2966,19 +2993,37 @@ struct MergeParallelInductions
                 continue;
               Value other = (add.getLhs() == val) ? add.getRhs() : add.getLhs();
 
-              MulIOp mul = other.getDefiningOp<MulIOp>();
-              if (mul.getLhs() == idxCasts[pair2.first]->getResult(0)) {
-                if (!valueCmp(Cmp::EQ, mul.getRhs(),
-                              fixedUpperBounds[pair1.first]))
+              Operation *mulOrShl = nullptr;
+              if (MulIOp mul = other.getDefiningOp<MulIOp>()) {
+                if (mul.getLhs() == idxCasts[pair2.first]->getResult(0)) {
+                  if (!valueCmp(Cmp::EQ, mul.getRhs(),
+                                fixedUpperBounds[pair1.first]))
+                    continue;
+                } else {
+                  if (mul.getRhs() != idxCasts[pair2.first]->getResult(0))
+                    continue;
+                  if (!valueCmp(Cmp::EQ, mul.getLhs(),
+                                fixedUpperBounds[pair1.first]))
+                    continue;
+                }
+                mulOrShl = mul;
+              } else if (ShLIOp shl = other.getDefiningOp<ShLIOp>()) {
+                if (shl.getLhs() == idxCasts[pair2.first]->getResult(0)) {
+                  IntegerAttr iattr;
+                  if (!matchPattern(shl.getRhs(), m_Constant(&iattr)))
+                    continue;
+                  int64_t shlCst = iattr.getValue().getSExtValue();
+                  auto ub = fixedUpperBounds[pair1.first];
+                  if (ub.isValue ? !valueCmp(Cmp::EQ, ub.v_val,
+                                             ValueOrInt(1 << shlCst))
+                                 : ub.i_val != 1 << shlCst)
+                    continue;
+                } else
                   continue;
-              } else {
-                if (mul.getRhs() != idxCasts[pair2.first]->getResult(0))
-                  continue;
-                if (!valueCmp(Cmp::EQ, mul.getLhs(),
-                              fixedUpperBounds[pair1.first]))
-                  continue;
-              }
-              if (!mul->getResult(0).hasOneUse())
+                mulOrShl = shl;
+              } else
+                continue;
+              if (!mulOrShl->getResult(0).hasOneUse())
                 continue;
               if (!idxCasts[pair2.first]->getResult(0).hasOneUse())
                 continue;
@@ -3038,7 +3083,6 @@ void AffineCFGPass::runOnOperation() {
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions,
-
           CanonicalieForBounds>(getOperation()->getContext());
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
