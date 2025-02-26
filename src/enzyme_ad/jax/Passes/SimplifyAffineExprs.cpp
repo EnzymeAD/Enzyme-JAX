@@ -411,12 +411,12 @@ template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
   isl_space *space =
       isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
   for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "dim", (void *)(i + 1));
+    isl_id *id = isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1));
     space = isl_space_set_dim_id(space, isl_dim_set, i, id);
   }
   unsigned symOffset = cst.getNumDimVars();
   for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(symOffset + i + 1));
+    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
     space = isl_space_set_dim_id(space, isl_dim_set, i, id);
   }
 

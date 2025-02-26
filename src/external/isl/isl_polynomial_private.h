@@ -78,7 +78,7 @@ struct isl_pw_qpolynomial {
 #undef PW
 #define PW isl_pw_qpolynomial
 
-#include <isl_pw_templ.h>
+#include <isl_pw_templ.h.inc>
 
 #undef EL
 #define EL isl_pw_qpolynomial
@@ -116,7 +116,7 @@ struct isl_pw_qpolynomial_fold {
 #undef PW
 #define PW isl_pw_qpolynomial_fold
 
-#include <isl_pw_templ.h>
+#include <isl_pw_templ.h.inc>
 
 #undef EL
 #define EL isl_pw_qpolynomial_fold

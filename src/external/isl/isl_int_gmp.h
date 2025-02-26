@@ -1,4 +1,4 @@
-#ifndef ISL_INT_GMP_H
+#if 0 //#ifndef ISL_INT_GMP_H
 #define ISL_INT_GMP_H
 
 #include <gmp.h>

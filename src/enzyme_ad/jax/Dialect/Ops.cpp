@@ -261,7 +261,6 @@ public:
     {
       bool potentialReadNone = false;
       for (auto arg : fn.front().getArguments()) {
-        auto operandIndex = arg.getArgNumber();
         bool readnone = arg.use_empty();
         if (!readnone)
           continue;

@@ -56,6 +56,6 @@ isl_bool isl_val_plain_is_equal(__isl_keep isl_val *val1,
 #undef BASE
 #define BASE val
 
-#include <isl_multi_templ.h>
+#include <isl_multi_templ.h.inc>
 
 #endif

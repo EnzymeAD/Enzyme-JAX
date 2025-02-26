@@ -42,6 +42,6 @@ extern isl_id isl_id_none;
 #undef BASE
 #define BASE id
 
-#include <isl_multi_templ.h>
+#include <isl_multi_templ.h.inc>
 
 #endif

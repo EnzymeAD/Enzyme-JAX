@@ -4,7 +4,7 @@
 #include <isl/aff_type.h>
 
 #define ISL_TYPE	isl_aff
-#include <isl/maybe_templ.h>
+#include <isl/maybe_templ.h.inc>
 #undef ISL_TYPE
 
 #endif

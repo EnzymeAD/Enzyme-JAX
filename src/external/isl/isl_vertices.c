@@ -1040,19 +1040,19 @@ error:
 	return NULL;
 }
 
-isl_ctx *isl_vertex_get_ctx(__isl_keep isl_vertex *vertex)
+isl_ctx *isl_vertex_get_ctx(__isl_keep struct isl_external_vertex *vertex)
 {
 	return vertex ? isl_vertices_get_ctx(vertex->vertices) : NULL;
 }
 
-isl_size isl_vertex_get_id(__isl_keep isl_vertex *vertex)
+isl_size isl_vertex_get_id(__isl_keep struct isl_external_vertex *vertex)
 {
 	return vertex ? vertex->id : isl_size_error;
 }
 
 /* Return the activity domain of the vertex "vertex".
  */
-__isl_give isl_basic_set *isl_vertex_get_domain(__isl_keep isl_vertex *vertex)
+__isl_give isl_basic_set *isl_vertex_get_domain(__isl_keep struct isl_external_vertex *vertex)
 {
 	struct isl_vertex *v;
 
@@ -1072,7 +1072,7 @@ __isl_give isl_basic_set *isl_vertex_get_domain(__isl_keep isl_vertex *vertex)
 /* Return a multiple quasi-affine expression describing the vertex "vertex"
  * in terms of the parameters,
  */
-__isl_give isl_multi_aff *isl_vertex_get_expr(__isl_keep isl_vertex *vertex)
+__isl_give isl_multi_aff *isl_vertex_get_expr(__isl_keep struct isl_external_vertex *vertex)
 {
 	struct isl_vertex *v;
 	isl_basic_set *bset;
@@ -1086,17 +1086,17 @@ __isl_give isl_multi_aff *isl_vertex_get_expr(__isl_keep isl_vertex *vertex)
 	return isl_multi_aff_from_basic_set_equalities(bset);
 }
 
-static __isl_give isl_vertex *isl_vertex_alloc(__isl_take isl_vertices *vertices,
+static __isl_give struct isl_external_vertex *isl_vertex_alloc(__isl_take isl_vertices *vertices,
 	int id)
 {
 	isl_ctx *ctx;
-	isl_vertex *vertex;
+	struct isl_external_vertex *vertex;
 
 	if (!vertices)
 		return NULL;
 
 	ctx = isl_vertices_get_ctx(vertices);
-	vertex = isl_alloc_type(ctx, isl_vertex);
+	vertex = isl_alloc_type(ctx, struct isl_external_vertex);
 	if (!vertex)
 		goto error;
 
@@ -1109,7 +1109,7 @@ error:
 	return NULL;
 }
 
-__isl_null isl_vertex *isl_vertex_free(__isl_take isl_vertex *vertex)
+__isl_null struct isl_external_vertex *isl_vertex_free(__isl_take struct isl_external_vertex *vertex)
 {
 	if (!vertex)
 		return NULL;
@@ -1339,10 +1339,10 @@ isl_stat isl_vertices_foreach_cell(__isl_keep isl_vertices *vertices,
 }
 
 isl_stat isl_vertices_foreach_vertex(__isl_keep isl_vertices *vertices,
-	isl_stat (*fn)(__isl_take isl_vertex *vertex, void *user), void *user)
+	isl_stat (*fn)(__isl_take struct isl_external_vertex *vertex, void *user), void *user)
 {
 	int i;
-	isl_vertex *vertex;
+	struct isl_external_vertex *vertex;
 
 	if (!vertices)
 		return isl_stat_error;
@@ -1366,10 +1366,10 @@ isl_stat isl_vertices_foreach_vertex(__isl_keep isl_vertices *vertices,
 }
 
 isl_stat isl_cell_foreach_vertex(__isl_keep isl_cell *cell,
-	isl_stat (*fn)(__isl_take isl_vertex *vertex, void *user), void *user)
+	isl_stat (*fn)(__isl_take struct isl_external_vertex *vertex, void *user), void *user)
 {
 	int i;
-	isl_vertex *vertex;
+	struct isl_external_vertex *vertex;
 
 	if (!cell)
 		return isl_stat_error;

@@ -699,7 +699,6 @@ public:
 
   LogicalResult matchAndRewrite(TruncIOp op,
                                 PatternRewriter &rewriter) const override {
-    auto module = op->getParentOfType<ModuleOp>();
     auto ifOp = op.getIn().getDefiningOp<scf::IfOp>();
     if (!ifOp)
       return failure();
@@ -819,6 +818,8 @@ struct WhileToForHelper {
           lbInt = lbConstInt.getSExtValue();
           ubInt = ubConstInt.getSExtValue();
           stepInt = stepConstInt.getSExtValue();
+        } else {
+          return false;
         }
 
         if ((ubInt - lbInt) % stepInt == 0) {
@@ -1004,8 +1005,6 @@ struct WhileToForHelper {
   }
 
   void prepareFor(PatternRewriter &rewriter) {
-    Value one;
-
     if (updateCmpNeOp == 1) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(cmpIOp);
@@ -1133,7 +1132,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     Value upperBound;
     Value compareValue;
     arith::CmpIOp cmpOp;
-    if (cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>()) {
+    if ((cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>())) {
       // We need to check for is that one of the lhs or rhs is a constant, and
       // extract the value as upper bound.
       if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
@@ -1230,10 +1229,9 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
     rewriter.setInsertionPoint(whileOp);
     // If case: The do while loop executes more than once
-    if ((lb + step < ub) && (step > 0) || (lb + step > ub) && (step < 0)) {
+    if (((lb + step < ub) && (step > 0)) || ((lb + step > ub) && (step < 0))) {
       // Copy region from while body to for body
       SmallVector<Value> newInitOperands;
-      int numOfConditionArgs = conditionOp.getArgs().size();
       for (auto operand : whileOp.getOperands())
         newInitOperands.push_back(operand);
       for (auto resTy : whileOp.getResultTypes()) {

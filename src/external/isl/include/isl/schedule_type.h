@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include <isl/ctx.h>
+
 enum isl_schedule_node_type {
 	isl_schedule_node_error = -1,
 	isl_schedule_node_band,
