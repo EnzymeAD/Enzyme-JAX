@@ -403,6 +403,44 @@ struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
   }
 };
 
+struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
+  ReadOnlyAllocaElim(MLIRContext *context)
+      : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
+
+  LogicalResult matchAndRewrite(LLVM::AllocaOp alloca,
+                                PatternRewriter &rewriter) const override {
+    Value ptr = alloca.getResult();
+    SmallVector<Operation *> deadUsers;
+
+    // Check all users of the alloca
+    for (Operation *user : ptr.getUsers()) {
+      // Allow lifetime markers
+      if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
+        deadUsers.push_back(user);
+        continue;
+      }
+
+      if (auto memcpy = dyn_cast<LLVM::MemcpyOp>(user)) {
+        // If stores into allocation, keep it
+        if (memcpy.getDst() == ptr)
+          return failure();
+
+        deadUsers.push_back(user);
+      } else {
+        // Found non-read/lifetime user
+        return failure();
+      }
+    }
+
+    for (Operation *user : llvm::reverse(deadUsers)) {
+      rewriter.eraseOp(user);
+    }
+    rewriter.eraseOp(alloca);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -509,7 +547,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 
   patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
-
+  patterns.add<ReadOnlyAllocaElim>(converter);
   patterns
       .add<AddFOpLowering, AddIOpLowering, AndIOpLowering,
            // AddUIExtendedOpLowering,
