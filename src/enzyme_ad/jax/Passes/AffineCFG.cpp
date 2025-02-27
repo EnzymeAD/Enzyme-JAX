@@ -13,6 +13,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
+#include <numeric>
 #include <deque>
 
 #define DEBUG_TYPE "affine-cfg"
@@ -2733,6 +2734,395 @@ struct MergeNestedAffineParallelIf
   }
 };
 
+// When all uses of an IV are of the form (%i % cst) or (%i // cst), replace
+// with two ivs: %i1 = (0) to (ub[i] // cst) %i0 = (0) to (cst)
+struct SplitParallelInductions
+    : public OpRewritePattern<affine::AffineParallelOp> {
+  using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineParallelOp op,
+                                PatternRewriter &rewriter) const override {
+    // Reductions are not supported yet.
+    if (!op.getReductions().empty())
+      return failure();
+
+    SmallVector<Operation *> idxCasts;
+    SmallVector<ValueOrInt> bases;
+    SmallVector<bool> legality;
+    SmallVector<ValueOrInt> fixedUpperBounds;
+
+    for (auto it : llvm::enumerate(op.getIVs())) {
+      auto idx = it.index();
+      auto iv = it.value();
+      ValueOrInt base(Value(nullptr));
+      bool legal = true;
+
+      for (auto lb : op.getLowerBoundMap(iv.getArgNumber()).getResults()) {
+        if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
+          if (cst.getValue() != 0) {
+            legal = false;
+            break;
+          }
+        } else {
+          legal = false;
+          break;
+        }
+      }
+
+      bool seenub = false;
+      for (auto ub : op.getUpperBoundMap(iv.getArgNumber()).getResults()) {
+        if (seenub) {
+          legal = false;
+          break;
+        }
+        seenub = true;
+        if (auto cst = ub.dyn_cast<AffineConstantExpr>()) {
+          fixedUpperBounds.push_back(ValueOrInt(cst.getValue()));
+        } else if (auto dim = ub.dyn_cast<AffineDimExpr>()) {
+          fixedUpperBounds.push_back(
+              ValueOrInt(op.getUpperBoundsOperands()[dim.getPosition()]));
+        } else if (auto sym = ub.dyn_cast<AffineSymbolExpr>()) {
+          fixedUpperBounds.push_back(ValueOrInt(
+              op.getUpperBoundsOperands()[op.getUpperBoundsMap().getNumDims() +
+                                          sym.getPosition()]));
+        } else {
+          legal = false;
+          fixedUpperBounds.push_back(ValueOrInt(0));
+        }
+      }
+
+      auto step = op.getSteps()[idx];
+      if (step != 1) {
+        legal = false;
+        continue;
+      }
+
+      for (auto U : iv.getUsers()) {
+        SmallVector<AffineExpr> exprs;
+        ValueRange operands;
+
+        if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
+          exprs.append(AS.getAffineMap().getResults().begin(),
+                       AS.getAffineMap().getResults().end());
+          operands = AS.getMapOperands();
+        } else if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
+          exprs.append(AL.getAffineMap().getResults().begin(),
+                       AL.getAffineMap().getResults().end());
+          operands = AL.getMapOperands();
+        } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
+          exprs.append(AI.getIntegerSet().getConstraints().begin(),
+                       AI.getIntegerSet().getConstraints().end());
+          operands = AI.getOperands();
+        } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
+
+          for (auto UU : cstOp.getResult().getUsers()) {
+
+            Value newBase;
+            if (isa<arith::FloorDivSIOp, arith::RemUIOp>(UU)) {
+              newBase = UU->getOperand(1);
+            } else {
+              UU->dump();
+              legal = false;
+              break;
+            }
+
+            if (base.isValue && !base.v_val)
+              base = ValueOrInt(newBase);
+            else if (base.isValue && base.v_val == newBase) {
+              base = ValueOrInt(newBase);
+            } else if (!base.isValue) {
+              APInt iattr;
+              if (!matchPattern(newBase, m_ConstantInt(&iattr))) {
+                legal = false;
+                break;
+              }
+              auto newBaseVal = iattr.getZExtValue();
+              if (!(base.i_val == newBaseVal ||
+                    isa<arith::FloorDivSIOp>(UU) &&
+                        (base.i_val % newBaseVal == 0 ||
+                         newBaseVal % base.i_val == 0))) {
+                legal = false;
+                break;
+              }
+
+              base.i_val = base.i_val > newBaseVal ? newBaseVal : base.i_val;
+            } else {
+              legal = false;
+              break;
+            }
+          }
+
+          if (!legal)
+            break;
+          else
+            continue;
+        } else {
+          legal = false;
+          break;
+        }
+
+        auto findBasePattern = [](Value iv, AffineExpr root,
+                                  ValueRange operands, ValueOrInt &base,
+                                  bool &legal) {
+          SmallVector<AffineExpr> todo = {root};
+          while (!todo.empty()) {
+            auto subExpr = todo.back();
+            todo.pop_back();
+
+            if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(subExpr)) {
+              auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getLHS());
+
+              auto kind = subExpr.getKind();
+              if (!dimExpr || operands[dimExpr.getPosition()] != iv ||
+                  (kind != AffineExprKind::FloorDiv &&
+                   kind != AffineExprKind::Mod)) {
+                todo.push_back(binExpr.getLHS());
+                todo.push_back(binExpr.getRHS());
+                continue;
+              }
+
+              auto rhs = binExpr.getRHS();
+
+              ValueOrInt newBase(-1);
+              if (auto symExpr = dyn_cast<AffineSymbolExpr>(rhs)) {
+                newBase = ValueOrInt(operands[symExpr.getPosition()]);
+              } else if (auto constExpr = dyn_cast<AffineConstantExpr>(rhs)) {
+                newBase = ValueOrInt(constExpr.getValue());
+              } else {
+                legal = false;
+                return;
+              }
+
+              if (base.isValue && base.v_val == nullptr) {
+                base = newBase;
+              } else if (base.isValue && newBase.isValue &&
+                         base.v_val == newBase.v_val) {
+                base = newBase;
+              } else if (!base.isValue && !newBase.isValue &&
+                         (base.i_val == newBase.i_val ||
+                          (kind == AffineExprKind::FloorDiv &&
+                           (base.i_val % newBase.i_val == 0 ||
+                            newBase.i_val % base.i_val == 0)))) {
+                base.i_val =
+                    base.i_val > newBase.i_val ? newBase.i_val : base.i_val;
+              } else {
+                legal = false;
+                return;
+              }
+            } else if (auto dimExpr = dyn_cast<AffineDimExpr>(subExpr)) {
+              // iv referenced without pattern
+              if (operands[dimExpr.getPosition()] == iv) {
+                legal = false;
+                return;
+              }
+            }
+          }
+        };
+
+        for (auto expr : exprs) {
+          findBasePattern(iv, expr, operands, base, legal);
+          unsigned ivPos = 0;
+          for (unsigned i = 0; i < operands.size(); ++i) {
+            if (operands[i] == iv) {
+              ivPos = i;
+              break;
+            }
+          }
+          if (!legal)
+            break;
+        }
+
+        if (!legal)
+          break;
+      }
+
+      if (base.isValue && !base.v_val) {
+        legal = false;
+      }
+
+      // We can add an extra iv
+      if (legal) {
+        assert(!base.isValue && "todo");
+
+        Block *body = op.getBody();
+
+        SmallVector<int64_t> steps;
+
+        for (auto s : op.getSteps())
+          steps.push_back(s);
+
+        steps.push_back(1);
+
+        SmallVector<AffineExpr> lbounds(
+            op.getLowerBoundsMap().getResults().begin(),
+            op.getLowerBoundsMap().getResults().end());
+        lbounds.push_back(mlir::getAffineConstantExpr(0, op.getContext()));
+
+        SmallVector<AffineExpr> ubounds;
+
+        for (size_t i = 0; i < idx; ++i)
+          ubounds.push_back(op.getUpperBoundsMap().getResult(i));
+
+        AffineExpr baseExpr =
+            base.isValue
+                ? mlir::getAffineSymbolExpr(0, op.getContext())
+                : mlir::getAffineConstantExpr(base.i_val, op.getContext());
+
+        AffineExpr ubound0 =
+            op.getUpperBoundsMap().getResult(idx).floorDiv(baseExpr);
+        AffineExpr ubound1 =
+            op.getUpperBoundsMap().getResult(idx).floorDiv(ubound0);
+
+        ubounds.push_back(ubound0);
+
+        for (size_t i = idx + 1, e = op.getUpperBoundsMap().getNumResults();
+             i < e; ++i)
+          ubounds.push_back(op.getUpperBoundsMap().getResult(i));
+
+        ubounds.push_back(ubound1);
+
+        SmallVector<int32_t> lowerBoundsGroup;
+        SmallVector<int32_t> upperBoundsGroup;
+        for (auto lb : op.getLowerBoundsGroups())
+          lowerBoundsGroup.push_back(lb.getZExtValue());
+        lowerBoundsGroup.push_back(1);
+
+        for (auto ub : op.getUpperBoundsGroups())
+          upperBoundsGroup.push_back(ub.getZExtValue());
+        upperBoundsGroup.push_back(1);
+
+        auto affineLoop = rewriter.create<affine::AffineParallelOp>(
+            op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
+            AffineMapAttr::get(
+                AffineMap::get(op.getLowerBoundsMap().getNumDims(),
+                               op.getLowerBoundsMap().getNumSymbols(), lbounds,
+                               op.getContext())),
+            rewriter.getI32TensorAttr(lowerBoundsGroup),
+            AffineMapAttr::get(
+                AffineMap::get(op.getUpperBoundsMap().getNumDims(),
+                               op.getUpperBoundsMap().getNumSymbols(), ubounds,
+                               op.getContext())),
+            rewriter.getI32TensorAttr(upperBoundsGroup),
+            rewriter.getI64ArrayAttr(steps), op.getMapOperands());
+
+        rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
+                                    affineLoop.getRegion().begin());
+        rewriter.eraseOp(op);
+
+        rewriter.startOpModification(affineLoop);
+        Value newIv = body->addArgument(iv.getType(), iv.getLoc());
+        rewriter.finalizeOpModification(affineLoop);
+
+        SmallVector<Operation *> users(iv.getUsers().begin(),
+                                       iv.getUsers().end());
+
+        auto getDimExpr = [](Value iv, ValueRange operands) {
+          unsigned ivPos = 0;
+          for (unsigned i = 0; i < operands.size(); ++i) {
+            if (operands[i] == iv) {
+              ivPos = i;
+              break;
+            }
+          }
+          return mlir::getAffineDimExpr(ivPos, iv.getContext());
+        };
+
+        auto getNewMap = [getDimExpr](Value iv, AffineMap oldMap,
+                                      ValueRange operands,
+                                      AffineExpr baseExpr) {
+          unsigned ivPos = 0;
+          for (unsigned i = 0; i < operands.size(); ++i) {
+            if (operands[i] == iv) {
+              ivPos = i;
+              break;
+            }
+          }
+
+          AffineExpr majorExpr = getDimExpr(iv, operands),
+                     minorExpr = mlir::getAffineDimExpr(oldMap.getNumDims(),
+                                                        iv.getContext());
+
+          return oldMap
+              .replace(majorExpr % baseExpr, minorExpr, oldMap.getNumDims() + 1,
+                       oldMap.getNumSymbols())
+              .replace(majorExpr, majorExpr * baseExpr, oldMap.getNumDims() + 1,
+                       oldMap.getNumSymbols());
+        };
+
+        for (auto U : users) {
+          if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
+            auto operands = AL.getMapOperands();
+            auto map = AL.getAffineMap();
+            auto newMap = getNewMap(iv, map, operands, baseExpr);
+
+            rewriter.modifyOpInPlace(AL, [&]() {
+              AL.setMap(newMap);
+              AL->insertOperands(1 + map.getNumDims(), newIv);
+            });
+          } else if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
+            auto operands = AS.getMapOperands();
+            auto map = AS.getAffineMap();
+            auto newMap = getNewMap(iv, map, operands, baseExpr);
+
+            rewriter.modifyOpInPlace(AS, [&]() {
+              AS.setMap(newMap);
+              AS->insertOperands(2 + map.getNumDims(), newIv);
+            });
+          } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
+            auto operands = AI.getOperands();
+            auto is = AI.getIntegerSet();
+
+            AffineExpr majorExpr = getDimExpr(iv, operands),
+                       minorExpr = mlir::getAffineDimExpr(is.getNumDims(),
+                                                          iv.getContext());
+
+            SmallVector<AffineExpr> newConstraints;
+            for (auto constraint : is.getConstraints())
+              newConstraints.push_back(
+                  constraint.replace(majorExpr % baseExpr, minorExpr)
+                      .replace(majorExpr, majorExpr * baseExpr));
+            auto newIntegerSet =
+                IntegerSet::get(is.getNumDims() + 1, is.getNumSymbols(),
+                                newConstraints, is.getEqFlags());
+
+            rewriter.modifyOpInPlace(AI, [&]() {
+              AI.setIntegerSet(newIntegerSet);
+              AI->insertOperands(is.getNumDims(), newIv);
+            });
+          } else if (auto IC = dyn_cast<arith::IndexCastUIOp>(U)) {
+            OpBuilder::InsertionGuard guard(rewriter);
+            rewriter.setInsertionPoint(U);
+
+            for (auto UU : IC.getResult().getUsers()) {
+
+              if (isa<arith::FloorDivSIOp>(UU)) {
+                // TODO
+                // auto mulWithExpr = rewriter.create<arith::MulIOp>(
+
+                rewriter.replaceAllUsesWith(UU->getResult(0), U->getResult(0));
+              } else if (isa<arith::RemUIOp>(UU)) {
+                rewriter.replaceAllUsesWith(
+                    UU->getResult(0),
+                    rewriter.create<arith::IndexCastUIOp>(
+                        IC.getLoc(), IC.getResult().getType(), newIv));
+              } else {
+                llvm_unreachable("impossible use of cast");
+              }
+            }
+
+          } else {
+            llvm_unreachable("not supported affine use");
+          }
+        }
+
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct MergeParallelInductions
     : public OpRewritePattern<affine::AffineParallelOp> {
   using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
@@ -3167,7 +3557,8 @@ void AffineCFGPass::runOnOperation() {
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions,
-          CanonicalieForBounds>(getOperation()->getContext());
+          SplitParallelInductions, CanonicalieForBounds>(
+      getOperation()->getContext());
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
