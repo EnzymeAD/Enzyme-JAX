@@ -142,7 +142,7 @@ struct AffineExprToIslAffConverter {
       case mlir::AffineExprKind::FloorDiv:
         return isl_aff_floor(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::Mod: {
-        if (isl_aff_is_cst(rhs)) {
+        if (isl_aff_is_cst(rhs) == isl_bool_true) {
           isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
           isl_aff_free(rhs);
           return r;
