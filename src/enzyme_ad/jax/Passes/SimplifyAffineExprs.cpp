@@ -141,13 +141,24 @@ struct AffineExprToIslAffConverter {
         return isl_aff_ceil(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::FloorDiv:
         return isl_aff_floor(isl_aff_div(lhs, rhs));
-      case mlir::AffineExprKind::Mod:
-        return isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+      case mlir::AffineExprKind::Mod: {
+        if (isl_aff_is_cst(rhs) == isl_bool_true) {
+          isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+          isl_aff_free(rhs);
+          return r;
+        } else {
+          isl_aff_free(lhs);
+          isl_aff_free(rhs);
+          return nullptr;
+        }
+      }
       case mlir::AffineExprKind::Mul:
         return isl_aff_mul(lhs, rhs);
       default:
         LLVM_DEBUG(llvm::dbgs()
                    << "Unhandled kind " << (unsigned)bo.getKind() << "\n");
+        isl_aff_free(lhs);
+        isl_aff_free(rhs);
         return nullptr;
       }
     } else if (auto c = dyn_cast<AffineConstantExpr>(expr)) {
@@ -581,6 +592,7 @@ struct SimplifyAffineExprsPass
     auto r = isl_options_set_ast_build_exploit_nested_bounds(ctx, 1);
     if (r != isl_stat_ok) {
       signalPassFailure();
+      isl_ctx_free(ctx);
       return;
     }
 
