@@ -2820,21 +2820,60 @@ struct MergeParallelInductions
         SmallVector<AffineExpr> exprs;
         ValueRange operands;
         if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
-          for (auto E : AL.getAffineMap().getResults())
-            exprs.push_back(E);
           operands = AL.getMapOperands();
+          for (auto E : AL.getAffineMap().getResults()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AL.getAffineMap().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumSymbols());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
           affineMapUsers_t.push_back(U);
         } else if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
           if (AS.getValue() == iv)
             legal = false;
-          for (auto E : AS.getAffineMap().getResults())
-            exprs.push_back(E);
           operands = AS.getMapOperands();
+          for (auto E : AS.getAffineMap().getResults()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AS.getAffineMap().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumSymbols());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
           affineMapUsers_t.push_back(U);
         } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
-          for (auto E : AI.getIntegerSet().getConstraints())
-            exprs.push_back(E);
           operands = AI.getOperands();
+          for (auto E : AI.getIntegerSet().getConstraints()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AI.getIntegerSet().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |= E.isFunctionOfSymbol(
+                    i - AI.getIntegerSet().getNumSymbols());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
           affineMapUsers_t.push_back(U);
         } else if (auto idx = dyn_cast<IndexCastOp>(U)) {
           if (idxCst) {
