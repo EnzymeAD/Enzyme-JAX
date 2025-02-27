@@ -27,6 +27,7 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::arith;
 using namespace mlir::affine;
+using namespace mlir::enzyme;
 
 bool isValidSymbolInt(Value value, bool recur = true);
 bool isValidSymbolInt(Operation *defOp, bool recur) {
@@ -630,6 +631,7 @@ static void composeAffineMapAndOperands(AffineMap *map,
   auto normalizedMap = normalizer.getAffineMap();
   auto normalizedOperands = normalizer.getOperands();
   affine::canonicalizeMapAndOperands(&normalizedMap, &normalizedOperands);
+  normalizedMap = recreateExpr(normalizedMap);
   *map = normalizedMap;
   *operands = normalizedOperands;
   assert(*map);
@@ -950,6 +952,7 @@ struct CanonicalizeAffineApply
     fully2ComposeAffineMapAndOperands(rewriter, &map, &mapOperands, DI);
     affine::canonicalizeMapAndOperands(&map, &mapOperands);
     map = removeDuplicateExprs(map);
+    map = recreateExpr(map);
 
     if (map == prevMap)
       return failure();
@@ -998,6 +1001,7 @@ struct CanonicalizeAffineIf : public OpRewritePattern<affine::AffineIfOp> {
     fully2ComposeAffineMapAndOperands(&map, &mapOperands);
     affine::canonicalizeMapAndOperands(&map, &mapOperands);
     map = removeDuplicateExprs(map);
+    map = recreateExpr(map);
     if (map == prevMap)
       return failure();
     rewriter.replaceOpWithNewOp<affine::AffineApplyOp>(affineOp, map,
@@ -1367,6 +1371,7 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);
+    map = recreateExpr(map);
     assert(map.getNumInputs() == operands.size());
 
     affine::AffineLoadOp affineLoad = rewriter.create<affine::AffineLoadOp>(
@@ -1403,6 +1408,7 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
     affine::canonicalizeMapAndOperands(&map, &operands);
+    map = recreateExpr(map);
 
     rewriter.create<affine::AffineStoreOp>(store.getLoc(),
                                            store.getValueToStore(),
@@ -1446,6 +1452,7 @@ template <typename T> struct AffineFixup : public OpRewritePattern<T> {
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);
     assert(map.getNumInputs() == operands.size());
+    map = recreateExpr(map);
 
     if (map == prevMap && !areChanged(operands, prevOperands))
       return failure();
@@ -1529,10 +1536,12 @@ struct CanonicalieForBounds : public OpRewritePattern<affine::AffineForOp> {
     fully2ComposeAffineMapAndOperands(rewriter, &lbMap, &lbOperands, DI);
     affine::canonicalizeMapAndOperands(&lbMap, &lbOperands);
     lbMap = removeDuplicateExprs(lbMap);
+    lbMap = recreateExpr(lbMap);
 
     fully2ComposeAffineMapAndOperands(rewriter, &ubMap, &ubOperands, DI);
     affine::canonicalizeMapAndOperands(&ubMap, &ubOperands);
     ubMap = removeDuplicateExprs(ubMap);
+    ubMap = recreateExpr(ubMap);
 
     // ubMap.dump();
     // forOp.dump();
@@ -1787,12 +1796,14 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
         fully2ComposeAffineMapAndOperands(rewriter, &lbMap, &lbs, DI);
         affine::canonicalizeMapAndOperands(&lbMap, &lbs);
         lbMap = removeDuplicateExprs(lbMap);
+        lbMap = recreateExpr(lbMap);
       }
       AffineMap ubMap = getMultiSymbolIdentity(builder, ubs.size());
       {
         fully2ComposeAffineMapAndOperands(rewriter, &ubMap, &ubs, DI);
         affine::canonicalizeMapAndOperands(&ubMap, &ubs);
         ubMap = removeDuplicateExprs(ubMap);
+        ubMap = recreateExpr(ubMap);
       }
 
       affine::AffineForOp affineLoop = rewriter.create<affine::AffineForOp>(
@@ -1859,9 +1870,11 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
 
     fully2ComposeAffineMapAndOperands(rewriter, &lbMap, &lbOperands, DI);
     affine::canonicalizeMapAndOperands(&lbMap, &lbOperands);
+    lbMap = recreateExpr(lbMap);
 
     fully2ComposeAffineMapAndOperands(rewriter, &ubMap, &ubOperands, DI);
     affine::canonicalizeMapAndOperands(&ubMap, &ubOperands);
+    ubMap = recreateExpr(ubMap);
 
     forOp.setLowerBounds(lbOperands, lbMap);
     forOp.setUpperBounds(ubOperands, ubMap);

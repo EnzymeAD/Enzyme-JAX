@@ -10,6 +10,8 @@
 
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 
@@ -32,6 +34,10 @@ void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
 
 void addSingleIter(mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
+
+mlir::AffineExpr recreateExpr(mlir::AffineExpr expr);
+mlir::AffineMap recreateExpr(mlir::AffineMap expr);
+mlir::IntegerSet recreateExpr(mlir::IntegerSet expr);
 } // namespace enzyme
 
 namespace cf {
