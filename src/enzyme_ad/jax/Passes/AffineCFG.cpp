@@ -2598,10 +2598,10 @@ struct MergeNestedAffineParallelIf
         if (auto newCst = rhs.dyn_cast<AffineConstantExpr>()) {
           bool seen = false;
           for (size_t i = 0; i < uboundGroup[pair.first]; i++) {
-            if (auto oldCst = ubounds[i].dyn_cast<AffineConstantExpr>()) {
+            if (auto oldCst = ubounds[off + i].dyn_cast<AffineConstantExpr>()) {
               seen = true;
               if (newCst.getValue() < oldCst.getValue())
-                ubounds[i] = rhs;
+                ubounds[off + i] = rhs;
             }
           }
           if (seen)
@@ -2625,13 +2625,13 @@ struct MergeNestedAffineParallelIf
 
           bool seen = false;
           for (size_t i = 0; i < lboundGroup[pair.first]; i++) {
-            if (auto oldCst = lbounds[i].dyn_cast<AffineConstantExpr>()) {
+            if (auto oldCst = lbounds[off + i].dyn_cast<AffineConstantExpr>()) {
               if (cst.getValue() <= oldCst.getValue()) {
                 seen = true;
               } else if ((cst.getValue() - oldCst.getValue()) %
                              op.getSteps()[pair.first] ==
                          0) {
-                lbounds[i] = min;
+                lbounds[off + i] = min;
                 seen = true;
               }
             }
@@ -3145,6 +3145,7 @@ struct MergeParallelInductions
 
             rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                         affineLoop.getRegion().begin());
+            rewriter.eraseOp(op);
             return success();
           }
         }

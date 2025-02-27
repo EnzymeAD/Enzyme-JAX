@@ -30,6 +30,6 @@ func.func @foo(%arg0: memref<1x99x194xf64, 1>, %arg1: index) {
 }
 
 // CHECK-LABEL: @foo
-// CHECK:    affine.parallel (%arg2, %arg3) = (33, 0) to (87, 192) {
+// CHECK:    affine.parallel (%arg2, %arg3) = (0, 33) to (87, 192) {
 // CHECK-NEXT:        affine.store %cst, %arg0[0, %arg2 + 6, %arg3 + 6] : memref<1x99x194xf64, 1>
 // CHECK-NEXT:    }

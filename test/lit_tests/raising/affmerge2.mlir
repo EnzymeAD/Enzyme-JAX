@@ -15,7 +15,7 @@ module {
 
 // CHECK:  func.func @ran(%arg0: memref<1x99x194xf64, 1>) {
 // CHECK-NEXT:    %cst = arith.constant 2.731500e+02 : f64
-// CHECK-NEXT:    affine.parallel (%arg1, %arg2) = (0, 0) to (87, 192) {
+// CHECK-NEXT:    affine.parallel (%arg1, %arg2) = (0, 0) to (87, 182) {
 // CHECK-NEXT:        affine.store %cst, %arg0[0, %arg1 + 6, %arg2 + 6] : memref<1x99x194xf64, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
