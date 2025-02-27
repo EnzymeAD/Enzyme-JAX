@@ -1585,6 +1585,7 @@ struct CanonicalizIfBounds : public OpRewritePattern<affine::AffineIfOp> {
 
     fully2ComposeIntegerSetAndOperands(rewriter, &map, &operands, DI);
     affine::canonicalizeSetAndOperands(&map, &operands);
+    map = recreateExpr(map);
 
     // map(s).
     if (map == prevMap && !areChanged(operands, origOperands))
