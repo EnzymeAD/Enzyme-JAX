@@ -150,7 +150,6 @@ struct CommRankOpLowering : public OpRewritePattern<mpi::CommRankOp> {
 //         return success();
 //     }
 // };
-
 struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
     using OpRewritePattern::OpRewritePattern;
     mutable bool func_written = false;
@@ -166,9 +165,23 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
 
         if (!func_written) {
             auto ctx = rewriter.getContext();
+            auto op_types = op->getOperandTypes();
+
+            SmallVector<mlir::Type> types;
+            types.push_back(mlir::LLVM::LLVMPointerType::get(ctx));
+            for (auto itr = ++op_types.begin(); itr != op_types.end(); ++itr) 
+                types.push_back(*itr);
+            llvm::errs() << "types: " << types << "\n";
+
+
             const auto func_type = FunctionType::get(ctx,
                 op.getOperandTypes(),
                 op->getResultTypes()
+            );
+            const auto mpi_func_type = LLVM::LLVMFunctionType::get(
+                mlir::IntegerType::get(ctx, 32),
+                types,
+                false
             );
             
             auto module = ([op]() {
@@ -181,6 +194,14 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             auto module_block = &module.getBodyRegion().getBlocks().front();
 
             rewriter.setInsertionPoint( module_block, module_block->end());
+
+            // first, create the MPI_Send symbol
+            auto mpi_send = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(),
+                "MPI_Send",
+                mpi_func_type
+            );
+
+            // then create the wrapper function
             auto func_op = rewriter.create<func::FuncOp>(op.getLoc(),
                 "mpi_send_func",
                 func_type);
@@ -188,13 +209,6 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             auto entry_block = func_op.addEntryBlock();
             assert(entry_block);
             rewriter.setInsertionPoint(entry_block, entry_block->begin());
-            auto const_op = rewriter.create<LLVM::ConstantOp>(op.getLoc(), 
-                mlir::IntegerType::get(ctx, 64),
-                0xffff
-            );
-            auto function_ptr_op = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), 
-                mlir::LLVM::LLVMPointerType::get(ctx),
-                const_op);
 
             auto operands = entry_block->getArguments();
             auto extract_op = rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(op.getLoc(),
@@ -203,17 +217,19 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             auto memref_ptr_op = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), mlir::LLVM::LLVMPointerType::get(ctx), cast_op);
 
             SmallVector<mlir::Value> values;
-            values.push_back(function_ptr_op);
             values.push_back(memref_ptr_op);
             values.insert(values.end(), operands.begin()+1, operands.end());
+
+            for(auto& elem : values)
+                llvm::errs() << "values: " << elem.getType() << "\n";
             
             rewriter.create<LLVM::CallOp>(op.getLoc(), 
-                mlir::TypeRange{}, 
-                mlir::ValueRange{values},
-                ArrayRef<NamedAttribute>{
-                    rewriter.getNamedAttr(LLVM::CallOp::getOperandSegmentSizeAttr(), rewriter.getDenseI32ArrayAttr({3,1})), 
-                    rewriter.getNamedAttr("op_bundle_sizes", rewriter.getDenseI32ArrayAttr({1, 1}))}
+                mpi_send,
+                mlir::ValueRange{values}
             );
+            rewriter.create<func::ReturnOp>(op.getLoc());
+        // rewriter.create<LLVM::CallOp>(op.getLoc(),
+        // );
 
             func_written = true;
         }
