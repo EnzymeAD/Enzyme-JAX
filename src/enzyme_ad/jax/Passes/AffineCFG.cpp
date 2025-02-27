@@ -2883,7 +2883,7 @@ struct MergeParallelInductions
           bool flegal = true;
           std::map<size_t, AffineExpr> indUsage;
           getIndUsage(expr, operands, indUsage, flegal);
-          if (!flegal || indUsage.size() < 2) {
+          if (!flegal || indUsage.size() == 1) {
             legal = false;
             break;
           }
