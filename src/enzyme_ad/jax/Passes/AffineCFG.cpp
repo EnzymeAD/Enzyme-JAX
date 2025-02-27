@@ -2578,43 +2578,73 @@ struct MergeNestedAffineParallelIf
         continue;
       }
 
-      // currently aff * idx + stuff >= 0
-      // currently aff * idx >= -stuff
-      //    idx >= (-stuff).floorDiv(aff)   OR   idx <= ...
-
-      if (affCst.getValue() < 0)
+      // currently aff * idx + rhs >= 0
+      // currently aff * idx >= -rhs
+      //    if aff is negative, then
+      //       idx <= (-rhs).floorDiv(aff)
+      //       idx <  (-rhs).floorDiv(aff) - 1
+      //    else if idx is positive
+      //       idx >= (-rhs).floorDiv(aff)
+      assert(affCst.getValue() != 0);
+      if (affCst.getValue() < 0) {
+        changed = true;
         rhs = rhs.floorDiv(-affCst.getValue()) + 1;
-      else {
+
+        size_t off = 0;
+        for (size_t i = 0; i < pair.first; i++)
+          off += uboundGroup[i];
+
+        if (auto newCst = rhs.dyn_cast<AffineConstantExpr>()) {
+          bool seen = false;
+          for (size_t i = 0; i < uboundGroup[pair.first]; i++) {
+            if (auto oldCst = ubounds[i].dyn_cast<AffineConstantExpr>()) {
+              seen = true;
+              if (newCst.getValue() < oldCst.getValue())
+                ubounds[i] = rhs;
+            }
+          }
+          if (seen)
+            continue;
+        }
+        ubounds.insert(
+            ubounds.begin() + off,
+            rhs.shiftDims(innerOp.getIntegerSet().getNumDims(),
+                          op.getUpperBoundsMap().getNumDims())
+                .shiftSymbols(innerOp.getIntegerSet().getNumSymbols(),
+                              op.getUpperBoundsMap().getNumSymbols()));
+
+        uboundGroup[pair.first]++;
+      } else {
+        auto min = rhs.floorDiv(-affCst.getValue());
+        if (auto cst = dyn_cast<AffineConstantExpr>(min)) {
+
+          size_t off = 0;
+          for (size_t i = 0; i < pair.first; i++)
+            off += lboundGroup[i];
+
+          bool seen = false;
+          for (size_t i = 0; i < lboundGroup[pair.first]; i++) {
+            if (auto oldCst = lbounds[i].dyn_cast<AffineConstantExpr>()) {
+              if (cst.getValue() <= oldCst.getValue()) {
+                seen = true;
+              } else if ((cst.getValue() - oldCst.getValue()) %
+                             op.getSteps()[pair.first] ==
+                         0) {
+                lbounds[i] = min;
+                seen = true;
+              }
+            }
+          }
+          if (seen) {
+            changed = true;
+            continue;
+          }
+        }
+
         remaining.push_back(cst.value());
         isEq.push_back(innerOp.getIntegerSet().isEq(cst.index()));
         continue;
       }
-
-      changed = true;
-
-      size_t off = 0;
-      for (size_t i = 0; i < pair.first; i++)
-        off += uboundGroup[i];
-
-      if (auto newCst = rhs.dyn_cast<AffineConstantExpr>()) {
-        bool seen = false;
-        for (size_t i = 0; i < uboundGroup[pair.first]; i++) {
-          if (auto oldCst = ubounds[i].dyn_cast<AffineConstantExpr>()) {
-            seen = true;
-            if (newCst.getValue() < oldCst.getValue())
-              ubounds[i] = rhs;
-          }
-        }
-        if (seen)
-          continue;
-      }
-      ubounds.insert(ubounds.begin() + off,
-                     rhs.shiftDims(innerOp.getIntegerSet().getNumDims(),
-                                   op.getUpperBoundsMap().getNumDims())
-                         .shiftSymbols(innerOp.getIntegerSet().getNumSymbols(),
-                                       op.getUpperBoundsMap().getNumSymbols()));
-
-      uboundGroup[pair.first]++;
     }
 
     if (!changed)
