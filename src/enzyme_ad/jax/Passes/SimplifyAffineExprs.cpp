@@ -218,24 +218,87 @@ AffineExpr commonAddWithMul(AffineExpr LHS, AffineExpr RHS,
   return LHS + RHS;
 }
 
+bool affineCmp(AffineExpr lhs, AffineExpr rhs) {
+  if (isa<AffineConstantExpr>(lhs) && !isa<AffineConstantExpr>(rhs))
+    return true;
+
+  if (!isa<AffineConstantExpr>(lhs) && isa<AffineConstantExpr>(rhs))
+    return false;
+
+  if (auto L = dyn_cast<AffineConstantExpr>(lhs))
+    if (auto R = dyn_cast<AffineConstantExpr>(rhs))
+      return L.getValue() < R.getValue();
+
+  if (isa<AffineSymbolExpr>(lhs) && !isa<AffineSymbolExpr>(rhs))
+    return true;
+
+  if (!isa<AffineSymbolExpr>(lhs) && isa<AffineSymbolExpr>(rhs))
+    return false;
+
+  if (auto L = dyn_cast<AffineSymbolExpr>(lhs))
+    if (auto R = dyn_cast<AffineSymbolExpr>(rhs))
+      return L.getPosition() < R.getPosition();
+
+  if (isa<AffineDimExpr>(lhs) && !isa<AffineDimExpr>(rhs))
+    return true;
+
+  if (!isa<AffineDimExpr>(lhs) && isa<AffineDimExpr>(rhs))
+    return false;
+
+  if (auto L = dyn_cast<AffineDimExpr>(lhs))
+    if (auto R = dyn_cast<AffineDimExpr>(rhs))
+      return L.getPosition() < R.getPosition();
+
+  auto L = cast<AffineBinaryOpExpr>(lhs);
+  auto R = cast<AffineBinaryOpExpr>(rhs);
+  if (affineCmp(L.getLHS(), R.getLHS()))
+    return true;
+  if (affineCmp(R.getLHS(), L.getLHS()))
+    return false;
+
+  if (affineCmp(L.getRHS(), R.getRHS()))
+    return true;
+  if (affineCmp(R.getRHS(), L.getRHS()))
+    return false;
+  return false;
+}
+
+SmallVector<AffineExpr> getSumOperands(AffineExpr expr) {
+  SmallVector<AffineExpr> todo = {expr};
+  SmallVector<AffineExpr> base;
+  while (!todo.empty()) {
+    auto cur = todo.pop_back_val();
+    if (auto Add = dyn_cast<AffineBinaryOpExpr>(cur))
+      if (Add.getKind() == AffineExprKind::Add) {
+        todo.push_back(Add.getLHS());
+        todo.push_back(Add.getRHS());
+        continue;
+      }
+    base.push_back(cur);
+  }
+  return base;
+}
+
+AffineExpr sortSum(AffineExpr expr) {
+  auto Add = dyn_cast<AffineBinaryOpExpr>(expr);
+  if (!Add)
+    return expr;
+  auto exprs = getSumOperands(Add);
+  llvm::sort(exprs, affineCmp);
+  auto res = exprs[0];
+  for (int i = 1; i < exprs.size(); i++)
+    res = res + exprs[i];
+  return res;
+}
+
 AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate) {
-  SmallVector<AffineExpr> todo[2];
-  todo[0] = {LHS};
-  todo[1] = {RHS};
-  SmallVector<AffineExpr> base[2];
-  for (int i = 0; i < 2; i++)
-    while (!todo[i].empty()) {
-      auto cur = todo[i].pop_back_val();
-      if (auto Add = dyn_cast<AffineBinaryOpExpr>(cur))
-        if (Add.getKind() == AffineExprKind::Add) {
-          todo[i].push_back(Add.getLHS());
-          todo[i].push_back(Add.getRHS());
-          continue;
-        }
-      base[i].push_back(cur);
-    }
+  SmallVector<AffineExpr> base[2] = {getSumOperands(LHS), getSumOperands(RHS)};
   if (base[0].size() == 1 && base[1].size() == 1)
     return commonAddWithMul(LHS, RHS, allownegate);
+
+  llvm::sort(base[0], affineCmp);
+  llvm::sort(base[1], affineCmp);
+
   for (int i = 0; i < base[0].size(); i++)
     for (int j = 0; j < base[1].size(); j++) {
       auto fuse = commonAddWithMul(base[0][i], base[1][j]);
@@ -261,7 +324,7 @@ AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate) {
   return commonAddWithMul(LHS, RHS, allownegate);
 }
 
-AffineExpr recreateExpr(AffineExpr expr) {
+AffineExpr mlir::enzyme::recreateExpr(AffineExpr expr) {
   if (auto bin = dyn_cast<AffineBinaryOpExpr>(expr)) {
     auto lhs = recreateExpr(bin.getLHS());
     auto rhs = recreateExpr(bin.getRHS());
@@ -270,18 +333,38 @@ AffineExpr recreateExpr(AffineExpr expr) {
     case AffineExprKind::Add:
       return internalAdd(lhs, rhs);
     case AffineExprKind::Mul:
-      return lhs * rhs;
+      return sortSum(lhs) * sortSum(rhs);
     case AffineExprKind::Mod:
-      return lhs % rhs;
+      return sortSum(lhs) % sortSum(rhs);
     case AffineExprKind::FloorDiv:
-      return lhs.floorDiv(rhs);
+      return sortSum(lhs).floorDiv(sortSum(rhs));
     case AffineExprKind::CeilDiv:
-      return lhs.ceilDiv(rhs);
+      return sortSum(lhs).ceilDiv(sortSum(rhs));
     default:
       return expr;
     }
   }
   return expr;
+}
+
+IntegerSet mlir::enzyme::recreateExpr(IntegerSet map) {
+  SmallVector<AffineExpr> exprs;
+  for (auto expr : map.getConstraints()) {
+    auto expr2 = sortSum(recreateExpr(expr));
+    exprs.push_back(expr2);
+  }
+  return IntegerSet::get(map.getNumDims(), map.getNumSymbols(), exprs,
+                         map.getEqFlags());
+}
+
+AffineMap mlir::enzyme::recreateExpr(AffineMap map) {
+  SmallVector<AffineExpr> exprs;
+  for (auto expr : map.getResults()) {
+    auto expr2 = sortSum(recreateExpr(expr));
+    exprs.push_back(expr2);
+  }
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs,
+                        map.getContext());
 }
 
 struct IslToAffineExprConverter {
@@ -611,16 +694,9 @@ struct SimplifyAffineExprsPass
 
     op->walk([=](AffineIfOp affineOp) {
       auto map = affineOp.getIntegerSet();
-      bool changed = false;
-      SmallVector<AffineExpr> exprs;
-      for (auto expr : map.getConstraints()) {
-        auto expr2 = recreateExpr(expr);
-        changed |= (expr != expr2);
-        exprs.push_back(expr2);
-      }
-      if (changed)
-        affineOp.setIntegerSet(IntegerSet::get(
-            map.getNumDims(), map.getNumSymbols(), exprs, map.getEqFlags()));
+      auto map2 = mlir::enzyme::recreateExpr(map);
+      if (map != map2)
+        affineOp.setIntegerSet(map2);
     });
   }
 };
