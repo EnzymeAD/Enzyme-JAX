@@ -13,7 +13,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
-#include <deque>
+#include <numeric>
 
 #define DEBUG_TYPE "affine-cfg"
 
@@ -2835,10 +2835,16 @@ struct SplitParallelInductions
                 legal = false;
                 break;
               }
-              if (base.i_val != iattr.getZExtValue()) {
+              auto newBaseVal = iattr.getZExtValue();
+              if (!(base.i_val == newBaseVal ||
+                    isa<arith::FloorDivSIOp>(UU) &&
+                        (base.i_val % newBaseVal == 0 ||
+                         newBaseVal % base.i_val == 0))) {
                 legal = false;
                 break;
               }
+
+              base.i_val = base.i_val > newBaseVal ? newBaseVal : base.i_val;
             } else {
               legal = false;
               break;
@@ -2892,8 +2898,12 @@ struct SplitParallelInductions
                          base.v_val == newBase.v_val) {
                 base = newBase;
               } else if (!base.isValue && !newBase.isValue &&
-                         base.i_val == newBase.i_val) {
-                base = newBase;
+                         (base.i_val == newBase.i_val ||
+                          (kind == AffineExprKind::FloorDiv &&
+                           (base.i_val % newBase.i_val == 0 ||
+                            newBase.i_val % base.i_val == 0)))) {
+                base.i_val =
+                    base.i_val > newBase.i_val ? newBase.i_val : base.i_val;
               } else {
                 legal = false;
                 return;
@@ -3032,9 +3042,9 @@ struct SplitParallelInductions
                                                         iv.getContext());
 
           return oldMap
-              .replace(majorExpr.floorDiv(baseExpr), majorExpr,
-                       oldMap.getNumDims(), oldMap.getNumSymbols())
               .replace(majorExpr % baseExpr, minorExpr, oldMap.getNumDims() + 1,
+                       oldMap.getNumSymbols())
+              .replace(majorExpr, majorExpr * baseExpr, oldMap.getNumDims() + 1,
                        oldMap.getNumSymbols());
         };
 
@@ -3068,9 +3078,8 @@ struct SplitParallelInductions
             SmallVector<AffineExpr> newConstraints;
             for (auto constraint : is.getConstraints())
               newConstraints.push_back(
-                  constraint.replace(majorExpr.floorDiv(baseExpr), majorExpr)
-                      .replace(majorExpr % baseExpr, minorExpr));
-
+                  constraint.replace(majorExpr % baseExpr, minorExpr)
+                      .replace(majorExpr, majorExpr * baseExpr));
             auto newIntegerSet =
                 IntegerSet::get(is.getNumDims() + 1, is.getNumSymbols(),
                                 newConstraints, is.getEqFlags());
@@ -3086,6 +3095,9 @@ struct SplitParallelInductions
             for (auto UU : IC.getResult().getUsers()) {
 
               if (isa<arith::FloorDivSIOp>(UU)) {
+                // TODO
+                // auto mulWithExpr = rewriter.create<arith::MulIOp>(
+
                 rewriter.replaceAllUsesWith(UU->getResult(0), U->getResult(0));
               } else if (isa<arith::RemUIOp>(UU)) {
                 rewriter.replaceAllUsesWith(
