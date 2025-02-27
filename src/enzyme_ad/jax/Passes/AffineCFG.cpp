@@ -14,6 +14,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include <numeric>
+#include <deque>
 
 #define DEBUG_TYPE "affine-cfg"
 

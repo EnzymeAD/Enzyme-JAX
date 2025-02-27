@@ -51,10 +51,10 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
 }
 
 // PRE-SIMPLE: #set = affine_set<(d0, d1) : (-(d0 floordiv 16) - (d1 floordiv 12) * 16 + 86 >= 0, d0 + d1 * 16 - (d1 floordiv 12) * 192 - (d0 floordiv 16) * 16 >= 0, -d0 - d1 * 16 + (d1 floordiv 12) * 192 + (d0 floordiv 16) * 16 + 181 >= 0)>
-// CHECK: #set = affine_set<(d0, d1) : (-(d0 floordiv 16) - (d1 floordiv 12) * 16 + 86 >= 0, d0 mod 16 + (d1 mod 12) * 16 >= 0, -(d0 mod 16) - (d1 mod 12) * 16 + 181 >= 0)> 
+// OPREV-CHECK: #set = affine_set<(d0, d1) : (-(d0 floordiv 16) - (d1 floordiv 12) * 16 + 86 >= 0, d0 mod 16 + (d1 mod 12) * 16 >= 0, -(d0 mod 16) - (d1 mod 12) * 16 + 181 >= 0)> 
 // CHECK-NEXT: module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
 // CHECK-NEXT:   func.func @foo() {
-// CHECK-NEXT:     affine.parallel (%arg0, %arg1) = (0, 0) to (72, 256) {
+// CHECK-NEXT:     affine.parallel (%arg0, %arg1) = (0, 0) to (87, 182) {
 // CHECK-NEXT:       affine.if #set(%arg1, %arg0) {
 // CHECK-NEXT:         "test.op"() : () -> ()
 // CHECK-NEXT:       }
