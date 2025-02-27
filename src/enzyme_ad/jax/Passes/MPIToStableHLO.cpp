@@ -171,7 +171,6 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             types.push_back(mlir::LLVM::LLVMPointerType::get(ctx));
             for (auto itr = ++op_types.begin(); itr != op_types.end(); ++itr) 
                 types.push_back(*itr);
-            llvm::errs() << "types: " << types << "\n";
 
 
             const auto func_type = FunctionType::get(ctx,
@@ -220,16 +219,12 @@ struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
             values.push_back(memref_ptr_op);
             values.insert(values.end(), operands.begin()+1, operands.end());
 
-            for(auto& elem : values)
-                llvm::errs() << "values: " << elem.getType() << "\n";
             
             rewriter.create<LLVM::CallOp>(op.getLoc(), 
                 mpi_send,
                 mlir::ValueRange{values}
             );
             rewriter.create<func::ReturnOp>(op.getLoc());
-        // rewriter.create<LLVM::CallOp>(op.getLoc(),
-        // );
 
             func_written = true;
         }
