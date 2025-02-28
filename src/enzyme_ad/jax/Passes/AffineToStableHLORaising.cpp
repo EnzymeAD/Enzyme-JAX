@@ -216,60 +216,78 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
   return shape;
 }
 
-static Value alignMemoryAccess(Value val, affine::AffineValueMap src,
-                               affine::AffineValueMap dst, OpBuilder &builder) {
-  // val -> tensor<10x1xf32> loaded from (i) -> (i, 0)
+static affine::AffineValueMap
+alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
+                  affine::AffineValueMap dst, OpBuilder &builder) {
+  // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
+  SmallVector<int64_t> shapeA = affineMapShape(src);
+  SmallVector<int64_t> shapeB = affineMapShape(dst);
 
-  auto rank = src.getNumResults();
-  if (rank > dst.getNumResults())
-    return val;
+  SmallVector<int64_t> outputShape;
 
-  if (rank < dst.getNumResults()) {
-    // not sure this is valid otherwise. (i.e. if there are
-    // less moving dims)
-    if (rank != 0)
-      return nullptr;
+  SmallVector<int64_t> broadcastDimensionsA(shapeA.size(), -1);
+  SmallVector<int64_t> broadcastDimensionsB(shapeB.size(), -1);
 
-    auto T = val.getType().cast<RankedTensorType>();
+  SmallVector<AffineExpr> exprs;
+  SmallVector<Value> mapOperands;
 
-    val = builder
-              .create<stablehlo::BroadcastInDimOp>(val.getLoc(),
-                                                   T.clone(affineMapShape(dst)),
-                                                   val, ArrayRef<int64_t>())
-              .getResult();
+  unsigned idxA = 0, idxB = 0;
+  unsigned rankA = src.getNumResults(), rankB = dst.getNumResults();
 
-    return val;
-  }
+  SetVector<Value> ivs;
 
-  // Needs transpose
-  SmallVector<int64_t> perm;
-  perm.reserve(rank);
+  for (auto [i, EA] : llvm::enumerate(src.getAffineMap().getResults())) {
+    broadcastDimensionsA[i] = outputShape.size();
 
-  for (unsigned i = 0; i < rank; ++i) {
-    auto srcExpr = src.getResult(i);
-    if (srcExpr.isSymbolicOrConstant()) {
-      perm.push_back(i);
-      continue;
-    }
+    Value ivA = getIVForExpr(src, EA);
 
-    auto iv = getIVForExpr(src, srcExpr);
     for (unsigned j = 0, e = dst.getNumResults(); j < e; ++j) {
-      auto dstExpr = dst.getResult(j);
-      if (!dstExpr.isSymbolicOrConstant()) {
-        auto dstIv = getIVForExpr(dst, dstExpr);
-        if (iv == dstIv) {
-          perm.push_back(j);
-          break;
-        }
+      auto EB = dst.getResult(j);
+      if (getIVForExpr(dst, EB) == ivA) {
+        broadcastDimensionsB[j] = outputShape.size();
       }
     }
+
+    outputShape.push_back(shapeA[i]);
+
+    exprs.push_back(
+        mlir::getAffineDimExpr(mapOperands.size(), ivA.getContext()));
+    mapOperands.push_back(ivA);
   }
 
-  auto transposeOp =
-      builder.create<stablehlo::TransposeOp>(val.getLoc(), val, perm);
+  for (auto [i, EB] : llvm::enumerate(dst.getAffineMap().getResults())) {
+    if (broadcastDimensionsB[i] != -1)
+      continue; // dim already set in A
 
-  return transposeOp.getResult();
+    Value ivB = getIVForExpr(dst, EB);
+
+    broadcastDimensionsB[i] = outputShape.size();
+    outputShape.push_back(shapeB[i]);
+
+    exprs.push_back(
+        mlir::getAffineDimExpr(mapOperands.size(), ivB.getContext()));
+    mapOperands.push_back(ivB);
+  }
+
+  auto TA = a.getType().cast<RankedTensorType>(),
+       TB = b.getType().cast<RankedTensorType>();
+
+  a = builder
+          .create<stablehlo::BroadcastInDimOp>(
+              a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
+          .getResult();
+
+  b = builder
+          .create<stablehlo::BroadcastInDimOp>(
+              b.getLoc(), TB.clone(outputShape), b, broadcastDimensionsB)
+          .getResult();
+
+  affine::AffineValueMap outputMap(
+      AffineMap::getMultiDimIdentityMap(mapOperands.size(), a.getContext()),
+      mapOperands);
+
+  return outputMap;
 }
 
 static LogicalResult
@@ -309,10 +327,33 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto sliceOp = builder.create<stablehlo::SliceOp>(
         op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
 
+    SmallVector<AffineExpr> dynExprs;
+    SmallVector<int64_t> dynShape;
+
+    AffineMap affineMap = accessValueMap.getAffineMap();
+    for (auto [S, E] : llvm::zip_equal(outputShape, affineMap.getResults())) {
+      if (!E.isSymbolicOrConstant()) {
+        dynExprs.push_back(E);
+        dynShape.push_back(S);
+      }
+    }
+
     auto val = loadOp.getResult();
-    auto newVal = sliceOp.getResult();
+
+    Value newVal = sliceOp.getResult();
+    newVal = builder
+                 .create<stablehlo::ReshapeOp>(
+                     newVal.getLoc(),
+                     newVal.getType().cast<RankedTensorType>().clone(dynShape),
+                     newVal)
+                 .getResult();
     mapping.map(val, newVal);
-    maps[newVal] = accessValueMap;
+
+    affine::AffineValueMap dynAffineValueMap(
+        AffineMap::get(affineMap.getNumDims(), affineMap.getNumSymbols(),
+                       dynExprs, newVal.getContext()),
+        accessValueMap.getOperands());
+    maps[newVal] = dynAffineValueMap;
 
     return success();
   }
@@ -341,29 +382,55 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto Ty = builder.getI64Type();
     auto unrankedTensorType = RankedTensorType::get({}, Ty);
-    for (auto idx : startIndices) {
+
+    affine::AffineValueMap updateValueMap = maps[update];
+
+    // for each dim in update, where it will
+    // be located in broadcastedupdate
+    SmallVector<int64_t> broadcastDims(
+        update.getType().cast<RankedTensorType>().getShape().size(), -1);
+    SmallVector<int64_t> updateShape;
+
+    for (auto [E, lb, ub, stride] :
+         llvm::zip_equal(accessValueMap.getAffineMap().getResults(),
+                         startIndices, limitIndices, strides)) {
+      updateShape.push_back((ub - lb) / stride);
+
       startIndicesValues.push_back(
           builder
               .create<stablehlo::ConstantOp>(
                   op->getLoc(), unrankedTensorType,
                   SplatElementsAttr::get(
                       unrankedTensorType,
-                      ArrayRef<Attribute>(IntegerAttr::get(Ty, idx))))
+                      ArrayRef<Attribute>(IntegerAttr::get(Ty, lb))))
               .getResult());
+
+      if (E.isSymbolicOrConstant())
+        continue;
+
+      // find dim in update which varies along the same iv
+      Value storeIv = getIVForExpr(accessValueMap, E);
+
+      for (auto [updateIdx, EE] :
+           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+        Value updateIv = getIVForExpr(updateValueMap, EE);
+        if (storeIv == updateIv) {
+          broadcastDims[updateIdx] = (updateShape.size() - 1);
+          break;
+        }
+      }
     }
 
-    // here we need to make sure that the actual saved value has the right
-    // transpose. consider the following kernel:
-    //
-    // affine.parallel (%arg1, %arg2) = (0, 0) to (100, 100) {
-    //   %0 = affine.load %arg0[%arg2, %arg1] : memref<100x100xf32, 1>
-    //   affine.store %0, %arg0[%arg1, %arg2] : memref<100x100xf32, 1>
-    // }
-    //
-    // in this case, we want to transpose on the store (or read) to emit a
-    // stablehlo.transpose. For each value, maps contains the access map.
-    // `alignMemoryAccess` tries to update val to the right size.
-    update = alignMemoryAccess(update, maps[update], accessValueMap, builder);
+    // Store has less ivs than load.
+    if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+      return failure();
+    }
+
+    update = builder.create<stablehlo::BroadcastInDimOp>(
+        op->getLoc(),
+        update.getType().cast<RankedTensorType>().clone(updateShape), update,
+        broadcastDims);
+
     if (!update)
       return failure();
 
@@ -439,20 +506,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           b = mapping.lookup(op->getOperand(1));
 
     auto mapA = maps[a], mapB = maps[b];
-    auto outputMap = mapA;
-
-    auto newA = alignMemoryAccess(a, mapA, mapB, builder);
-    if (!newA)
-      return failure();
-    if (newA == a) {
-      b = alignMemoryAccess(b, mapB, mapA, builder);
-      if (!b)
-        return failure();
-    } else {
-      outputMap = mapB;
-      a = newA;
-    }
-
+    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder);
     assert(a.getType() == b.getType());
 
     auto IT = a.getType().cast<RankedTensorType>();
@@ -483,27 +537,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           c = mapping.lookup(op->getOperand(2));
 
     auto mapA = maps[a], mapB = maps[b], mapC = maps[c];
-
-    if (mapA.getAffineMap().getNumResults() == 0) {
-      a = alignMemoryAccess(a, mapA, mapB, builder);
-      if (!a)
-        return failure();
-    }
-
-    if (mapB.getAffineMap().getNumResults() == 0) {
-      b = alignMemoryAccess(b, mapB, mapA, builder);
-      if (!b)
-        return failure();
-    }
-
-    if (mapC.getAffineMap().getNumResults() == 0) {
-      c = alignMemoryAccess(c, mapC, mapA, builder);
-      if (!c)
-        return failure();
-    }
-
-    /*if (mapA != mapB || mapA != mapC)*/
-    /*  return failure();*/
+    auto outputMap = alignMemoryAccess(b, mapB, c, mapC, builder);
+    outputMap = alignMemoryAccess(a, mapA, b, outputMap, builder);
 
     auto IT = b.getType().cast<RankedTensorType>();
     Type result = RankedTensorType::get(
@@ -518,7 +553,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = mapA;
+      maps[newRes] = outputMap;
     }
 
     return success();
