@@ -64,10 +64,20 @@ def CommMessage : OpInterface<"CommMessage"> {
 * Dialect Ops
 */
 
-// Return, for end of split blocks. We may just be able to use return- lets see if there's any special
-// semantics we want join to have
+// A "join" terminator indicating the end of a branch- can only do in enter or exit blocks
 def CommJoin : CommOp<"join", traits = [Terminator]> {
   let summary = "Denotes the end of a split block, similar to ret for a function";
+  let arguments = (ins );
+  let results = (outs );
+  let assemblyFormat = [{
+    attr-dict
+  }];
+}
+
+def CommContinue : CommOp <"continue", traits=[Terminator]> {
+  // TODO figure out if we can just use scf yield
+  let summary = "Op for indicating which values to pass to the next region as determined similar to scf.yield";
+  // TODO add variadic inputs to make this op useful
   let arguments = (ins );
   let results = (outs );
   let assemblyFormat = [{
@@ -116,9 +126,9 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
 def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait]> {
   let summary = "Represents one branch that can be taken by a split node";
   let arguments = (ins DenseI32ArrayAttr:$device_ids);
-  let regions = (region AnyRegion:$region);
+  let regions = (region SizedRegion<1>:$entry, SizedRegion<1>:$loop, SizedRegion<1>:$reentry, SizedRegion<1>:$exit);
   let assemblyFormat = [{
-    attr-dict $device_ids $region
+    attr-dict $device_ids `enter` $entry custom<SplitRecurrenceRegions>($loop, $reentry, $exit)
   }];
 }
 

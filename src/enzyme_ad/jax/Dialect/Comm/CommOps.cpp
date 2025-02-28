@@ -3,7 +3,6 @@
 
 #include "llvm/ADT/DenseSet.h"
 
-
 using namespace mlir;
 using namespace mlir::comm;
 
@@ -72,6 +71,59 @@ mlir::Type CommMultiplexMessage::getInputType() {
 
 mlir::Type CommMultiplexMessage::getOutputType() {
   return getDataType();
+}
+
+// Custom parsers
+
+/**
+ * Want to see either <<empty string>> or:
+ *  `loop` $loop `reenter` $reentry `exit` $exit
+ */
+static ParseResult parseSplitRecurrenceRegions(OpAsmParser &p, Region &loop, Region &reentry, Region &exit){
+  auto res = p.parseOptionalKeyword("loop");
+  if(res.succeeded()) {
+    // Keyword indicates presence of items in IR, which we need to (non-optionally) parse
+    res = p.parseRegion(loop);            if(res.failed()) return failure();
+    res = p.parseKeyword("reenter");      if(res.failed()) return failure();
+    res = p.parseRegion(reentry);         if(res.failed()) return failure();
+    res = p.parseKeyword("exit");         if(res.failed()) return failure();
+    res = p.parseRegion(exit);            if(res.failed()) return failure();
+  } else {
+    // No keyword indicates no recurrence items, fill region defaults
+    auto loop_block = new Block();
+    loop.push_back(loop_block);
+    auto reentry_block = new Block();
+    reentry.push_back(reentry_block);
+    auto exit_block = new Block();
+    exit.push_back(exit_block);
+
+    // Add the correct terminators to the parsed blocks'
+    OpBuilder builder(p.getContext());
+    mlir::Location loc(p.getEncodedSourceLoc(p.getCurrentLocation()));
+    
+    builder.setInsertionPointToEnd(loop_block);
+    builder.create<CommContinue>(loc);
+
+    builder.setInsertionPointToEnd(reentry_block);
+    builder.create<CommContinue>(loc);
+
+    builder.setInsertionPointToEnd(exit_block);
+    builder.create<CommJoin>(loc);
+  
+    return success();
+  }
+}
+
+/**
+ * Just print everything- optionality is there for convenience and an empty region has same semantics as a missing one
+ */
+static void printSplitRecurrenceRegions(OpAsmPrinter &p, Operation* op, Region &loop, Region &reentry, Region &exit){
+  p.printKeywordOrString("loop");
+  p.printRegion(loop);
+  p.printKeywordOrString("reenter");
+  p.printRegion(reentry);
+  p.printKeywordOrString("exit");
+  p.printRegion(exit);
 }
 
 #define GET_OP_CLASSES
