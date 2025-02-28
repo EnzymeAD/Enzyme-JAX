@@ -433,6 +433,28 @@ public:
   }
 };
 
+class TruncIOfIndexUI final : public OpRewritePattern<arith::TruncIOp> {
+public:
+  using OpRewritePattern<arith::TruncIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getOperand().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(ext.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      operand.getOperand());
+    return success();
+  }
+};
+
 class ShrUIOfIndexUI final : public OpRewritePattern<arith::ShRUIOp> {
 public:
   using OpRewritePattern<arith::ShRUIOp>::OpRewritePattern;
@@ -516,8 +538,24 @@ public:
     if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
       return failure();
 
-    if (constValue.getValue().isNegative())
+    if (constValue.getValue().isNegative()) {
+      if (auto add2 = operand.getOperand().getDefiningOp<arith::AddIOp>()) {
+        IntegerAttr constValue2;
+        if (matchPattern(add2.getRhs(), m_Constant(&constValue2))) {
+          auto v2 = constValue.getValue() + constValue2.getValue();
+          if (!v2.isNegative()) {
+            auto rhs = rewriter.create<arith::ConstantIndexOp>(
+                ext.getRhs().getLoc(), v2.getZExtValue());
+            auto idxshr = rewriter.create<arith::AddIOp>(ext.getLoc(),
+                                                         add2.getLhs(), rhs);
+            rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
+                ext, ext.getType(), idxshr);
+            return success();
+          }
+        }
+      }
       return failure();
+    }
 
     auto rhs = rewriter.create<arith::ConstantIndexOp>(
         ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
@@ -526,6 +564,105 @@ public:
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
+  }
+};
+
+class MulIOfIndexUI final : public OpRewritePattern<arith::MulIOp> {
+public:
+  using OpRewritePattern<arith::MulIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MulIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    IntegerAttr constValue;
+    if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
+      return failure();
+
+    auto rhs = rewriter.create<arith::ConstantIndexOp>(
+        ext.getRhs().getLoc(), constValue.getValue().isNegative()
+                                   ? constValue.getValue().getSExtValue()
+                                   : constValue.getValue().getZExtValue());
+    auto idxshr =
+        rewriter.create<arith::MulIOp>(ext.getLoc(), operand.getOperand(), rhs);
+    if (constValue.getValue().isNegative())
+      rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(),
+                                                      idxshr);
+    else
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                        idxshr);
+    return success();
+  }
+};
+
+class AddIOfDoubleIndex final : public OpRewritePattern<arith::AddIOp> {
+public:
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp ext,
+                                PatternRewriter &rewriter) const override {
+    if (!ext.getLhs().getDefiningOp<arith::IndexCastUIOp>() &&
+        !ext.getLhs().getDefiningOp<arith::IndexCastOp>())
+      return failure();
+
+    if (!ext.getRhs().getDefiningOp<arith::IndexCastUIOp>() &&
+        !ext.getRhs().getDefiningOp<arith::IndexCastOp>())
+      return failure();
+
+    if (!ext.getType().isInteger(64))
+      return failure();
+
+    bool sign = ext.getLhs().getDefiningOp<arith::IndexCastOp>() ||
+                ext.getRhs().getDefiningOp<arith::IndexCastOp>();
+
+    auto add = rewriter.create<arith::AddIOp>(
+        ext.getLoc(), ext.getLhs().getDefiningOp()->getOperand(0),
+        ext.getRhs().getDefiningOp()->getOperand(0));
+    if (sign)
+      rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(), add);
+    else
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                        add);
+    return failure();
+  }
+};
+
+class ToRem final : public OpRewritePattern<arith::AddIOp> {
+public:
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp ext,
+                                PatternRewriter &rewriter) const override {
+    for (int i = 0; i < 2; i++) {
+      auto val = ext->getOperand(i);
+      auto val2 = ext->getOperand(1 - i);
+      auto mul = val2.getDefiningOp<arith::MulIOp>();
+      if (!mul)
+        continue;
+      APInt factor;
+      if (!matchPattern(mul.getRhs(), m_ConstantInt(&factor)))
+        continue;
+      auto div = mul.getLhs().getDefiningOp<arith::DivUIOp>();
+      if (!div)
+        continue;
+      APInt divisor;
+      if (!matchPattern(div.getRhs(), m_ConstantInt(&divisor)))
+        continue;
+      if (factor != -divisor)
+        continue;
+      rewriter.replaceOpWithNewOp<arith::RemUIOp>(
+          ext, val, factor.isNegative() ? div.getRhs() : mul.getRhs());
+      return success();
+    }
+    return failure();
   }
 };
 
@@ -952,7 +1089,8 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       patterns
-          .add<ExtUIOfIndexUI, ShrUIOfIndexUI, DivUIOfIndexUI, AddIOfIndexUI>(
+          .add<ExtUIOfIndexUI, TruncIOfIndexUI, ShrUIOfIndexUI, DivUIOfIndexUI,
+               AddIOfIndexUI, MulIOfIndexUI, AddIOfDoubleIndex, ToRem>(
               &getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),

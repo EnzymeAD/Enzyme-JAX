@@ -13,8 +13,8 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
-#include <numeric>
 #include <deque>
+#include <numeric>
 
 #define DEBUG_TYPE "affine-cfg"
 
@@ -2797,65 +2797,106 @@ struct SplitParallelInductions
         continue;
       }
 
+      SmallVector<Operation *> users;
       for (auto U : iv.getUsers()) {
+        users.push_back(U);
+      }
+      while (!users.empty()) {
+        auto U = users.pop_back_val();
         SmallVector<AffineExpr> exprs;
         ValueRange operands;
 
-        if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
-          exprs.append(AS.getAffineMap().getResults().begin(),
-                       AS.getAffineMap().getResults().end());
-          operands = AS.getMapOperands();
-        } else if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
-          exprs.append(AL.getAffineMap().getResults().begin(),
-                       AL.getAffineMap().getResults().end());
+        if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
           operands = AL.getMapOperands();
-        } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
-          exprs.append(AI.getIntegerSet().getConstraints().begin(),
-                       AI.getIntegerSet().getConstraints().end());
-          operands = AI.getOperands();
-        } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
-
-          for (auto UU : cstOp.getResult().getUsers()) {
-
-            Value newBase;
-            if (isa<arith::FloorDivSIOp, arith::RemUIOp>(UU)) {
-              newBase = UU->getOperand(1);
-            } else {
-              UU->dump();
-              legal = false;
-              break;
-            }
-
-            if (base.isValue && !base.v_val)
-              base = ValueOrInt(newBase);
-            else if (base.isValue && base.v_val == newBase) {
-              base = ValueOrInt(newBase);
-            } else if (!base.isValue) {
-              APInt iattr;
-              if (!matchPattern(newBase, m_ConstantInt(&iattr))) {
-                legal = false;
-                break;
+          for (auto E : AL.getAffineMap().getResults()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AL.getAffineMap().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumSymbols());
               }
-              auto newBaseVal = iattr.getZExtValue();
-              if (!(base.i_val == newBaseVal ||
-                    isa<arith::FloorDivSIOp>(UU) &&
-                        (base.i_val % newBaseVal == 0 ||
-                         newBaseVal % base.i_val == 0))) {
-                legal = false;
-                break;
-              }
-
-              base.i_val = base.i_val > newBaseVal ? newBaseVal : base.i_val;
-            } else {
-              legal = false;
-              break;
             }
+            if (functionOf)
+              exprs.push_back(E);
           }
+        } else if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
+          if (AS.getValue() == iv)
+            legal = false;
+          operands = AS.getMapOperands();
+          for (auto E : AS.getAffineMap().getResults()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AS.getAffineMap().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumSymbols());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
+        } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
+          operands = AI.getOperands();
+          for (auto E : AI.getIntegerSet().getConstraints()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AI.getIntegerSet().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |= E.isFunctionOfSymbol(
+                    i - AI.getIntegerSet().getNumSymbols());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
+        } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
+          for (auto UU : cstOp.getResult().getUsers()) {
+            users.push_back(UU);
+          }
+          continue;
+        } else if (auto cstOp = dyn_cast<arith::IndexCastOp>(U)) {
+          for (auto UU : cstOp.getResult().getUsers()) {
+            users.push_back(UU);
+          }
+          continue;
+        } else if (isa<arith::FloorDivSIOp, arith::DivUIOp, arith::RemUIOp>(
+                       U)) {
+          Value newBase = U->getOperand(1);
 
-          if (!legal)
+          if (base.isValue && !base.v_val)
+            base = ValueOrInt(newBase);
+          else if (base.isValue && base.v_val == newBase) {
+            base = ValueOrInt(newBase);
+          } else if (!base.isValue) {
+            APInt iattr;
+            if (!matchPattern(newBase, m_ConstantInt(&iattr))) {
+              legal = false;
+              break;
+            }
+            auto newBaseVal = iattr.getZExtValue();
+            if (!(base.i_val == newBaseVal ||
+                  isa<arith::FloorDivSIOp, arith::DivUIOp>(U) &&
+                      (base.i_val % newBaseVal == 0 ||
+                       newBaseVal % base.i_val == 0))) {
+              legal = false;
+              break;
+            }
+
+            base.i_val = base.i_val > newBaseVal ? newBaseVal : base.i_val;
+          } else {
+            legal = false;
             break;
-          else
-            continue;
+          }
         } else {
           legal = false;
           break;
@@ -3089,27 +3130,43 @@ struct SplitParallelInductions
               AI.setIntegerSet(newIntegerSet);
               AI->insertOperands(is.getNumDims(), newIv);
             });
-          } else if (auto IC = dyn_cast<arith::IndexCastUIOp>(U)) {
+          } else if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(U)) {
             OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPoint(U);
 
-            for (auto UU : IC.getResult().getUsers()) {
+            for (auto UU : U->getResult(0).getUsers()) {
 
-              if (isa<arith::FloorDivSIOp>(UU)) {
-                // TODO
-                // auto mulWithExpr = rewriter.create<arith::MulIOp>(
-
-                rewriter.replaceAllUsesWith(UU->getResult(0), U->getResult(0));
+              if (isa<arith::FloorDivSIOp, arith::DivUIOp>(UU)) {
+                rewriter.setInsertionPoint(UU);
+                auto replacement = rewriter.create<arith::MulIOp>(
+                    UU->getLoc(), U->getResult(0),
+                    rewriter.create<arith::ConstantIntOp>(
+                        UU->getLoc(), base.i_val, U->getResult(0).getType()));
+                replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
+                rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
+                                                            UU->getOperand(1));
               } else if (isa<arith::RemUIOp>(UU)) {
                 rewriter.replaceAllUsesWith(
                     UU->getResult(0),
                     rewriter.create<arith::IndexCastUIOp>(
-                        IC.getLoc(), IC.getResult().getType(), newIv));
+                        U->getLoc(), U->getResult(0).getType(), newIv));
               } else {
                 llvm_unreachable("impossible use of cast");
               }
             }
 
+          } else if (isa<arith::FloorDivSIOp, arith::DivUIOp>(U)) {
+            rewriter.replaceAllUsesWith(U->getResult(0), U->getOperand(0));
+            rewriter.setInsertionPoint(U);
+            auto replacement = rewriter.create<arith::MulIOp>(
+                U->getLoc(), U->getResult(0),
+                rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
+                                                        base.i_val));
+            replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
+            rewriter.replaceOpWithNewOp<arith::DivUIOp>(U, replacement,
+                                                        U->getOperand(1));
+          } else if (isa<arith::RemUIOp>(U)) {
+            rewriter.replaceAllUsesWith(U->getResult(0), newIv);
           } else {
             llvm_unreachable("not supported affine use");
           }
