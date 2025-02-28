@@ -10,7 +10,7 @@ module {
   }
 
   func.func @main(%arg0: tensor<100x100xf32>) -> tensor<100x100xf32> {
-    %0:2 = enzymexla.jit_call @transpose_kernel(%arg0, %arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<100x100xf32>, tensor<100x100xf32>) -> (tensor<100x100xf32>, tensor<100x100xf32>)
+    %0:2 = enzymexla.jit_call @transpose_kernel(%arg0, %arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<100x100xf32>, tensor<100x100xf32>) -> (tensor<100x100xf32>, tensor<100x100xf32>)
     return %0#1 : tensor<100x100xf32>
   }
 }

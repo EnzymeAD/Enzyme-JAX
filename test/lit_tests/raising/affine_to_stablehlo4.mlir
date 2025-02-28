@@ -12,7 +12,7 @@ module {
   }
 
   func.func @main(%84: tensor<204xf64>, %85: tensor<100xf64>) -> tensor<100xf64> {
-    %86:2 = enzymexla.jit_call @myfunc(%84, %85) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<204xf64>, tensor<100xf64>) -> (tensor<204xf64>, tensor<100xf64>)
+    %86:2 = enzymexla.jit_call @myfunc(%84, %85) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<204xf64>, tensor<100xf64>) -> (tensor<204xf64>, tensor<100xf64>)
     return %86#1 : tensor<100xf64>
   }
 }

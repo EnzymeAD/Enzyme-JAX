@@ -572,16 +572,25 @@ static void replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc,
   auto use_opt =
       symbolTable.getSymbolTable(modOp).getSymbolUses(oldFunc, modOp);
   for (auto use : *use_opt) {
-    auto user = use.getUser();
-
-    assert(isa<enzymexla::JITCallOp>(user));
+    auto user = dyn_cast<enzymexla::JITCallOp>(use.getUser());
 
     OpBuilder builder(user);
     auto newCall = builder.create<func::CallOp>(user->getLoc(), newFunc,
                                                 user->getOperands());
 
+    auto operand_aliases = user.getOutputOperandAliases();
+    assert(operand_aliases.size() == user.getNumResults());
+
+    SmallVector<Value> replacements;
+    size_t outputs = user.getNumResults();
+    for (auto alias_attr : operand_aliases) {
+      auto alias = cast<mlir::stablehlo::OutputOperandAliasAttr>(alias_attr);
+      auto operandIndex = alias.getOperandIndex();
+      replacements.push_back(newCall.getResult(operandIndex));
+    }
+
     for (auto [oldRes, newRes] :
-         llvm::zip_equal(user->getResults(), newCall->getResults())) {
+         llvm::zip_equal(user->getResults(), replacements)) {
       oldRes.replaceAllUsesWith(newRes);
     }
 
