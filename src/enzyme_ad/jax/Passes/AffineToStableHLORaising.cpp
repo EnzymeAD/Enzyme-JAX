@@ -226,8 +226,11 @@ static Value alignMemoryAccess(Value val, affine::AffineValueMap src,
     return val;
 
   if (rank < dst.getNumResults()) {
-    assert(rank == 0); // not sure this is valid otherwise. (i.e. if there are
-                       // less moving dims)
+    // not sure this is valid otherwise. (i.e. if there are
+    // less moving dims)
+    if (rank != 0)
+      return nullptr;
+
     auto T = val.getType().cast<RankedTensorType>();
 
     val = builder
@@ -361,6 +364,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // stablehlo.transpose. For each value, maps contains the access map.
     // `alignMemoryAccess` tries to update val to the right size.
     update = alignMemoryAccess(update, maps[update], accessValueMap, builder);
+    if (!update)
+      return failure();
 
     auto newOperand = builder.create<stablehlo::DynamicUpdateSliceOp>(
         op->getLoc(), operand, update, startIndicesValues);
@@ -437,8 +442,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto outputMap = mapA;
 
     auto newA = alignMemoryAccess(a, mapA, mapB, builder);
+    if (!newA)
+      return failure();
     if (newA == a) {
       b = alignMemoryAccess(b, mapB, mapA, builder);
+      if (!b)
+        return failure();
     } else {
       outputMap = mapB;
       a = newA;
@@ -475,14 +484,23 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto mapA = maps[a], mapB = maps[b], mapC = maps[c];
 
-    if (mapA.getAffineMap().getNumResults() == 0)
+    if (mapA.getAffineMap().getNumResults() == 0) {
       a = alignMemoryAccess(a, mapA, mapB, builder);
+      if (!a)
+        return failure();
+    }
 
-    if (mapB.getAffineMap().getNumResults() == 0)
+    if (mapB.getAffineMap().getNumResults() == 0) {
       b = alignMemoryAccess(b, mapB, mapA, builder);
+      if (!b)
+        return failure();
+    }
 
-    if (mapC.getAffineMap().getNumResults() == 0)
+    if (mapC.getAffineMap().getNumResults() == 0) {
       c = alignMemoryAccess(c, mapC, mapA, builder);
+      if (!c)
+        return failure();
+    }
 
     /*if (mapA != mapB || mapA != mapC)*/
     /*  return failure();*/
