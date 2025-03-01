@@ -3252,13 +3252,13 @@ struct MergeParallelInductions
     };
 
     // TODO check all users are affine sums like this.
-    std::map<size_t, Operation *> idxCasts;
+    std::map<size_t, Value> idxCasts;
     SetVector<Operation *> affineMapUsers;
     SmallVector<bool> legality;
     SmallVector<ValueOrInt> fixedUpperBounds;
     for (auto iv : op.getIVs()) {
       bool legal = true;
-      Operation *idxCst = nullptr;
+      Value idxCst = nullptr;
 
       for (auto lb : op.getLowerBoundMap(iv.getArgNumber()).getResults()) {
         if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
@@ -3294,9 +3294,16 @@ struct MergeParallelInductions
       }
 
       SmallVector<Operation *, 1> affineMapUsers_t;
+      SmallVector<std::pair<Value, Operation*>> users;
+
       for (auto U : iv.getUsers()) {
+        users.emplace_back(iv, U);
+      }
+
+      while (!users.empty()) {
+        auto [val, U] = users.pop_back_val();
         SmallVector<AffineExpr> exprs;
-        ValueRange operands;
+        SmallVector<Value> operands;
         if (auto AL = dyn_cast<affine::AffineLoadOp>(U)) {
           operands = AL.getMapOperands();
           for (auto E : AL.getAffineMap().getResults()) {
@@ -3354,44 +3361,33 @@ struct MergeParallelInductions
           }
           affineMapUsers_t.push_back(U);
         } else if (auto idx = dyn_cast<IndexCastOp>(U)) {
-          if (idxCst) {
-            legal = false;
-            break;
-          } else
-            idxCst = idx;
+          for (auto U2 : idx->getUsers())
+            users.emplace_back(idx, U2);
+          continue;
         } else if (auto idx = dyn_cast<IndexCastUIOp>(U)) {
-          if (idxCst) {
-            legal = false;
-            break;
-          } else
-            idxCst = idx;
+          for (auto U2 : idx->getUsers())
+            users.emplace_back(idx, U2);
+          continue;
         } else if (auto addOp = dyn_cast<arith::AddIOp>(U)) {
           if (idxCst) {
             legal = false;
             break;
           }
 
-          // AddI with constant is ignored.
-          if (!matchPattern(addOp.getLhs(), m_Constant()) &&
-              !matchPattern(addOp.getRhs(), m_Constant())) {
-            legal = false;
-            break;
-          }
+          idxCst = val;
 
-          auto result = addOp.getResult();
-          if (!result.hasOneUse()) {
-            legal = false;
-            break;
-          }
+          auto *scope = affine::getAffineScope(op)->getParentOp();
+          DominanceInfo DI(scope);
 
-          if (auto idx = dyn_cast<IndexCastUIOp>(*result.user_begin())) {
-            idxCst = idx;
-          } else if (auto idx = dyn_cast<IndexCastOp>(*result.user_begin())) {
-            idxCst = idx;
-          } else {
-            legal = false;
-            break;
-          }
+          AffineExpr dimExprs[1] = { rewriter.getAffineSymbolExpr(0) };
+          
+          auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1, dimExprs,
+                                    rewriter.getContext());
+
+          operands = { addOp->getResult(0) };
+          fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
+
+          exprs.push_back(map.getResult(0));
         } else {
           legal = false;
           break;
@@ -3515,7 +3511,7 @@ struct MergeParallelInductions
             }
 
             if (idxCasts.count(pair1.first)) {
-              Value val = idxCasts[pair1.first]->getResult(0);
+              Value val = idxCasts[pair1.first];
               if (!val.hasOneUse())
                 continue;
               AddIOp add = dyn_cast<AddIOp>(*val.user_begin());
@@ -3525,12 +3521,12 @@ struct MergeParallelInductions
 
               Operation *mulOrShl = nullptr;
               if (MulIOp mul = other.getDefiningOp<MulIOp>()) {
-                if (mul.getLhs() == idxCasts[pair2.first]->getResult(0)) {
+                if (mul.getLhs() == idxCasts[pair2.first]) {
                   if (!valueCmp(Cmp::EQ, mul.getRhs(),
                                 fixedUpperBounds[pair1.first]))
                     continue;
                 } else {
-                  if (mul.getRhs() != idxCasts[pair2.first]->getResult(0))
+                  if (mul.getRhs() != idxCasts[pair2.first])
                     continue;
                   if (!valueCmp(Cmp::EQ, mul.getLhs(),
                                 fixedUpperBounds[pair1.first]))
@@ -3538,7 +3534,7 @@ struct MergeParallelInductions
                 }
                 mulOrShl = mul;
               } else if (ShLIOp shl = other.getDefiningOp<ShLIOp>()) {
-                if (shl.getLhs() == idxCasts[pair2.first]->getResult(0)) {
+                if (shl.getLhs() == idxCasts[pair2.first]) {
                   IntegerAttr iattr;
                   if (!matchPattern(shl.getRhs(), m_Constant(&iattr)))
                     continue;
@@ -3555,7 +3551,7 @@ struct MergeParallelInductions
                 continue;
               if (!mulOrShl->getResult(0).hasOneUse())
                 continue;
-              if (!idxCasts[pair2.first]->getResult(0).hasOneUse())
+              if (!idxCasts[pair2.first].hasOneUse())
                 continue;
             }
 
@@ -3602,6 +3598,34 @@ struct MergeParallelInductions
   }
 };
 
+
+
+struct AddAddCstEnd
+    : public OpRewritePattern<arith::AddIOp> {
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp op,
+                                PatternRewriter &rewriter) const override {
+    for (int i=0; i<2; i++) {
+      auto val = op->getOperand(i).getDefiningOp<arith::AddIOp>();
+      if (!val) continue;
+      auto val2 = op->getOperand(1-i);
+
+      IntegerAttr iattr;
+      if (matchPattern(val2, m_Constant(&iattr)))
+        continue;
+
+      if (!matchPattern(val.getRhs(), m_Constant(&iattr)))
+        continue;
+
+      auto tmp1 = rewriter.create<arith::AddIOp>(op.getLoc(), val2, val.getLhs());
+      rewriter.replaceOpWithNewOp<arith::AddIOp>(op, tmp1, val.getRhs());
+      return success();
+    }
+    return failure();
+  }
+};
+
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   mlir::enzyme::addSingleIter(rpl, getOperation()->getContext());
@@ -3614,7 +3638,7 @@ void AffineCFGPass::runOnOperation() {
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions,
-          SplitParallelInductions, CanonicalieForBounds>(
+          SplitParallelInductions, CanonicalieForBounds, AddAddCstEnd>(
       getOperation()->getContext());
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);

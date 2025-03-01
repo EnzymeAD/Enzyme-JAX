@@ -575,7 +575,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapAq, dsts, submaps, builder);
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
