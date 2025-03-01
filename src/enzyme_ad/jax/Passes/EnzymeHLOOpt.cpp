@@ -7895,6 +7895,9 @@ void mlir::transform::addConcatenateOpCanon(RewritePatternSet &patterns,
 }
 
 namespace {
+
+#include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
+  
 struct EnzymeHLOOptPass
     : public enzyme::impl::EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   using EnzymeHLOOptPassBase::EnzymeHLOOptPassBase;
@@ -7903,6 +7906,7 @@ struct EnzymeHLOOptPass
     auto context = getOperation()->getContext();
 
     RewritePatternSet patterns(context);
+    populateWithGenerated(patterns);
     patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
                  MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
                  DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
