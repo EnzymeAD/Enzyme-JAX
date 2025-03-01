@@ -3,6 +3,7 @@ load("@llvm-project//llvm:lit_test.bzl", "lit_test")
 [
     lit_test(
         name = "%s.test" % src,
+        timeout = "short",
         srcs = [src],
         data = [
             "@llvm-project//llvm:FileCheck",
