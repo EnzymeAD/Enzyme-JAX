@@ -742,7 +742,10 @@ pybind_extension(
         "@xla//xla/mlir_hlo:deallocation_passes",
         "@xla//xla/mlir_hlo:mlir_hlo",
         "@xla//xla/service/cpu:cpu_executable",
+        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:stream_executor_impl",
-        "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl"
+        "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
+        "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
     ],
 )
