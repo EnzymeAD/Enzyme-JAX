@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Verifier.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -490,6 +491,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     maps[newOp->getResult(0)] = maps[newOperand];
 
     builder.insert(newOp);
+    if (!mlir::verify(newOp).succeeded()) {
+      llvm::errs() << "failed to verify: " << *newOp << "\n";
+      return failure();
+    }
     return success();
   }
 
