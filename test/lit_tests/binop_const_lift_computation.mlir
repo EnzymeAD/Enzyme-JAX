@@ -103,3 +103,28 @@ func.func @subaddconst(%arg0: tensor<f64>) -> tensor<f64> {
   %1 = stablehlo.subtract %0, %cst_0 : tensor<f64>
   return %1 : tensor<f64>
 }
+
+
+func.func @add_chain(%arg0: tensor<3xi64>) -> tensor<3xi64> {
+  // CHECK-LABEL: func @add_chain
+  // CHECK:       %[[CST:.*]] = stablehlo.constant dense<3> : tensor<3xi64>
+  // CHECK-NEXT:  %[[RES:.*]] = stablehlo.add %arg0, %[[CST]] : tensor<3xi64>
+  // CHECK-NEXT:  return %[[RES]] : tensor<3xi64>
+  %c = stablehlo.constant dense<1> : tensor<3xi64>
+  %0 = stablehlo.add %arg0, %c : tensor<3xi64>
+  %1 = stablehlo.add %0, %c : tensor<3xi64>
+  %2 = stablehlo.add %1, %c : tensor<3xi64>
+  return %2 : tensor<3xi64>
+}
+
+func.func @mul_chain(%arg0: tensor<3xi64>) -> tensor<3xi64> {
+  // CHECK-LABEL: func @mul_chain
+  // CHECK:       %[[CST:.*]] = stablehlo.constant dense<8> : tensor<3xi64>
+  // CHECK-NEXT:  %[[RES:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<3xi64>
+  // CHECK-NEXT:  return %[[RES]] : tensor<3xi64>
+  %c = stablehlo.constant dense<2> : tensor<3xi64>
+  %0 = stablehlo.multiply %arg0, %c : tensor<3xi64>
+  %1 = stablehlo.multiply %0, %c : tensor<3xi64>
+  %2 = stablehlo.multiply %1, %c : tensor<3xi64>
+  return %2 : tensor<3xi64>
+}
