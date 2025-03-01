@@ -394,6 +394,33 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "StablehloOptPatternsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-rewriters"],
+            "Passes/StablehloOptPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/StablehloOptPatterns.td",
+    deps = [
+        ":StablehloOptPatternsTdFiles",
+    ],
+)
+
+td_library(
+    name = "StablehloOptPatternsTdFiles",
+    srcs = [
+        "Passes/StablehloOptPatterns.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
 cc_library(
     name = "XLADerivatives",
     srcs = glob(
@@ -423,6 +450,7 @@ cc_library(
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
+        ":StablehloOptPatternsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",

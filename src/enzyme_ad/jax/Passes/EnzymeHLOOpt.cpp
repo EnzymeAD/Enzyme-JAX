@@ -2931,54 +2931,6 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
-// ((add x cst0) cst1) -> (add x1 (add cst0 cst1))
-template <typename T> struct BinOpConstSimplify : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
-    // Only apply to integers
-    if (!isa<IntegerType>(op.getType().getElementType()))
-      return failure();
-
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
-
-    auto lhsConst = matchPattern(lhs, m_Constant());
-    auto rhsConst = matchPattern(rhs, m_Constant());
-
-    if (!lhsConst && !rhsConst)
-      return failure();
-
-    auto constVal = lhsConst ? lhs : rhs;
-    auto otherOp = lhsConst ? rhs.template getDefiningOp<T>()
-                            : lhs.template getDefiningOp<T>();
-
-    if (!otherOp)
-      return failure();
-
-    auto otherLhs = otherOp.getRhs();
-    auto otherRhs = otherOp.getLhs();
-
-    auto otherLhsConst = matchPattern(otherLhs, m_Constant());
-    auto otherRhsConst = matchPattern(otherRhs, m_Constant());
-
-    if (!otherLhsConst && !otherRhsConst)
-      return failure();
-
-    // Both op and other have a constant operand
-    // group constants to a new op.
-    auto otherConstVal = otherLhsConst ? otherLhs : otherRhs;
-    auto otherOperand = otherLhsConst ? otherRhs : otherLhs;
-
-    auto constantAdd = rewriter.create<T>(
-        otherOp.getLoc(), op.getResult().getType(), constVal, otherConstVal);
-    rewriter.replaceOpWithNewOp<T>(op, otherOperand, constantAdd);
-
-    return success();
-  }
-};
-
 struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -7849,7 +7801,10 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 
 ///////////////  End Imported from stablehlo
 
+// clang-format off
+#include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
+// clang-format on
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
@@ -7895,6 +7850,7 @@ void mlir::transform::addConcatenateOpCanon(RewritePatternSet &patterns,
 }
 
 namespace {
+
 struct EnzymeHLOOptPass
     : public enzyme::impl::EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
   using EnzymeHLOOptPassBase::EnzymeHLOOptPassBase;
@@ -7903,6 +7859,7 @@ struct EnzymeHLOOptPass
     auto context = getOperation()->getContext();
 
     RewritePatternSet patterns(context);
+    populateWithGenerated(patterns);
     patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
                  MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
                  DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
@@ -7928,9 +7885,7 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>,
-        BinOpConstSimplify<stablehlo::AddOp>,
-        BinOpConstSimplify<stablehlo::MulOp>>(context);
+        BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
