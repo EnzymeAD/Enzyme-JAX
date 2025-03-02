@@ -866,6 +866,54 @@ public:
   }
 };
 
+/// Replace scf.if that yields a boolean with predicated execution
+struct PredicateIfOp : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+
+    // Only handle if ops that yield a boolean
+    if (ifOp.getNumResults() != 1)
+      return failure();
+    if (!ifOp.getResult(0).getType().isInteger(1))
+      return failure();
+
+    // Get the then block
+    Block &thenBlock = ifOp.getThenRegion().front();
+    Block &elseBlock = ifOp.getElseRegion().front();
+
+    // Check if else block just yields false
+    auto elseYield = dyn_cast<scf::YieldOp>(elseBlock.getTerminator());
+    if (!elseYield)
+      return failure();
+    APInt value;
+    if (!matchPattern(elseYield.getOperand(0), m_ConstantInt(&value)) ||
+        !value.isZero())
+      return failure();
+
+    // Get the yield op from then block
+    auto yieldOp = dyn_cast<scf::YieldOp>(thenBlock.getTerminator());
+    if (!yieldOp)
+      return failure();
+
+    // Move all ops except the terminator before the if
+    auto insertPt = ifOp.getOperation();
+    for (auto &op : llvm::make_early_inc_range(thenBlock)) {
+      if (!isa<scf::YieldOp>(op)) {
+        op.moveBefore(insertPt);
+      }
+    }
+
+    // Create the final condition
+    Value finalCond = rewriter.create<arith::AndIOp>(
+        ifOp.getLoc(), ifOp.getCondition(), yieldOp.getOperand(0));
+
+    rewriter.replaceOp(ifOp, finalCond);
+    return success();
+  }
+};
+
 } // end namespace
 
 struct CanonicalizeLoopsPass
@@ -875,7 +923,7 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf, PredicateIfOp,
                    SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
