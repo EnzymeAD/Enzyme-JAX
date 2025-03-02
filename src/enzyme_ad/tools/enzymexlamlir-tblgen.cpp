@@ -35,11 +35,14 @@ static llvm::cl::opt<ActionType> action(
     llvm::cl::values(clEnumValN(GenPopulatePatternsInterfaceImpl,
                                 "gen-populate-patterns-interface-impl", "")),
     llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsFuncDecl,
-                                "gen-populate-stablehlo-patterns-func-decls", "")),
+                                "gen-populate-stablehlo-patterns-func-decls",
+                                "")),
     llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsFuncDef,
-                                "gen-populate-stablehlo-patterns-func-defs", "")),
-    llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsInterfaceImpl,
-                                "gen-populate-stablehlo-patterns-interface-impl", "")),
+                                "gen-populate-stablehlo-patterns-func-defs",
+                                "")),
+    llvm::cl::values(
+        clEnumValN(GenPopulateStablehloPatternsInterfaceImpl,
+                   "gen-populate-stablehlo-patterns-interface-impl", "")),
     llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsFuncDecl,
                                 "gen-populate-raising-patterns-func-decls",
                                 "")),
@@ -54,6 +57,7 @@ llvm::StringRef getPopulateFunctionNameSuffix(const llvm::Record *rec) {
                                         : rec->getName();
 }
 
+// Emit impl for the transform op interface
 static bool emitPopulatePatterns(llvm::raw_ostream &os,
                                  const llvm::RecordKeeper &records,
                                  llvm::StringRef patternOpStr) {
@@ -91,6 +95,9 @@ static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
   return false;
 }
 
+// Create definition with implementation:
+//   {% for pattern in patterns %}
+//     pattern.add<pattern>(&context);
 static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
                                          const llvm::RecordKeeper &records,
                                          llvm::StringRef patternOpStr) {
@@ -113,6 +120,27 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
   return false;
 }
 
+// Create definition with the implementation:
+//   patterns.add<$cppClass>(&context);
+static bool emitPopulateSelfPatternsFuncDefs(llvm::raw_ostream &os,
+                                             const llvm::RecordKeeper &records,
+                                             llvm::StringRef patternOpStr) {
+  for (const llvm::Record *rec :
+       records.getAllDerivedDefinitions(patternOpStr)) {
+    os << "void ";
+    llvm::StringRef ns = rec->getValueAsString("cppNamespace");
+    if (!ns.empty())
+      os << ns;
+    os << "::populate" << getPopulateFunctionNameSuffix(rec)
+       << "(::mlir::RewritePatternSet &patterns,\n"
+       << "    ::mlir::MLIRContext &context,\n"
+       << "    ::mlir::PatternBenefit benefit) {\n";
+    os << "  patterns.add<" << getPopulateFunctionNameSuffix(rec) << ">(&context);\n";
+    os << "}\n\n";
+  }
+  return false;
+}
+
 static bool tablegenMain(llvm::raw_ostream &os,
                          const llvm::RecordKeeper &records) {
   switch (action) {
@@ -125,7 +153,7 @@ static bool tablegenMain(llvm::raw_ostream &os,
   case GenPopulateStablehloPatternsFuncDecl:
     return emitPopulatePatternsFuncDecls(os, records, "StablehloPatternOp");
   case GenPopulateStablehloPatternsFuncDef:
-    return emitPopulatePatternsFuncDefs(os, records, "StablehloPatternOp");
+    return emitPopulateSelfPatternsFuncDefs(os, records, "StablehloPatternOp");
   case GenPopulateStablehloPatternsInterfaceImpl:
     return emitPopulatePatterns(os, records, "StablehloPatternOp");
   case GenPopulateRaisingPatternsFuncDecl:

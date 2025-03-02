@@ -12,38 +12,21 @@ include "mlir/IR/OpBase.td"
 include "stablehlo/dialect/StablehloOps.td"
 
 
-def SearchablePatternDescriptorOpInterface :
-    OpInterface<"SearchablePatternDescriptorOpInterface",
-                [PatternDescriptorOpInterface]> {
-  let methods = [
-    StaticInterfaceMethod<
-      [{Generates possible attribute combinations for opaque op construction.}],
-      "::llvm::SmallVector<::mlir::DictionaryAttr>",
-      "getPossibleAttrCombinations",
-      (ins "::mlir::Builder &":$builder),
-      /*methodBody=*/[{}],
-      /*defaultImplementation=*/[{
-        return {builder.getDictionaryAttr({})};
-      }]>,
-  ];
-}
-
 // Wrap both Pat and Transform Dialect op
 class StablehloPatternOp<string mnemonic,
                         dag pattern,
                         dag result,
                         list<dag> preds = [],
                         list<dag> supplemental_results = [],
-                        dag benefitAdded = (addBenefit 0), list<Trait> traits = []> :
+                        dag benefitAdded = (addBenefit 0)> :
         Pat<pattern, result, preds, supplemental_results, benefitAdded>,
-        Op<Transform_Dialect,
-         "apply_patterns.stablehlo." # mnemonic,
-          // For some reason, inherited methods are not getting declared...
-         !listconcat(
-            [DeclareOpInterfaceMethods<SearchablePatternDescriptorOpInterface>,
-             DeclareOpInterfaceMethods<PatternDescriptorOpInterface>],
-            traits)> {
-  let patterns = ["$cppClass"];
+        Op<Transform_Dialect, "apply_patterns.stablehlo." # mnemonic,
+           [DeclareOpInterfaceMethods<PatternDescriptorOpInterface>]> {
+  let extraClassDefinition = [{
+    void mlir::transform::populatePatterns(::mlir::RewritePatternSet &patterns) {
+      patterns->add<::$cppClass>($_self.getContext(), getBenefit() ? PatternBenefit(*getBenefit()) : PatternBenefit(1)));
+    }
+  }];
 }
 
 
@@ -56,9 +39,11 @@ class StablehloPatternOp<string mnemonic,
 // folding applied after.
 
 // Pattern: op(op(X, cstA), cstB) -> op(X, op(cstA, cstB))
-class BinOpLiftConstantComputation<Op OpTypeA, Op OpTypeB,
+class BinOpLiftConstantComputation<string mnemonic,
+                                   Op OpTypeA, Op OpTypeB,
                                    Op ResOpTypeA = OpTypeA, Op ResOpTypeB = OpTypeB>
-  : Pat<(OpTypeA:$opA
+  : StablehloPatternOp<mnemonic,
+        (OpTypeA:$opA
           (OpTypeB:$opB $lhsB, (StableHLO_ConstantOp:$rhsB $valueB)),
           (StableHLO_ConstantOp:$rhsA $valueA)),
         (ResOpTypeA $lhsB, (ResOpTypeB $rhsB, $rhsA))>;
@@ -72,11 +57,7 @@ class BinOpLiftConstantComputationFlip<string mnemonic,
           (OpTypeA:$opA
             (OpTypeB:$opB $lhsB, (StableHLO_ConstantOp:$rhsB $valueB)),
             (StableHLO_ConstantOp:$rhsA $valueA)),
-          (ResOpTypeA $lhsB, (ResOpTypeB $rhsA, $rhsB))> {
-  let arguments = (ins OptionalAttr<I64Attr>:$benefit);
-  list<string> patterns = [];
-  let assemblyFormat = "attr-dict";
-}
+          (ResOpTypeA $lhsB, (ResOpTypeB $rhsA, $rhsB))>;
 
 // Naming convention: `<RootOp><ChildOp>Const`:
 
@@ -84,22 +65,22 @@ class BinOpLiftConstantComputationFlip<string mnemonic,
 def MulDivConst : BinOpLiftConstantComputationFlip<"mul_div_const", StableHLO_MulOp, StableHLO_DivOp>;
 
 // Pattern: (x * cst_1) * cst_2 -> x * (cst_1 * cst_2)
-def MulMulConst : BinOpLiftConstantComputation<StableHLO_MulOp, StableHLO_MulOp>;
+def MulMulConst : BinOpLiftConstantComputation<"mul_mul_const", StableHLO_MulOp, StableHLO_MulOp>;
 
 // Pattern: (x * cst_1) / cst_2 -> x * (cst_1 / cst_2)
-def DivMulConst : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_MulOp, StableHLO_MulOp, StableHLO_DivOp>;
+def DivMulConst : BinOpLiftConstantComputation<"div_mul_const", StableHLO_DivOp, StableHLO_MulOp, StableHLO_MulOp, StableHLO_DivOp>;
 
 // Pattern: (x / cst_1) / cst_2 -> x / (cst_1 * cst_2)
-def DivDivConst : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_DivOp, StableHLO_DivOp, StableHLO_MulOp>;
+def DivDivConst : BinOpLiftConstantComputation<"div_div_const", StableHLO_DivOp, StableHLO_DivOp, StableHLO_DivOp, StableHLO_MulOp>;
 
 // Pattern: (x + cst_1) + cst_2 -> x + (cst_1 + cst_2)
-def AddAddConst : BinOpLiftConstantComputation<StableHLO_AddOp, StableHLO_AddOp>;
+def AddAddConst : BinOpLiftConstantComputation<"add_add_const", StableHLO_AddOp, StableHLO_AddOp>;
 
 // Pattern: (x - cst_1) + cst_2 -> x + (cst_2 - cst_1)
-def AddSubConst : BinOpLiftConstantComputationFlip<"mul_div_const", StableHLO_AddOp, StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_SubtractOp>;
+def AddSubConst : BinOpLiftConstantComputationFlip<"add_sub_const", StableHLO_AddOp, StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_SubtractOp>;
 
 // Pattern: (x - cst_1) - cst_2 -> x - (cst_1 + cst_2)
-def SubSubConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_AddOp>;
+def SubSubConst : BinOpLiftConstantComputation<"sub_sub_const", StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_AddOp>;
 
 // Pattern: (x + cst_1) - cst_2 -> x + (cst_1 - cst_2)
-def SubAddConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
+def SubAddConst : BinOpLiftConstantComputation<"sub_add_const", StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
