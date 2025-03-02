@@ -217,17 +217,19 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
 }
 
 static affine::AffineValueMap
-alignMemoryAccess(Value &a, affine::AffineValueMap src, Value* bs,
+alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder) {
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
-  
+
   SmallVector<int64_t> shapeA = affineMapShape(src);
-  assert(shapeA.size() == cast<RankedTensorType>(a.getType()).getShape().size());
+  assert(shapeA.size() ==
+         cast<RankedTensorType>(a.getType()).getShape().size());
   SmallVector<SmallVector<int64_t>> shapeBs;
-  for (int i=0; i<dsts.size(); i++) {
+  for (int i = 0; i < dsts.size(); i++) {
     shapeBs.push_back(affineMapShape(dsts[i]));
-    assert(shapeBs[i].size() == cast<RankedTensorType>(bs[i].getType()).getShape().size());
+    assert(shapeBs[i].size() ==
+           cast<RankedTensorType>(bs[i].getType()).getShape().size());
   }
 
   SmallVector<int64_t> outputShape;
@@ -250,7 +252,8 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value* bs,
 
     Value ivA = getIVForExpr(src, EA);
 
-    for (auto [dst, broadcastDimensionsB] : llvm::zip(dsts, broadcastDimensionsBs)) {
+    for (auto [dst, broadcastDimensionsB] :
+         llvm::zip(dsts, broadcastDimensionsBs)) {
 
       for (unsigned j = 0, e = dst.getNumResults(); j < e; ++j) {
         auto EB = dst.getAffineMap().getResult(j);
@@ -267,14 +270,16 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value* bs,
     mapOperands.push_back(ivA);
   }
 
-  for (auto &&[dst, broadcastDimensionsB, shapeB] : llvm::zip(dsts, broadcastDimensionsBs, shapeBs)) {
+  for (auto &&[dst, broadcastDimensionsB, shapeB] :
+       llvm::zip(dsts, broadcastDimensionsBs, shapeBs)) {
     for (auto [i, EB] : llvm::enumerate(dst.getAffineMap().getResults())) {
       if (broadcastDimensionsB[i] != -1)
         continue; // dim already set in A
 
       Value ivB = getIVForExpr(dst, EB);
 
-      for (auto &&[dst2, broadcastDimensionsB2] : llvm::zip(dsts, broadcastDimensionsBs)) {
+      for (auto &&[dst2, broadcastDimensionsB2] :
+           llvm::zip(dsts, broadcastDimensionsBs)) {
         for (unsigned j = 0, e = dst2.getNumResults(); j < e; ++j) {
           auto EB2 = dst2.getAffineMap().getResult(j);
           if (getIVForExpr(dst2, EB2) == ivB) {
@@ -298,14 +303,14 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value* bs,
               a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
           .getResult();
 
-  for (size_t i=0; i<dsts.size(); i++) {
+  for (size_t i = 0; i < dsts.size(); i++) {
     auto TB = bs[i].getType().cast<RankedTensorType>();
     bs[i] = builder
-            .create<stablehlo::BroadcastInDimOp>(
-                bs[i].getLoc(), TB.clone(outputShape), bs[i], broadcastDimensionsBs[i])
-            .getResult();
+                .create<stablehlo::BroadcastInDimOp>(
+                    bs[i].getLoc(), TB.clone(outputShape), bs[i],
+                    broadcastDimensionsBs[i])
+                .getResult();
   }
-
 
   affine::AffineValueMap outputMap(
       AffineMap::getMultiDimIdentityMap(mapOperands.size(), a.getContext()),
@@ -313,7 +318,6 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value* bs,
 
   return outputMap;
 }
-
 
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,

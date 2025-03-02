@@ -18,10 +18,9 @@ module {
   }
 }
 
-// CHECK:  func.func @ran(%arg0: memref<1x99x194xf64, 1>) {
-// CHECK-NEXT:    %cst = arith.constant 2.731500e+02 : f64
-// CHECK-NEXT:    affine.parallel (%arg1, %arg2) = (0, 0) to (87, 182) {
-// CHECK-NEXT:        affine.store %cst, %arg0[0, %arg1 + 6, %arg2 + 6] : memref<1x99x194xf64, 1>
+// CHECK:    %c1 = arith.constant 1 : index
+// CHECK-NEXT:    affine.parallel (%arg3) = (0) to (96) {
+// CHECK-NEXT:      %0 = arith.addi %arg3, %c1 : index
+// CHECK-NEXT:      %1 = arith.index_castui %0 : index to i64
+// CHECK-NEXT:      "test.op"(%1) : (i64) -> ()
 // CHECK-NEXT:    }
-// CHECK-NEXT:    return
-// CHECK-NEXT:  }
