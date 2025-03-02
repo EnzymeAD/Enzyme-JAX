@@ -409,6 +409,29 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "StablehloOptTransformsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-stablehlo-patterns-func-decls"],
+            "TransformOps/StablehloOptTransforms.h.inc",
+        ),
+        (
+            ["-gen-populate-stablehlo-patterns-func-defs"],
+            "TransformOps/StablehloOptTransforms.cpp.inc",
+        ),
+        (
+            ["-gen-populate-stablehlo-patterns-interface-impl"],
+            "TransformOps/StablehloOptTransformsImpl.cpp.inc",
+        )
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+    td_file = "Passes/StablehloOptPatterns.td",
+    deps = [
+        ":StablehloOptPatternsTdFiles",
+    ],
+)
+
 td_library(
     name = "StablehloOptPatternsTdFiles",
     srcs = [
@@ -417,6 +440,7 @@ td_library(
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:TransformDialectTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
     ],
 )
@@ -451,6 +475,7 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":StablehloOptTransformsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",

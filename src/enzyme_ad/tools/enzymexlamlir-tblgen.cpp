@@ -18,6 +18,9 @@ enum ActionType {
   GenPopulatePatternsFuncDecl,
   GenPopulatePatternsFuncDef,
   GenPopulatePatternsInterfaceImpl,
+  GenPopulateStablehloPatternsFuncDecl,
+  GenPopulateStablehloPatternsFuncDef,
+  GenPopulateStablehloPatternsInterfaceImpl,
   GenPopulateRaisingPatternsFuncDecl,
   GenPopulateRaisingPatternsFuncDef,
   GenPopulateRaisingPatternsInterfaceImpl,
@@ -31,6 +34,12 @@ static llvm::cl::opt<ActionType> action(
                                 "gen-populate-patterns-func-defs", "")),
     llvm::cl::values(clEnumValN(GenPopulatePatternsInterfaceImpl,
                                 "gen-populate-patterns-interface-impl", "")),
+    llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsFuncDecl,
+                                "gen-populate-stablehlo-patterns-func-decls", "")),
+    llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsFuncDef,
+                                "gen-populate-stablehlo-patterns-func-defs", "")),
+    llvm::cl::values(clEnumValN(GenPopulateStablehloPatternsInterfaceImpl,
+                                "gen-populate-stablehlo-patterns-interface-impl", "")),
     llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsFuncDecl,
                                 "gen-populate-raising-patterns-func-decls",
                                 "")),
@@ -113,6 +122,12 @@ static bool tablegenMain(llvm::raw_ostream &os,
     return emitPopulatePatternsFuncDefs(os, records, "EnzymeHLOPatternOp");
   case GenPopulatePatternsInterfaceImpl:
     return emitPopulatePatterns(os, records, "EnzymeHLOPatternOp");
+  case GenPopulateStablehloPatternsFuncDecl:
+    return emitPopulatePatternsFuncDecls(os, records, "StablehloPatternOp");
+  case GenPopulateStablehloPatternsFuncDef:
+    return emitPopulatePatternsFuncDefs(os, records, "StablehloPatternOp");
+  case GenPopulateStablehloPatternsInterfaceImpl:
+    return emitPopulatePatterns(os, records, "StablehloPatternOp");
   case GenPopulateRaisingPatternsFuncDecl:
     return emitPopulatePatternsFuncDecls(os, records, "RaisingPatternOp");
   case GenPopulateRaisingPatternsFuncDef:
