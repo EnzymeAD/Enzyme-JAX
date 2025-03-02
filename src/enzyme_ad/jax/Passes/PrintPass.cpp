@@ -29,7 +29,7 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
 
     OpPrintingFlags flags;
     if (debug)
-      flags.enableDebugInfo(/*pretty*/ false);
+      flags.enableDebugInfo(true, /*pretty*/ false);
     if (use_stdout) {
       getOperation()->print(llvm::outs(), flags);
       llvm::outs() << "\n";
