@@ -674,7 +674,7 @@ public:
     else
       rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                         add);
-    return failure();
+    return success();
   }
 };
 
