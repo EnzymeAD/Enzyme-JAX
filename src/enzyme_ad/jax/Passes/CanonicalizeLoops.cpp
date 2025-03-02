@@ -384,6 +384,18 @@ std::optional<int64_t> maxSize(mlir::Value v) {
 
     return (*lhs) >> constValue.getValue().getZExtValue();
   }
+  if (auto rem = v.getDefiningOp<arith::RemUIOp>()) {
+    auto lhs = maxSize(rem.getLhs());
+
+    APInt constValue;
+    if (!matchPattern(rem.getRhs(), m_ConstantInt(&constValue)))
+      return lhs;
+
+    if (!lhs)
+      return constValue.getZExtValue();
+
+    return *lhs < constValue.getZExtValue() ? *lhs : constValue.getZExtValue();
+  }
   if (auto shr = v.getDefiningOp<arith::DivUIOp>()) {
     auto lhs = maxSize(shr.getLhs());
     if (!lhs)
@@ -573,13 +585,14 @@ public:
 
   LogicalResult matchAndRewrite(arith::MulIOp ext,
                                 PatternRewriter &rewriter) const override {
-    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
-    if (!operand)
+    auto operand = ext.getLhs().getDefiningOp();
+    if (!isa<arith::IndexCastUIOp, arith::IndexCastOp>(operand))
       return failure();
-    auto maxSizeOpt = maxSize(operand.getOperand());
+    auto maxSizeOpt = maxSize(operand->getOperand(0));
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+    if (APInt::getMaxValue(
+            operand->getResult(0).getType().getIntOrFloatBitWidth())
             .ult(*maxSizeOpt))
       return failure();
 
@@ -591,8 +604,8 @@ public:
         ext.getRhs().getLoc(), constValue.getValue().isNegative()
                                    ? constValue.getValue().getSExtValue()
                                    : constValue.getValue().getZExtValue());
-    auto idxshr =
-        rewriter.create<arith::MulIOp>(ext.getLoc(), operand.getOperand(), rhs);
+    auto idxshr = rewriter.create<arith::MulIOp>(ext.getLoc(),
+                                                 operand->getOperand(0), rhs);
     if (constValue.getValue().isNegative())
       rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(),
                                                       idxshr);
