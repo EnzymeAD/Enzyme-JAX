@@ -603,6 +603,36 @@ public:
   }
 };
 
+class ShLIOfIndexUI final : public OpRewritePattern<arith::ShLIOp> {
+public:
+  using OpRewritePattern<arith::ShLIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShLIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    IntegerAttr constValue;
+    if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
+      return failure();
+
+    auto rhs = rewriter.create<arith::ConstantIndexOp>(
+        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr =
+        rewriter.create<arith::ShLIOp>(ext.getLoc(), operand.getOperand(), rhs);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
+                                                      idxshr);
+    return success();
+  }
+};
+
 class AddIOfDoubleIndex final : public OpRewritePattern<arith::AddIOp> {
 public:
   using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
@@ -1088,10 +1118,9 @@ struct CanonicalizeLoopsPass
 
     {
       RewritePatternSet patterns(&getContext());
-      patterns
-          .add<ExtUIOfIndexUI, TruncIOfIndexUI, ShrUIOfIndexUI, DivUIOfIndexUI,
-               AddIOfIndexUI, MulIOfIndexUI, AddIOfDoubleIndex, ToRem>(
-              &getContext());
+      patterns.add<ExtUIOfIndexUI, TruncIOfIndexUI, ShrUIOfIndexUI,
+                   DivUIOfIndexUI, AddIOfIndexUI, MulIOfIndexUI, ShLIOfIndexUI,
+                   AddIOfDoubleIndex, ToRem>(&getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {

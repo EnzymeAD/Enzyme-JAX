@@ -130,7 +130,13 @@ def PrintPass : Pass<"print"> {
       /*CLI argument=*/"stdout",
       /*type=*/"bool",
       /*default=*/"true",
-      /*description=*/"Whether to print to stdout (vs stderr)">];
+      /*description=*/"Whether to print to stdout (vs stderr)">,
+      Option</*C++ variable name=*/"debug",
+      /*CLI argument=*/"debug",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to print to stdout (vs stderr)">,
+      ];
 }
 
 def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
