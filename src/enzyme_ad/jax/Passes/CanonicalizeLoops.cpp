@@ -586,7 +586,7 @@ public:
   LogicalResult matchAndRewrite(arith::MulIOp ext,
                                 PatternRewriter &rewriter) const override {
     auto operand = ext.getLhs().getDefiningOp();
-    if (!isa<arith::IndexCastUIOp, arith::IndexCastOp>(operand))
+    if (!operand || !isa<arith::IndexCastUIOp, arith::IndexCastOp>(operand))
       return failure();
     auto maxSizeOpt = maxSize(operand->getOperand(0));
     if (!maxSizeOpt)
