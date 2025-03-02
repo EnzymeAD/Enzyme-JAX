@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(affine-cfg,canonicalize,raise-affine-to-stablehlo,canonicalize,arith-raise,canonicalize,enzyme-hlo-opt{max_constant_expansion=0},canonicalize)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(func.func(canonicalize-loops),affine-cfg,canonicalize,raise-affine-to-stablehlo,canonicalize,arith-raise,canonicalize,enzyme-hlo-opt{max_constant_expansion=0},canonicalize)" | FileCheck %s
 
 module {
     func.func private @"##call__Z18gpu_compute__x_Az_16CompilerMetadataI10StaticSizeI6_185__E12DynamicCheckvv7NDRangeILi1ES0_I5_12__ES0_I5_16__EvvEE21LatitudeLongitudeGridI7Float648Periodic7Bounded4Flat28StaticVerticalDiscretizationIvvS9_S9_EvvS9_S9_11OffsetArrayIS9_Li1E12StepRangeLenIS9_14TwicePrecisionIS9_ESI_5Int64EESL_vESF_IS9_Li1E13CuTracedArrayIS9_Li1ELi1E6_186__EESP_SP_SP_SP_SP_SP_SP_#703$par65"(%arg0: memref<186xf64, 1>, %arg1: memref<186xf64, 1>, %arg2: memref<186xf64, 1>, %arg3: memref<186xf64, 1>, %arg4: memref<186xf64, 1>, %arg5: memref<186xf64, 1>, %arg6: memref<186xf64, 1>, %arg7: memref<186xf64, 1>) {

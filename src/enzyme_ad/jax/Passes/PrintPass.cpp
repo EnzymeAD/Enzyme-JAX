@@ -26,10 +26,17 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
   using PrintPassBase::PrintPassBase;
 
   void runOnOperation() override {
-    if (use_stdout)
-      llvm::outs() << *getOperation() << "\n";
-    else
-      llvm::errs() << *getOperation() << "\n";
+
+    OpPrintingFlags flags;
+    if (debug)
+      flags.enableDebugInfo(/*pretty*/ false);
+    if (use_stdout) {
+      getOperation()->print(llvm::outs(), flags);
+      llvm::outs() << "\n";
+    } else {
+      getOperation()->print(llvm::errs(), flags);
+      llvm::errs() << "\n";
+    }
   }
 };
 
