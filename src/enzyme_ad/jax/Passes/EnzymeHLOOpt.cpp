@@ -6230,7 +6230,7 @@ struct BroadcastInDimOpCanon final
       // BroadcastInDim equivalent to transpose.
       if (type.getRank() == operandTy.getRank()) {
         rewriter.replaceOpWithNewOp<mlir::stablehlo::TransposeOp>(
-            op, type, operand, dims);
+            op, type, operand, getInversePermutation(dims));
         return success();
       }
     }
