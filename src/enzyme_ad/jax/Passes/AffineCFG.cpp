@@ -3471,8 +3471,8 @@ struct MergeParallelInductions
               if (i < AI.getIntegerSet().getNumDims()) {
                 functionOf |= E.isFunctionOfDim(i);
               } else {
-                functionOf |= E.isFunctionOfSymbol(
-                    i - AI.getIntegerSet().getNumDims());
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AI.getIntegerSet().getNumDims());
               }
             }
             if (functionOf)
