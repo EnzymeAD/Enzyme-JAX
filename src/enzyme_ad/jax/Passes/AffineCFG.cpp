@@ -1827,12 +1827,13 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       SmallVector<Value> vals;
       rewriter.setInsertionPointToStart(&affineLoop.getRegion().front());
       for (Value arg : affineLoop.getRegion().front().getArguments()) {
-        if (arg == affineLoop.getInductionVar() &&
+        bool isInduction = arg == affineLoop.getInductionVar();
+	if (isInduction &&
             arg.getType() != loop.getInductionVar().getType()) {
           arg = rewriter.create<arith::IndexCastOp>(
               loop.getLoc(), loop.getInductionVar().getType(), arg);
         }
-        if (rewrittenStep && arg == affineLoop.getInductionVar()) {
+        if (rewrittenStep && isInduction) {
           arg = rewriter.create<AddIOp>(
               loop.getLoc(), loop.getLowerBound(),
               rewriter.create<MulIOp>(loop.getLoc(), arg, loop.getStep()));
