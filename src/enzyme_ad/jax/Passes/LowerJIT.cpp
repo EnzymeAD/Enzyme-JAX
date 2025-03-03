@@ -974,11 +974,6 @@ struct LowerJITPass
           NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
       auto existingBackendConfig =
           op->getAttrOfType<DictionaryAttr>("backend_config");
-      if (existingBackendConfig) {
-        for (auto attr : existingBackendConfig.getValue()) {
-          names.push_back(attr);
-        }
-      }
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
       Operation *replacement;
@@ -999,11 +994,11 @@ struct LowerJITPass
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_cpu"),
             /* has_side_effect*/ op.getHasSideEffectAttr(),
-            /*backend_config*/ dattr,
+            /*backend_config*/ backendstr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
                 rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+                mlir::stablehlo::CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
             output_operand_aliases);
 
