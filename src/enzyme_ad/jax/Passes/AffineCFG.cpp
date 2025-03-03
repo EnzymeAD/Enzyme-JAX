@@ -2893,6 +2893,7 @@ struct SplitParallelInductions
       for (auto U : iv.getUsers()) {
         users.push_back(U);
       }
+      bool hasRemainder = false;
       while (!users.empty()) {
         auto U = users.pop_back_val();
         SmallVector<AffineExpr> exprs;
@@ -2963,6 +2964,9 @@ struct SplitParallelInductions
           continue;
         } else if (isa<arith::FloorDivSIOp, arith::DivUIOp, arith::RemUIOp>(
                        U)) {
+          if (isa<arith::RemUIOp>(U)) {
+            hasRemainder |= isa<arith::RemUIOp>(U);
+          }
           Value newBase = U->getOperand(1);
 
           if (base.isValue && !base.v_val)
@@ -2993,10 +2997,9 @@ struct SplitParallelInductions
           legal = false;
           break;
         }
-
         auto findBasePattern = [](Value iv, AffineExpr root,
                                   ValueRange operands, ValueOrInt &base,
-                                  bool &legal) {
+                                  bool &legal, bool &hasRemainder) {
           SmallVector<AffineExpr> todo = {root};
           while (!todo.empty()) {
             auto subExpr = todo.back();
@@ -3026,6 +3029,10 @@ struct SplitParallelInductions
                 return;
               }
 
+              if (kind == AffineExprKind::Mod) {
+                hasRemainder = true;
+              }
+
               if (base.isValue && base.v_val == nullptr) {
                 base = newBase;
               } else if (base.isValue && newBase.isValue &&
@@ -3053,7 +3060,7 @@ struct SplitParallelInductions
         };
 
         for (auto expr : exprs) {
-          findBasePattern(iv, expr, operands, base, legal);
+          findBasePattern(iv, expr, operands, base, legal, hasRemainder);
           if (!legal)
             break;
         }
@@ -3065,6 +3072,8 @@ struct SplitParallelInductions
       if (base.isValue && !base.v_val) {
         legal = false;
       }
+      if (!hasRemainder)
+        legal = false;
 
       // We can add an extra iv
       if (legal) {
@@ -3096,6 +3105,11 @@ struct SplitParallelInductions
 
         AffineExpr ubound0 =
             op.getUpperBoundsMap().getResult(idx).floorDiv(baseExpr);
+
+        if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext())) {
+          continue;
+        }
+
         AffineExpr ubound1 =
             op.getUpperBoundsMap().getResult(idx).floorDiv(ubound0);
 
