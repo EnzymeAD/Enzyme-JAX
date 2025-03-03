@@ -3431,7 +3431,7 @@ struct MergeParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |=
-                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumSymbols());
+                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumDims());
               }
             }
             if (functionOf)
@@ -3453,7 +3453,7 @@ struct MergeParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |=
-                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumSymbols());
+                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumDims());
               }
             }
             if (functionOf)
@@ -3472,7 +3472,7 @@ struct MergeParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |= E.isFunctionOfSymbol(
-                    i - AI.getIntegerSet().getNumSymbols());
+                    i - AI.getIntegerSet().getNumDims());
               }
             }
             if (functionOf)
