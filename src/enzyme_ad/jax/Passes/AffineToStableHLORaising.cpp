@@ -54,7 +54,6 @@ struct InductionVariableRange {
   int64_t lb;
   int64_t ub;
   int64_t step;
-  bool reverse;
 
   int64_t getNumIters() { return (ub - lb) / step; }
 };
@@ -98,7 +97,6 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
   range.lb = lb;
   range.ub = ub;
   range.step = step;
-  range.reverse = false;
 
   return std::optional<InductionVariableRange>{range};
 }
@@ -134,28 +132,23 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
     auto kind = expr.getKind();
     switch (kind) {
     case AffineExprKind::Add:
-      if (rangeDyn->reverse) {
-        range.lb = -rangeDyn->ub + const_;
-        range.ub = -rangeDyn->lb + const_;
-        range.step = rangeDyn->step;
-      } else {
-        range.lb = rangeDyn->lb + const_;
-        range.ub = rangeDyn->ub + const_;
-        range.step = rangeDyn->step;
-      }
-      range.reverse = rangeDyn->reverse;
+      range.lb = rangeDyn->lb + const_;
+      range.ub = rangeDyn->ub + const_;
+      range.step = rangeDyn->step;
       break;
     case AffineExprKind::Mul:
+      // %i = (0) to (180) step 1
+      // -%i = (-0) to (-180) (step -1)
       if (const_ < 0) {
-        range.lb = rangeDyn->lb * -const_;
-        range.ub = rangeDyn->ub * -const_;
-        range.step = rangeDyn->step * -const_;
-        range.reverse = !rangeDyn->reverse;
+        // (i) in (lb) to (ub)
+        // (-i) in (-ub) to (-lb) (step -1)
+        range.lb = rangeDyn->lb * const_;
+        range.ub = rangeDyn->ub * const_;
+        range.step = rangeDyn->step * const_;
       } else {
         range.lb = rangeDyn->lb * const_;
         range.ub = rangeDyn->ub * const_;
         range.step = rangeDyn->step * const_;
-        range.reverse = rangeDyn->reverse;
       }
       break;
     default:
@@ -205,11 +198,16 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
     if (!range.has_value())
       return failure();
 
-    startIndices.push_back(range->lb);
-    limitIndices.push_back(range->ub);
-    strides.push_back(range->step);
-    if (range->reverse) {
+    if (range->step < 0) {
+      // 0:-1:-180 -> -179:1:1
+      startIndices.push_back(range->ub - range->step);
+      limitIndices.push_back(range->lb - range->step);
+      strides.push_back(-range->step);
       reverseDims.push_back(i);
+    } else {
+      startIndices.push_back(range->lb);
+      limitIndices.push_back(range->ub);
+      strides.push_back(range->step);
     }
   }
 
@@ -384,15 +382,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       outputShape.push_back((ub - lb) / step);
     }
 
-    inputTen = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), inputTen,
-                                                    reverseDims);
-
     auto T = RankedTensorType::get(
         outputShape,
         inputTen.getType().cast<RankedTensorType>().getElementType());
 
     auto sliceOp = builder.create<stablehlo::SliceOp>(
         op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+
+    Value newVal = sliceOp.getResult();
+
+    newVal = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), newVal,
+                                                  reverseDims);
 
     SmallVector<AffineExpr> dynExprs;
     SmallVector<int64_t> dynShape;
@@ -407,7 +407,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto val = loadOp.getResult();
 
-    Value newVal = sliceOp.getResult();
     newVal = builder
                  .create<stablehlo::ReshapeOp>(
                      newVal.getLoc(),
