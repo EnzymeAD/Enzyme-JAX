@@ -240,8 +240,8 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<enzymexla::JITCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
-      launchOp.getHasSideEffect(),
-      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+      launchOp.getHasSideEffect(), launchOp.getBackendConfigAttr(),
+      launchOp.getOperandLayoutsAttr(),
       /*resultLayouts*/ nullptr, outputAliases);
 }
 

@@ -36,6 +36,6 @@ module {
 // CHECK-LABEL: @main
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<64xi64>) -> tensor<64xi64> {
 // CHECK-NEXT:    %[[CALL:.+]] = stablehlo.custom_call @enzymexla_compile_cpu(%arg0) 
-// CHECK-SAME: {api_version = 3 : i32, backend_config = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00", 
+// CHECK-SAME: {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"},
 // CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %[[CALL]] : tensor<64xi64>

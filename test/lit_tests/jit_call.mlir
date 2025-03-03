@@ -1,18 +1,17 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-jit{jit=false backend=cpu},enzyme-hlo-opt)" | FileCheck %s
 
-// CHECK-LABEL: llvm.func @throw() {
-llvm.func @throw() {
-  llvm.unreachable
-}
+module {
+  llvm.func internal unnamed_addr fastcc @throw() attributes {dso_local, no_inline, sym_visibility = "private"} {
+    llvm.unreachable
+  }
 
-// CHECK-LABEL: func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
-func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
-  // CHECK: enzymexla.jit_call @throw
-  // CHECK-SAME: has_side_effect = true
-  // CHECK-SAME: backend_config = {bar = 42 : i32}
-  enzymexla.jit_call @throw () {
-      has_side_effect = true,
-      backend_config = {bar = 42 : i32}
-    } : () -> ()
-  return %arg0 : tensor<4xf32>
+  // CHECK-LABEL: func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
+  func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
+    // CHECK: stablehlo.custom_call @enzymexla_compile_cpu() {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00", bar = 42 : i32}, has_side_effect = true} : () -> ()
+    enzymexla.jit_call @throw () {
+        has_side_effect = true,
+        backend_config = {bar = 42 : i32}
+      } : () -> ()
+    return %arg0 : tensor<4xf32>
+  }
 }
