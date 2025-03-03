@@ -23,12 +23,22 @@ class StablehloPatternOp<string mnemonic,
         Op<Transform_Dialect, "apply_patterns.stablehlo." # mnemonic,
            [DeclareOpInterfaceMethods<PatternDescriptorOpInterface>]> {
   let extraClassDefinition = [{
-    void mlir::transform::populatePatterns(::mlir::RewritePatternSet &patterns) {
-      patterns->add<::$cppClass>($_self.getContext(), getBenefit() ? PatternBenefit(*getBenefit()) : PatternBenefit(1)));
+    void $cppClass::populatePatterns(::mlir::RewritePatternSet &patterns) {
+      mlir::transform::populate$cppClass(patterns, *patterns.getContext(), 1);
     }
   }];
 }
 
+// Groupings of other dialect patterns
+class StablehloPatternGroup<string mnemonic, list<Op> patterns> :
+        Op<Transform_Dialect, "apply_patterns.stablehlo." # mnemonic,
+           [DeclareOpInterfaceMethods<PatternDescriptorOpInterface>]> {
+  let extraClassDefinition =
+    "void $cppClass::populatePatterns(::mlir::RewritePatternSet &patterns) {\n" #
+      !interleave(!foreach(pattern, patterns,
+        "  mlir::transform::populate" # pattern # "(patterns, *patterns.getContext(), 1);"), "\n") # "\n" #
+    "}";
+}
 
 ////////
 // Mul/Div || Add/Sub - constant computation lifting 
@@ -84,3 +94,5 @@ def SubSubConst : BinOpLiftConstantComputation<"sub_sub_const", StableHLO_Subtra
 
 // Pattern: (x + cst_1) - cst_2 -> x + (cst_1 - cst_2)
 def SubAddConst : BinOpLiftConstantComputation<"sub_add_const", StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
+
+def BinopConstSimplify : StablehloPatternGroup<"binop_const_simplify", [MulDivConst, MulMulConst, DivMulConst, DivDivConst, SubAddConst, AddAddConst, AddSubConst, SubSubConst, SubAddConst]>;

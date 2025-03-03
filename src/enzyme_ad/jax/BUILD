@@ -443,11 +443,11 @@ gentbl_cc_library(
     name = "StablehloOptTransformOpsIncGen",
     tbl_outs = [
         (
-            ["-gen-op-decls"],
+            ["-gen-op-decls", "--op-include-regex=transform.apply_patterns.stablehlo."],
             "TransformOps/StablehloTransformOps.h.inc",
         ),
         (
-            ["-gen-op-defs"],
+            ["-gen-op-defs", "--op-include-regex=transform.apply_patterns.stablehlo."],
             "TransformOps/StablehloTransformOps.cpp.inc",
         ),
     ],
