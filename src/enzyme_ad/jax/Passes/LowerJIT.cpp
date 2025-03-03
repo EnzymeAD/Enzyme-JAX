@@ -998,7 +998,8 @@ struct LowerJITPass
             /* api_version*/
             CustomCallApiVersionAttr::get(
                 rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED),
+                mlir::stablehlo::CustomCallApiVersion::
+                    API_VERSION_STATUS_RETURNING_UNIFIED),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
             output_operand_aliases);
 
