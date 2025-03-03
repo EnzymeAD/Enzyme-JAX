@@ -65,7 +65,8 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let arguments = (ins
     FlatSymbolRefAttr:$fn, 
     Variadic<AnyType>:$inputs,
-    DefaultValuedStrAttr<StrAttr, "">:$backend_config,
+    DefaultValuedOptionalAttr<BoolAttr, "false">:$has_side_effect,
+    DefaultValuedOptionalAttr<AnyAttrOf<[StrAttr, DictionaryAttr]>, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
     DefaultValuedOptionalAttr<

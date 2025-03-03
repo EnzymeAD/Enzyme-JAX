@@ -972,6 +972,13 @@ struct LowerJITPass
       SmallVector<NamedAttribute> names;
       names.push_back(
           NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
+      auto existingBackendConfig =
+          op->getAttrOfType<DictionaryAttr>("backend_config");
+      if (existingBackendConfig) {
+        for (auto attr : existingBackendConfig.getValue()) {
+          names.push_back(attr);
+        }
+      }
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
       Operation *replacement;
@@ -979,7 +986,7 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ op.getHasSideEffectAttr(),
             /*backend_config*/ dattr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
@@ -991,13 +998,12 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
-            /*backend_config*/ backendstr,
+            /* has_side_effect*/ op.getHasSideEffectAttr(),
+            /*backend_config*/ dattr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
                 rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::
-                    API_VERSION_STATUS_RETURNING_UNIFIED),
+                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
             output_operand_aliases);
 
