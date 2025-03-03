@@ -9,11 +9,13 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_PRINTPASS
+#define GEN_PASS_DEF_PRINTLOCATIONPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -36,6 +38,75 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
     } else {
       getOperation()->print(llvm::errs(), flags);
       llvm::errs() << "\n";
+    }
+  }
+};
+
+static llvm::raw_ostream &printMetadata(llvm::raw_ostream &os, Attribute attr) {
+  if (auto diSubprogram = dyn_cast<mlir::LLVM::DISubprogramAttr>(attr)) {
+    os << "@" << diSubprogram.getName().getValue() << " in ";
+    os << diSubprogram.getFile().getDirectory().getValue() << "/"
+       << diSubprogram.getFile().getName().getValue();
+    os << ":" << diSubprogram.getLine();
+  } else {
+    attr.print(os);
+  }
+  return os;
+}
+
+static llvm::raw_ostream &printPartialLocation(llvm::raw_ostream &os,
+                                               Location loc) {
+  if (isa<UnknownLoc>(loc)) {
+    os << "<unknown>";
+  } else if (auto flc = dyn_cast<FileLineColLoc>(loc)) {
+    os << flc.getFilename() << ":" << flc.getLine() << ":" << flc.getColumn();
+  } else if (auto callsite = dyn_cast<CallSiteLoc>(loc)) {
+    printPartialLocation(os, callsite.getCallee());
+    printPartialLocation(os << "\ncalled from: ", callsite.getCaller());
+  } else if (auto fused = dyn_cast<FusedLoc>(loc)) {
+    if (fused.getLocations().size() > 1)
+      os << "fused<";
+    llvm::interleaveComma(fused.getLocations(), os, [&](Location nested) {
+      printPartialLocation(os, nested);
+    });
+    if (fused.getLocations().size() > 1)
+      os << ">";
+    os << " (";
+    printMetadata(os, fused.getMetadata());
+    os << ")";
+  } else {
+    loc.print(os);
+  }
+
+  return os;
+}
+
+static void attachAndPrintLocation(Operation *op, bool attach = true,
+                                   bool print = true) {
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  printPartialLocation(os, op->getLoc());
+  if (attach)
+    op->setAttr("enzyme.location", StringAttr::get(op->getContext(), os.str()));
+  if (print)
+    op->emitRemark() << os.str();
+}
+
+class PrintLocationPass
+    : public enzyme::impl::PrintLocationPassBase<PrintLocationPass> {
+public:
+  using PrintLocationPassBase::PrintLocationPassBase;
+
+  void runOnOperation() override {
+    SmallVector<Operation *> targets;
+    getOperation()->walk([&](Operation *op) {
+      if (op->hasAttr("enzyme.print_location")) {
+        targets.push_back(op);
+      }
+    });
+
+    for (Operation *op : targets) {
+      attachAndPrintLocation(op, shouldAttach, shouldPrint);
     }
   }
 };
