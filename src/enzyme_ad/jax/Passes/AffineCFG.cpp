@@ -2734,6 +2734,113 @@ struct MergeNestedAffineParallelIf
   }
 };
 
+struct AffineDimDescriptor {
+  bool known = false;
+  int64_t lb;
+  int64_t ub;
+  int64_t step;
+
+  AffineDimDescriptor(int64_t lb_, int64_t ub_, int64_t step_)
+      : known(true), lb(lb_), ub(ub_), step(step_) {}
+  AffineDimDescriptor() : known(false) {}
+};
+
+static std::optional<AffineExpr>
+optimizeExprFloorDiv(llvm::ArrayRef<AffineDimDescriptor> dims, AffineExpr lhs,
+                     AffineExpr rhs) {
+  if (!rhs.isSymbolicOrConstant())
+    return std::nullopt;
+
+  auto constRhs = dyn_cast<AffineConstantExpr>(rhs);
+  if (!constRhs)
+    return std::nullopt; // todo: symbolic
+
+  if (auto lhsDim = dyn_cast<AffineDimExpr>(lhs)) {
+    auto dim = dims[lhsDim.getPosition()];
+    if (!dim.known)
+      return std::nullopt;
+
+    if (dim.step >= 0 && dim.ub > constRhs.getValue())
+      return std::nullopt;
+
+    return mlir::getAffineConstantExpr(0, lhs.getContext());
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<AffineExpr>
+optimizeExprMod(llvm::ArrayRef<AffineDimDescriptor> dims, AffineExpr lhs,
+                AffineExpr rhs) {
+  if (!rhs.isSymbolicOrConstant())
+    return std::nullopt;
+
+  if (auto lhsBin = dyn_cast<AffineBinaryOpExpr>(lhs)) {
+    auto lhsKind = lhs.getKind();
+    if (lhsKind == AffineExprKind::Mul) {
+      // (a * x) % x => 0
+      if (lhsBin.getRHS() == rhs)
+        return mlir::getAffineConstantExpr(0, lhs.getContext());
+
+      return std::nullopt;
+    }
+  }
+
+  auto constRhs = dyn_cast<AffineConstantExpr>(rhs);
+  if (!constRhs)
+    return std::nullopt;
+
+  if (auto lhsDim = dyn_cast<AffineDimExpr>(lhs)) {
+    auto dim = dims[lhsDim.getPosition()];
+    if (!dim.known || dim.step != 1 || dim.lb != 0 ||
+        dim.ub != constRhs.getValue())
+      return std::nullopt;
+
+    return lhsDim;
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<AffineExpr>
+optimizeExprWithBounds(AffineExpr expr,
+                       llvm::ArrayRef<AffineDimDescriptor> dims) {
+  std::optional<AffineExpr> replacement;
+  auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr);
+  if (!binExpr)
+    return std::nullopt;
+
+  AffineExpr lhs = binExpr.getLHS(), rhs = binExpr.getRHS();
+
+  switch (expr.getKind()) {
+  case AffineExprKind::Mod:
+    replacement = optimizeExprMod(dims, lhs, rhs);
+    break;
+  case AffineExprKind::FloorDiv:
+    replacement = optimizeExprFloorDiv(dims, lhs, rhs);
+    break;
+  default:
+    break;
+  }
+
+  return replacement;
+}
+
+static AffineMap optimizeMap(AffineMap map,
+                             llvm::ArrayRef<AffineDimDescriptor> dims) {
+  llvm::DenseMap<AffineExpr, AffineExpr> replacements;
+  SmallVector<AffineExpr> todo(map.getResults().begin(),
+                               map.getResults().end());
+
+  map.walkExprs([&replacements, &dims](AffineExpr expr) {
+    auto val = optimizeExprWithBounds(expr, dims);
+    if (val.has_value())
+      replacements[expr] = *val;
+  });
+
+  return map.replace(replacements);
+}
+
 // When all uses of an IV are of the form (%i % cst) or (%i // cst), replace
 // with two ivs: %i1 = (0) to (ub[i] // cst) %i0 = (0) to (cst)
 struct SplitParallelInductions
@@ -2742,14 +2849,9 @@ struct SplitParallelInductions
 
   LogicalResult matchAndRewrite(affine::AffineParallelOp op,
                                 PatternRewriter &rewriter) const override {
-    // Reductions are not supported yet.
-    if (!op.getReductions().empty())
+    // Reductions or min-max are not supported yet.
+    if (!op.getReductions().empty() || op.hasMinMaxBounds())
       return failure();
-
-    SmallVector<Operation *> idxCasts;
-    SmallVector<ValueOrInt> bases;
-    SmallVector<bool> legality;
-    SmallVector<ValueOrInt> fixedUpperBounds;
 
     for (auto it : llvm::enumerate(op.getIVs())) {
       auto idx = it.index();
@@ -2776,18 +2878,8 @@ struct SplitParallelInductions
           break;
         }
         seenub = true;
-        if (auto cst = ub.dyn_cast<AffineConstantExpr>()) {
-          fixedUpperBounds.push_back(ValueOrInt(cst.getValue()));
-        } else if (auto dim = ub.dyn_cast<AffineDimExpr>()) {
-          fixedUpperBounds.push_back(
-              ValueOrInt(op.getUpperBoundsOperands()[dim.getPosition()]));
-        } else if (auto sym = ub.dyn_cast<AffineSymbolExpr>()) {
-          fixedUpperBounds.push_back(ValueOrInt(
-              op.getUpperBoundsOperands()[op.getUpperBoundsMap().getNumDims() +
-                                          sym.getPosition()]));
-        } else {
+        if (!ub.isa<AffineConstantExpr>()) {
           legal = false;
-          fixedUpperBounds.push_back(ValueOrInt(0));
         }
       }
 
@@ -2836,7 +2928,7 @@ struct SplitParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |=
-                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumSymbols());
+                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumDims());
               }
             }
             if (functionOf)
@@ -2852,8 +2944,8 @@ struct SplitParallelInductions
               if (i < AI.getIntegerSet().getNumDims()) {
                 functionOf |= E.isFunctionOfDim(i);
               } else {
-                functionOf |= E.isFunctionOfSymbol(
-                    i - AI.getIntegerSet().getNumSymbols());
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AI.getIntegerSet().getNumDims());
               }
             }
             if (functionOf)
@@ -2952,23 +3044,16 @@ struct SplitParallelInductions
               }
             } else if (auto dimExpr = dyn_cast<AffineDimExpr>(subExpr)) {
               // iv referenced without pattern
-              if (operands[dimExpr.getPosition()] == iv) {
-                legal = false;
-                return;
-              }
+              // if (operands[dimExpr.getPosition()] == iv) {
+              //   legal = false;
+              //   return;
+              // }
             }
           }
         };
 
         for (auto expr : exprs) {
           findBasePattern(iv, expr, operands, base, legal);
-          unsigned ivPos = 0;
-          for (unsigned i = 0; i < operands.size(); ++i) {
-            if (operands[i] == iv) {
-              ivPos = i;
-              break;
-            }
-          }
           if (!legal)
             break;
         }
@@ -3050,9 +3135,7 @@ struct SplitParallelInductions
                                     affineLoop.getRegion().begin());
         rewriter.eraseOp(op);
 
-        rewriter.startOpModification(affineLoop);
         Value newIv = body->addArgument(iv.getType(), iv.getLoc());
-        rewriter.finalizeOpModification(affineLoop);
 
         SmallVector<Operation *> users(iv.getUsers().begin(),
                                        iv.getUsers().end());
@@ -3068,26 +3151,26 @@ struct SplitParallelInductions
           return mlir::getAffineDimExpr(ivPos, iv.getContext());
         };
 
-        auto getNewMap = [getDimExpr](Value iv, AffineMap oldMap,
-                                      ValueRange operands,
-                                      AffineExpr baseExpr) {
-          unsigned ivPos = 0;
-          for (unsigned i = 0; i < operands.size(); ++i) {
-            if (operands[i] == iv) {
-              ivPos = i;
-              break;
-            }
-          }
+        auto getNewMap = [getDimExpr, ubound0, base](Value iv, AffineMap oldMap,
+                                                     ValueRange operands,
+                                                     AffineExpr baseExpr) {
+          SmallVector<AffineDimDescriptor> dimDescriptors(
+              operands.size() + 1, AffineDimDescriptor());
 
           AffineExpr majorExpr = getDimExpr(iv, operands),
                      minorExpr = mlir::getAffineDimExpr(oldMap.getNumDims(),
                                                         iv.getContext());
 
-          return oldMap
-              .replace(majorExpr % baseExpr, minorExpr, oldMap.getNumDims() + 1,
-                       oldMap.getNumSymbols())
-              .replace(majorExpr, majorExpr * baseExpr, oldMap.getNumDims() + 1,
-                       oldMap.getNumSymbols());
+          dimDescriptors[majorExpr.cast<AffineDimExpr>().getPosition()] =
+              AffineDimDescriptor(
+                  0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
+          dimDescriptors[minorExpr.cast<AffineDimExpr>().getPosition()] =
+              AffineDimDescriptor(0, base.i_val, 1);
+
+          return optimizeMap(
+              oldMap.replace(majorExpr, majorExpr * baseExpr + minorExpr,
+                             oldMap.getNumDims() + 1, oldMap.getNumSymbols()),
+              dimDescriptors);
         };
 
         for (auto U : users) {
@@ -3117,11 +3200,31 @@ struct SplitParallelInductions
                        minorExpr = mlir::getAffineDimExpr(is.getNumDims(),
                                                           iv.getContext());
 
+            SmallVector<AffineDimDescriptor> dimDescriptors(
+                is.getNumDims() + 1, AffineDimDescriptor());
+
+            dimDescriptors[majorExpr.cast<AffineDimExpr>().getPosition()] =
+                AffineDimDescriptor(
+                    0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
+            dimDescriptors[minorExpr.cast<AffineDimExpr>().getPosition()] =
+                AffineDimDescriptor(0, base.i_val, 1);
+
             SmallVector<AffineExpr> newConstraints;
-            for (auto constraint : is.getConstraints())
-              newConstraints.push_back(
-                  constraint.replace(majorExpr % baseExpr, minorExpr)
-                      .replace(majorExpr, majorExpr * baseExpr));
+            for (auto constraint : is.getConstraints()) {
+              auto E = constraint.replace(majorExpr,
+                                          majorExpr * baseExpr + minorExpr);
+
+              DenseMap<AffineExpr, AffineExpr> replacements;
+              E.walk([&](AffineExpr subExpr) {
+                auto replacement =
+                    optimizeExprWithBounds(subExpr, dimDescriptors);
+                if (replacement.has_value())
+                  replacements[subExpr] = *replacement;
+              });
+
+              newConstraints.push_back(E.replace(replacements));
+            }
+
             auto newIntegerSet =
                 IntegerSet::get(is.getNumDims() + 1, is.getNumSymbols(),
                                 newConstraints, is.getEqFlags());
@@ -3328,7 +3431,7 @@ struct MergeParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |=
-                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumSymbols());
+                    E.isFunctionOfSymbol(i - AL.getAffineMap().getNumDims());
               }
             }
             if (functionOf)
@@ -3350,7 +3453,7 @@ struct MergeParallelInductions
                 functionOf |= E.isFunctionOfDim(i);
               } else {
                 functionOf |=
-                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumSymbols());
+                    E.isFunctionOfSymbol(i - AS.getAffineMap().getNumDims());
               }
             }
             if (functionOf)
@@ -3368,8 +3471,8 @@ struct MergeParallelInductions
               if (i < AI.getIntegerSet().getNumDims()) {
                 functionOf |= E.isFunctionOfDim(i);
               } else {
-                functionOf |= E.isFunctionOfSymbol(
-                    i - AI.getIntegerSet().getNumSymbols());
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AI.getIntegerSet().getNumDims());
               }
             }
             if (functionOf)

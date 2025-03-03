@@ -137,9 +137,19 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
       range.step = rangeDyn->step;
       break;
     case AffineExprKind::Mul:
-      range.lb = rangeDyn->lb * const_;
-      range.ub = rangeDyn->ub * const_;
-      range.step = rangeDyn->step * const_;
+      // %i = (0) to (180) step 1
+      // -%i = (-0) to (-180) (step -1)
+      if (const_ < 0) {
+        // (i) in (lb) to (ub)
+        // (-i) in (-ub) to (-lb) (step -1)
+        range.lb = rangeDyn->lb * const_;
+        range.ub = rangeDyn->ub * const_;
+        range.step = rangeDyn->step * const_;
+      } else {
+        range.lb = rangeDyn->lb * const_;
+        range.ub = rangeDyn->ub * const_;
+        range.step = rangeDyn->step * const_;
+      }
       break;
     default:
       // unsupported
@@ -164,7 +174,8 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
 static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
                                       SmallVectorImpl<int64_t> &startIndices,
                                       SmallVectorImpl<int64_t> &limitIndices,
-                                      SmallVectorImpl<int64_t> &strides) {
+                                      SmallVectorImpl<int64_t> &strides,
+                                      SmallVectorImpl<int64_t> &reverseDims) {
   auto rank = accessValueMap.getNumResults();
 
   startIndices.reserve(rank);
@@ -187,9 +198,17 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
     if (!range.has_value())
       return failure();
 
-    startIndices.push_back(range->lb);
-    limitIndices.push_back(range->ub);
-    strides.push_back(range->step);
+    if (range->step < 0) {
+      // 0:-1:-180 -> -179:1:1
+      startIndices.push_back(range->ub - range->step);
+      limitIndices.push_back(range->lb - range->step);
+      strides.push_back(-range->step);
+      reverseDims.push_back(i);
+    } else {
+      startIndices.push_back(range->lb);
+      limitIndices.push_back(range->ub);
+      strides.push_back(range->step);
+    }
   }
 
   return success();
@@ -200,8 +219,10 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
   SmallVector<int64_t> startIndices;
   SmallVector<int64_t> limitIndices;
   SmallVector<int64_t> strides;
+  SmallVector<int64_t> reverseDims;
 
-  if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides)
+  if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
+                       reverseDims)
           .failed())
     return {};
 
@@ -349,8 +370,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> startIndices;
     SmallVector<int64_t> limitIndices;
     SmallVector<int64_t> strides;
+    SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides)
+    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
+                         reverseDims)
             .failed())
       return failure();
 
@@ -366,6 +389,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto sliceOp = builder.create<stablehlo::SliceOp>(
         op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
 
+    Value newVal = sliceOp.getResult();
+
+    newVal = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), newVal,
+                                                  reverseDims);
+
     SmallVector<AffineExpr> dynExprs;
     SmallVector<int64_t> dynShape;
 
@@ -379,7 +407,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto val = loadOp.getResult();
 
-    Value newVal = sliceOp.getResult();
     newVal = builder
                  .create<stablehlo::ReshapeOp>(
                      newVal.getLoc(),
@@ -410,8 +437,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> startIndices;
     SmallVector<int64_t> limitIndices;
     SmallVector<int64_t> strides;
+    SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides)
+    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
+                         reverseDims)
             .failed())
       return failure();
 
@@ -472,6 +501,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     if (!update)
       return failure();
+
+    update = builder.create<stablehlo::ReverseOp>(storeOp.getLoc(), update,
+                                                  reverseDims);
 
     auto newOperand = builder.create<stablehlo::DynamicUpdateSliceOp>(
         op->getLoc(), operand, update, startIndicesValues);
