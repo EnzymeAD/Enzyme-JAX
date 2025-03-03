@@ -1828,8 +1828,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       rewriter.setInsertionPointToStart(&affineLoop.getRegion().front());
       for (Value arg : affineLoop.getRegion().front().getArguments()) {
         bool isInduction = arg == affineLoop.getInductionVar();
-	if (isInduction &&
-            arg.getType() != loop.getInductionVar().getType()) {
+        if (isInduction && arg.getType() != loop.getInductionVar().getType()) {
           arg = rewriter.create<arith::IndexCastOp>(
               loop.getLoc(), loop.getInductionVar().getType(), arg);
         }
