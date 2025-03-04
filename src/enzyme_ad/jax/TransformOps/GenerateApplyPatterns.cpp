@@ -127,9 +127,9 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     }
 
     SmallVector<std::string> tfxNamespaces = {
-      "transform.apply_patterns.enzyme_hlo.",
-      "transform.apply_patterns.stablehlo.",
-      "transform.apply_patterns.",
+        "transform.apply_patterns.enzyme_hlo.",
+        "transform.apply_patterns.stablehlo.",
+        "transform.apply_patterns.",
     };
     std::optional<std::string> tfxOpName;
     for (llvm::StringRef tfxNamespace : tfxNamespaces) {

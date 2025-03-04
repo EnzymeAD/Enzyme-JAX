@@ -135,7 +135,8 @@ static bool emitPopulateSelfPatternsFuncDefs(llvm::raw_ostream &os,
        << "(::mlir::RewritePatternSet &patterns,\n"
        << "    ::mlir::MLIRContext &context,\n"
        << "    ::mlir::PatternBenefit benefit) {\n";
-    os << "  patterns.add<" << getPopulateFunctionNameSuffix(rec) << ">(&context);\n";
+    os << "  patterns.add<" << getPopulateFunctionNameSuffix(rec)
+       << ">(&context);\n";
     os << "}\n\n";
   }
   return false;
