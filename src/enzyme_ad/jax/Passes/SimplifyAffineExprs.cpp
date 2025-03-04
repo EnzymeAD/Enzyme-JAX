@@ -336,12 +336,32 @@ AffineExpr mlir::enzyme::recreateExpr(AffineExpr expr) {
       return sortSum(lhs) * sortSum(rhs);
     case AffineExprKind::Mod:
       return sortSum(lhs) % sortSum(rhs);
-    case AffineExprKind::FloorDiv:
-      return sortSum(lhs).floorDiv(sortSum(rhs));
-    case AffineExprKind::CeilDiv:
-      return sortSum(lhs).ceilDiv(sortSum(rhs));
-    default:
-      return expr;
+    case AffineExprKind::FloorDiv: {
+      rhs = sortSum(rhs);
+      SmallVector<AffineExpr> toDivide;
+      SmallVector<AffineExpr> alreadyDivided;
+      if (auto cst = dyn_cast<AffineConstantExpr>(rhs)) {
+        for (auto expr : getSumOperands(lhs)) {
+          if (expr.isMultipleOf(cst.getValue()))
+            alreadyDivided.push_back(expr.floorDiv(cst));
+          else
+            toDivide.push_back(expr);
+        }
+      } else {
+        toDivide.push_back(sortSum(lhs));
+      }
+      llvm::sort(toDivide, affineCmp);
+      AffineExpr out = getAffineConstantExpr(0, expr.getContext());
+      for (auto expr : toDivide)
+        out = out + expr;
+      out = out.floorDiv(rhs);
+      alreadyDivided.push_back(out);
+      out = getAffineConstantExpr(0, expr.getContext());
+      llvm::sort(alreadyDivided, affineCmp);
+      for (auto expr : alreadyDivided)
+        out = out + expr;
+      return out;
+    }
     }
   }
   return expr;

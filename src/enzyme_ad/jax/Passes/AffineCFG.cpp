@@ -2766,6 +2766,38 @@ optimizeExprFloorDiv(llvm::ArrayRef<AffineDimDescriptor> dims, AffineExpr lhs,
     return mlir::getAffineConstantExpr(0, lhs.getContext());
   }
 
+  if (auto add = dyn_cast<AffineBinaryOpExpr>(lhs)) {
+    if (add.getKind() == AffineExprKind::Add) {
+      for (int i = 0; i < 2; i++) {
+        auto lhs = i == 0 ? add.getLHS() : add.getRHS();
+        auto rhs = i == 0 ? add.getRHS() : add.getLHS();
+        auto lhse = dyn_cast<AffineDimExpr>(lhs);
+        if (!lhse)
+          continue;
+        auto rhse = dyn_cast<AffineBinaryOpExpr>(rhs);
+        if (!rhse)
+          continue;
+        if (rhse.getKind() != AffineExprKind::Mul)
+          continue;
+        auto mulconst = dyn_cast<AffineConstantExpr>(rhse.getRHS());
+        if (!mulconst)
+          continue;
+        auto dim = dims[lhse.getPosition()];
+        if (!dim.known)
+          continue;
+
+        if (dim.step < 0)
+          continue;
+        if (dim.lb != 0)
+          continue;
+        if (dim.ub != mulconst.getValue())
+          continue;
+        if (constRhs.getValue() % mulconst.getValue() == 0)
+          return rhse.getLHS().floorDiv(constRhs.floorDiv(mulconst));
+      }
+    }
+  }
+
   return std::nullopt;
 }
 
@@ -2802,43 +2834,44 @@ optimizeExprMod(llvm::ArrayRef<AffineDimDescriptor> dims, AffineExpr lhs,
   return std::nullopt;
 }
 
-static std::optional<AffineExpr>
-optimizeExprWithBounds(AffineExpr expr,
-                       llvm::ArrayRef<AffineDimDescriptor> dims) {
+AffineExpr optimizeExprWithBounds(AffineExpr expr,
+                                  llvm::ArrayRef<AffineDimDescriptor> dims) {
   std::optional<AffineExpr> replacement;
   auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr);
   if (!binExpr)
-    return std::nullopt;
+    return expr;
 
-  AffineExpr lhs = binExpr.getLHS(), rhs = binExpr.getRHS();
+  AffineExpr lhs = optimizeExprWithBounds(binExpr.getLHS(), dims);
+  AffineExpr rhs = optimizeExprWithBounds(binExpr.getRHS(), dims);
 
   switch (expr.getKind()) {
+  case AffineExprKind::Add:
+    return lhs + rhs;
+  case AffineExprKind::Mul:
+    return lhs * rhs;
   case AffineExprKind::Mod:
-    replacement = optimizeExprMod(dims, lhs, rhs);
-    break;
+    if (auto replacement = optimizeExprMod(dims, lhs, rhs))
+      return *replacement;
+    else
+      return lhs % rhs;
   case AffineExprKind::FloorDiv:
-    replacement = optimizeExprFloorDiv(dims, lhs, rhs);
-    break;
-  default:
-    break;
+    if (auto replacement = optimizeExprFloorDiv(dims, lhs, rhs))
+      return *replacement;
+    else
+      return lhs.floorDiv(rhs);
   }
 
-  return replacement;
+  return expr;
 }
 
 static AffineMap optimizeMap(AffineMap map,
                              llvm::ArrayRef<AffineDimDescriptor> dims) {
   llvm::DenseMap<AffineExpr, AffineExpr> replacements;
-  SmallVector<AffineExpr> todo(map.getResults().begin(),
-                               map.getResults().end());
-
-  map.walkExprs([&replacements, &dims](AffineExpr expr) {
-    auto val = optimizeExprWithBounds(expr, dims);
-    if (val.has_value())
-      replacements[expr] = *val;
-  });
-
-  return map.replace(replacements);
+  SmallVector<AffineExpr> todo;
+  for (auto expr : map.getResults())
+    todo.push_back(optimizeExprWithBounds(expr, dims));
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), todo,
+                        map.getContext());
 }
 
 // When all uses of an IV are of the form (%i % cst) or (%i // cst), replace
@@ -3106,6 +3139,10 @@ struct SplitParallelInductions
         AffineExpr ubound0 =
             op.getUpperBoundsMap().getResult(idx).floorDiv(baseExpr);
 
+        if (ubound0 * baseExpr != op.getUpperBoundsMap().getResult(idx)) {
+          continue;
+        }
+
         if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext())) {
           continue;
         }
@@ -3154,7 +3191,7 @@ struct SplitParallelInductions
         SmallVector<Operation *> users(iv.getUsers().begin(),
                                        iv.getUsers().end());
 
-        auto getDimExpr = [](Value iv, ValueRange operands) {
+        auto getDimExpr = [](Value iv, ValueRange operands) -> AffineDimExpr {
           unsigned ivPos = 0;
           for (unsigned i = 0; i < operands.size(); ++i) {
             if (operands[i] == iv) {
@@ -3162,7 +3199,8 @@ struct SplitParallelInductions
               break;
             }
           }
-          return mlir::getAffineDimExpr(ivPos, iv.getContext());
+          return cast<AffineDimExpr>(
+              mlir::getAffineDimExpr(ivPos, iv.getContext()));
         };
 
         auto getNewMap = [getDimExpr, ubound0, base](Value iv, AffineMap oldMap,
@@ -3210,10 +3248,9 @@ struct SplitParallelInductions
             auto operands = AI.getOperands();
             auto is = AI.getIntegerSet();
 
-            AffineExpr majorExpr = getDimExpr(iv, operands),
-                       minorExpr = mlir::getAffineDimExpr(is.getNumDims(),
-                                                          iv.getContext());
-
+            AffineDimExpr majorExpr = getDimExpr(iv, operands);
+            auto minorExpr =
+                mlir::getAffineDimExpr(is.getNumDims(), iv.getContext());
             SmallVector<AffineDimDescriptor> dimDescriptors(
                 is.getNumDims() + 1, AffineDimDescriptor());
 
@@ -3225,18 +3262,15 @@ struct SplitParallelInductions
 
             SmallVector<AffineExpr> newConstraints;
             for (auto constraint : is.getConstraints()) {
+              if (!constraint.isFunctionOfDim(majorExpr.getPosition())) {
+                newConstraints.push_back(constraint);
+                continue;
+              }
               auto E = constraint.replace(majorExpr,
                                           majorExpr * baseExpr + minorExpr);
+              E = optimizeExprWithBounds(E, dimDescriptors);
 
-              DenseMap<AffineExpr, AffineExpr> replacements;
-              E.walk([&](AffineExpr subExpr) {
-                auto replacement =
-                    optimizeExprWithBounds(subExpr, dimDescriptors);
-                if (replacement.has_value())
-                  replacements[subExpr] = *replacement;
-              });
-
-              newConstraints.push_back(E.replace(replacements));
+              newConstraints.push_back(E);
             }
 
             auto newIntegerSet =
@@ -3692,8 +3726,8 @@ void AffineCFGPass::runOnOperation() {
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions,
-          SplitParallelInductions, CanonicalieForBounds, AddAddCstEnd>(
-      getOperation()->getContext());
+          CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);
+  rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
