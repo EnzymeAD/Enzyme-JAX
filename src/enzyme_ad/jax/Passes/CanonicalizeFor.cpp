@@ -2783,14 +2783,14 @@ void checkOperands(
   }
 }
 
-//Algorithm:
-//1. Extract yield operations from both regions
-//2. Check if yield operations match in if and else region
-//3. If match, move them outside the loop and recursively check their operands
-//4. If don't match then continue with the next operand
-//5. Create a new if operation with updated yields
-//6. Updated source operands of operations moved outside to the new yields
-//7. Replace uses of the original if operation with the new one
+// Algorithm:
+// 1. Extract yield operations from both regions
+// 2. Check if yield operations match in if and else region
+// 3. If match, move them outside the loop and recursively check their operands
+// 4. If don't match then continue with the next operand
+// 5. Create a new if operation with updated yields
+// 6. Updated source operands of operations moved outside to the new yields
+// 7. Replace uses of the original if operation with the new one
 struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
   IfYieldMovementPattern(mlir::MLIRContext *context)
       : OpRewritePattern<scf::IfOp>(context, /*benefit=*/1) {}
