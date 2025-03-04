@@ -466,6 +466,7 @@ cc_library(
         "@llvm-project//mlir:MemRefToLLVM",
         "@llvm-project//mlir:NVGPUToNVVM",
         "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MPIDialect",
         "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:MemRefDialect",

@@ -18,14 +18,13 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Dialect/MPI/IR/MPI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MPI/IR/MPI.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "stablehlo/dialect/StablehloOps.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-
+#include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir {
 namespace enzyme {
@@ -41,337 +40,90 @@ using namespace mlir::enzymexla;
 
 namespace {
 
-
-
-struct InitOpLowering : public OpRewritePattern<mpi::InitOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::InitOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // ::mlir::ValueRange inputs{};
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op.getResultTypes(), inputs,
-        //     rewriter.getStringAttr("mpi_init"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
-};
-
-struct FinalizeOpLowering : public OpRewritePattern<mpi::FinalizeOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::FinalizeOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // ::mlir::ValueRange inputs{};
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op.getResultTypes(), inputs,
-        //     rewriter.getStringAttr("mpi_finalize"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
-};
-
-// struct CommWorldOpLowering : public OpRewritePattern<mpi::CommWorldOp> {
-//     using OpRewritePattern<mpi::CommWorldOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::CommWorldOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_comm_world"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-struct CommRankOpLowering : public OpRewritePattern<mpi::CommRankOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::CommRankOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // ::mlir::ValueRange inputs{};
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op.getResultTypes(), inputs,
-        //     rewriter.getStringAttr("mpi_comm_rank"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
-};
-
-// struct CommSizeOpLowering : public OpRewritePattern<mpi::CommSizeOp> {
-//     using OpRewritePattern<mpi::CommSizeOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::CommSizeOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_comm_size"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-// struct CommSplitOpLowering : public OpRewritePattern<mpi::CommSplitOp> {
-//     using OpRewritePattern<mpi::CommSplitOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::CommSplitOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_comm_split"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
 struct SendOpLowering : public OpRewritePattern<mpi::SendOp> {
-    using OpRewritePattern::OpRewritePattern;
-    mutable bool func_written = false;
+  using OpRewritePattern::OpRewritePattern;
 
-    LogicalResult matchAndRewrite(mpi::SendOp op, PatternRewriter &rewriter) const override {
-        auto jit_op = rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(op, op.getResultTypes(),
-            rewriter.getStringAttr("mpi_send_func"),
-            op.getOperands(),
-            "",
-            ::mlir::Attribute{},
-            ::mlir::Attribute{},
-            ::mlir::ArrayAttr{});
+  mutable bool func_written = false;
 
-        if (!func_written) {
-            auto ctx = rewriter.getContext();
-            auto op_types = op->getOperandTypes();
+  LogicalResult matchAndRewrite(mpi::SendOp op,
+                                PatternRewriter &rewriter) const override {
+    auto jit_op = rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, op.getResultTypes(), rewriter.getStringAttr("mpi_send_func"),
+        op.getOperands(), "", ::mlir::Attribute{}, ::mlir::Attribute{},
+        ::mlir::ArrayAttr{});
 
-            SmallVector<mlir::Type> types;
-            types.push_back(mlir::LLVM::LLVMPointerType::get(ctx));
-            for (auto itr = ++op_types.begin(); itr != op_types.end(); ++itr) 
-                types.push_back(*itr);
+    if (!func_written) {
+      auto ctx = rewriter.getContext();
+      auto op_types = op->getOperandTypes();
 
+      SmallVector<mlir::Type> mpi_send_operand_types{
+          mlir::LLVM::LLVMPointerType::get(ctx), // const void *buf
+          mlir::IntegerType::get(ctx, 32),       // int count
+          mlir::IntegerType::get(ctx, 32),       // MPI_Datatype datatype
+          mlir::IntegerType::get(ctx, 32),       // int dest
+          mlir::IntegerType::get(ctx, 32),       // int tag
+          mlir::IntegerType::get(ctx, 32),       // MPI_Comm comm
+      };
 
-            const auto func_type = FunctionType::get(ctx,
-                op.getOperandTypes(),
-                op->getResultTypes()
-            );
-            const auto mpi_func_type = LLVM::LLVMFunctionType::get(
-                mlir::IntegerType::get(ctx, 32),
-                types,
-                false
-            );
-            
-            auto module = ([op]() {
-                auto h = op->getParentOp();
-                while (auto parent = h->getParentOp())
-                    h = parent;
-                return llvm::dyn_cast<ModuleOp>(h);
-            })();
-            assert(module);
-            auto module_block = &module.getBodyRegion().getBlocks().front();
+      const auto func_type =
+          FunctionType::get(ctx, op.getOperandTypes(), op->getResultTypes());
+      const auto mpi_func_type = LLVM::LLVMFunctionType::get(
+          mlir::IntegerType::get(ctx, 32), mpi_send_operand_types, false);
 
-            rewriter.setInsertionPoint( module_block, module_block->end());
+      auto module = ([op]() {
+        auto h = op->getParentOp();
+        while (auto parent = h->getParentOp())
+          h = parent;
+        return llvm::dyn_cast<ModuleOp>(h);
+      })();
+      assert(module);
+      auto module_block = &module.getBodyRegion().getBlocks().front();
 
-            // first, create the MPI_Send symbol
-            auto mpi_send = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(),
-                "MPI_Send",
-                mpi_func_type
-            );
+      rewriter.setInsertionPoint(module_block, module_block->end());
 
-            // then create the wrapper function
-            auto func_op = rewriter.create<func::FuncOp>(op.getLoc(),
-                "mpi_send_func",
-                func_type);
+      // we create the MPI symbols here
+      auto global = rewriter.create<LLVM::GlobalOp>(
+          op.getLoc(), mlir::IntegerType::get(ctx, 32), true,
+          LLVM::Linkage::Internal, "MPI_DataType",
+          rewriter.getIntegerAttr(mlir::IntegerType::get(ctx, 32), 0xffff));
+      // first, create the MPI_Send symbol
+      auto mpi_send = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), "MPI_Send",
+                                                        mpi_func_type);
 
-            auto entry_block = func_op.addEntryBlock();
-            assert(entry_block);
-            rewriter.setInsertionPoint(entry_block, entry_block->begin());
+      // then create the wrapper function
+      auto func_op = rewriter.create<func::FuncOp>(op.getLoc(), "mpi_send_func",
+                                                   func_type);
 
-            auto operands = entry_block->getArguments();
-            auto extract_op = rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(op.getLoc(),
-                operands[0]);
-            auto cast_op = rewriter.create<arith::IndexCastOp>(op.getLoc(), mlir::IntegerType::get(ctx, 64), extract_op);
-            auto memref_ptr_op = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), mlir::LLVM::LLVMPointerType::get(ctx), cast_op);
+      auto entry_block = func_op.addEntryBlock();
+      assert(entry_block);
+      rewriter.setInsertionPoint(entry_block, entry_block->begin());
 
-            SmallVector<mlir::Value> values;
-            values.push_back(memref_ptr_op);
-            values.insert(values.end(), operands.begin()+1, operands.end());
+      auto operands = entry_block->getArguments();
+      auto memref_ptr_op = rewriter.create<enzymexla::Memref2PointerOp>(
+          op.getLoc(), mlir::LLVM::LLVMPointerType::get(ctx), operands[0]);
+      auto global_addr =
+          rewriter.create<LLVM::AddressOfOp>(op.getLoc(), global);
+      auto global_load = rewriter.create<LLVM::LoadOp>(
+          op.getLoc(), global.getType(), global_addr);
 
-            
-            rewriter.create<LLVM::CallOp>(op.getLoc(), 
-                mpi_send,
-                mlir::ValueRange{values}
-            );
-            rewriter.create<func::ReturnOp>(op.getLoc());
+      SmallVector<mlir::Value> values{{
+          memref_ptr_op,
+          global_load,
+          global_load,
+          global_load,
+          global_load,
+          global_load,
+      }};
 
-            func_written = true;
-        }
+      rewriter.create<LLVM::CallOp>(op.getLoc(), mpi_send,
+                                    mlir::ValueRange{values});
+      rewriter.create<func::ReturnOp>(op.getLoc());
 
-        return success();
+      func_written = true;
     }
-};
 
-struct RecvOpLowering : public OpRewritePattern<mpi::RecvOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::RecvOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op.getResultTypes(), op.getOperands(),
-        //     rewriter.getStringAttr("mpi_recv"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
-};
-
-// struct ISendOpLowering : public OpRewritePattern<mpi::ISendOp> {
-//     using OpRewritePattern<mpi::ISendOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::ISendOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_isend"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-// struct IRecvOpLowering : public OpRewritePattern<mpi::IRecvOp> {
-//     using OpRewritePattern<mpi::IRecvOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::IRecvOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_irecv"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-// struct BarrierOpLowering : public OpRewritePattern<mpi::BarrierOp> {
-//     using OpRewritePattern<mpi::BarrierOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::BarrierOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_barrier"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-// struct WaitOpLowering : public OpRewritePattern<mpi::WaitOp> {
-//     using OpRewritePattern<mpi::WaitOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::WaitOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_wait"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-// struct AllReduceOpLowering : public OpRewritePattern<mpi::AllReduceOp> {
-//     using OpRewritePattern<mpi::AllReduceOp>::OpRewritePattern;
-
-//     LogicalResult matchAndRewrite(mpi::AllReduceOp op, PatternRewriter &rewriter) const override {
-//         rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//             op, op.getResultTypes(), op.getOperands(),
-//             rewriter.getStringAttr("mpi_allreduce"),
-//             rewriter.getBoolAttr(false),
-//             rewriter.getDictionaryAttr({}),
-//             CustomCallApiVersionAttr::get(
-//                 rewriter.getContext(),
-//                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-//             nullptr, ValueRange(), ValueRange(), ValueRange());
-//         return success();
-//     }
-// };
-
-struct RetvalCheckOpLowering : public OpRewritePattern<mpi::RetvalCheckOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::RetvalCheckOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // ::mlir::ValueRange inputs{};
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op->getResultTypes(), inputs,
-        //     rewriter.getStringAttr("mpi_retval_check"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
-};
-
-struct ErrorClassOpLowering : public OpRewritePattern<mpi::ErrorClassOp> {
-    using OpRewritePattern::OpRewritePattern;
-
-    LogicalResult matchAndRewrite(mpi::ErrorClassOp op, PatternRewriter &rewriter) const override {
-        return failure();
-        // ::mlir::ValueRange inputs{};
-        // rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        //     op, op->getResultTypes(), inputs,
-        //     rewriter.getStringAttr("mpi_error_class"),
-        //     rewriter.getBoolAttr(false),
-        //     rewriter.getDictionaryAttr({}),
-        //     CustomCallApiVersionAttr::get(
-        //         rewriter.getContext(),
-        //         mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        //     nullptr, ValueRange(), ValueRange(), ValueRange());
-        // return success();
-    }
+    return success();
+  }
 };
 
 } // namespace
@@ -381,44 +133,42 @@ struct ErrorClassOpLowering : public OpRewritePattern<mpi::ErrorClassOp> {
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct LowerMPIToStableHLOPass : public mlir::enzyme::impl::LowerMPIToStableHLOPassBase<LowerMPIToStableHLOPass> {
-using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
-    void runOnOperation() override {
-        using namespace mlir::enzyme::impl;
-        auto& ctx = getContext();
-        ctx.loadDialect<mlir::LLVM::LLVMDialect>();
-        ctx.loadDialect<mpi::MPIDialect>();
-        ctx.loadDialect<enzymexla::EnzymeXLADialect>();
-        ctx.loadDialect<memref::MemRefDialect>();
+struct LowerMPIToStableHLOPass
+    : public mlir::enzyme::impl::LowerMPIToStableHLOPassBase<
+          LowerMPIToStableHLOPass> {
+  using LowerMPIToStableHLOPassBase::LowerMPIToStableHLOPassBase;
+  void runOnOperation() override {
+    using namespace mlir::enzyme::impl;
+    auto &ctx = getContext();
+    SymbolTable symTable(getOperation());
 
-        mlir::ConversionTarget target(getContext());
-        // XLA can't handle MPI ops, so we must convert all MPI ops to `stablehlo.custom_call` ops
-        target.template addIllegalDialect<mpi::MPIDialect>();
-        target.addLegalDialect("enzymexla");
-        target.addLegalDialect("llvm");
-        target.addLegalDialect("memref");
-        target.addLegalDialect("arith");
-        target.addLegalDialect("func");
+    ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+    ctx.loadDialect<mpi::MPIDialect>();
+    ctx.loadDialect<enzymexla::EnzymeXLADialect>();
+    ctx.loadDialect<memref::MemRefDialect>();
 
-        RewritePatternSet patterns(&getContext());
-        patterns.add<
-            InitOpLowering,
-            FinalizeOpLowering,
-            CommRankOpLowering,
-            SendOpLowering,
-            RecvOpLowering,
-            RetvalCheckOpLowering,
-            ErrorClassOpLowering
-        >(&getContext());
+    mlir::ConversionTarget target(getContext());
+    // XLA can't handle MPI ops, so we must convert all MPI ops to
+    // `stablehlo.custom_call` ops
+    target.template addIllegalDialect<mpi::MPIDialect>();
+    target.addLegalDialect("enzymexla");
+    target.addLegalDialect("llvm");
+    target.addLegalDialect("memref");
+    target.addLegalDialect("arith");
+    target.addLegalDialect("func");
 
-        if (failed(applyPartialConversion(getOperation(), target, std::move(patterns)))) {
-            signalPassFailure();
-        }
+    RewritePatternSet patterns(&getContext());
+    patterns.add<SendOpLowering>(&getContext());
+
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
+      signalPassFailure();
     }
+  }
 };
-  
+
 } // namespace
 
 void mlir::enzyme::registerLowerMPIToStableHLOPassHere() {
-    PassRegistration<LowerMPIToStableHLOPass>();
+  PassRegistration<LowerMPIToStableHLOPass>();
 }
