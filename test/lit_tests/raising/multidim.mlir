@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --delinearize-indexing --canonicalize --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --delinearize-indexing --simplify-affine-exprs --canonicalize --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   func.func private @kern$par0(
 // CHECK-SAME:                                 %[[VAL_0:[^:]*]]: memref<?x5x3xi64, 1>) {

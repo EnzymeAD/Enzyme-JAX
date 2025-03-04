@@ -701,6 +701,8 @@ public:
         continue;
       if (factor != -divisor)
         continue;
+      if (div.getLhs() != val)
+	continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(
           ext, val, factor.isNegative() ? div.getRhs() : mul.getRhs());
       return success();
