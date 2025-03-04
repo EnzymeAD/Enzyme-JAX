@@ -2740,8 +2740,7 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
 
 void checkOperands(
     scf::IfOp ifOp, int opOperandIndex, Value operandIf, Value operandElse,
-    SmallVector<std::tuple<unsigned long, Operation *, unsigned long>>
-        &yieldUseMap,
+    SmallVector<std::tuple<size_t, Operation *, size_t>> &yieldUseMap,
     SmallVector<Operation *> &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     PatternRewriter &rewriter) {
@@ -2772,14 +2771,14 @@ void checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
   opsToMoveAfterIf.push_back(opToMove);
-  int index = 0;
-  for (auto [thenOperand, elseOperand] :
-       llvm::zip(operandIf.getDefiningOp()->getOperands(),
-                 operandElse.getDefiningOp()->getOperands())) {
+
+  for (auto [index, operands] : llvm::enumerate(
+           llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
+                           operandElse.getDefiningOp()->getOperands()))) {
+    auto [thenOperand, elseOperand] = operands;
     checkOperands(ifOp, index, thenOperand, elseOperand, yieldUseMap,
                   opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
                   rewriter);
-    index++;
   }
 }
 
@@ -2813,8 +2812,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
     SmallVector<Operation *> opsToMoveAfterIf;
-    SmallVector<std::tuple<unsigned long, Operation *, unsigned long>>
-        yieldUseMap;
+    SmallVector<std::tuple<size_t, Operation *, size_t>> yieldUseMap;
 
     for (auto [thenOperand, elseOperand] :
 
@@ -2842,18 +2840,17 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
         originalYieldsNewValues.push_back(thenOperand);
         continue;
       }
-      Operation *opToMove = thenOperand.getDefiningOp();
 
+      Operation *opToMove = thenOperand.getDefiningOp();
       opsToMoveAfterIf.push_back(opToMove);
 
-      int index = 0;
-      for (auto [thenOperand, elseOperand] :
-           llvm::zip(thenOperand.getDefiningOp()->getOperands(),
-                     elseOperand.getDefiningOp()->getOperands())) {
+      for (auto [index, operands] : llvm::enumerate(
+               llvm::zip_equal(thenOperand.getDefiningOp()->getOperands(),
+                               elseOperand.getDefiningOp()->getOperands()))) {
+        auto [thenOperand, elseOperand] = operands;
         checkOperands(ifOp, index, thenOperand, elseOperand, yieldUseMap,
                       opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
                       rewriter);
-        index++;
       }
       originalYieldsNewValues.push_back(opToMove->getResult(0));
     }
@@ -2861,10 +2858,10 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     // If no changes to yield operands, return failure
     if (ifYieldOperands.size() == thenYield.getOperands().size() &&
         llvm::all_of(
-            llvm::zip(ifYieldOperands, thenYield.getOperands()),
+            llvm::zip_equal(ifYieldOperands, thenYield.getOperands()),
             [](auto pair) { return std::get<0>(pair) == std::get<1>(pair); }) &&
         llvm::all_of(
-            llvm::zip(elseYieldOperands, elseYield.getOperands()),
+            llvm::zip_equal(elseYieldOperands, elseYield.getOperands()),
             [](auto pair) { return std::get<0>(pair) == std::get<1>(pair); })) {
       return failure();
     }
@@ -2877,7 +2874,6 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
       resultTypes.push_back(operand.getType());
     }
 
-    // Create the new if operation
     auto newIfOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), resultTypes,
                                               ifOp.getCondition(),
                                               /*hasElse=*/true);
@@ -2890,12 +2886,13 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     IRMapping mappingIfThen;
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newIfOp.getThenRegion().front());
+
       for (auto [prevIfArg, newIfArg] :
-           llvm::zip(ifOp.getThenRegion().front().getArguments(),
+           llvm::zip_equal(ifOp.getThenRegion().front().getArguments(),
                      newIfOp.getThenRegion().front().getArguments())) {
         mappingIfThen.map(prevIfArg, newIfArg);
       }
-      rewriter.setInsertionPointToStart(&newIfOp.getThenRegion().front());
       for (Operation &op : oldThenBlock.without_terminator()) {
         rewriter.clone(op, mappingIfThen);
       }
@@ -2904,11 +2901,12 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     // Create new yield in then block
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(&newThenBlock);
+
       SmallVector<Value> remappedYieldOperands;
       for (auto arg : ifYieldOperands) {
         remappedYieldOperands.push_back(mappingIfThen.lookupOrDefault(arg));
       }
-      rewriter.setInsertionPointToEnd(&newThenBlock);
       rewriter.create<scf::YieldOp>(thenYield.getLoc(), remappedYieldOperands);
     }
     // Move operations from the original else block to the new else block
@@ -2919,12 +2917,13 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     IRMapping mappingElse;
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newIfOp.getElseRegion().front());
+
       for (auto [prevElseArg, newElseArg] :
-           llvm::zip(ifOp.getElseRegion().front().getArguments(),
+           llvm::zip_equal(ifOp.getElseRegion().front().getArguments(),
                      newIfOp.getElseRegion().front().getArguments())) {
         mappingElse.map(prevElseArg, newElseArg);
       }
-      rewriter.setInsertionPointToStart(&newIfOp.getElseRegion().front());
       for (Operation &op : oldElseBlock.without_terminator()) {
         rewriter.clone(op, mappingElse);
       }
@@ -2932,11 +2931,12 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(&newElseBlock);
+
       SmallVector<Value> remappedYieldOperands;
       for (auto arg : elseYieldOperands) {
         remappedYieldOperands.push_back(mappingElse.lookupOrDefault(arg));
       }
-      rewriter.setInsertionPointToEnd(&newElseBlock);
       rewriter.create<scf::YieldOp>(elseYield.getLoc(), remappedYieldOperands);
     }
 
@@ -2944,37 +2944,38 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     IRMapping mappingAfterIf;
     {
       OpBuilder::InsertionGuard guard(rewriter);
-      for (auto [arg, init] :
-           llvm::zip(ifOp.getThenRegion().front().getArguments(),
-                     newIfOp.getThenRegion().front().getArguments())) {
-        mappingAfterIf.map(arg, init);
-      }
       rewriter.setInsertionPointAfter(ifOp);
+
       llvm::SmallPtrSet<Operation *, 4> uniqueOpsToMoveAfterIfMap;
       for (Operation *user : opsToMoveAfterIf) {
         uniqueOpsToMoveAfterIfMap.insert(user);
       }
-      SmallVector<Operation *> uniqueOpsToMoveAfterIfVector(
-          uniqueOpsToMoveAfterIfMap.begin(), uniqueOpsToMoveAfterIfMap.end());
-      for (auto op : llvm::reverse(uniqueOpsToMoveAfterIfVector)) {
-        rewriter.clone(*op, mappingAfterIf);
+      
+      // Traverse the if, and if the op is found inside unique ops to move after if
+      // Move it to after the if operation.
+      // Need to insert ops one after the another, so do we need to adjust insertion point everytime?
+      for(auto &op : ifOp.getThenRegion().front().getOperations()) {
+        if(uniqueOpsToMoveAfterIfMap.count(&op)) {
+          rewriter.clone(op, mappingAfterIf);
+          Value mappedValue = mappingAfterIf.lookupOrDefault(op.getResult(0));
+          mappingAfterIf.map(op.getResult(0), mappedValue);
+          rewriter.setInsertionPointAfter(mappedValue.getDefiningOp());
+        }
       }
     }
 
     // Replace uses of the original if operation with the new one
-    int pos = 0;
-    for (auto value : originalYieldsNewValues) {
-      rewriter.replaceAllUsesWith(ifOp.getResults()[pos],
+    for (auto [idx, value] : llvm::enumerate(originalYieldsNewValues)) {
+      rewriter.replaceAllUsesWith(ifOp.getResults()[idx],
                                   mappingAfterIf.lookupOrDefault(value));
-      pos++;
     }
 
     // Replace uses of the new yield values
     // All the ops moved outside of the if operation need the yielded values
     for (auto &elem : yieldUseMap) {
-      unsigned long index = std::get<0>(elem);
+      size_t index = std::get<0>(elem);
       Operation *user = mappingAfterIf.lookupOrDefault(std::get<1>(elem));
-      unsigned long pos = std::get<2>(elem);
+      size_t pos = std::get<2>(elem);
       OpOperand &opOperand = user->getOpOperand(pos);
       rewriter.modifyOpInPlace(opOperand.getOwner(), [&]() {
         opOperand.set(newIfOp.getResults()[pos]);
