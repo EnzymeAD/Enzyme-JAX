@@ -641,6 +641,7 @@ pybind_library(
     deps = [
         ":XLADerivatives",
         ":TransformOps",
+        ":StablehloTransformOps",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -773,6 +774,7 @@ pybind_extension(
     visibility = ["//visibility:public"],
     deps = [
         ":TransformOps",
+        ":StablehloTransformOps",
         ":clang_compile",
         ":compile_with_xla",
         ":cpu",

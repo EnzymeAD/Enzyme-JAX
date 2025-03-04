@@ -17,9 +17,7 @@ namespace mlir {
 namespace enzyme {
 void registerStablehloTransformExtension(mlir::DialectRegistry &registry);
 
-SmallVector<StringRef> getTransformOperationNames();
+SmallVector<StringRef> getStablehloTransformOperationNames();
 
-void registerGenerateApplyPatternsPass();
-void registerRemoveTransformPass();
 } // namespace enzyme
 } // namespace mlir

@@ -45,7 +45,7 @@ template <typename... OpType> static SmallVector<StringRef> extractNames() {
   return {OpType::getOperationName()...};
 }
 
-SmallVector<StringRef> mlir::enzyme::getTransformOperationNames() {
+SmallVector<StringRef> mlir::enzyme::getStablehloTransformOperationNames() {
   return extractNames<
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/TransformOps/StablehloTransformOps.cpp.inc"
