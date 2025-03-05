@@ -64,6 +64,7 @@ cc_binary(
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:UBDialect",
         "//src/enzyme_ad/jax:RaisingTransformOps",
+        "//src/enzyme_ad/jax:StablehloTransformOps",
         "//src/enzyme_ad/jax:TransformOps",
         "//src/enzyme_ad/jax:XLADerivatives",
         "@stablehlo//:chlo_ops",

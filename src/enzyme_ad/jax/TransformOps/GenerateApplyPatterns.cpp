@@ -126,20 +126,25 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
       }
     }
 
-    std::string potentialOpName =
-        "transform.apply_patterns.enzyme_hlo." + opName.str();
-    if (!RegisteredOperationName::lookup(potentialOpName,
-                                         builder.getContext())) {
-      potentialOpName = "transform.apply_patterns." + opName.str();
-      if (!RegisteredOperationName::lookup(potentialOpName,
-                                           builder.getContext())) {
-        return ::emitError(loc)
-               << "couldn't find a pattern operation corresponding to "
-               << opName;
+    SmallVector<std::string> tfxNamespaces = {
+        "transform.apply_patterns.enzyme_hlo.",
+        "transform.apply_patterns.stablehlo.",
+        "transform.apply_patterns.",
+    };
+    std::optional<std::string> tfxOpName;
+    for (llvm::StringRef tfxNamespace : tfxNamespaces) {
+      std::string potentialOpName = (tfxNamespace + opName.str()).str();
+      if (RegisteredOperationName::lookup(potentialOpName,
+                                          builder.getContext())) {
+        tfxOpName = std::move(potentialOpName);
+        break;
       }
     }
+    if (!tfxOpName.has_value())
+      return ::emitError(loc)
+             << "couldn't find a pattern operation corresponding to " << opName;
 
-    OperationState state(loc, potentialOpName);
+    OperationState state(loc, tfxOpName.value());
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1) {
