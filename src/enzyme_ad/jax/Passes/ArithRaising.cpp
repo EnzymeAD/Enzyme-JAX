@@ -85,6 +85,9 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::ShRUIOp, stablehlo::ShiftRightLogicalOp,
                  mhlo::ShiftRightLogicalOp);
     RAISE_BINARY(complex::AddOp, stablehlo::AddOp, mhlo::AddOp);
+    RAISE_BINARY(arith::AndIOp, stablehlo::AndOp, mhlo::AndOp);
+    RAISE_BINARY(arith::OrIOp, stablehlo::OrOp, mhlo::OrOp);
+    RAISE_BINARY(arith::XOrIOp, stablehlo::XorOp, mhlo::XorOp);
 
 #undef RAISE_BINARY
 
@@ -110,10 +113,65 @@ struct ArithRaisingPass
     RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
     RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
     RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
+    RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
 
 #undef RAISE_UNARY
 
+    op->walk([=](arith::MaxNumFOp maxOp) {
+      // maxnumf %a,%b -> select(isnan(%a), %b, max(%a, %b))
+      if (!use_stablehlo ||
+          !maxOp.getResult().getType().isa<RankedTensorType>())
+        return;
+
+      OpBuilder builder(maxOp);
+      Value isLhsNaN =
+          builder.create<math::IsNaNOp>(maxOp.getLoc(), maxOp.getLhs());
+      Value max = builder.create<stablehlo::MaxOp>(
+          maxOp.getLoc(), maxOp.getLhs(), maxOp.getRhs());
+      Value res = builder.create<stablehlo::SelectOp>(maxOp.getLoc(), isLhsNaN,
+                                                      maxOp.getRhs(), max);
+      maxOp.replaceAllUsesWith(res);
+      maxOp.erase();
+    });
+    op->walk([=](arith::MinNumFOp minOp) {
+      // maxnumf %a,%b -> select(isnan(%a), %b, min(%a, %b))
+      if (!use_stablehlo ||
+          !minOp.getResult().getType().isa<RankedTensorType>())
+        return;
+
+      OpBuilder builder(minOp);
+      Value isLhsNaN =
+          builder.create<math::IsNaNOp>(minOp.getLoc(), minOp.getLhs());
+      Value min = builder.create<stablehlo::MinOp>(
+          minOp.getLoc(), minOp.getLhs(), minOp.getRhs());
+      Value res = builder.create<stablehlo::SelectOp>(minOp.getLoc(), isLhsNaN,
+                                                      minOp.getRhs(), min);
+      minOp.replaceAllUsesWith(res);
+      minOp.erase();
+    });
+    op->walk([=](math::IsNaNOp nanOp) {
+      if (!use_stablehlo ||
+          !nanOp.getResult().getType().isa<RankedTensorType>())
+        return;
+
+      OpBuilder builder(nanOp);
+
+      Value isFinite = builder.create<stablehlo::IsFiniteOp>(
+          nanOp.getLoc(), nanOp.getOperand());
+      Value isNotFinite =
+          builder.create<stablehlo::NotOp>(nanOp.getLoc(), isFinite);
+
+      Value isNotInf = builder.create<stablehlo::NotOp>(
+          nanOp.getLoc(),
+          builder.create<chlo::IsInfOp>(nanOp.getLoc(), nanOp.getOperand()));
+
+      Value isNaN = builder.create<stablehlo::AndOp>(nanOp.getLoc(),
+                                                     isNotFinite, isNotInf);
+
+      nanOp.replaceAllUsesWith(isNaN);
+      nanOp.erase();
+    });
     op->walk([=](complex::ConjOp addOp) {
       if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
