@@ -88,6 +88,7 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::AndIOp, stablehlo::AndOp, mhlo::AndOp);
     RAISE_BINARY(arith::OrIOp, stablehlo::OrOp, mhlo::OrOp);
     RAISE_BINARY(arith::XOrIOp, stablehlo::XorOp, mhlo::XorOp);
+    RAISE_BINARY(math::PowFOp, stablehlo::PowOp, mhlo::PowOp);
 
 #undef RAISE_BINARY
 
@@ -112,6 +113,7 @@ struct ArithRaisingPass
     RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
     RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
     RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
+    RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
     RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
     RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);

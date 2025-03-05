@@ -570,7 +570,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp>(op)) {
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
@@ -579,8 +579,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
           arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
-          math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp, math::IsNaNOp>(
-          op)) {
+          math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp,
+          math::IsNaNOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
@@ -607,8 +607,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::CmpIOp, arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp,
           arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
           arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
-          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, math::CopySignOp>(
-          op)) {
+          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, math::CopySignOp,
+          math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -692,7 +692,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "cannot raise op: " << *op;);
+  LLVM_DEBUG(llvm::dbgs() << "cannot raise op: " << *op << "\n";);
 
   return failure();
 }
