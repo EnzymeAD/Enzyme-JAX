@@ -406,7 +406,7 @@ std::optional<int64_t> maxSize(mlir::Value v) {
       return lhs;
 
     if (constValue.isNegative())
-       return {};
+      return {};
 
     return (*lhs) * constValue.getZExtValue();
   }
@@ -557,9 +557,9 @@ public:
     if (!maxSizeOpt)
       return failure();
     if (!operand.getType().isIndex())
-	if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
-      return failure();
+      if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+              .ult(*maxSizeOpt))
+        return failure();
     if (operand.getRhs() != ext.getRhs())
       return failure();
     rewriter.replaceOp(ext, operand.getLhs());
@@ -739,7 +739,7 @@ public:
       if (factor != -divisor)
         continue;
       if (div.getLhs() != val)
-	continue;
+        continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(
           ext, val, factor.isNegative() ? div.getRhs() : mul.getRhs());
       return success();
@@ -1183,7 +1183,7 @@ struct CanonicalizeLoopsPass
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
-   patterns.add<RemoveAffineParallelSingleIter,ExtUIOfIndexUI, TruncIOfIndexUI, ShrUIOfIndexUI,
-                   DivUIOfIndexUI, DivMul, AddIOfIndexUI, MulIOfIndexUI, ShLIOfIndexUI,
-                   AddIOfDoubleIndex, ToRem>(ctx);
+  patterns.add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
+               ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI,
+               MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
 }

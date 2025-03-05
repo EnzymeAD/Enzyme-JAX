@@ -2874,21 +2874,24 @@ static AffineMap optimizeMap(AffineMap map,
                         map.getContext());
 }
 
-struct OptimizeRem
-    : public OpRewritePattern<arith::RemUIOp> {
+struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
   using OpRewritePattern<arith::RemUIOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(arith::RemUIOp op,
                                 PatternRewriter &rewriter) const override {
-     AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
-     if (!sum) return failure();
-     for (int i=0; i<2; i++) {
-	 auto val = sum->getOperand(i).getDefiningOp<arith::MulIOp>();
-	 if (!val) continue;
-	 if (val.getRhs() != op.getRhs()) continue;
-	 rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1-i), op.getRhs());
-     }
-     return failure();
+    AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
+    if (!sum)
+      return failure();
+    for (int i = 0; i < 2; i++) {
+      auto val = sum->getOperand(i).getDefiningOp<arith::MulIOp>();
+      if (!val)
+        continue;
+      if (val.getRhs() != op.getRhs())
+        continue;
+      rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
+                                                  op.getRhs());
+    }
+    return failure();
   }
 };
 
@@ -3046,10 +3049,10 @@ struct SplitParallelInductions
             break;
           }
         } else {
-	   if (pval == iv)	
-	     continue;
-	   legal = false;
-	   break;
+          if (pval == iv)
+            continue;
+          legal = false;
+          break;
         }
         auto findBasePattern = [](Value iv, AffineExpr root,
                                   ValueRange operands, ValueOrInt &base,
@@ -3345,8 +3348,11 @@ struct SplitParallelInductions
                 rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
                                                         base.i_val));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
-            auto replacement2 = rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
-	    rewriter.replaceUsesWithIf(iv, replacement2->getResult(0), [&](OpOperand &op) { return op.getOwner() == U; });
+            auto replacement2 =
+                rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
+            rewriter.replaceUsesWithIf(
+                iv, replacement2->getResult(0),
+                [&](OpOperand &op) { return op.getOwner() == U; });
           }
         }
 
@@ -3752,8 +3758,7 @@ void AffineCFGPass::runOnOperation() {
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions,
-	  OptimizeRem,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
           CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);
   rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
   GreedyRewriteConfig config;
