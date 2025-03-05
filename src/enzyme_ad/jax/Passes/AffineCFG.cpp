@@ -2874,6 +2874,28 @@ static AffineMap optimizeMap(AffineMap map,
                         map.getContext());
 }
 
+struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
+  using OpRewritePattern<arith::RemUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::RemUIOp op,
+                                PatternRewriter &rewriter) const override {
+    AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
+    if (!sum)
+      return failure();
+    for (int i = 0; i < 2; i++) {
+      auto val = sum->getOperand(i).getDefiningOp<arith::MulIOp>();
+      if (!val)
+        continue;
+      if (val.getRhs() != op.getRhs())
+        continue;
+      rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
+                                                  op.getRhs());
+    }
+    return failure();
+  }
+};
+
+// Reductions or min-max are not supported yet.
 // When all uses of an IV are of the form (%i % cst) or (%i // cst), replace
 // with two ivs: %i1 = (0) to (ub[i] // cst) %i0 = (0) to (cst)
 struct SplitParallelInductions
@@ -2922,13 +2944,13 @@ struct SplitParallelInductions
         continue;
       }
 
-      SmallVector<Operation *> users;
+      SmallVector<std::pair<Operation *, Value>> users;
       for (auto U : iv.getUsers()) {
-        users.push_back(U);
+        users.emplace_back(U, iv);
       }
       bool hasRemainder = false;
       while (!users.empty()) {
-        auto U = users.pop_back_val();
+        auto &&[U, pval] = users.pop_back_val();
         SmallVector<AffineExpr> exprs;
         ValueRange operands;
 
@@ -2987,12 +3009,12 @@ struct SplitParallelInductions
           }
         } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
           for (auto UU : cstOp.getResult().getUsers()) {
-            users.push_back(UU);
+            users.emplace_back(UU, cstOp->getResult(0));
           }
           continue;
         } else if (auto cstOp = dyn_cast<arith::IndexCastOp>(U)) {
           for (auto UU : cstOp.getResult().getUsers()) {
-            users.push_back(UU);
+            users.emplace_back(UU, cstOp->getResult(0));
           }
           continue;
         } else if (isa<arith::FloorDivSIOp, arith::DivUIOp, arith::RemUIOp>(
@@ -3027,6 +3049,8 @@ struct SplitParallelInductions
             break;
           }
         } else {
+          if (pval == iv)
+            continue;
           legal = false;
           break;
         }
@@ -3307,10 +3331,9 @@ struct SplitParallelInductions
             }
 
           } else if (isa<arith::FloorDivSIOp, arith::DivUIOp>(U)) {
-            rewriter.replaceAllUsesWith(U->getResult(0), U->getOperand(0));
             rewriter.setInsertionPoint(U);
             auto replacement = rewriter.create<arith::MulIOp>(
-                U->getLoc(), U->getResult(0),
+                U->getLoc(), iv,
                 rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
                                                         base.i_val));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
@@ -3319,7 +3342,17 @@ struct SplitParallelInductions
           } else if (isa<arith::RemUIOp>(U)) {
             rewriter.replaceAllUsesWith(U->getResult(0), newIv);
           } else {
-            llvm_unreachable("not supported affine use");
+            rewriter.setInsertionPoint(U);
+            auto replacement = rewriter.create<arith::MulIOp>(
+                U->getLoc(), iv,
+                rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
+                                                        base.i_val));
+            replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
+            auto replacement2 =
+                rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
+            rewriter.replaceUsesWithIf(
+                iv, replacement2->getResult(0),
+                [&](OpOperand &op) { return op.getOwner() == U; });
           }
         }
 
@@ -3725,7 +3758,7 @@ void AffineCFGPass::runOnOperation() {
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
           AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
           CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);
   rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
   GreedyRewriteConfig config;

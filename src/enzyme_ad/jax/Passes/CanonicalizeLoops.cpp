@@ -396,6 +396,20 @@ std::optional<int64_t> maxSize(mlir::Value v) {
 
     return *lhs < constValue.getZExtValue() ? *lhs : constValue.getZExtValue();
   }
+  if (auto rem = v.getDefiningOp<arith::MulIOp>()) {
+    auto lhs = maxSize(rem.getLhs());
+    if (!lhs)
+      return lhs;
+
+    APInt constValue;
+    if (!matchPattern(rem.getRhs(), m_ConstantInt(&constValue)))
+      return lhs;
+
+    if (constValue.isNegative())
+      return {};
+
+    return (*lhs) * constValue.getZExtValue();
+  }
   if (auto shr = v.getDefiningOp<arith::DivUIOp>()) {
     auto lhs = maxSize(shr.getLhs());
     if (!lhs)
@@ -526,6 +540,29 @@ public:
                                                   operand.getOperand(), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
+    return success();
+  }
+};
+
+class DivMul final : public OpRewritePattern<arith::DivUIOp> {
+public:
+  using OpRewritePattern<arith::DivUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::DivUIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getLhs().getDefiningOp<arith::MulIOp>();
+    if (!operand)
+      return failure();
+    auto maxSizeOpt = maxSize(operand);
+    if (!maxSizeOpt)
+      return failure();
+    if (!operand.getType().isIndex())
+      if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+              .ult(*maxSizeOpt))
+        return failure();
+    if (operand.getRhs() != ext.getRhs())
+      return failure();
+    rewriter.replaceOp(ext, operand.getLhs());
     return success();
   }
 };
@@ -702,7 +739,7 @@ public:
       if (factor != -divisor)
         continue;
       if (div.getLhs() != val)
-	continue;
+        continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(
           ext, val, factor.isNegative() ? div.getRhs() : mul.getRhs());
       return success();
@@ -1133,10 +1170,7 @@ struct CanonicalizeLoopsPass
 
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<ExtUIOfIndexUI, TruncIOfIndexUI, ShrUIOfIndexUI,
-                   DivUIOfIndexUI, AddIOfIndexUI, MulIOfIndexUI, ShLIOfIndexUI,
-                   AddIOfDoubleIndex, ToRem>(&getContext());
-
+      addSingleIter(patterns, &getContext());
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {
         signalPassFailure();
@@ -1149,5 +1183,7 @@ struct CanonicalizeLoopsPass
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
-  patterns.add<RemoveAffineParallelSingleIter>(ctx);
+  patterns.add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
+               ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI,
+               MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
 }
