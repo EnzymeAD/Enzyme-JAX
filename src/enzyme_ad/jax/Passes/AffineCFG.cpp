@@ -1,5 +1,6 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -764,6 +765,17 @@ void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
 }
 
 namespace {
+/// Descriptor of a potentially parallelizable loop.
+struct ParallelizationCandidate {
+  ParallelizationCandidate(AffineForOp l, SmallVector<LoopReduction> &&r)
+      : loop(l), reductions(std::move(r)) {}
+
+  /// The potentially parallelizable loop.
+  AffineForOp loop;
+  /// Desciprtors of reductions that can be parallelized in the loop.
+  SmallVector<LoopReduction> reductions;
+};
+
 struct AffineCFGPass : public enzyme::impl::AffineCFGBase<AffineCFGPass> {
   void runOnOperation() override;
 };
@@ -3747,6 +3759,28 @@ struct AddAddCstEnd : public OpRewritePattern<arith::AddIOp> {
   }
 };
 
+static void greedilyParallelize(Operation *op) {
+  // Whether to parallelize reductions.
+  constexpr bool parallelReductions = true;
+
+  // The walker proceeds in pre-order to process the outer loops first
+  // and control the number of outer parallel loops.
+  std::vector<ParallelizationCandidate> parallelizableLoops;
+  op->walk<WalkOrder::PreOrder>([&](AffineForOp loop) {
+    SmallVector<LoopReduction> reductions;
+    if (isLoopParallel(loop, parallelReductions ? &reductions : nullptr))
+      parallelizableLoops.emplace_back(loop, std::move(reductions));
+  });
+
+  for (const ParallelizationCandidate &candidate : parallelizableLoops) {
+    if (failed(
+            affine::affineParallelize(candidate.loop, candidate.reductions))) {
+      LLVM_DEBUG(llvm::dbgs() << "[" DEBUG_TYPE "] failed to parallelize\n"
+                              << candidate.loop);
+    }
+  }
+}
+
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   mlir::enzyme::addSingleIter(rpl, getOperation()->getContext());
@@ -3763,6 +3797,7 @@ void AffineCFGPass::runOnOperation() {
   rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  greedilyParallelize(getOperation());
 }
 
 bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
