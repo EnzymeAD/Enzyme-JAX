@@ -2738,34 +2738,54 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
+// This function checks if given operands can be yielded instead of moved
+// outside the if operation
+// Checks:
+// 1. If operand is a block argument
+// 2. If operand is not in the same region as the if operation
+// 3. If there is only 1 unique user of op
+// 4. If the if and else operands are not of the same operation
+// 5. If the operands are not readnone
+// In any of these cases we can't propagate the operand outside the if operation
+// and are yielded instead
+bool checkIfYield(Value thenOperand, Value elseOperand, scf::IfOp ifOp) {
+
+  llvm::SmallPtrSet<Operation *, 4> uniqueThenUsers, uniqueElseUsers;
+  for (Operation *user : thenOperand.getUsers()) {
+    uniqueThenUsers.insert(user);
+  }
+  for (Operation *user : elseOperand.getUsers()) {
+    uniqueElseUsers.insert(user);
+  }
+
+  if (isa<BlockArgument>(thenOperand) || isa<BlockArgument>(elseOperand) ||
+      !ifOp.getThenRegion().isAncestor(
+          thenOperand.getDefiningOp()->getParentRegion()) ||
+      !ifOp.getElseRegion().isAncestor(
+          elseOperand.getDefiningOp()->getParentRegion()) ||
+      !(uniqueThenUsers.size() == 1 && uniqueElseUsers.size() == 1) ||
+      (thenOperand.getDefiningOp()->getName() !=
+       elseOperand.getDefiningOp()->getName()) ||
+      !isReadNone(thenOperand.getDefiningOp()) ||
+      !isReadNone(elseOperand.getDefiningOp()))
+    return true;
+  return false;
+}
+
 void checkOperands(
-    scf::IfOp ifOp, int opOperandIndex, Value operandIf, Value operandElse,
+    scf::IfOp ifOp, int opOperandIndex, Value parentOp, Value operandIf,
+    Value operandElse,
     SmallVector<std::tuple<size_t, Operation *, size_t>> &yieldUseMap,
     SmallVector<Operation *> &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     PatternRewriter &rewriter) {
-  // Extract unique users of the operands and checking if count is 1
-  llvm::SmallPtrSet<Operation *, 4> uniqueThenUsers, uniqueElseUsers;
-  for (Operation *user : operandIf.getUsers()) {
-    uniqueThenUsers.insert(user);
-  }
-  for (Operation *user : operandElse.getUsers()) {
-    uniqueElseUsers.insert(user);
-  }
-  if (isa<BlockArgument>(operandIf) || isa<BlockArgument>(operandElse) ||
-      !ifOp.getThenRegion().isAncestor(
-          operandIf.getDefiningOp()->getParentRegion()) ||
-      !ifOp.getElseRegion().isAncestor(
-          operandElse.getDefiningOp()->getParentRegion()) ||
-      !(uniqueThenUsers.size() == 1 && uniqueElseUsers.size() == 1) ||
-      (operandIf.getDefiningOp()->getName() !=
-       operandElse.getDefiningOp()->getName()) ||
-      !isReadNone(operandIf.getDefiningOp()) ||
-      !isReadNone(operandElse.getDefiningOp())) {
+
+  if (checkIfYield(operandIf, operandElse, ifOp)) {
     ifYieldOperands.push_back(operandIf);
     elseYieldOperands.push_back(operandElse);
+    int currentYieldIndex = ifYieldOperands.size() - 1;
     yieldUseMap.push_back(std::make_tuple(
-        ifYieldOperands.size() - 1, opsToMoveAfterIf.back(), opOperandIndex));
+        currentYieldIndex, parentOp.getDefiningOp(), opOperandIndex));
     return;
   }
 
@@ -2776,7 +2796,7 @@ void checkOperands(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
                            operandElse.getDefiningOp()->getOperands()))) {
     auto [thenOperand, elseOperand] = operands;
-    checkOperands(ifOp, index, thenOperand, elseOperand, yieldUseMap,
+    checkOperands(ifOp, index, operandIf, thenOperand, elseOperand, yieldUseMap,
                   opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
                   rewriter);
   }
@@ -2785,11 +2805,13 @@ void checkOperands(
 // Algorithm:
 // 1. Extract yield operations from both regions
 // 2. Check if yield operations match in if and else region
-// 3. If match, move them outside the loop and recursively check their operands
-// 4. If don't match then continue with the next operand
-// 5. Create a new if operation with updated yields
-// 6. Updated source operands of operations moved outside to the new yields
-// 7. Replace uses of the original if operation with the new one
+// 3. If match, recursively check their operands to see if they can be moved as
+// well
+// 4. Track all ops which can be moved outside the if op
+// 5. Track yiels ops which didn't change and the ones which changed.
+// 6. Create a new if operation with updated yields
+// 7. Updated source operands of operations moved outside to the new yields
+// 8. Replace uses of the original if operation with the new one
 struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
   IfYieldMovementPattern(mlir::MLIRContext *context)
       : OpRewritePattern<scf::IfOp>(context, /*benefit=*/1) {}
@@ -2806,53 +2828,52 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     auto elseYield =
         cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
 
-    // List of yield positions not modified
+    // List of yield positions not modified - contains 2 kinds of values:
+    // 1. Ones which remain inside the if operation
+    // 2. Ones which are moved to outside the if operation
     std::vector<Value> originalYieldsNewValues;
+    // Since there are 2 kinds of yields we need to know which yield is moved to
+    // outside the if operation and which one remains inside the if operation -1
+    // indicates that the yield is moved to outside the if operation Any other
+    // value indicates that the yield is remaining inside the if operation and
+    // their correspoding yield index
+    SmallVector<int> originalYieldsForIndex;
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
     SmallVector<Operation *> opsToMoveAfterIf;
+    // Captures the yield position of newIf op, the operation that uses it, and
+    // the operand index of the operation
     SmallVector<std::tuple<size_t, Operation *, size_t>> yieldUseMap;
 
-    for (auto [thenOperand, elseOperand] :
-
+    for (auto [thenYieldOperand, elseYieldOperand] :
          llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
 
-      llvm::SmallPtrSet<Operation *, 4> uniqueThenUsers, uniqueElseUsers;
-      for (Operation *user : thenOperand.getUsers()) {
-        uniqueThenUsers.insert(user);
-      }
-      for (Operation *user : elseOperand.getUsers()) {
-        uniqueElseUsers.insert(user);
-      }
-      if (isa<BlockArgument>(thenOperand) || isa<BlockArgument>(elseOperand) ||
-          !ifOp.getThenRegion().isAncestor(
-              thenOperand.getDefiningOp()->getParentRegion()) ||
-          !ifOp.getElseRegion().isAncestor(
-              elseOperand.getDefiningOp()->getParentRegion()) ||
-          !(uniqueThenUsers.size() == 1 && uniqueElseUsers.size() == 1) ||
-          (thenOperand.getDefiningOp()->getName() !=
-           elseOperand.getDefiningOp()->getName()) ||
-          !isReadNone(thenOperand.getDefiningOp()) ||
-          !isReadNone(elseOperand.getDefiningOp())) {
-        ifYieldOperands.push_back(thenOperand);
-        elseYieldOperands.push_back(elseOperand);
-        originalYieldsNewValues.push_back(thenOperand);
+      if (checkIfYield(thenYieldOperand, elseYieldOperand, ifOp)) {
+        ifYieldOperands.push_back(thenYieldOperand);
+        elseYieldOperands.push_back(elseYieldOperand);
+        originalYieldsNewValues.push_back(
+            thenYieldOperand); // This is not moved to outside if
+        int currentYieldIndex = ifYieldOperands.size() - 1;
+        originalYieldsForIndex.push_back(currentYieldIndex);
         continue;
       }
 
-      Operation *opToMove = thenOperand.getDefiningOp();
+      Operation *opToMove = thenYieldOperand.getDefiningOp();
       opsToMoveAfterIf.push_back(opToMove);
 
-      for (auto [index, operands] : llvm::enumerate(
-               llvm::zip_equal(thenOperand.getDefiningOp()->getOperands(),
-                               elseOperand.getDefiningOp()->getOperands()))) {
+      for (auto [index, operands] : llvm::enumerate(llvm::zip_equal(
+               thenYieldOperand.getDefiningOp()->getOperands(),
+               elseYieldOperand.getDefiningOp()->getOperands()))) {
         auto [thenOperand, elseOperand] = operands;
-        checkOperands(ifOp, index, thenOperand, elseOperand, yieldUseMap,
-                      opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
-                      rewriter);
+        checkOperands(ifOp, index, thenYieldOperand, thenOperand, elseOperand,
+                      yieldUseMap, opsToMoveAfterIf, ifYieldOperands,
+                      elseYieldOperands, rewriter);
       }
-      originalYieldsNewValues.push_back(opToMove->getResult(0));
+      originalYieldsNewValues.push_back(
+          opToMove->getResult(0)); // This is moved to outside if
+      originalYieldsForIndex.push_back(
+          -1); //-1 indicates that the yield is moved to outside if
     }
 
     // If no changes to yield operands, return failure
@@ -2890,7 +2911,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
       for (auto [prevIfArg, newIfArg] :
            llvm::zip_equal(ifOp.getThenRegion().front().getArguments(),
-                     newIfOp.getThenRegion().front().getArguments())) {
+                           newIfOp.getThenRegion().front().getArguments())) {
         mappingIfThen.map(prevIfArg, newIfArg);
       }
       for (Operation &op : oldThenBlock.without_terminator()) {
@@ -2921,7 +2942,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
       for (auto [prevElseArg, newElseArg] :
            llvm::zip_equal(ifOp.getElseRegion().front().getArguments(),
-                     newIfOp.getElseRegion().front().getArguments())) {
+                           newIfOp.getElseRegion().front().getArguments())) {
         mappingElse.map(prevElseArg, newElseArg);
       }
       for (Operation &op : oldElseBlock.without_terminator()) {
@@ -2950,12 +2971,12 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
       for (Operation *user : opsToMoveAfterIf) {
         uniqueOpsToMoveAfterIfMap.insert(user);
       }
-      
-      // Traverse the if, and if the op is found inside unique ops to move after if
-      // Move it to after the if operation.
-      // Need to insert ops one after the another, so do we need to adjust insertion point everytime?
-      for(auto &op : ifOp.getThenRegion().front().getOperations()) {
-        if(uniqueOpsToMoveAfterIfMap.count(&op)) {
+
+      // Traverse the if, and if the op is found inside unique ops to move after
+      // if Move it to after the if operation. Need to insert ops one after the
+      // another, so do we need to adjust insertion point everytime?
+      for (auto &op : ifOp.getThenRegion().front().getOperations()) {
+        if (uniqueOpsToMoveAfterIfMap.count(&op)) {
           rewriter.clone(op, mappingAfterIf);
           Value mappedValue = mappingAfterIf.lookupOrDefault(op.getResult(0));
           mappingAfterIf.map(op.getResult(0), mappedValue);
