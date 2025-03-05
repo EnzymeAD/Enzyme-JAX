@@ -53,30 +53,24 @@ module {
   }
 }
 
-// CHECK: module {
-// CHECK-NEXT:   func.func private @"##call__Z25gpu__mask_immersed_field_16CompilerMetadataI10StaticSizeI13_180__85__20_E12DynamicCheckvv7NDRangeILi3ES0_I11_12__6__20_ES0_I11_16__16__1_EvvEE11OffsetArrayI7Float64Li3E13CuTracedArrayIS9_Li3ELi1E13_194__99__34_EE5TupleI6Center4FaceSE_E20ImmersedBoundaryGridIS9_8Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridIS9_SI_SJ_SK_28StaticVerticalDiscretizationIS8_IS9_Li1ESA_IS9_Li1ELi1E5_35__EES8_IS9_Li1ESA_IS9_Li1ELi1E5_34__EESO_SQ_ES8_IS9_Li2ESA_IS9_Li2ELi1E9_194__99_EE8TripolarI5Int64SV_SV_EvE16GridFittedBottomI5FieldISE_SE_vvvvS8_IS9_Li3ESA_IS9_Li3ELi1E12_194__99__1_EES9_vvvE23CenterImmersedConditionEvvvES9_#1335$par75"(%arg0: memref<34x99x194xf64, 1>, %arg1: memref<34xf64, 1>, %arg2: memref<1x99x194xf64, 1>) {
-// CHECK-DAG:     %c1 = arith.constant 1 : index
-// CHECK-DAG:     %c-1_i64 = arith.constant -1 : i64
-// CHECK-DAG:     %c1_i64 = arith.constant 1 : i64
-// CHECK-DAG:     %cst = arith.constant 0.000000e+00 : f64
-// CHECK-NEXT:     affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (20, 85, 180) {
-// CHECK-NEXT:       %0 = arith.addi %arg4, %c1 : index
-// CHECK-NEXT:       %1 = arith.index_castui %0 : index to i64
-// CHECK-NEXT:       %2 = affine.load %arg1[%arg3 + 7] : memref<34xf64, 1>
-// CHECK-NEXT:       %3 = affine.load %arg2[0, %arg4 + 7, %arg5 + 7] : memref<1x99x194xf64, 1>
-// CHECK-NEXT:       %4 = arith.cmpf ole, %2, %3 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:       %5 = arith.addi %1, %c-1_i64 : i64
-// CHECK-NEXT:       %6 = affine.load %arg2[0, %arg4 + 6, %arg5 + 7] : memref<1x99x194xf64, 1>
-// CHECK-NEXT:       %7 = arith.cmpf ole, %2, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:       %8 = arith.cmpi ult, %5, %c1_i64 : i64
-// CHECK-NEXT:       %9 = arith.ori %8, %7 : i1
-// CHECK-NEXT:       %10 = arith.ori %4, %9 : i1
-// CHECK-NEXT:       %11 = arith.cmpi uge, %5, %c1_i64 : i64
-// CHECK-NEXT:       %12 = arith.andi %11, %10 : i1
-// CHECK-NEXT:       %13 = affine.load %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<34x99x194xf64, 1>
-// CHECK-NEXT:       %14 = arith.select %12, %cst, %13 : f64
-// CHECK-NEXT:       affine.store %14, %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<34x99x194xf64, 1>
-// CHECK-NEXT:     }
-// CHECK-NEXT:     return
-// CHECK-NEXT:   }
-// CHECK-NEXT: }
+// CHECK:  func.func private @"##call__Z25gpu__mask_immersed_field_16CompilerMetadataI10StaticSizeI13_180__85__20_E12DynamicCheckvv7NDRangeILi3ES0_I11_12__6__20_ES0_I11_16__16__1_EvvEE11OffsetArrayI7Float64Li3E13CuTracedArrayIS9_Li3ELi1E13_194__99__34_EE5TupleI6Center4FaceSE_E20ImmersedBoundaryGridIS9_8Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridIS9_SI_SJ_SK_28StaticVerticalDiscretizationIS8_IS9_Li1ESA_IS9_Li1ELi1E5_35__EES8_IS9_Li1ESA_IS9_Li1ELi1E5_34__EESO_SQ_ES8_IS9_Li2ESA_IS9_Li2ELi1E9_194__99_EE8TripolarI5Int64SV_SV_EvE16GridFittedBottomI5FieldISE_SE_vvvvS8_IS9_Li3ESA_IS9_Li3ELi1E12_194__99__1_EES9_vvvE23CenterImmersedConditionEvvvES9_#1335$par75"(%arg0: memref<34x99x194xf64, 1>, %arg1: memref<34xf64, 1>, %arg2: memref<1x99x194xf64, 1>) {
+// CHECK-NEXT:    %c1_i64 = arith.constant 1 : i64
+// CHECK-NEXT:    %cst = arith.constant 0.000000e+00 : f64
+// CHECK-NEXT:    affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (20, 85, 180) {
+// CHECK-NEXT:      %0 = affine.load %arg1[%arg3 + 7] : memref<34xf64, 1>
+// CHECK-NEXT:      %1 = affine.load %arg2[0, %arg4 + 7, %arg5 + 7] : memref<1x99x194xf64, 1>
+// CHECK-NEXT:      %2 = arith.cmpf ole, %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %3 = arith.index_castui %arg4 : index to i64
+// CHECK-NEXT:      %4 = affine.load %arg2[0, %arg4 + 6, %arg5 + 7] : memref<1x99x194xf64, 1>
+// CHECK-NEXT:      %5 = arith.cmpf ole, %0, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %6 = arith.cmpi ult, %3, %c1_i64 : i64
+// CHECK-NEXT:      %7 = arith.ori %6, %5 : i1
+// CHECK-NEXT:      %8 = arith.ori %2, %7 : i1
+// CHECK-NEXT:      %9 = arith.cmpi uge, %3, %c1_i64 : i64
+// CHECK-NEXT:      %10 = arith.andi %9, %8 : i1
+// CHECK-NEXT:      %11 = affine.load %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<34x99x194xf64, 1>
+// CHECK-NEXT:      %12 = arith.select %10, %cst, %11 : f64
+// CHECK-NEXT:      affine.store %12, %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<34x99x194xf64, 1>
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
