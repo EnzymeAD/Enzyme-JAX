@@ -88,6 +88,10 @@ jobs:
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: |
           bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
+      - name: Run lit tests
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        run: |
+          bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }} 
