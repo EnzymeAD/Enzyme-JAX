@@ -34,6 +34,8 @@ namespace enzyme {
 } // namespace enzyme
 } // namespace mlir
 
+#define DEBUG_TYPE "raise-affine-to-stablehlo"
+
 using namespace mlir;
 using namespace mlir::enzyme;
 
@@ -78,6 +80,16 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
   assert(affine::isAffineInductionVar(iv));
 
   auto owner = affine::getAffineParallelInductionVarOwner(iv);
+  if (!owner) {
+    auto forOp = affine::getForInductionVarOwner(iv);
+    if (!forOp.hasConstantBounds())
+      return std::nullopt;
+
+    int64_t lb = forOp.getConstantLowerBound(),
+            ub = forOp.getConstantUpperBound(), step = forOp.getStepAsInt();
+
+    return InductionVariableRange{lb, ub, step};
+  }
 
   if (owner.hasMinMaxBounds()) // Non-constant ranges.
     return std::nullopt;
@@ -93,12 +105,7 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
                 .getValue();
   auto step = owner.getSteps()[ivPos];
 
-  InductionVariableRange range;
-  range.lb = lb;
-  range.ub = ub;
-  range.step = step;
-
-  return std::optional<InductionVariableRange>{range};
+  return InductionVariableRange{lb, ub, step};
 }
 
 static std::optional<InductionVariableRange>
@@ -160,6 +167,34 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
   }
 
   return std::optional<InductionVariableRange>{range};
+}
+
+static void
+emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
+                  IRMapping &mapping,
+                  llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  auto ET = builder.getI64Type();
+  auto Ty = RankedTensorType::get({range.getNumIters()}, ET);
+  Value iota =
+      builder.create<stablehlo::IotaOp>(iv.getLoc(), Ty, 0).getResult();
+  iota = builder.create<stablehlo::AddOp>(
+      iv.getLoc(), Ty, iota,
+      builder.create<stablehlo::ConstantOp>(
+          iv.getLoc(), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb)))));
+  iota = builder.create<stablehlo::MulOp>(
+      iv.getLoc(), Ty, iota,
+      builder.create<stablehlo::ConstantOp>(
+          iv.getLoc(), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step)))));
+  mapping.map(iv, iota);
+
+  // contiguous with respect to itself: (d0) -> (d0)
+  affine::AffineValueMap accessMap(
+      AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
+  maps[iota] = accessMap;
 }
 
 // Given an affine map for a load/store operation, compute the startIndices,
@@ -544,7 +579,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
           arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
-          math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp>(op)) {
+          math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp, math::IsNaNOp>(
+          op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
@@ -567,10 +603,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // binary ops
   if (isa<arith::MulIOp, arith::MulFOp, arith::AddIOp, arith::AddFOp,
           arith::SubIOp, arith::SubFOp, arith::DivFOp, arith::DivSIOp,
-          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::CmpIOp,
-          arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp, arith::ShLIOp,
-          arith::MinimumFOp, arith::MaximumFOp, arith::MinUIOp, arith::MinSIOp,
-          arith::MaxUIOp, arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp>(op)) {
+          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::XOrIOp,
+          arith::CmpIOp, arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp,
+          arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
+          arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
+          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, math::CopySignOp>(
+          op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -633,6 +671,28 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     return success();
   }
+
+  // Inner for loops
+  if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+    if (forOp.getNumIterOperands() != 0)
+      return failure();
+
+    auto iv = forOp.getInductionVar();
+    auto range = getIVRange(iv);
+    if (!range.has_value())
+      return failure();
+
+    emitIVToStableHLO(builder, iv, *range, mapping, maps);
+
+    for (auto &innerOp : forOp.getBody()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+        return failure();
+    }
+
+    return success();
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "cannot raise op: " << *op;);
 
   return failure();
 }
@@ -726,31 +786,12 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
 
       for (auto iv : loopRoot.getIVs()) {
         auto range = getIVRange(iv);
-        if (!range.has_value())
+        if (!range.has_value()) {
           anyFailed = true;
+          break;
+        }
 
-        auto ET = builder.getI64Type();
-        auto Ty = RankedTensorType::get({range->getNumIters()}, ET);
-        Value iota =
-            builder.create<stablehlo::IotaOp>(iv.getLoc(), Ty, 0).getResult();
-        iota = builder.create<stablehlo::AddOp>(
-            iv.getLoc(), Ty, iota,
-            builder.create<stablehlo::ConstantOp>(
-                iv.getLoc(), Ty,
-                SplatElementsAttr::get(
-                    Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range->lb)))));
-        iota = builder.create<stablehlo::MulOp>(
-            iv.getLoc(), Ty, iota,
-            builder.create<stablehlo::ConstantOp>(
-                iv.getLoc(), Ty,
-                SplatElementsAttr::get(Ty, ArrayRef<Attribute>(IntegerAttr::get(
-                                               ET, range->step)))));
-        mapping.map(iv, iota);
-
-        // contiguous with respect to itself: (d0) -> (d0)
-        affine::AffineValueMap accessMap(
-            AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
-        maps[iota] = accessMap;
+        emitIVToStableHLO(builder, iv, *range, mapping, maps);
       }
 
       if (!anyFailed) {
