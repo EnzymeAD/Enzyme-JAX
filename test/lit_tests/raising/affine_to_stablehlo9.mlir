@@ -46,13 +46,13 @@ module {
 // CHECK-NEXT:    %11 = stablehlo.compare  LT, %0, %c,  UNSIGNED : (tensor<85xi64>, tensor<85xi64>) -> tensor<85xi1>
 // CHECK-NEXT:    %12 = stablehlo.broadcast_in_dim %11, dims = [0] : (tensor<85xi1>) -> tensor<85x20x180xi1>
 // CHECK-NEXT:    %13 = stablehlo.transpose %10, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
-// CHECK-NEXT:    %14 = arith.ori %12, %13 : tensor<85x20x180xi1>
+// CHECK-NEXT:    %14 = stablehlo.or %12, %13 : tensor<85x20x180xi1>
 // CHECK-NEXT:    %15 = stablehlo.transpose %14, dims = [1, 0, 2] : (tensor<85x20x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %16 = arith.ori %6, %15 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %16 = stablehlo.or %6, %15 : tensor<20x85x180xi1>
 // CHECK-NEXT:    %17 = stablehlo.not %11 : tensor<85xi1>
 // CHECK-NEXT:    %18 = stablehlo.broadcast_in_dim %17, dims = [0] : (tensor<85xi1>) -> tensor<85x20x180xi1>
 // CHECK-NEXT:    %19 = stablehlo.transpose %16, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
-// CHECK-NEXT:    %20 = arith.andi %18, %19 : tensor<85x20x180xi1>
+// CHECK-NEXT:    %20 = stablehlo.and %18, %19 : tensor<85x20x180xi1>
 // CHECK-NEXT:    %21 = stablehlo.slice %arg0 [7:27, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
 // CHECK-NEXT:    %22 = stablehlo.transpose %21, dims = [1, 0, 2] : (tensor<20x85x180xf64>) -> tensor<85x20x180xf64>
 // CHECK-NEXT:    %23 = stablehlo.select %20, %cst, %22 : tensor<85x20x180xi1>, tensor<85x20x180xf64>
