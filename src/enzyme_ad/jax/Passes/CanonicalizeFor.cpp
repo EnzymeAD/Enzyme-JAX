@@ -2799,10 +2799,11 @@ std::pair<Value, size_t> checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
 
-  auto [it, inserted] = opsToMoveAfterIf.try_emplace(opToMove);
-  if (!inserted) {
+  if (opsToMoveAfterIf.contains(opToMove)) {
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
+
+  auto &&[it, found] = opsToMoveAfterIf.insert(std::make_pair(opToMove, SmallVector<std::pair<Value, size_t>>()));
 
   SmallVector<std::pair<Value, size_t>> &newoperands = it->second;
 
