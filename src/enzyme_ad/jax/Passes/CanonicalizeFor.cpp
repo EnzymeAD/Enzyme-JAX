@@ -2799,12 +2799,12 @@ std::pair<Value, size_t> checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
 
-  if (opsToMoveAfterIf.contains(opToMove)) {
+  auto [it, inserted] = opsToMoveAfterIf.try_emplace(opToMove);
+  if (!inserted) {
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
 
-  SmallVector<std::pair<Value, size_t>> &newoperands =
-      opsToMoveAfterIf[opToMove];
+  SmallVector<std::pair<Value, size_t>> &newoperands = it->second;
 
   for (auto [index, operands] : llvm::enumerate(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
