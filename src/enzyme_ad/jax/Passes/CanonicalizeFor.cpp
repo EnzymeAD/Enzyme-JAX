@@ -2738,27 +2738,250 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
+// This function checks if given operands can be yielded instead of moved
+// outside the if operation
+// Checks:
+// 1. If operand is a block argument
+// 2. If operand is not in the same region as the if operation
+// 3. If there is only 1 unique user of op
+// 4. If the if and else operands are not of the same operation
+// 5. If the operands are not readnone
+// In any of these cases we can't propagate the operand outside the if operation
+// and are yielded instead
+bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
+                               scf::IfOp ifOp) {
+  for (auto operand : {thenOperand, elseOperand}) {
+    auto defop = operand.getDefiningOp();
+    if (!defop)
+      return false;
+
+    if (!ifOp->isAncestor(defop))
+      return false;
+
+    if (!isReadNone(operand.getDefiningOp()))
+      return false;
+
+    if (operand.getDefiningOp()->getNumRegions())
+      return false;
+  }
+
+  if (thenOperand.getDefiningOp()->getName() !=
+      elseOperand.getDefiningOp()->getName())
+    return false;
+
+  if (thenOperand.getDefiningOp()->getAttrDictionary() !=
+      elseOperand.getDefiningOp()->getAttrDictionary())
+    return false;
+
+  return true;
+}
+
+std::pair<Value, size_t> checkOperands(
+    scf::IfOp ifOp, Value operandIf, Value operandElse,
+    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
+        &opsToMoveAfterIf,
+    SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
+    DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
+    PatternRewriter &rewriter) {
+
+  if (operandIf == operandElse)
+    return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+
+  std::pair<Value, Value> key = {operandIf, operandElse};
+  if (!isLegalToSinkYieldedValue(operandIf, operandElse, ifOp)) {
+    if (!thenOperationsToYieldIndex.contains(key)) {
+      thenOperationsToYieldIndex[key] = ifYieldOperands.size();
+      ifYieldOperands.push_back(operandIf);
+      elseYieldOperands.push_back(operandElse);
+    }
+    return std::pair<Value, size_t>(nullptr, thenOperationsToYieldIndex[key]);
+  }
+
+  Operation *opToMove = operandIf.getDefiningOp();
+
+  if (opsToMoveAfterIf.find(opToMove) != opsToMoveAfterIf.end()) {
+    return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+  }
+
+  opsToMoveAfterIf.insert(
+      std::make_pair(opToMove, SmallVector<std::pair<Value, size_t>>()));
+
+  SmallVector<std::pair<Value, size_t>> &newoperands =
+      opsToMoveAfterIf.at(opToMove);
+
+  for (auto [index, operands] : llvm::enumerate(
+           llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
+                           operandElse.getDefiningOp()->getOperands()))) {
+    auto [thenOperand, elseOperand] = operands;
+    newoperands.push_back(checkOperands(
+        ifOp, thenOperand, elseOperand, opsToMoveAfterIf, ifYieldOperands,
+        elseYieldOperands, thenOperationsToYieldIndex, rewriter));
+  }
+
+  return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+}
+
+// Algorithm:
+// 1. Extract yield operations from both regions
+// 2. Check if yield operations match in if and else region
+// 3. If match, recursively check their operands to see if they can be moved as
+// well
+// 4. Track all ops which can be moved outside the if op
+// 5. Track yiels ops which didn't change and the ones which changed.
+// 6. Create a new if operation with updated yields
+// 7. Updated source operands of operations moved outside to the new yields
+// 8. Replace uses of the original if operation with the new one
+struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
+  IfYieldMovementPattern(mlir::MLIRContext *context)
+      : OpRewritePattern<scf::IfOp>(context, /*benefit=*/1) {}
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Ensure both regions exist and have single blocks
+    if (ifOp.getThenRegion().empty() || ifOp.getElseRegion().empty())
+      return failure();
+
+    // Extract yield operations from both regions
+    auto thenYield =
+        cast<scf::YieldOp>(ifOp.getThenRegion().front().getTerminator());
+    auto elseYield =
+        cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
+
+    // List of replacement values for each of the original if's results
+    // There are two kinds of replacements:
+    //   1) A new value, which will be moved after the if statement
+    //   2) if the value is null, the pair.second denotes the index of the new
+    //   if
+    //      statement that we should use here.
+    SmallVector<std::pair<Value, size_t>> originalYields;
+
+    // Use SetVector to ensure uniqueness while preserving order
+    SmallVector<Value> ifYieldOperands, elseYieldOperands;
+    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
+        opsToMoveAfterIf;
+
+    // A list of operands defined within the if block, which have been promoted
+    // to be yielded from the if statement. The size_t argument denotes the
+    // index of the new if result which contains the value
+    DenseMap<std::pair<Value, Value>, size_t> thenOperationsToYieldIndex;
+
+    bool changed = false;
+
+    for (auto [thenYieldOperand, elseYieldOperand] :
+         llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
+
+      auto yld =
+          checkOperands(ifOp, thenYieldOperand, elseYieldOperand,
+                        opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
+                        thenOperationsToYieldIndex, rewriter);
+
+      originalYields.emplace_back(yld);
+      if (yld.first)
+        changed = true;
+    }
+
+    // If no changes to yield operands, return failure
+    if (!changed) {
+      return failure();
+    }
+
+    // Create a new if operation with the same condition
+    SmallVector<Type> resultTypes;
+
+    // Cannot do unique, as unique might differ for if-else
+    for (auto operand : ifYieldOperands) {
+      resultTypes.push_back(operand.getType());
+    }
+
+    auto newIfOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), resultTypes,
+                                              ifOp.getCondition(),
+                                              /*hasElse=*/true);
+
+    // Move operations from the original then block to the new then block
+
+    rewriter.eraseBlock(&newIfOp.getThenRegion().front());
+    if (ifOp.getElseRegion().getBlocks().size()) {
+      rewriter.eraseBlock(&newIfOp.getElseRegion().front());
+    }
+
+    rewriter.inlineRegionBefore(ifOp.getThenRegion(), newIfOp.getThenRegion(),
+                                newIfOp.getThenRegion().begin());
+    rewriter.inlineRegionBefore(ifOp.getElseRegion(), newIfOp.getElseRegion(),
+                                newIfOp.getElseRegion().begin());
+
+    // Create new yield in then block
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(newIfOp.thenBlock());
+      rewriter.create<scf::YieldOp>(thenYield.getLoc(), ifYieldOperands);
+      rewriter.eraseOp(thenYield);
+    }
+
+    // Create new yield in else block
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(newIfOp.elseBlock());
+      rewriter.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+      rewriter.eraseOp(elseYield);
+    }
+
+    IRMapping mappingAfterIf;
+
+    rewriter.setInsertionPointAfter(newIfOp);
+    for (auto &op : newIfOp.thenBlock()->getOperations()) {
+      if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
+        SmallVector<Value> operands;
+        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
+          if (valoperand)
+            operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
+          else
+            operands.push_back(newIfOp.getResult(idxop));
+        }
+        auto *newOp = rewriter.create(op.getLoc(), op.getName().getIdentifier(),
+                                      operands, op.getResultTypes(),
+                                      op.getAttrs(), op.getSuccessors());
+
+        mappingAfterIf.map(&op, newOp);
+        for (auto &&[prev, post] :
+             llvm::zip_equal(op.getResults(), newOp->getResults()))
+          mappingAfterIf.map(prev, post);
+      }
+    }
+
+    // Replace uses of the original if operation with the new one
+    SmallVector<Value> newResults;
+    for (auto [idx, pair] : llvm::enumerate(originalYields)) {
+      newResults.push_back(pair.first ? mappingAfterIf.lookup(pair.first)
+                                      : newIfOp.getResult(pair.second));
+    }
+
+    // Erase yield operations of prev if operation
+    rewriter.replaceOp(ifOp, newResults);
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<
-      truncProp, ForOpInductionReplacement, RemoveUnusedForResults,
-      RemoveUnusedArgs, MoveDoWhileToFor, MoveWhileToFor, RemoveWhileSelect,
-      SelectExtractToExtractSelect, SelectTruncToTruncSelect, SelectI1Simplify,
+  rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
+          RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
+          MoveWhileToFor, RemoveWhileSelect, SelectExtractToExtractSelect,
+          SelectTruncToTruncSelect, SelectI1Simplify,
 
-      MoveWhileDown, MoveWhileDown2,
+          MoveWhileDown, MoveWhileDown2,
 
-      ReplaceRedundantArgs,
+          ReplaceRedundantArgs,
 
-      WhileShiftToInduction,
+          WhileShiftToInduction,
 
-      ForBreakAddUpgrade, RemoveUnusedResults,
+          ForBreakAddUpgrade, RemoveUnusedResults,
 
-      MoveWhileAndDown,
-      // MoveWhileDown3 Infinite loops on current kernel code, disabling
-      // [and should fix] MoveWhileDown3,
-      MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
-      WhileCmpOffset, RemoveUnusedCondVar, ReturnSq, MoveSideEffectFreeWhile>(
-      getOperation()->getContext());
+          MoveWhileAndDown,
+          // MoveWhileDown3 Infinite loops on current kernel code, disabling
+          // [and should fix] MoveWhileDown3,
+          MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
+          WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
+          MoveSideEffectFreeWhile>(getOperation()->getContext());
   //	 WhileLICM,
   GreedyRewriteConfig config;
   config.maxIterations = 247;
