@@ -1689,6 +1689,91 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp->getParentOfType<affine::AffineForOp>() &&
+        !ifOp->getParentOfType<affine::AffineParallelOp>())
+      return failure();
+
+    std::vector<mlir::Type> types = {ifOp.getType()};
+
+    for (int i = 0; i < 2; i++) {
+      SmallVector<AffineExpr, 2> exprs;
+      SmallVector<bool, 2> eqflags;
+      SmallVector<Value, 4> applies;
+
+      // condition, Negated
+      std::deque<std::pair<Value, bool>> todo = {
+          std::make_pair(ifOp.getCondition(), i == 1)};
+      bool badcmp = false;
+      while (todo.size()) {
+        auto &&[cur, negated] = todo.front();
+        todo.pop_front();
+        if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
+          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated)) {
+            badcmp = true;
+            break;
+          }
+          continue;
+        }
+        if (!negated) {
+          if (auto andi = cur.getDefiningOp<AndIOp>()) {
+            todo.emplace_back(andi.getOperand(0), negated);
+            todo.emplace_back(andi.getOperand(1), negated);
+            continue;
+          }
+        }
+        if (negated) {
+          if (auto andi = cur.getDefiningOp<OrIOp>()) {
+            todo.emplace_back(andi.getOperand(0), negated);
+            todo.emplace_back(andi.getOperand(1), negated);
+            continue;
+          }
+        }
+
+        if (auto noti = cur.getDefiningOp<XOrIOp>()) {
+          if (matchPattern(noti.getOperand(1), m_One())) {
+            todo.emplace_back(noti.getOperand(0), !negated);
+            continue;
+          }
+        }
+        LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
+                                << " - negated: " << negated << "\n");
+        badcmp = true;
+        break;
+      }
+      if (badcmp)
+        continue;
+
+      auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+      DominanceInfo DI(scope);
+
+      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
+                                  eqflags);
+      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &applies, DI);
+      affine::canonicalizeSetAndOperands(&iset, &applies);
+      affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
+          ifOp.getLoc(), types, iset, applies,
+          /*elseBlock=*/true);
+
+      rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
+      rewriter.create<affine::AffineYieldOp>(
+          ifOp.getLoc(), i == 0 ? ifOp.getTrueValue() : ifOp.getFalseValue());
+
+      rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
+      rewriter.create<affine::AffineYieldOp>(
+          ifOp.getLoc(), i == 0 ? ifOp.getFalseValue() : ifOp.getTrueValue());
+
+      rewriter.replaceOp(ifOp, affineIfOp.getResults());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -3756,7 +3841,7 @@ void AffineCFGPass::runOnOperation() {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
-          AffineIfSimplification, CombineAffineIfs,
+          MoveSelectToAffine, AffineIfSimplification, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
           CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);

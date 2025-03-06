@@ -573,10 +573,11 @@ public:
 
   LogicalResult matchAndRewrite(arith::AddIOp ext,
                                 PatternRewriter &rewriter) const override {
-    auto operand = ext.getLhs().getDefiningOp<arith::IndexCastUIOp>();
-    if (!operand)
+    auto operand = ext.getLhs();
+    auto operandOp = operand.getDefiningOp();
+    if (!operandOp || !isa<arith::IndexCastUIOp, arith::IndexCastOp>(operandOp))
       return failure();
-    auto maxSizeOpt = maxSize(operand.getOperand());
+    auto maxSizeOpt = maxSize(operandOp->getOperand(0));
     if (!maxSizeOpt)
       return failure();
     if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
@@ -588,7 +589,7 @@ public:
       return failure();
 
     if (constValue.getValue().isNegative()) {
-      if (auto add2 = operand.getOperand().getDefiningOp<arith::AddIOp>()) {
+      if (auto add2 = operandOp->getOperand(0).getDefiningOp<arith::AddIOp>()) {
         IntegerAttr constValue2;
         if (matchPattern(add2.getRhs(), m_Constant(&constValue2))) {
           auto v2 = constValue.getValue() + constValue2.getValue();
@@ -608,10 +609,43 @@ public:
 
     auto rhs = rewriter.create<arith::ConstantIndexOp>(
         ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
-    auto idxshr =
-        rewriter.create<arith::AddIOp>(ext.getLoc(), operand.getOperand(), rhs);
+    auto idxshr = rewriter.create<arith::AddIOp>(ext.getLoc(),
+                                                 operandOp->getOperand(0), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
+    return success();
+  }
+};
+
+class SubIOfIndexUI final : public OpRewritePattern<arith::SubIOp> {
+public:
+  using OpRewritePattern<arith::SubIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SubIOp ext,
+                                PatternRewriter &rewriter) const override {
+    auto operand = ext.getRhs().getDefiningOp<arith::IndexCastUIOp>();
+    if (!operand)
+      return failure();
+
+    auto maxSizeOpt = maxSize(operand.getOperand());
+    if (!maxSizeOpt)
+      return failure();
+    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
+            .ult(*maxSizeOpt))
+      return failure();
+
+    APInt constValue;
+    if (!matchPattern(ext.getLhs(), m_ConstantInt(&constValue)))
+      return failure();
+
+    if (!constValue.isZero())
+      return failure();
+
+    auto lhs2 = rewriter.create<arith::ConstantIndexOp>(
+        ext.getLhs().getLoc(), constValue.getSExtValue());
+    auto sub2 = rewriter.create<arith::SubIOp>(ext.getLoc(), lhs2,
+                                               operand.getOperand());
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(), sub2);
     return success();
   }
 };
@@ -1183,7 +1217,8 @@ struct CanonicalizeLoopsPass
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
-  patterns.add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
-               ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI,
-               MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
+  patterns
+      .add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
+           ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI, SubIOfIndexUI,
+           MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
 }
