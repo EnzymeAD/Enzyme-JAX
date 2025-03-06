@@ -2778,7 +2778,7 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
 
 std::pair<Value, size_t> checkOperands(
     scf::IfOp ifOp, Value operandIf, Value operandElse,
-    DenseMap<Operation *, SmallVector<std::pair<Value, size_t>>>
+    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
         &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
@@ -2799,13 +2799,15 @@ std::pair<Value, size_t> checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
 
-  if (opsToMoveAfterIf.contains(opToMove)) {
+  if (opsToMoveAfterIf.find(opToMove) != opsToMoveAfterIf.end()) {
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
 
-  auto &&[it, found] = opsToMoveAfterIf.insert(std::make_pair(opToMove, SmallVector<std::pair<Value, size_t>>()));
+  opsToMoveAfterIf.insert(
+      std::make_pair(opToMove, SmallVector<std::pair<Value, size_t>>()));
 
-  SmallVector<std::pair<Value, size_t>> &newoperands = it->second;
+  SmallVector<std::pair<Value, size_t>> &newoperands =
+      opsToMoveAfterIf.at(opToMove);
 
   for (auto [index, operands] : llvm::enumerate(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
@@ -2855,7 +2857,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    DenseMap<Operation *, SmallVector<std::pair<Value, size_t>>>
+    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
         opsToMoveAfterIf;
 
     // A list of operands defined within the if block, which have been promoted
@@ -2927,7 +2929,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     rewriter.setInsertionPointAfter(newIfOp);
     for (auto &op : newIfOp.thenBlock()->getOperations()) {
-      if (opsToMoveAfterIf.contains(&op)) {
+      if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
         SmallVector<Value> operands;
         for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
           if (valoperand)
