@@ -2748,56 +2748,62 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
 // 5. If the operands are not readnone
 // In any of these cases we can't propagate the operand outside the if operation
 // and are yielded instead
-bool checkIfYield(Value thenOperand, Value elseOperand, scf::IfOp ifOp) {
-
-  llvm::SmallPtrSet<Operation *, 4> uniqueThenUsers, uniqueElseUsers;
-  for (Operation *user : thenOperand.getUsers()) {
-    uniqueThenUsers.insert(user);
-  }
-  for (Operation *user : elseOperand.getUsers()) {
-    uniqueElseUsers.insert(user);
+bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand, scf::IfOp ifOp) {
+  for (auto operand : {thenOperand, elseOperand}) {
+    if (isa<BlockArgument>(operand))
+      return false;
+    if (!isReadNone(operand.getDefiningOp()))
+      return false;
   }
 
-  if (isa<BlockArgument>(thenOperand) || isa<BlockArgument>(elseOperand) ||
-      !ifOp.getThenRegion().isAncestor(
-          thenOperand.getDefiningOp()->getParentRegion()) ||
-      !ifOp.getElseRegion().isAncestor(
-          elseOperand.getDefiningOp()->getParentRegion()) ||
-      !(uniqueThenUsers.size() == 1 && uniqueElseUsers.size() == 1) ||
-      (thenOperand.getDefiningOp()->getName() !=
-       elseOperand.getDefiningOp()->getName()) ||
-      !isReadNone(thenOperand.getDefiningOp()) ||
-      !isReadNone(elseOperand.getDefiningOp()))
-    return true;
-  return false;
+  if (!ifOp.getThenRegion().isAncestor(
+    thenOperand.getDefiningOp()->getParentRegion()))
+    return false;
+
+  if (!ifOp.getElseRegion().isAncestor(
+    elseOperand.getDefiningOp()->getParentRegion()))
+    return false;
+
+  if (thenOperand.getDefiningOp()->getName() != elseOperand.getDefiningOp()->getName())
+    return false;
+  
+  return true;
 }
 
 void checkOperands(
-    scf::IfOp ifOp, int opOperandIndex, Value parentOp, Value operandIf,
+    scf::IfOp ifOp, Value parentOp, Value operandIf,
     Value operandElse,
-    SmallVector<std::tuple<size_t, Operation *, size_t>> &yieldUseMap,
-    SmallVector<Operation *> &opsToMoveAfterIf,
+    SetVector<Operation *> &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
+    SmallVector<std::pair<Value, size_t>> &thenOperationsToYieldIndex,
     PatternRewriter &rewriter) {
 
-  if (checkIfYield(operandIf, operandElse, ifOp)) {
+  if (!isLegalToSinkYieldedValue(operandIf, operandElse, ifOp)) {
+    if (auto op = operandIf.getDefiningOp()) {
+      if (ifOp->isAncestor(op)) {
+        thenOperationsToYieldIndex.emplace_back(operandIf, ifYieldOperands.size());
+      }
+    }
     ifYieldOperands.push_back(operandIf);
     elseYieldOperands.push_back(operandElse);
-    int currentYieldIndex = ifYieldOperands.size() - 1;
-    yieldUseMap.push_back(std::make_tuple(
-        currentYieldIndex, parentOp.getDefiningOp(), opOperandIndex));
     return;
   }
 
   Operation *opToMove = operandIf.getDefiningOp();
-  opsToMoveAfterIf.push_back(opToMove);
+
+  if (opsToMoveAfterIf.contains(opToMove)) {
+    return;
+  }
+
+  opsToMoveAfterIf.insert(opToMove);
 
   for (auto [index, operands] : llvm::enumerate(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
                            operandElse.getDefiningOp()->getOperands()))) {
     auto [thenOperand, elseOperand] = operands;
-    checkOperands(ifOp, index, operandIf, thenOperand, elseOperand, yieldUseMap,
+    checkOperands(ifOp, operandIf, thenOperand, elseOperand, 
                   opsToMoveAfterIf, ifYieldOperands, elseYieldOperands,
+                  thenOperationsToYieldIndex,
                   rewriter);
   }
 }
@@ -2828,62 +2834,51 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     auto elseYield =
         cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
 
-    // List of yield positions not modified - contains 2 kinds of values:
-    // 1. Ones which remain inside the if operation
-    // 2. Ones which are moved to outside the if operation
-    std::vector<Value> originalYieldsNewValues;
-    // Since there are 2 kinds of yields we need to know which yield is moved to
-    // outside the if operation and which one remains inside the if operation -1
-    // indicates that the yield is moved to outside the if operation Any other
-    // value indicates that the yield is remaining inside the if operation and
-    // their correspoding yield index
-    SmallVector<int> originalYieldsForIndex;
+    // List of replacement values for each of the original if's results
+    // There are two kinds of replacements:
+    //   1) A new value, which will be moved after the if statement
+    //   2) if the value is null, the pair.second denotes the index of the new if
+    //      statement that we should use here.
+    SmallVector<std::pair<Value, size_t>> originalYields;
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    SmallVector<Operation *> opsToMoveAfterIf;
-    // Captures the yield position of newIf op, the operation that uses it, and
-    // the operand index of the operation
-    SmallVector<std::tuple<size_t, Operation *, size_t>> yieldUseMap;
+    SetVector<Operation *> opsToMoveAfterIf;
+
+    // A list of operands defined within the if block, which have been promoted to be yielded from the
+    // if statement. The size_t argument denotes the index of the new if result which contains
+    // the value
+    SmallVector<std::pair<Value, size_t>> thenOperationsToYieldIndex;
+
+    bool changed = false;
 
     for (auto [thenYieldOperand, elseYieldOperand] :
          llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
 
-      if (checkIfYield(thenYieldOperand, elseYieldOperand, ifOp)) {
+      if (!isLegalToSinkYieldedValue(thenYieldOperand, elseYieldOperand, ifOp)) {
         ifYieldOperands.push_back(thenYieldOperand);
         elseYieldOperands.push_back(elseYieldOperand);
-        originalYieldsNewValues.push_back(
-            thenYieldOperand); // This is not moved to outside if
-        int currentYieldIndex = ifYieldOperands.size() - 1;
-        originalYieldsForIndex.push_back(currentYieldIndex);
+        originalYields.emplace_back(nullptr, ifYieldOperands.size() - 1);
         continue;
       }
 
       Operation *opToMove = thenYieldOperand.getDefiningOp();
-      opsToMoveAfterIf.push_back(opToMove);
+      opsToMoveAfterIf.insert(opToMove);
 
       for (auto [index, operands] : llvm::enumerate(llvm::zip_equal(
                thenYieldOperand.getDefiningOp()->getOperands(),
                elseYieldOperand.getDefiningOp()->getOperands()))) {
         auto [thenOperand, elseOperand] = operands;
-        checkOperands(ifOp, index, thenYieldOperand, thenOperand, elseOperand,
-                      yieldUseMap, opsToMoveAfterIf, ifYieldOperands,
-                      elseYieldOperands, rewriter);
+        checkOperands(ifOp, thenYieldOperand, thenOperand, elseOperand,
+                      opsToMoveAfterIf, ifYieldOperands,
+                      elseYieldOperands, thenOperationsToYieldIndex, rewriter);
       }
-      originalYieldsNewValues.push_back(
-          opToMove->getResult(0)); // This is moved to outside if
-      originalYieldsForIndex.push_back(
-          -1); //-1 indicates that the yield is moved to outside if
+      originalYields.emplace_back(opToMove->getResult(0), 0xdeadbeef);
+      changed = true;
     }
 
     // If no changes to yield operands, return failure
-    if (ifYieldOperands.size() == thenYield.getOperands().size() &&
-        llvm::all_of(
-            llvm::zip_equal(ifYieldOperands, thenYield.getOperands()),
-            [](auto pair) { return std::get<0>(pair) == std::get<1>(pair); }) &&
-        llvm::all_of(
-            llvm::zip_equal(elseYieldOperands, elseYield.getOperands()),
-            [](auto pair) { return std::get<0>(pair) == std::get<1>(pair); })) {
+    if (!changed) {
       return failure();
     }
 
@@ -2900,111 +2895,55 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
                                               /*hasElse=*/true);
 
     // Move operations from the original then block to the new then block
-    Block &newThenBlock = newIfOp.getThenRegion().front();
-    Block &oldThenBlock = ifOp.getThenRegion().front();
 
-    // Move all operations except the terminator to new if block
-    IRMapping mappingIfThen;
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&newIfOp.getThenRegion().front());
-
-      for (auto [prevIfArg, newIfArg] :
-           llvm::zip_equal(ifOp.getThenRegion().front().getArguments(),
-                           newIfOp.getThenRegion().front().getArguments())) {
-        mappingIfThen.map(prevIfArg, newIfArg);
-      }
-      for (Operation &op : oldThenBlock.without_terminator()) {
-        rewriter.clone(op, mappingIfThen);
-      }
+    rewriter.eraseBlock(&newIfOp.getThenRegion().front());
+    if (ifOp.getElseRegion().getBlocks().size()) {
+      rewriter.eraseBlock(&newIfOp.getElseRegion().front());
     }
+
+    rewriter.inlineRegionBefore(ifOp.getThenRegion(),
+                                newIfOp.getThenRegion(),
+                                newIfOp.getThenRegion().begin());
+    rewriter.inlineRegionBefore(ifOp.getElseRegion(),
+                                newIfOp.getElseRegion(),
+                                newIfOp.getElseRegion().begin());
 
     // Create new yield in then block
     {
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToEnd(&newThenBlock);
-
-      SmallVector<Value> remappedYieldOperands;
-      for (auto arg : ifYieldOperands) {
-        remappedYieldOperands.push_back(mappingIfThen.lookupOrDefault(arg));
-      }
-      rewriter.create<scf::YieldOp>(thenYield.getLoc(), remappedYieldOperands);
+      rewriter.setInsertionPointToEnd(newIfOp.thenBlock());
+      rewriter.create<scf::YieldOp>(thenYield.getLoc(), ifYieldOperands);
+      rewriter.eraseOp(thenYield);
     }
-    // Move operations from the original else block to the new else block
-    Block &newElseBlock = newIfOp.getElseRegion().front();
-    Block &oldElseBlock = ifOp.getElseRegion().front();
 
-    // Move all operations except the terminator in new else block
-    IRMapping mappingElse;
+    // Create new yield in else block
     {
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&newIfOp.getElseRegion().front());
-
-      for (auto [prevElseArg, newElseArg] :
-           llvm::zip_equal(ifOp.getElseRegion().front().getArguments(),
-                           newIfOp.getElseRegion().front().getArguments())) {
-        mappingElse.map(prevElseArg, newElseArg);
-      }
-      for (Operation &op : oldElseBlock.without_terminator()) {
-        rewriter.clone(op, mappingElse);
-      }
+      rewriter.setInsertionPointToEnd(newIfOp.elseBlock());
+      rewriter.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+      rewriter.eraseOp(elseYield);
     }
 
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToEnd(&newElseBlock);
-
-      SmallVector<Value> remappedYieldOperands;
-      for (auto arg : elseYieldOperands) {
-        remappedYieldOperands.push_back(mappingElse.lookupOrDefault(arg));
-      }
-      rewriter.create<scf::YieldOp>(elseYield.getLoc(), remappedYieldOperands);
-    }
-
-    // Move ops from newIfOp to after region
     IRMapping mappingAfterIf;
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointAfter(ifOp);
+    for (auto &&[yldVal, index] : thenOperationsToYieldIndex) {
+      mappingAfterIf.map(yldVal, newIfOp.getResult(index));
+    };
 
-      llvm::SmallPtrSet<Operation *, 4> uniqueOpsToMoveAfterIfMap;
-      for (Operation *user : opsToMoveAfterIf) {
-        uniqueOpsToMoveAfterIfMap.insert(user);
-      }
-
-      // Traverse the if, and if the op is found inside unique ops to move after
-      // if Move it to after the if operation. Need to insert ops one after the
-      // another, so do we need to adjust insertion point everytime?
-      for (auto &op : ifOp.getThenRegion().front().getOperations()) {
-        if (uniqueOpsToMoveAfterIfMap.count(&op)) {
-          rewriter.clone(op, mappingAfterIf);
-          Value mappedValue = mappingAfterIf.lookupOrDefault(op.getResult(0));
-          mappingAfterIf.map(op.getResult(0), mappedValue);
-          rewriter.setInsertionPointAfter(mappedValue.getDefiningOp());
-        }
-      }
+    rewriter.setInsertionPointAfter(newIfOp);
+    for (auto &op : newIfOp.thenBlock()->getOperations()) {
+      if (opsToMoveAfterIf.contains(&op)) {
+        rewriter.clone(op, mappingAfterIf);
+      }      
     }
 
     // Replace uses of the original if operation with the new one
-    for (auto [idx, value] : llvm::enumerate(originalYieldsNewValues)) {
-      rewriter.replaceAllUsesWith(ifOp.getResults()[idx],
-                                  mappingAfterIf.lookupOrDefault(value));
-    }
-
-    // Replace uses of the new yield values
-    // All the ops moved outside of the if operation need the yielded values
-    for (auto &elem : yieldUseMap) {
-      size_t index = std::get<0>(elem);
-      Operation *user = mappingAfterIf.lookupOrDefault(std::get<1>(elem));
-      size_t pos = std::get<2>(elem);
-      OpOperand &opOperand = user->getOpOperand(pos);
-      rewriter.modifyOpInPlace(opOperand.getOwner(), [&]() {
-        opOperand.set(newIfOp.getResults()[pos]);
-      });
+    SmallVector<Value> newResults;
+    for (auto [idx, pair] : llvm::enumerate(originalYields)) {
+      newResults.push_back(pair.first ? mappingAfterIf.lookup(pair.first) : newIfOp.getResult(pair.second));
     }
 
     // Erase yield operations of prev if operation
-    rewriter.eraseOp(ifOp);
+    rewriter.replaceOp(ifOp, newResults);
     return success();
   }
 };
