@@ -1,22 +1,36 @@
-// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --canonicalize --arith-raise --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(raise-affine-to-stablehlo,enzyme-hlo-opt{max_constant_expansion=0})" | FileCheck %s
+
+#set = affine_set<(d0) : (-d0 + 89 >= 0)>
 
 module {
-  func.func private @kernel_with_for(%arg0: memref<187x194xf64, 1>) {
+  func.func private @call__Z31gpu__fill_south_and_north_halo(%arg0: memref<194xf64, 1>) {
     affine.parallel (%arg1) = (0) to (180) {
-      affine.for %arg2 = 0 to 50 {
-        %7 = affine.load %arg0[-%arg2 + 134, -%arg1 + 186] : memref<187x194xf64, 1> // [134:84:-1, 186:7:-1]
-        affine.store %7, %arg0[%arg2 + 136, %arg1 + 7] : memref<187x194xf64, 1> // [136:186, 7:186]
+      %1 = affine.load %arg0[-%arg1 + 186] : memref<194xf64, 1>
+      %2 = affine.load %arg0[%arg1 + 7] : memref<194xf64, 1>
+      %3 = affine.if #set(%arg1) -> f64 { // %arg1 < 89
+        affine.yield %2 : f64
+      } else {
+        affine.yield %1 : f64
       }
+      affine.store %3, %arg0[%arg1 + 7] : memref<194xf64, 1>
     }
     return
   }
 }
 
-// CHECK:  func.func private @kernel_with_for_raised(%arg0: tensor<187x194xf64>) -> tensor<187x194xf64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<7> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<136> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [85:135, 7:187] : (tensor<187x194xf64>) -> tensor<50x180xf64>
-// CHECK-NEXT:    %1 = stablehlo.reverse %0, dims = [0, 1] : tensor<50x180xf64>
-// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1, %c_0, %c : (tensor<187x194xf64>, tensor<50x180xf64>, tensor<i64>, tensor<i64>) -> tensor<187x194xf64>
-// CHECK-NEXT:    return %2 : tensor<187x194xf64>
+// CHECK:  func.func private @call__Z31gpu__fill_south_and_north_halo_raised(%arg0: tensor<194xf64>) -> tensor<194xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<89> : tensor<180xi64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<-1> : tensor<180xi64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<180xi64>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<180xi64>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [7:187] : (tensor<194xf64>) -> tensor<180xf64>
+// CHECK-NEXT:    %2 = stablehlo.reverse %1, dims = [0] : tensor<180xf64>
+// CHECK-NEXT:    %3 = stablehlo.multiply %0, %c_0 : tensor<180xi64>
+// CHECK-NEXT:    %4 = stablehlo.add %3, %c : tensor<180xi64>
+// CHECK-NEXT:    %5 = stablehlo.compare  GE, %4, %c_1 : (tensor<180xi64>, tensor<180xi64>) -> tensor<180xi1>
+// CHECK-NEXT:    %6 = stablehlo.select %5, %1, %2 : tensor<180xi1>, tensor<180xf64>
+// CHECK-NEXT:    %7 = stablehlo.slice %arg0 [0:7] : (tensor<194xf64>) -> tensor<7xf64>
+// CHECK-NEXT:    %8 = stablehlo.slice %arg0 [187:194] : (tensor<194xf64>) -> tensor<7xf64>
+// CHECK-NEXT:    %9 = stablehlo.concatenate %7, %6, %8, dim = 0 : (tensor<7xf64>, tensor<180xf64>, tensor<7xf64>) -> tensor<194xf64>
+// CHECK-NEXT:    return %9 : tensor<194xf64>
 // CHECK-NEXT:  }
