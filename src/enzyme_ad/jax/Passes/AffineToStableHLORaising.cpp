@@ -34,6 +34,8 @@ namespace enzyme {
 } // namespace enzyme
 } // namespace mlir
 
+#define DEBUG_TYPE "raise-affine-to-stablehlo"
+
 using namespace mlir;
 using namespace mlir::enzyme;
 
@@ -78,6 +80,16 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
   assert(affine::isAffineInductionVar(iv));
 
   auto owner = affine::getAffineParallelInductionVarOwner(iv);
+  if (!owner) {
+    auto forOp = affine::getForInductionVarOwner(iv);
+    if (!forOp.hasConstantBounds())
+      return std::nullopt;
+
+    int64_t lb = forOp.getConstantLowerBound(),
+            ub = forOp.getConstantUpperBound(), step = forOp.getStepAsInt();
+
+    return InductionVariableRange{lb, ub, step};
+  }
 
   if (owner.hasMinMaxBounds()) // Non-constant ranges.
     return std::nullopt;
@@ -93,12 +105,7 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
                 .getValue();
   auto step = owner.getSteps()[ivPos];
 
-  InductionVariableRange range;
-  range.lb = lb;
-  range.ub = ub;
-  range.step = step;
-
-  return std::optional<InductionVariableRange>{range};
+  return InductionVariableRange{lb, ub, step};
 }
 
 static std::optional<InductionVariableRange>
@@ -160,6 +167,34 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
   }
 
   return std::optional<InductionVariableRange>{range};
+}
+
+static void
+emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
+                  IRMapping &mapping,
+                  llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  auto ET = builder.getI64Type();
+  auto Ty = RankedTensorType::get({range.getNumIters()}, ET);
+  Value iota =
+      builder.create<stablehlo::IotaOp>(iv.getLoc(), Ty, 0).getResult();
+  iota = builder.create<stablehlo::AddOp>(
+      iv.getLoc(), Ty, iota,
+      builder.create<stablehlo::ConstantOp>(
+          iv.getLoc(), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb)))));
+  iota = builder.create<stablehlo::MulOp>(
+      iv.getLoc(), Ty, iota,
+      builder.create<stablehlo::ConstantOp>(
+          iv.getLoc(), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step)))));
+  mapping.map(iv, iota);
+
+  // contiguous with respect to itself: (d0) -> (d0)
+  affine::AffineValueMap accessMap(
+      AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
+  maps[iota] = accessMap;
 }
 
 // Given an affine map for a load/store operation, compute the startIndices,
@@ -350,6 +385,126 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
   return res;
 }
 
+// like affine::expandAffineExpr but with stablehlo ops and returning
+// the corresponding AffineValueMap for the produced value.
+static std::tuple<Value, affine::AffineValueMap>
+expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
+                 ValueRange operands, IRMapping &mapping) {
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
+    auto ET = builder.getI64Type();
+    auto TT = RankedTensorType::get({}, ET);
+    Value res = builder.create<stablehlo::ConstantOp>(
+        loc, TT,
+        SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, constExpr.getValue()))));
+    return {res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
+  }
+
+  if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
+    auto [lhs, lhsMap] =
+        expandAffineExpr(builder, loc, lhsExpr, operands, mapping);
+    auto [rhs, rhsMap] =
+        expandAffineExpr(builder, loc, rhsExpr, operands, mapping);
+
+    affine::AffineValueMap outputMap =
+        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder);
+
+    auto makeI64Constant = [loc, &builder](ShapedType ty,
+                                           int64_t cst) -> Value {
+      return builder
+          .create<stablehlo::ConstantOp>(
+              loc, ty,
+
+              SplatElementsAttr::get(ty, ArrayRef<Attribute>(IntegerAttr::get(
+                                             ty.getElementType(), cst))))
+          .getResult();
+    };
+
+    Value result;
+    switch (expr.getKind()) {
+    case AffineExprKind::Add:
+      result = builder.create<stablehlo::AddOp>(loc, lhs, rhs);
+      break;
+    case AffineExprKind::Mul:
+      result = builder.create<stablehlo::MulOp>(loc, lhs, rhs);
+      break;
+    case AffineExprKind::Mod:
+      // a mod b =
+      //     let remainder = srem a, b;
+      //         negative = a < 0 in
+      //     select negative, remainder + b, remainder.
+      {
+        Value remainder = builder.create<stablehlo::RemOp>(loc, lhs, rhs);
+        Value negative = builder.create<stablehlo::CompareOp>(
+            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            stablehlo::ComparisonDirection::LT);
+        result = builder.create<stablehlo::SelectOp>(
+            loc, negative,
+            builder.create<stablehlo::AddOp>(loc, remainder, rhs), remainder);
+      };
+      break;
+    case AffineExprKind::FloorDiv:
+      // a floordiv b =
+      //     let negative = a < 0 in
+      //     let absolute = negative ? -a - 1 : a in
+      //     let quotient = absolute / b in
+      //         negative ? -quotient - 1 : quotient
+      {
+        Value negative = builder.create<stablehlo::CompareOp>(
+            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            stablehlo::ComparisonDirection::LE);
+        Value one = makeI64Constant(lhs.getType().cast<ShapedType>(), 1);
+        Value absolute = builder.create<stablehlo::SelectOp>(
+            loc, negative,
+            builder.create<stablehlo::SubtractOp>(
+                loc, builder.create<stablehlo::NegOp>(loc, lhs), one),
+            lhs);
+        Value quotient = builder.create<stablehlo::DivOp>(loc, absolute, rhs);
+        result = builder.create<stablehlo::SelectOp>(
+            loc, negative,
+            builder.create<stablehlo::SubtractOp>(
+                loc, builder.create<stablehlo::NegOp>(loc, quotient), one),
+            quotient);
+      };
+      break;
+    case AffineExprKind::CeilDiv:
+      // a ceildiv b =
+      //     let negative = a <= 0 in
+      //     let absolute = negative ? -a : a - 1 in
+      //     let quotient = absolute / b in
+      //         negative ? -quotient : quotient + 1
+      {
+        Value negative = builder.create<stablehlo::CompareOp>(
+            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            stablehlo::ComparisonDirection::LE);
+        Value one = makeI64Constant(lhs.getType().cast<ShapedType>(), 1);
+        Value absolute = builder.create<stablehlo::SelectOp>(
+            loc, negative, builder.create<stablehlo::NegOp>(loc, lhs),
+            builder.create<stablehlo::AddOp>(loc, lhs, one));
+        Value quotient = builder.create<stablehlo::DivOp>(loc, absolute, rhs);
+        result = builder.create<stablehlo::SelectOp>(
+            loc, negative, builder.create<stablehlo::NegOp>(loc, quotient),
+            builder.create<stablehlo::AddOp>(loc, quotient, one));
+      };
+      break;
+    default:
+      llvm_unreachable("unsupported expansion of expr");
+    }
+    return {result, outputMap};
+  }
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value dim = operands[dimExpr.getPosition()];
+    return {
+        mapping.lookup(dim),
+        affine::AffineValueMap(
+            AffineMap::getMultiDimIdentityMap(1, expr.getContext()), {dim})};
+  }
+
+  llvm_unreachable("unreachable");
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
@@ -535,7 +690,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp>(op)) {
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
@@ -544,7 +699,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
           arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
-          math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp>(op)) {
+          math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp,
+          math::IsNaNOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
@@ -567,10 +723,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // binary ops
   if (isa<arith::MulIOp, arith::MulFOp, arith::AddIOp, arith::AddFOp,
           arith::SubIOp, arith::SubFOp, arith::DivFOp, arith::DivSIOp,
-          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::CmpIOp,
-          arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp, arith::ShLIOp,
-          arith::MinimumFOp, arith::MaximumFOp, arith::MinUIOp, arith::MinSIOp,
-          arith::MaxUIOp, arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp>(op)) {
+          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::XOrIOp,
+          arith::CmpIOp, arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp,
+          arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
+          arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
+          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, math::CopySignOp,
+          math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -633,6 +791,180 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     return success();
   }
+
+  // Affine if (only pure ops with yield is currently supported)
+  if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+    if (!ifOp.hasElse() || ifOp->getNumResults() == 0 ||
+        llvm::any_of(*ifOp.getThenBlock(),
+                     [](Operation &op) { return !mlir::isPure(&op); }) ||
+        llvm::any_of(*ifOp.getElseBlock(),
+                     [](Operation &op) { return !mlir::isPure(&op); })) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "cannot raise if yet (non-pure or yielded values): " << *op
+                 << "\n");
+      return failure();
+    }
+
+    auto is = ifOp.getIntegerSet();
+    if (is.getNumSymbols() != 0) {
+      LLVM_DEBUG(llvm::dbgs() << "cannot raise integer set with symbols yet\n");
+      return failure(); // TODO
+    }
+
+    Value cond = nullptr;
+    affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
+    for (auto [constraint, eq] :
+         llvm::zip_equal(is.getConstraints(), is.getEqFlags())) {
+      auto [expandedExpr, outputMap] = expandAffineExpr(
+          builder, ifOp.getLoc(), constraint, ifOp.getOperands(), mapping);
+      Value zero = builder.create<stablehlo::ConstantOp>(
+          ifOp.getLoc(), expandedExpr.getType().cast<ShapedType>(),
+          SplatElementsAttr::get(
+              expandedExpr.getType().cast<ShapedType>(),
+              ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
+      Value newCond = builder.create<stablehlo::CompareOp>(
+          ifOp.getLoc(), expandedExpr, zero,
+          eq ? stablehlo::ComparisonDirection::EQ
+             : stablehlo::ComparisonDirection::GE);
+      if (cond) {
+        map = alignMemoryAccess(cond, map, newCond, outputMap, builder);
+        cond = builder.create<stablehlo::AndOp>(ifOp.getLoc(), cond, newCond);
+      } else {
+        cond = newCond;
+        map = outputMap;
+      }
+    }
+
+    for (auto &innerOp : ifOp.getThenBlock()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+        return failure();
+    }
+
+    for (auto &innerOp : ifOp.getElseBlock()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+        return failure();
+    }
+
+    Operation *thenTerm = ifOp.getThenBlock()->getTerminator(),
+              *elseTerm = ifOp.getElseBlock()->getTerminator();
+
+    for (auto [thenVal, elseVal, res] :
+         llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                         ifOp.getResults())) {
+      Value newRes = builder
+                         .create<stablehlo::SelectOp>(ifOp.getLoc(), cond,
+                                                      mapping.lookup(thenVal),
+                                                      mapping.lookup(elseVal))
+                         .getResult();
+      mapping.map(res, newRes);
+      maps[newRes] = map;
+    }
+
+    return success();
+  }
+
+  // Inner parallel for loops
+  if (auto parallelOp = dyn_cast<affine::AffineParallelOp>(op)) {
+    if (parallelOp.hasMinMaxBounds() || !parallelOp.getReductions().empty())
+      return failure();
+
+    for (auto iv : parallelOp.getIVs()) {
+      auto range = getIVRange(iv);
+      if (!range.has_value())
+        return failure();
+      emitIVToStableHLO(builder, iv, *range, mapping, maps);
+    }
+
+    for (auto &innerOp : parallelOp.getBody()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+        return failure();
+    }
+
+    return success();
+  }
+
+  // // Inner for op
+  // if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+  //   if (!forOp.hasConstantBounds())
+  //     return failure();
+  //
+  //   Value iv = forOp.getInductionVar();
+  //   InductionVariableRange range = *getIVRange(iv);
+  //
+  //   auto ET = builder.getI64Type();
+  //   auto TT = RankedTensorType::get({}, ET);
+  //
+  //   Value lb = builder.create<stablehlo::ConstantOp>(
+  //       forOp.getLoc(), TT,
+  //       SplatElementsAttr::get(
+  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
+  //   Value ub = builder.create<stablehlo::ConstantOp>(
+  //       forOp.getLoc(), TT,
+  //       SplatElementsAttr::get(
+  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
+  //   Value step = builder.create<stablehlo::ConstantOp>(
+  //       forOp.getLoc(), TT,
+  //       SplatElementsAttr::get(
+  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+  //
+  //   auto whileOp =
+  //       builder.create<stablehlo::WhileOp>(forOp.getLoc(), ValueRange{lb});
+  //
+  //   Block *cond = new Block(), *body = new Block();
+  //   whileOp->getRegion(0).push_back(cond);
+  //   whileOp->getRegion(1).push_back(body);
+  //
+  //   Value ivInCond = cond->addArgument(TT, iv.getLoc());
+  //   {
+  //     OpBuilder::InsertionGuard guard(builder);
+  //     builder.setInsertionPointToStart(cond);
+  //     Value cond = builder.create<stablehlo::CompareOp>(
+  //         forOp.getLoc(), ivInCond, step,
+  //         stablehlo::ComparisonDirection::LT);
+  //     builder.create<stablehlo::ReturnOp>(forOp.getLoc(), cond);
+  //   }
+  //   Value ivInBody = body->addArgument(TT, iv.getLoc());
+  //   {
+  //     OpBuilder::InsertionGuard guard(builder);
+  //     builder.setInsertionPointToStart(body);
+  //
+  //     mapping.map(iv, ivInBody);
+  //     maps[ivInBody] =
+  //         affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+  //
+  //     // Is this the only condition?
+  //     SetVector<Value> mutatedMemrefs;
+  //     op->walk([&](affine::AffineStoreOp AS) {
+  //       mutatedMemrefs.insert(AS.getMemref());
+  //     });
+  //
+  //     // for (auto m : mutatedMemrefs) {
+  //     //   auto T = mapping.lookup(m).getType();
+  //     //   whileOp->insertOperands();
+  //     //   cond->addArgument(T, m.getLoc());
+  //     //   body->addArgument(T, m.getLoc());
+  //     // }
+  //
+  //     for (auto &innerOp : forOp.getBody()->without_terminator()) {
+  //
+  //       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder,
+  //       maps).failed())
+  //         return failure();
+  //     }
+  //
+  //     Value newIvInBody =
+  //         builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
+  //
+  //     SmallVector<Value> loopCarried = {newIvInBody};
+  //     for (auto m : mutatedMemrefs)
+  //       loopCarried.push_back(mapping.lookup(m));
+  //     builder.create<stablehlo::ReturnOp>(forOp.getLoc(), loopCarried);
+  //   }
+  //
+  //   return success();
+  // }
+
+  LLVM_DEBUG(llvm::dbgs() << "cannot raise op to stablehlo: " << *op << "\n";);
 
   return failure();
 }
@@ -726,31 +1058,12 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
 
       for (auto iv : loopRoot.getIVs()) {
         auto range = getIVRange(iv);
-        if (!range.has_value())
+        if (!range.has_value()) {
           anyFailed = true;
+          break;
+        }
 
-        auto ET = builder.getI64Type();
-        auto Ty = RankedTensorType::get({range->getNumIters()}, ET);
-        Value iota =
-            builder.create<stablehlo::IotaOp>(iv.getLoc(), Ty, 0).getResult();
-        iota = builder.create<stablehlo::AddOp>(
-            iv.getLoc(), Ty, iota,
-            builder.create<stablehlo::ConstantOp>(
-                iv.getLoc(), Ty,
-                SplatElementsAttr::get(
-                    Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range->lb)))));
-        iota = builder.create<stablehlo::MulOp>(
-            iv.getLoc(), Ty, iota,
-            builder.create<stablehlo::ConstantOp>(
-                iv.getLoc(), Ty,
-                SplatElementsAttr::get(Ty, ArrayRef<Attribute>(IntegerAttr::get(
-                                               ET, range->step)))));
-        mapping.map(iv, iota);
-
-        // contiguous with respect to itself: (d0) -> (d0)
-        affine::AffineValueMap accessMap(
-            AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
-        maps[iota] = accessMap;
+        emitIVToStableHLO(builder, iv, *range, mapping, maps);
       }
 
       if (!anyFailed) {
