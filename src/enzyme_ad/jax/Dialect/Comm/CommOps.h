@@ -12,7 +12,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpDefinition.h"
-
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 
 #include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/CommTypes.h"

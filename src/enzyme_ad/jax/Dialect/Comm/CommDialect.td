@@ -3,6 +3,7 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/Traits.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"  
 
 def CommDialect : Dialect {
   let name = "comm";
@@ -63,28 +64,6 @@ def CommMessage : OpInterface<"CommMessage"> {
 /*
 * Dialect Ops
 */
-
-// A "join" terminator indicating the end of a branch- can only do in enter or exit blocks
-def CommJoin : CommOp<"join", traits = [Terminator]> {
-  let summary = "Denotes the end of a split block, similar to ret for a function";
-  let arguments = (ins );
-  let results = (outs );
-  let assemblyFormat = [{
-    attr-dict
-  }];
-}
-
-def CommContinue : CommOp <"continue", traits=[Terminator]> {
-  // TODO figure out if we can just use scf yield
-  let summary = "Op for indicating which values to pass to the next region as determined similar to scf.yield";
-  // TODO add variadic inputs to make this op useful
-  let arguments = (ins );
-  let results = (outs );
-  let assemblyFormat = [{
-    attr-dict
-  }];
-}
-
 def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   let summary = "The highest level split node in the communication dialect.";
   let description = [{
@@ -100,14 +79,16 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
           // ... comm branch region
         }
       }
+
+    A split block may be marked as a loop, in which case it may have loopy branches:
+    branches may consume the same communication token once per loop.
   }];
 
-  let arguments = (ins ); // no inputs yet, encoded in the region
+  let arguments = (ins UnitAttr:$is_loopy);
   let regions = (region SizedRegion<1>:$declarations);
   let results = (outs );
-
   let assemblyFormat = [{
-     $declarations attr-dict
+    (`loop` $is_loopy^)? attr-dict-with-keyword $declarations
   }];
 
   let hasVerifier = 1;
@@ -123,13 +104,38 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   }];
 }
 
-def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait]> {
+def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait, SingleBlock, HasParent<"CommSplit">]> {
   let summary = "Represents one branch that can be taken by a split node";
-  let arguments = (ins DenseI32ArrayAttr:$device_ids);
-  let regions = (region SizedRegion<1>:$entry, SizedRegion<1>:$loop, SizedRegion<1>:$reentry, SizedRegion<1>:$exit);
-  let assemblyFormat = [{
-    attr-dict $device_ids `enter` $entry custom<SplitRecurrenceRegions>($loop, $reentry, $exit)
+  let description = [{
+      Represents a device subset-specific execution path in a split node. A simple (non-loopy) branch
+      consists of a single entry region containing a single basic block of code. A loopy branch contains
+      the same entry branch, a loop region (analogous to a do-while loop or the "cond" region in a scf.while),
+      a reentry region (analogous to the "do" region in a scf.while), and an exit region executed once after the
+      loop completes. 
+        * loop, reentry, and exit regions are optional and may be empty, but if any are present all must be present.
+        * Values are passed between regions using the sfc.yield operation
+        * The loop condition is indicated by a scf.condition operation in the loop region
+        * Communication tokens are refreshed before starting the reentry region. To be semantically correct, all branches that
+          communicate to each other must have loop conditions that keep them in a consistent state. This is not checked (and is
+          not decidable in general), but will rather be assumed of the input; the compiler will make sure to maintain correctness.
   }];
+
+  let arguments = (ins DenseI32ArrayAttr:$device_ids);
+  let regions = (region SizedRegion<1>:$entry, MaxSizedRegion<1>:$loop, MaxSizedRegion<1>:$reentry, MaxSizedRegion<1>:$exit);
+  let assemblyFormat = [{
+    attr-dict $device_ids `enter` $entry custom<BranchLoopRegions>($loop, $reentry, $exit)
+  }];
+
+  // Extras: a function to quickly determine if the branch is loopy (has any instructions in loop or reentry other than continue)
+  let extraClassDeclaration = [{
+    /**
+      * Returns true if the branch loops. If false all code must be placed in the entry block.
+      */
+    bool isLoop();
+  }];
+
+  // Verifier to check exit block is used only if the branch is loopy
+  let hasVerifier = 1;
 }
 
 def CommSend: CommOp<"send"> {
@@ -158,7 +164,7 @@ def CommRecv: CommOp<"recv"> {
 * Different types of message ops
 */
 // Base class for messages
-class CommMessageBase<string name, list<Trait> extra_traits = []>: CommOp<name, traits = extra_traits # [DeclareOpInterfaceMethods<CommMessage>, CommSplitMemberOpTrait]>;
+class CommMessageBase<string name, list<Trait> extra_traits = []>: CommOp<name, traits = extra_traits # [DeclareOpInterfaceMethods<CommMessage>, CommSplitMemberOpTrait, HasParent<"CommSplit">]>;
 
 // Message types. In the future we will likely want to have a common base class
 def CommSimpleMessage: CommMessageBase<"simple_msg"> {
@@ -184,4 +190,24 @@ def CommMultiplexMessage: CommMessageBase<"multiplex_msg"> {
     attr-dict $data_type $in_tokens
   }];
   let hasVerifier = 1;
+}
+
+// Terminators, modeled almost identically after scf.yield and scf.condition
+// (we can't use scf.yield directly because it requires parent ops to be scf ops)
+def CommYield: CommOp<"yield", traits = [HasParent<"CommBranch">, Terminator, ReturnLike]> {
+  let summary = "Yields a value to the parent branch";
+  let arguments = (ins Variadic<AnyType>:$results);
+  let results = (outs );
+  let assemblyFormat = [{
+    attr-dict ($results^ `:` type($results))?
+  }];
+}
+
+def CommCondition: CommOp<"condition", traits = [HasParent<"CommBranch">, Terminator, ReturnLike]> {
+  let summary = "A condition that determines if the loop should continue";
+  let arguments = (ins I1:$condition, Variadic<AnyType>:$results);
+  let results = (outs );
+  let assemblyFormat = [{
+    `(` $condition `)` attr-dict ($results^ `:` type($results))?
+  }];
 }

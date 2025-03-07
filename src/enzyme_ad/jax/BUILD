@@ -153,7 +153,8 @@ gentbl_cc_library(
         ":CommDialectFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:AttrTdFiles",
-        "@llvm-project//mlir:BuiltinDialectTdFiles"
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
@@ -277,6 +278,7 @@ cc_library(
     deps = [
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
         ":CommDialectIncGen",
     ],
 )
