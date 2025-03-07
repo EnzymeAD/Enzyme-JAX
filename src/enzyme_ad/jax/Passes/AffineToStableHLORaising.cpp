@@ -851,13 +851,26 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [thenVal, elseVal, res] :
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp.getResults())) {
-      Value newRes = builder
-                         .create<stablehlo::SelectOp>(ifOp.getLoc(), cond,
-                                                      mapping.lookup(thenVal),
-                                                      mapping.lookup(elseVal))
-                         .getResult();
-      mapping.map(res, newRes);
-      maps[newRes] = map;
+
+      Value a = cond;
+      Value b = mapping.lookup(thenVal);
+      Value c = mapping.lookup(elseVal);
+
+      auto mapA = map, mapB = maps[b], mapC = maps[c];
+
+      Value dsts[] = {b, c};
+      affine::AffineValueMap submaps[] = {mapB, mapC};
+      auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
+      b = dsts[0];
+      c = dsts[1];
+      assert(b.getType() == c.getType());
+
+      auto IT = b.getType().cast<RankedTensorType>();
+      Type result = b.getType();
+
+      auto newOp = builder.create<stablehlo::SelectOp>(ifOp.getLoc(), a, b, c);
+      mapping.map(res, newOp.getResult());
+      maps[newOp.getResult()] = outputMap;
     }
 
     return success();
