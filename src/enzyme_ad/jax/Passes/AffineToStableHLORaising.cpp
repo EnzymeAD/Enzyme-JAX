@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -507,6 +508,56 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps);
+
+static LogicalResult
+emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
+               OpBuilder &builder, IRMapping &mapping,
+               DenseMap<Value, affine::AffineValueMap> &maps) {
+  Block *thenBlock = &ifOp->getRegion(0).front(),
+        *elseBlock = &ifOp->getRegion(1).front();
+
+  for (auto &innerOp : thenBlock->without_terminator()) {
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+      return failure();
+  }
+
+  for (auto &innerOp : elseBlock->without_terminator()) {
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+      return failure();
+  }
+
+  Operation *thenTerm = thenBlock->getTerminator(),
+            *elseTerm = elseBlock->getTerminator();
+
+  for (auto [thenVal, elseVal, res] :
+       llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                       ifOp->getResults())) {
+
+    Value a = cond;
+    Value b = mapping.lookup(thenVal);
+    Value c = mapping.lookup(elseVal);
+
+    auto mapA = map, mapB = maps[b], mapC = maps[c];
+
+    Value dsts[] = {b, c};
+    affine::AffineValueMap submaps[] = {mapB, mapC};
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
+    b = dsts[0];
+    c = dsts[1];
+    assert(b.getType() == c.getType());
+
+    auto IT = b.getType().cast<RankedTensorType>();
+    Type result = b.getType();
+
+    auto newOp = builder.create<stablehlo::SelectOp>(ifOp->getLoc(), a, b, c);
+    mapping.map(res, newOp.getResult());
+    maps[newOp.getResult()] = outputMap;
+  }
+}
+
+static LogicalResult
+tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
 
   // Affine load inside a loop becomes a slice
@@ -792,6 +843,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    if (!ifOp.elseBlock() || ifOp->getNumResults() == 0 ||
+        llvm::any_of(*ifOp.thenBlock(),
+                     [](Operation &op) { return !mlir::isPure(&op); }) ||
+        llvm::any_of(*ifOp.elseBlock(),
+                     [](Operation &op) { return !mlir::isPure(&op); })) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "cannot raise if yet (non-pure or yielded values): " << *op
+                 << "\n");
+      return failure();
+    }
+
+    Value cond = mapping.lookup(ifOp.getCondition());
+    if (emitIfAsSelect(op, cond, maps[cond], builder, mapping, maps).failed())
+      return failure();
+
+    return success();
+  }
+
   // Affine if (only pure ops with yield is currently supported)
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
     if (!ifOp.hasElse() || ifOp->getNumResults() == 0 ||
@@ -835,43 +905,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
 
-    for (auto &innerOp : ifOp.getThenBlock()->without_terminator()) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
-        return failure();
-    }
-
-    for (auto &innerOp : ifOp.getElseBlock()->without_terminator()) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
-        return failure();
-    }
-
-    Operation *thenTerm = ifOp.getThenBlock()->getTerminator(),
-              *elseTerm = ifOp.getElseBlock()->getTerminator();
-
-    for (auto [thenVal, elseVal, res] :
-         llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
-                         ifOp.getResults())) {
-
-      Value a = cond;
-      Value b = mapping.lookup(thenVal);
-      Value c = mapping.lookup(elseVal);
-
-      auto mapA = map, mapB = maps[b], mapC = maps[c];
-
-      Value dsts[] = {b, c};
-      affine::AffineValueMap submaps[] = {mapB, mapC};
-      auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
-      b = dsts[0];
-      c = dsts[1];
-      assert(b.getType() == c.getType());
-
-      auto IT = b.getType().cast<RankedTensorType>();
-      Type result = b.getType();
-
-      auto newOp = builder.create<stablehlo::SelectOp>(ifOp.getLoc(), a, b, c);
-      mapping.map(res, newOp.getResult());
-      maps[newOp.getResult()] = outputMap;
-    }
+    if (emitIfAsSelect(op, cond, map, builder, mapping, maps).failed())
+      return failure();
 
     return success();
   }
