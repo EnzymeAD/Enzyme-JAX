@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
@@ -7803,6 +7804,7 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 
 // clang-format off
 #include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
+#include "src/enzyme_ad/jax/Passes/StablehloOptPopulatePatterns.cpp.inc"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 // clang-format on
 
