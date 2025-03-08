@@ -896,6 +896,35 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+    if (!forOp.hasConstantBounds())
+      return failure(); // We want to unroll the loop, so we need constant
+                        // bounds.
+
+    Value iv = forOp.getInductionVar();
+    InductionVariableRange range = *getIVRange(iv);
+    if (range.getNumIters() <= 50) { // Tune this threshold for unrolling,
+                                     // otherwise make it stablehlo.while
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(forOp);
+
+      for (int64_t ivValue = range.lb; ivValue < range.ub;
+           ivValue += range.step) {
+        Value ivConst = builder.create<stablehlo::ConstantOp>(
+            forOp.getLoc(), builder.getI64TensorAttr(ivValue));
+
+        mapping.map(iv, ivConst);
+
+        for (auto &innerOp : forOp.getBody()->without_terminator()) {
+          if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps)
+                  .failed())
+            return failure();
+        }
+      }
+      return success();
+    }
+  }
+
   // // Inner for op
   // if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
   //   if (!forOp.hasConstantBounds())
