@@ -1,6 +1,7 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(raise-affine-to-stablehlo,enzyme-hlo-opt{max_constant_expansion=0})" | FileCheck %s
 
 #set = affine_set<(d0) : (-d0 + 89 >= 0)>
+#set2 = affine_set<(d0) : (-d0 + 70 >= 0)>
 
 module {
   func.func private @call__Z31gpu__fill_south_and_north_halo(%arg0: memref<194xf64, 1>) {
