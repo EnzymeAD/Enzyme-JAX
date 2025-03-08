@@ -903,8 +903,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value iv = forOp.getInductionVar();
     InductionVariableRange range = *getIVRange(iv);
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPoint(forOp);
 
     for (int64_t ivValue = range.lb; ivValue < range.ub;
          ivValue += range.step) {
