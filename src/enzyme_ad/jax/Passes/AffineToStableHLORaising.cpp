@@ -521,8 +521,6 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   MemRefType ty = nullptr;
   if (auto read = dyn_cast<affine::AffineReadOpInterface>(op))
     ty = read.getMemRefType();
-  else if (auto write = dyn_cast<affine::AffineWriteOpInterface>(op))
-    ty = write.getMemRefType();
   if (!ty)
     return false;
 
