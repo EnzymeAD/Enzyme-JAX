@@ -529,21 +529,29 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   IslAnalysis ia;
 
   isl_set *array = ia.getMemrefShape(ty);
+  llvm::errs() << "ARRAY\n";
+  isl_set_dump(array);
 
   auto accessMap = ia.getAccessMap(op);
   if (!accessMap)
     return false;
+
+  llvm::errs() << "ACCESSMAP\n";
   isl_map_dump(accessMap);
 
   isl_set *domain = ia.getDomain(scope);
   if (!domain)
     return false;
+  llvm::errs() << "DOMAIN\n";
   isl_set_dump(domain);
   isl_set *accessed = isl_set_apply(domain, accessMap);
+  llvm::errs() << "ACCESSED\n";
   isl_set_dump(accessed);
   isl_bool inBounds = isl_set_is_subset(accessed, array);
   if (inBounds == isl_bool_error)
     return false;
+  llvm::errs() << "INBOUNDS\n";
+  llvm::errs() << inBounds << "\n";
   return inBounds;
 }
 
