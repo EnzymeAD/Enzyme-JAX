@@ -554,6 +554,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     mapping.map(res, newOp.getResult());
     maps[newOp.getResult()] = outputMap;
   }
+  return success();
 }
 
 static LogicalResult
