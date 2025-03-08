@@ -903,26 +903,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value iv = forOp.getInductionVar();
     InductionVariableRange range = *getIVRange(iv);
-    if (range.getNumIters() <= 50) { // Tune this threshold for unrolling,
-                                     // otherwise make it stablehlo.while
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPoint(forOp);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(forOp);
 
-      for (int64_t ivValue = range.lb; ivValue < range.ub;
-           ivValue += range.step) {
-        Value ivConst = builder.create<stablehlo::ConstantOp>(
-            forOp.getLoc(), builder.getI64TensorAttr(ivValue));
+    for (int64_t ivValue = range.lb; ivValue < range.ub;
+         ivValue += range.step) {
+      Value ivConst = builder.create<stablehlo::ConstantOp>(
+          forOp.getLoc(), builder.getI64TensorAttr(ivValue));
 
-        mapping.map(iv, ivConst);
+      mapping.map(iv, ivConst);
 
-        for (auto &innerOp : forOp.getBody()->without_terminator()) {
-          if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps)
-                  .failed())
-            return failure();
-        }
+      for (auto &innerOp : forOp.getBody()->without_terminator()) {
+        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+          return failure();
       }
-      return success();
     }
+    return success();
   }
 
   // // Inner for op
