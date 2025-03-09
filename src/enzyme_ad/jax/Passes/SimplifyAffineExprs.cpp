@@ -26,7 +26,6 @@
 #include <isl/space.h>
 #include <isl/space_type.h>
 #include <isl/val.h>
-#include <isl_aff_private.h>
 
 extern "C" {
 #include <isl_ast_build_expr.h>
