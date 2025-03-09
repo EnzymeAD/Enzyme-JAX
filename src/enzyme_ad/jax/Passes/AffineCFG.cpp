@@ -3629,7 +3629,9 @@ struct MergeParallelInductions
           affineUsers[iv.getArgNumber()].push_back(U);
         } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
           operands = AI.getOperands();
-          for (auto E : AI.getIntegerSet().getConstraints()) {
+          for (auto &&[E, isEqual] :
+               llvm::zip_equal(AI.getIntegerSet().getConstraints(),
+                               AI.getIntegerSet().getEqFlags())) {
             bool functionOf = false;
             for (size_t i = 0; i < operands.size(); i++) {
               if (operands[i] != iv)
@@ -3641,8 +3643,13 @@ struct MergeParallelInductions
                     E.isFunctionOfSymbol(i - AI.getIntegerSet().getNumDims());
               }
             }
-            if (functionOf)
+            if (functionOf) {
+              // use of dim == 0 doesn't matter
+              if (isEqual && isa<AffineDimExpr>(E)) {
+                continue;
+              }
               exprs.push_back(E);
+            }
           }
           numDims = AI.getIntegerSet().getNumDims();
           affineUsers[iv.getArgNumber()].push_back(U);
