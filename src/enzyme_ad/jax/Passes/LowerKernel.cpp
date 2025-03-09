@@ -230,9 +230,9 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getOutputOperandAliasesAttr());
+      kcall.getInputs(), /*has_side_effect*/ rewriter.getBoolAttr(false),
+      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
+      kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -372,9 +372,9 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getOutputOperandAliasesAttr());
+      kcall.getInputs(), /*has_side_effect*/ rewriter.getBoolAttr(false),
+      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
+      kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
