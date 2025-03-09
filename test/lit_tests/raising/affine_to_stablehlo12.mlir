@@ -49,7 +49,7 @@ module {
         %ld = affine.load %m1[%a1 - 2, %arg1 + 2] : memref<100x194xf64, 1>
         affine.yield %ld : f64
       } else {
-        %ld = affine.load %m2[%a1 - 2, %arg1 + 3] : memref<100x194xf64, 1>
+        %ld = affine.load %m2[%a1 - 2, %arg1 + 2] : memref<100x194xf64, 1>
         affine.yield %ld : f64
       }
       affine.store %1, %m3[%a1, %arg1] : memref<100x194xf64, 1>
@@ -62,7 +62,7 @@ module {
         %ld = affine.load %m1[%a1 - 2, %arg1 + 2] : memref<100x194xf64, 1>
         affine.yield %ld : f64
       } else {
-        %ld = affine.load %m2[%a1 - 2, %arg1 + 3] : memref<100x194xf64, 1>
+        %ld = affine.load %m2[%a1 - 2, %arg1 + 2] : memref<100x194xf64, 1>
         affine.yield %ld : f64
       }
       affine.store %1, %m3[%a1, %arg1] : memref<100x194xf64, 1>
