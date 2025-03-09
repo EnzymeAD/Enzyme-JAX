@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
@@ -27,6 +28,13 @@
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include <isl/ctx.h>
+#include <isl/ilp.h>
+#include <isl/map.h>
+#include <isl/set.h>
+#include <isl/space.h>
+#include <isl/val.h>
+#include <optional>
 
 namespace mlir {
 namespace enzyme {
@@ -506,6 +514,44 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
   llvm_unreachable("unreachable");
 }
 
+/// scope is an operation _in_ the scope we are interested in
+bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
+  if (mlir::isPure(op))
+    return true;
+
+  MemRefType ty = nullptr;
+  if (auto read = dyn_cast<affine::AffineReadOpInterface>(op))
+    ty = read.getMemRefType();
+  if (!ty)
+    return false;
+
+  IslAnalysis ia;
+
+  isl_set *array = ia.getMemrefShape(ty);
+  if (!array)
+    return false;
+
+  isl_map *accessMap = ia.getAccessMap(op);
+  if (!accessMap) {
+    isl_set_free(array);
+    return false;
+  }
+
+  isl_set *domain = ia.getDomain(scope);
+  if (!domain) {
+    isl_set_free(array);
+    isl_map_free(accessMap);
+    return false;
+  }
+  isl_set *accessed = isl_set_apply(domain, accessMap);
+  isl_bool inBounds = isl_set_is_subset(accessed, array);
+  isl_set_free(array);
+  isl_set_free(accessed);
+  if (inBounds == isl_bool_error)
+    return false;
+  return inBounds;
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps);
@@ -867,9 +913,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
     if (!ifOp.hasElse() || ifOp->getNumResults() == 0 ||
         llvm::any_of(*ifOp.getThenBlock(),
-                     [](Operation &op) { return !mlir::isPure(&op); }) ||
-        llvm::any_of(*ifOp.getElseBlock(),
-                     [](Operation &op) { return !mlir::isPure(&op); })) {
+                     [ifOp](Operation &op) {
+                       return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
+                     }) ||
+        llvm::any_of(*ifOp.getElseBlock(), [ifOp](Operation &op) {
+          return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
+        })) {
       LLVM_DEBUG(llvm::dbgs()
                  << "cannot raise if yet (non-pure or yielded values): " << *op
                  << "\n");

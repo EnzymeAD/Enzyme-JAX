@@ -1122,7 +1122,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     // Check to see if doBlock just has yield op
     Block &doBlock = whileOp.getAfter().front();
     if (!isa<scf::YieldOp>(doBlock.front()))
-      return failure();
+      return rewriter.notifyMatchFailure(whileOp, "non empty then block");
 
     // Before block analysis
     Block &beforeBlock = whileOp.getBefore().front();
@@ -1142,10 +1142,10 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
         upperBound = cmpOp.getLhs();
         compareValue = cmpOp.getRhs();
       } else
-        return failure();
+        return rewriter.notifyMatchFailure(whileOp, "cmp against non constant");
     } else {
       // Currently only supporting arith.cmpIOp
-      return failure();
+      return rewriter.notifyMatchFailure(whileOp, "cmp not arith.cmpIOp");
     }
 
     // Get condition op args and find IV index
@@ -1160,7 +1160,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       IVIndex++;
     }
     if (!indexFound)
-      return failure();
+      return rewriter.notifyMatchFailure(whileOp, "Did not find index");
 
     // Extract IV and lowerBound based on IVIndex
     Value IV = beforeBlock.getArgument(IVIndex);

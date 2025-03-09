@@ -1,4 +1,5 @@
 
+#include "AffineUtils.h"
 #include "Passes.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
@@ -11,6 +12,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include <isl/aff.h>
+#include <isl/aff_type.h>
 #include <isl/ast.h>
 #include <isl/ast_build.h>
 #include <isl/constraint.h>
@@ -18,6 +20,7 @@
 #include <isl/id.h>
 #include <isl/local_space.h>
 #include <isl/map.h>
+#include <isl/map_type.h>
 #include <isl/mat.h>
 #include <isl/set.h>
 #include <isl/space.h>
@@ -590,6 +593,154 @@ struct IslToAffineExprConverter {
     return nullptr;
   }
 };
+
+namespace mlir {
+AffineValueMap getAVM(Operation *op) {
+  if (auto cop = dyn_cast<AffineLoadOp>(op))
+    return AffineValueMap(cop.getMap(), cop.getMapOperands(), {});
+  else if (auto cop = dyn_cast<AffineStoreOp>(op))
+    return AffineValueMap(cop.getMap(), cop.getMapOperands(), {});
+  else if (auto cop = dyn_cast<AffineVectorLoadOp>(op))
+    return AffineValueMap(cop.getMap(), cop.getMapOperands(), {});
+  else if (auto cop = dyn_cast<AffineVectorStoreOp>(op))
+    return AffineValueMap(cop.getMap(), cop.getMapOperands(), {});
+  llvm_unreachable("Called with non affine op");
+}
+} // namespace mlir
+
+isl_set *IslAnalysis::getMemrefShape(MemRefType ty) {
+  // TODO we can support params in some cases
+  if (!ty.hasStaticShape())
+    return nullptr;
+  isl_space *space = isl_space_set_alloc(ctx, 0, ty.getRank());
+  isl_multi_aff *ma =
+      isl_multi_aff_identity_on_domain_space(isl_space_copy(space));
+  isl_set *set = isl_set_universe(isl_space_copy(space));
+  for (unsigned i = 0; i < ty.getRank(); i++) {
+    isl_aff *dim = isl_multi_aff_get_at(ma, i);
+    isl_aff *lb = isl_aff_val_on_domain_space(isl_space_copy(space),
+                                              isl_val_int_from_si(ctx, 0));
+    isl_aff *ub = isl_aff_val_on_domain_space(
+        isl_space_copy(space), isl_val_int_from_si(ctx, ty.getDimSize(i)));
+
+    set = isl_set_intersect(set, isl_aff_ge_set(isl_aff_copy(dim), lb));
+    set = isl_set_intersect(set, isl_aff_lt_set(isl_aff_copy(dim), ub));
+    isl_aff_free(dim);
+  }
+  isl_space_free(space);
+  isl_multi_aff_free(ma);
+
+  return set;
+}
+
+isl_map *IslAnalysis::getAccessMap(mlir::Operation *op) {
+  auto exprs = getAffExprs(op);
+  if (!exprs)
+    return nullptr;
+  isl_aff_list *list = isl_aff_list_alloc(ctx, exprs->size());
+  isl_space *domain = isl_space_domain(isl_aff_get_space((*exprs)[0]));
+  isl_space *range = isl_space_set_alloc(ctx, 0, exprs->size());
+  isl_space *space = isl_space_map_from_domain_and_range(domain, range);
+  for (auto aff : *exprs) {
+    assert(isl_space_dim(isl_aff_get_space(aff), isl_dim_param) == 0 &&
+           "only no-parameter aff supported currently");
+    list = isl_aff_list_add(list, aff);
+  }
+  isl_multi_aff *maff = isl_multi_aff_from_aff_list(space, list);
+  return isl_map_from_multi_aff(maff);
+}
+
+std::optional<SmallVector<isl_aff *>>
+IslAnalysis::getAffExprs(Operation *op, AffineValueMap avm) {
+  LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
+  auto [domain, cst] = ::getDomain(ctx, op);
+  LLVM_DEBUG(isl_set_dump(domain));
+  LLVM_DEBUG(cst.dump());
+  AffineMap map = avm.getAffineMap();
+
+  LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
+  PosMapTy dimPosMap;
+  PosMapTy dimPosMapReverse;
+  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
+    Value cstVal = cst.getValue(i);
+    LLVM_DEBUG(llvm::dbgs() << "cstVal " << cstVal << "\n");
+    for (unsigned origDim = 0; origDim < map.getNumDims(); origDim++) {
+      Value dim = avm.getOperand(origDim);
+      LLVM_DEBUG(llvm::dbgs() << "dim " << dim << "\n");
+      if (cstVal == dim) {
+        LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << i << "\n");
+        dimPosMap[origDim] = i;
+        dimPosMapReverse[i] = origDim;
+        break;
+      }
+    }
+  }
+
+  if (avm.getNumSymbols() != 0 || cst.getNumSymbolVars() != 0) {
+    // TODO While the fact that all dims from the map _must_ appear in the cst,
+    // this is not the case for symbols. We do not handle that case correctly
+    // currently, thus we abort early.
+    domain = isl_set_free(domain);
+    return std::nullopt;
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
+  PosMapTy symPosMap;
+  PosMapTy symPosMapReverse;
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
+    for (unsigned origSym = 0; origSym < map.getNumSymbols(); origSym++) {
+      Value dim = avm.getOperand(origSym + map.getNumDims());
+      if (cst.getValue(i + cst.getNumDimVars()) == dim) {
+        LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << i << "\n");
+        symPosMap[origSym] = i;
+        symPosMapReverse[i] = origSym;
+        break;
+      }
+    }
+  }
+
+  isl_space *space =
+      isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
+  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+  unsigned symOffset = cst.getNumDimVars();
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+
+  isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
+  space = isl_space_free(space);
+  AffineExprToIslAffConverter m2i{dimPosMap, symPosMap, ls, ctx};
+  SmallVector<isl_aff *> affVec;
+  for (unsigned i = 0; i < map.getNumResults(); i++) {
+    AffineExpr mlirExpr = map.getResult(i);
+    LLVM_DEBUG(llvm::dbgs() << "Handling AffineExpr\n" << mlirExpr << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Got aff\n");
+    isl_aff *aff = m2i.getIslAff(mlirExpr);
+    affVec.push_back(aff);
+  }
+  ls = isl_local_space_free(ls);
+  domain = isl_set_free(domain);
+
+  return affVec;
+}
+
+isl_set *IslAnalysis::getDomain(Operation *op) {
+  auto [domain, cst] = ::getDomain(ctx, op);
+
+  return domain;
+}
+
+std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {
+  return getAffExprs(op, getAVM(op));
+}
+
+IslAnalysis::IslAnalysis() { ctx = isl_ctx_alloc(); }
+
+IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
 template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
