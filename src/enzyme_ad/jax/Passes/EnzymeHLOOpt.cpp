@@ -7799,6 +7799,231 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+// (select (x > 0) z (neg z)) -> (mul (sign x) z)
+// (select (x >= 0) z (neg z)) -> (mul (sign x) z)
+// (select (x > 0) (neg z) z) -> (mul (sign x) (neg z))
+// (select (x >= 0) (neg z) z) -> (mul (sign x) (neg z))
+// (select (x < 0) z (neg z)) -> (mul (sign x) z)
+// (select (x <= 0) z (neg z)) -> (mul (sign x) z)
+// (select (x < 0) (neg z) z) -> (mul (sign x) (neg z))
+// (select (x <= 0) (neg z) z) -> (mul (sign x) (neg z))
+struct PositiveNegativeSelectSimplify
+    : public OpRewritePattern<stablehlo::SelectOp> {
+  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    auto cond = op.getPred();
+    auto trueValue = op.getOnTrue();
+    auto falseValue = op.getOnFalse();
+
+    Value rhs = nullptr;
+    bool lhspositive = true;
+    if (trueValue.getDefiningOp<stablehlo::NegOp>()) {
+      if (trueValue.getDefiningOp<stablehlo::NegOp>().getOperand() !=
+          falseValue)
+        return failure();
+
+      rhs = falseValue; // cond ? -z : z
+      lhspositive = false;
+    } else if (falseValue.getDefiningOp<stablehlo::NegOp>()) {
+      if (falseValue.getDefiningOp<stablehlo::NegOp>().getOperand() !=
+          trueValue)
+        return failure();
+
+      rhs = trueValue; // cond ? z : -z
+    } else {
+      return failure();
+    }
+
+    auto compareOp = cond.getDefiningOp<stablehlo::CompareOp>();
+    if (!compareOp)
+      return failure();
+
+    if (compareOp.getComparisonDirection() ==
+            stablehlo::ComparisonDirection::EQ ||
+        compareOp.getComparisonDirection() ==
+            stablehlo::ComparisonDirection::NE)
+      return failure();
+
+    Value condValue = nullptr;
+    bool positive = true;
+    auto lhsCompareOp = compareOp.getLhs();
+    auto rhsCompareOp = compareOp.getRhs();
+    if (matchPattern(lhsCompareOp, m_AnyZeroFloat()) ||
+        matchPattern(lhsCompareOp, m_Zero())) {
+      condValue = compareOp.getRhs();
+      positive = compareOp.getComparisonDirection() ==
+                     stablehlo::ComparisonDirection::GT ||
+                 compareOp.getComparisonDirection() ==
+                     stablehlo::ComparisonDirection::GE;
+    } else if (matchPattern(rhsCompareOp, m_AnyZeroFloat()) ||
+               matchPattern(rhsCompareOp, m_Zero())) {
+      condValue = compareOp.getLhs();
+      positive = compareOp.getComparisonDirection() ==
+                     stablehlo::ComparisonDirection::LT ||
+                 compareOp.getComparisonDirection() ==
+                     stablehlo::ComparisonDirection::LE;
+    } else {
+      return failure();
+    }
+
+    auto newOp = rewriter.create<stablehlo::SignOp>(op.getLoc(), condValue);
+    if (positive) { // cond > or >= 0
+      if (lhspositive) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, rhs);
+      } else {
+        auto negRhs = rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, negRhs);
+      }
+    } else { // cond < or <= 0
+      if (lhspositive) {
+        auto negRhs = rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, negRhs);
+      } else {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newOp, rhs);
+      }
+    }
+
+    return success();
+  }
+};
+
+// (mul (sign x) (abs x)) -> x
+// (mul (abs x) (sign x)) -> x
+struct SignAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    auto lhsSignOp = lhs.getDefiningOp<stablehlo::SignOp>();
+    if (lhsSignOp) {
+      auto rhsAbsOp = rhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!rhsAbsOp)
+        return failure();
+
+      if (lhsSignOp.getOperand() != rhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, lhsSignOp.getOperand());
+      return success();
+    }
+
+    auto rhsSignOp = rhs.getDefiningOp<stablehlo::SignOp>();
+    if (rhsSignOp) {
+      auto lhsAbsOp = lhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!lhsAbsOp)
+        return failure();
+
+      if (rhsSignOp.getOperand() != lhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, rhsSignOp.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+// (mul (neg x) (neg y)) -> (mul x y)
+// (mul (neg x) y) -> (neg (mul x y))
+// (mul x (neg y)) -> (neg (mul x y))
+struct MultiplyNegateSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    auto lhsNegOp = lhs.getDefiningOp<stablehlo::NegOp>();
+    auto rhsNegOp = rhs.getDefiningOp<stablehlo::NegOp>();
+    if (!lhsNegOp && !rhsNegOp)
+      return failure();
+
+    if (lhsNegOp) {
+      if (rhsNegOp) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, lhsNegOp.getOperand(),
+                                                      rhsNegOp.getOperand());
+        return success();
+      } else {
+        if (!isOnlyUsedInOperation(lhsNegOp, op))
+          return failure();
+        auto newOp = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), lhsNegOp.getOperand(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, newOp);
+        return success();
+      }
+    } else if (rhsNegOp) {
+      if (!isOnlyUsedInOperation(rhsNegOp, op))
+        return failure();
+      auto newOp = rewriter.create<stablehlo::MulOp>(op.getLoc(), lhs,
+                                                     rhsNegOp.getOperand());
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, newOp);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+// This pattern only does partially the following. We rely on transforming the op to a
+// pattern which further uses the above pattern.
+// (mul (sign x) (add (abs x) (abs x))) -> (mul x x)
+// TODO: We can simplify for cases where only one of the add operands is abs.
+struct MultiplySignAddSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    stablehlo::SignOp signOp = nullptr;
+    stablehlo::AddOp addOp = nullptr;
+    if (lhs.getDefiningOp<stablehlo::SignOp>()) {
+      signOp = lhs.getDefiningOp<stablehlo::SignOp>();
+      if (rhs.getDefiningOp<stablehlo::AddOp>()) {
+        addOp = rhs.getDefiningOp<stablehlo::AddOp>();
+      } else {
+        return failure();
+      }
+    } else if (rhs.getDefiningOp<stablehlo::SignOp>()) {
+      signOp = rhs.getDefiningOp<stablehlo::SignOp>();
+      if (lhs.getDefiningOp<stablehlo::AddOp>()) {
+        addOp = lhs.getDefiningOp<stablehlo::AddOp>();
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+
+    auto signOperand = signOp.getOperand();
+
+    auto lhsAddOp = addOp.getOperand(0);
+    auto rhsAddOp = addOp.getOperand(1);
+
+    if (lhsAddOp != rhsAddOp)
+      return failure(); // TODO: Can support more cases.
+
+    auto lhsAddAbsOp = lhsAddOp.getDefiningOp<stablehlo::AbsOp>();
+    auto rhsAddAbsOp = rhsAddOp.getDefiningOp<stablehlo::AbsOp>();
+    if (!lhsAddAbsOp || !rhsAddAbsOp)
+      return failure();
+
+    if (signOperand != lhsAddAbsOp.getOperand() || signOperand != rhsAddAbsOp.getOperand())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, signOperand, signOperand);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -8044,7 +8269,11 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
-        TransposeReduceSimplify
+        TransposeReduceSimplify,
+        SignAbsSimplify,
+        PositiveNegativeSelectSimplify,
+        MultiplyNegateSimplify,
+        MultiplySignAddSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
