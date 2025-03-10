@@ -1377,71 +1377,10 @@ struct SplitParallelIf : public OpRewritePattern<affine::AffineParallelOp> {
 
   LogicalResult matchAndRewrite(affine::AffineParallelOp pop,
                                 PatternRewriter &rewriter) const override {
-    IslAnalysis ia;
     for (auto &op : pop.getBody()->without_terminator()) {
       if (auto ifOp = dyn_cast<affine::AffineIfOp>(&op)) {
         if (succeeded(splitParallelIf(pop, ifOp, rewriter)))
           return success();
-#if 0
-
-        unsigned dimToSplit = 0;
-        uint64_t toSplitAt = 0;
-        allGood = false;
-        for (auto [cst, eq] : llvm::zip(cond.getConstraints(), cond.getEqFlags())) {
-
-          unsigned dim = 0;
-          if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(cst)) {
-            switch (binExpr.getKind()) {
-            case AffineExprKind::Add: {
-                AffineExpr other;
-                if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getLHS())) {
-                  dim = dimExpr.getPosition();
-                  other = binExpr.getRHS();
-                } else if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getRHS())) {
-                  dim = dimExpr.getPosition();
-                  other = binExpr.getLHS();
-                }
-                if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getRHS())) {
-                }
-            }
-            }
-          }
-
-          unsigned found = 0;
-          for (unsigned i = 0; i < cond.getNumDims(); i++) {
-            if (cst.isFunctionOfDim(i)) {
-              dim = i;
-              found++;
-            }
-          }
-          if (found != 1)
-            continue;
-          if (ifOp.getOperand(dim).getParentBlock()->getParentOp() != pop)
-            continue;
-
-          toSplitAt = cst.
-          allGood = true;
-        }
-
-        isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
-        isl_set *outsideIf = ia.getDomain(ifOp);
-        isl_set *inElse = isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
-        llvm::dbgs() << "INTHEN\n";
-        isl_set_dump(inThen);
-        llvm::dbgs() << "INELSE\n";
-        isl_set_dump(inElse);
-        llvm::dbgs() << "OUTSIDE\n";
-        isl_set_dump(outsideIf);
-
-        llvm::dbgs() << isl_set_is_box(inElse) << "\n";
-        llvm::dbgs() << isl_set_is_box(inThen) << "\n";
-        isl_fixed_box_dump(isl_set_get_lattice_tile(inElse));
-        isl_fixed_box_dump(isl_set_get_lattice_tile(inThen));
-        isl_fixed_box_dump(isl_set_get_lattice_tile(outsideIf));
-        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(inElse));
-        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(inThen));
-        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(outsideIf));
-#endif
       }
     }
     return failure();
