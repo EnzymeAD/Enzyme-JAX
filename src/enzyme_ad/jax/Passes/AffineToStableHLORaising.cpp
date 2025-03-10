@@ -91,16 +91,6 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
   assert(affine::isAffineInductionVar(iv));
 
   auto owner = affine::getAffineParallelInductionVarOwner(iv);
-  if (!owner) {
-    auto forOp = affine::getForInductionVarOwner(iv);
-    if (!forOp.hasConstantBounds())
-      return std::nullopt;
-
-    int64_t lb = forOp.getConstantLowerBound(),
-            ub = forOp.getConstantUpperBound(), step = forOp.getStepAsInt();
-
-    return InductionVariableRange{lb, ub, step};
-  }
 
   if (owner.hasMinMaxBounds()) // Non-constant ranges.
     return std::nullopt;
@@ -262,22 +252,28 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
 
 static SmallVector<int64_t>
 affineMapShape(affine::AffineValueMap accessValueMap) {
-  SmallVector<int64_t> startIndices;
-  SmallVector<int64_t> limitIndices;
-  SmallVector<int64_t> strides;
-  SmallVector<int64_t> reverseDims;
-
-  if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
-                       reverseDims)
-          .failed())
-    return {};
+  AffineMap map = accessValueMap.getAffineMap();
 
   SmallVector<int64_t> shape;
-  shape.reserve(startIndices.size());
+  shape.reserve(map.getNumResults());
 
-  for (auto [lb, ub, step] :
-       llvm::zip_equal(startIndices, limitIndices, strides)) {
-    shape.push_back((ub - lb) / step);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant()) {
+      shape.push_back(1);
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, E);
+    if (affine::isAffineForInductionVar(iv)) {
+      shape.push_back(1);
+      continue;
+    }
+
+    auto range = getIVRange(iv);
+    if (!range.has_value())
+      return {};
+
+    shape.push_back(range->getNumIters());
   }
 
   return shape;
@@ -507,6 +503,12 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 
   if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
     Value dim = operands[dimExpr.getPosition()];
+
+    if (affine::isAffineForInductionVar(dim)) {
+      return {mapping.lookup(dim),
+              affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
+    }
+
     return {
         mapping.lookup(dim),
         affine::AffineValueMap(
@@ -605,6 +607,216 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   return success();
 }
 
+static Value
+emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
+                 OpBuilder &builder,
+                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  Value indices = nullptr;
+
+  SmallVector<int64_t> startIndexMap;
+  SmallVector<int64_t> sliceSizes;
+  SmallVector<int64_t> outputShape;
+  SmallVector<Value> ivs;
+  for (auto raisedIdx : lIndices) {
+    startIndexMap.push_back(startIndexMap.size());
+
+    auto Ty = raisedIdx.getType().cast<RankedTensorType>();
+
+    SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
+                                      Ty.getShape().end());
+    indicesShape.push_back(1);
+
+    auto rank = Ty.getShape().size();
+    assert(rank <= 1);
+
+    sliceSizes.push_back(1);
+
+    if (rank == 0) {
+      indicesShape.push_back(1);
+    } else {
+      outputShape.push_back(Ty.getShape()[0]);
+
+      auto map = maps[raisedIdx];
+      assert(map.getNumResults() == 1);
+      auto iv = getIVForExpr(map, map.getAffineMap().getResult(0));
+      ivs.push_back(iv);
+    }
+
+    raisedIdx = builder.create<stablehlo::ReshapeOp>(
+        loc, Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
+
+    if (indices) {
+      int64_t indicesSize =
+                  indices.getType().cast<RankedTensorType>().getShape()[0],
+              numDims =
+                  indices.getType().cast<RankedTensorType>().getShape()[1],
+              newSize =
+                  raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
+
+      indices = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone({indicesSize, newSize, numDims}), indices,
+          llvm::ArrayRef<int64_t>({0, 2}));
+      indices = builder.create<stablehlo::ReshapeOp>(
+          loc, Ty.clone({indicesSize * newSize, numDims}), indices);
+      raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone({indicesSize, newSize}), raisedIdx,
+          llvm::ArrayRef<int64_t>({1, 0}));
+      raisedIdx = builder.create<stablehlo::ReshapeOp>(
+          loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+
+      indices = builder.create<stablehlo::ConcatenateOp>(
+          loc, Ty.clone({indicesSize * newSize, numDims + 1}),
+          ValueRange{indices, raisedIdx}, 1);
+    } else {
+      indices = raisedIdx;
+    }
+  }
+
+  Value res = builder.create<stablehlo::GatherOp>(
+      loc, mappedMemref, indices,
+      stablehlo::GatherDimensionNumbersAttr::get(
+          loc.getContext(),
+          /*offsetDims*/ {},
+          /*collapsedSliceDims*/ startIndexMap,
+          /*operandBatchingDims*/ {},
+          /*startIndicesBatchingDims*/ {},
+          /*startIndexMap*/ startIndexMap,
+          /*indexVectorDim*/ 1),
+      sliceSizes);
+
+  auto OT = res.getType().cast<RankedTensorType>();
+  res = builder.create<stablehlo::ReshapeOp>(loc, OT.clone(outputShape), res);
+
+  affine::AffineValueMap outputMap(
+      AffineMap::getMultiDimIdentityMap(ivs.size(), loc.getContext()), ivs);
+
+  maps[res] = outputMap;
+
+  return res;
+}
+
+static Value
+emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
+                   OpBuilder &builder,
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  Value indices = nullptr;
+
+  affine::AffineValueMap updateValueMap = maps[update];
+
+  auto UTy = update.getType().cast<RankedTensorType>();
+  SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
+  SmallVector<int64_t> updateShape;
+  SmallVector<int64_t> scatterDimsToOperandDims;
+
+  for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
+    auto idxMap = maps[raisedIdx];
+
+    auto Ty = raisedIdx.getType().cast<RankedTensorType>();
+    SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
+                                      Ty.getShape().end());
+    indicesShape.push_back(1);
+
+    int64_t rank = Ty.getShape().size();
+
+    assert(rank <= 1);
+
+    scatterDimsToOperandDims.push_back(i);
+
+    if (rank == 0) {
+      indicesShape.push_back(1);
+    } else {
+      auto iv = getIVForExpr(idxMap, idxMap.getAffineMap().getResult(0));
+
+      updateShape.push_back(
+          raisedIdx.getType().cast<RankedTensorType>().getShape()[0]);
+
+      for (auto [updateIdx, E] :
+           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+        Value updateIv = getIVForExpr(updateValueMap, E);
+        if (updateIv == iv) {
+          broadcastDims[updateIdx] = (updateShape.size() - 1);
+        }
+      }
+    }
+
+    raisedIdx = builder.create<stablehlo::ReshapeOp>(
+        loc, Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
+
+    if (indices) {
+      int64_t indicesSize =
+                  indices.getType().cast<RankedTensorType>().getShape()[0],
+              numDims =
+                  indices.getType().cast<RankedTensorType>().getShape()[1],
+              newSize =
+                  raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
+
+      indices = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone({indicesSize, newSize, numDims}), indices,
+          llvm::ArrayRef<int64_t>({0, 2}));
+      indices = builder.create<stablehlo::ReshapeOp>(
+          loc, Ty.clone({indicesSize * newSize, numDims}), indices);
+      raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone({indicesSize, newSize}), raisedIdx,
+          llvm::ArrayRef<int64_t>({1, 0}));
+      raisedIdx = builder.create<stablehlo::ReshapeOp>(
+          loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+
+      indices = builder.create<stablehlo::ConcatenateOp>(
+          loc, Ty.clone({indicesSize * newSize, numDims + 1}),
+          ValueRange{indices, raisedIdx}, 1);
+    } else {
+      indices = raisedIdx;
+    }
+  }
+
+  if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+    return nullptr;
+  }
+
+  update = builder.create<stablehlo::BroadcastInDimOp>(
+      loc, update.getType().cast<RankedTensorType>().clone(updateShape), update,
+      broadcastDims);
+
+  update = builder.create<stablehlo::ReshapeOp>(
+      loc,
+      RankedTensorType::get(
+          {indices.getType().cast<RankedTensorType>().getShape()[0]},
+          update.getType().cast<RankedTensorType>().getElementType()),
+      update);
+
+  auto Ty = input.getType().cast<RankedTensorType>();
+  stablehlo::ScatterOp scatter = builder.create<stablehlo::ScatterOp>(
+      loc, llvm::ArrayRef<Type>{Ty}, ValueRange{input}, indices,
+      ValueRange{update},
+      stablehlo::ScatterDimensionNumbersAttr::get(
+          loc.getContext(),
+          /*updateWindowDims*/ {},
+          /*insertedWindowDims*/ scatterDimsToOperandDims,
+          /*inputBatchingDims*/ {},
+          /*scatterIndicesBatchingDims*/ {},
+          /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
+          /*indexVectorDim*/ 1),
+      /*indicesAreSorted*/ false,
+      /*uniqueIndices*/ false);
+  Value res = scatter.getResult(0);
+
+  Block *updateBody = new Block();
+  scatter.getUpdateComputation().push_back(updateBody);
+
+  auto unrankedTy = RankedTensorType::get(
+      {}, update.getType().cast<RankedTensorType>().getElementType());
+  updateBody->addArgument(unrankedTy, loc);
+  Value updateInBody = updateBody->addArgument(unrankedTy, loc);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(updateBody);
+    builder.create<stablehlo::ReturnOp>(loc, updateInBody);
+  }
+
+  return res;
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
@@ -627,10 +839,31 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
-                         reverseDims)
-            .failed())
+    bool emitAsGather =
+        llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
+          return affine::isAffineForInductionVar(iv);
+        });
+
+    if (!emitAsGather && affineMapToSlice(accessValueMap, startIndices,
+                                          limitIndices, strides, reverseDims)
+                             .failed())
       return failure();
+
+    if (emitAsGather) {
+      SmallVector<Value> lIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [idx, idxMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping);
+        maps[idx] = idxMap;
+        lIndices.push_back(idx);
+      }
+
+      Value res =
+          emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
+      mapping.map(loadOp.getResult(), res);
+
+      return success();
+    }
 
     for (auto [lb, ub, step] :
          llvm::zip_equal(startIndices, limitIndices, strides)) {
@@ -694,10 +927,53 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, startIndices, limitIndices, strides,
-                         reverseDims)
-            .failed())
+    bool emitAsScatter =
+        llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
+          return affine::isAffineForInductionVar(iv);
+        });
+
+    if (!emitAsScatter && affineMapToSlice(accessValueMap, startIndices,
+                                           limitIndices, strides, reverseDims)
+                              .failed())
       return failure();
+
+    emitAsScatter = emitAsScatter || llvm::any_of(strides, [](int64_t stride) {
+                      return stride != 1;
+                    });
+
+    if (emitAsScatter) {
+      // Cannot emit as a dynamic_update_slice, emit as scatter instead
+
+      SmallVector<Value> sIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [expandedIndex, indexMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping);
+        maps[expandedIndex] = indexMap;
+        sIndices.push_back(expandedIndex);
+      }
+
+      Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
+                                     builder, maps);
+      if (!res) {
+        LLVM_DEBUG(
+            llvm::dbgs()
+                << "affine.store is dependent on less dims than stored value: "
+                << *op << "\n";
+            auto flags = OpPrintingFlags();
+            for (auto iv
+                 : accessValueMap.getOperands()) {
+              iv.printAsOperand(llvm::dbgs(), flags);
+              llvm::dbgs() << ", ";
+            } llvm::dbgs()
+            << "\n";
+            accessValueMap.getAffineMap().dump();
+
+        );
+        return failure();
+      }
+      mapping.map(storeOp.getMemref(), res);
+      return success();
+    }
 
     auto rank = access.getRank();
     SmallVector<Value> startIndicesValues;
@@ -788,90 +1064,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
     auto memref = loadOp.getMemref();
 
-    Value indices = nullptr;
+    SmallVector<Value> lIndices;
+    for (auto idx : loadOp.getIndices())
+      lIndices.push_back(mapping.lookup(idx));
 
-    SmallVector<int64_t> startIndexMap;
-    SmallVector<int64_t> sliceSizes;
-    SmallVector<int64_t> outputShape;
-    SmallVector<Value> ivs;
-    for (auto idx : loadOp.getIndices()) {
-      startIndexMap.push_back(startIndexMap.size());
-
-      auto raisedIdx = mapping.lookup(idx);
-      auto Ty = raisedIdx.getType().cast<RankedTensorType>();
-
-      SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
-                                        Ty.getShape().end());
-      indicesShape.push_back(1);
-
-      auto rank = Ty.getShape().size();
-      assert(rank <= 1);
-
-      sliceSizes.push_back(1);
-
-      if (rank == 0) {
-        indicesShape.push_back(1);
-      } else {
-        outputShape.push_back(Ty.getShape()[0]);
-
-        auto map = maps[raisedIdx];
-        assert(map.getNumResults() == 1);
-        auto iv = getIVForExpr(map, map.getAffineMap().getResult(0));
-        ivs.push_back(iv);
-      }
-
-      raisedIdx = builder.create<stablehlo::ReshapeOp>(
-          op->getLoc(), Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
-
-      if (indices) {
-        int64_t indicesSize =
-                    indices.getType().cast<RankedTensorType>().getShape()[0],
-                numDims =
-                    indices.getType().cast<RankedTensorType>().getShape()[1],
-                newSize =
-                    raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
-
-        indices = builder.create<stablehlo::BroadcastInDimOp>(
-            op->getLoc(), Ty.clone({indicesSize, newSize, numDims}), indices,
-            llvm::ArrayRef<int64_t>({0, 2}));
-        indices = builder.create<stablehlo::ReshapeOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, numDims}), indices);
-        raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
-            op->getLoc(), Ty.clone({indicesSize, newSize}), raisedIdx,
-            llvm::ArrayRef<int64_t>({1, 0}));
-        raisedIdx = builder.create<stablehlo::ReshapeOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, 1}), raisedIdx);
-
-        indices = builder.create<stablehlo::ConcatenateOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, numDims + 1}),
-            ValueRange{indices, raisedIdx}, 1);
-      } else {
-        indices = raisedIdx;
-      }
-    }
-
-    Value res = builder.create<stablehlo::GatherOp>(
-        op->getLoc(), mapping.lookup(memref), indices,
-        stablehlo::GatherDimensionNumbersAttr::get(
-            loadOp.getContext(),
-            /*offsetDims*/ {},
-            /*collapsedSliceDims*/ startIndexMap,
-            /*operandBatchingDims*/ {},
-            /*startIndicesBatchingDims*/ {},
-            /*startIndexMap*/ startIndexMap,
-            /*indexVectorDim*/ 1),
-        sliceSizes);
-
-    auto OT = res.getType().cast<RankedTensorType>();
-    res = builder.create<stablehlo::ReshapeOp>(op->getLoc(),
-                                               OT.clone(outputShape), res);
-
+    Value res = emitLoadAsGather(op->getLoc(), mapping.lookup(memref), lIndices,
+                                 builder, maps);
     mapping.map(loadOp.getResult(), res);
-
-    affine::AffineValueMap outputMap(
-        AffineMap::getMultiDimIdentityMap(ivs.size(), op->getContext()), ivs);
-
-    maps[res] = outputMap;
 
     return success();
   }
@@ -880,125 +1079,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value value = storeOp.getValueToStore();
     Value memref = storeOp.getMemref();
 
-    Value indices = nullptr;
+    SmallVector<Value> sIndices;
+    for (auto idx : storeOp.getIndices())
+      sIndices.push_back(mapping.lookup(idx));
 
-    Value input = mapping.lookup(memref);
-    Value update = mapping.lookup(value);
-    affine::AffineValueMap updateValueMap = maps[update];
-
-    auto UTy = update.getType().cast<RankedTensorType>();
-    SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
-    SmallVector<int64_t> updateShape;
-    SmallVector<int64_t> scatterDimsToOperandDims;
-
-    for (auto [i, idx] : llvm::enumerate(storeOp.getIndices())) {
-      auto raisedIdx = mapping.lookup(idx);
-      auto idxMap = maps[raisedIdx];
-
-      auto Ty = raisedIdx.getType().cast<RankedTensorType>();
-      SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
-                                        Ty.getShape().end());
-      indicesShape.push_back(1);
-
-      int64_t rank = Ty.getShape().size();
-
-      assert(rank <= 1);
-
-      scatterDimsToOperandDims.push_back(i);
-
-      if (rank == 0) {
-        indicesShape.push_back(1);
-      } else {
-        auto iv = getIVForExpr(idxMap, idxMap.getAffineMap().getResult(0));
-
-        updateShape.push_back(
-            raisedIdx.getType().cast<RankedTensorType>().getShape()[0]);
-
-        for (auto [updateIdx, E] :
-             llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
-          Value updateIv = getIVForExpr(updateValueMap, E);
-          if (updateIv == iv) {
-            broadcastDims[updateIdx] = (updateShape.size() - 1);
-          }
-        }
-      }
-
-      raisedIdx = builder.create<stablehlo::ReshapeOp>(
-          op->getLoc(), Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
-
-      if (indices) {
-        int64_t indicesSize =
-                    indices.getType().cast<RankedTensorType>().getShape()[0],
-                numDims =
-                    indices.getType().cast<RankedTensorType>().getShape()[1],
-                newSize =
-                    raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
-
-        indices = builder.create<stablehlo::BroadcastInDimOp>(
-            op->getLoc(), Ty.clone({indicesSize, newSize, numDims}), indices,
-            llvm::ArrayRef<int64_t>({0, 2}));
-        indices = builder.create<stablehlo::ReshapeOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, numDims}), indices);
-        raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
-            op->getLoc(), Ty.clone({indicesSize, newSize}), raisedIdx,
-            llvm::ArrayRef<int64_t>({1, 0}));
-        raisedIdx = builder.create<stablehlo::ReshapeOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, 1}), raisedIdx);
-
-        indices = builder.create<stablehlo::ConcatenateOp>(
-            op->getLoc(), Ty.clone({indicesSize * newSize, numDims + 1}),
-            ValueRange{indices, raisedIdx}, 1);
-      } else {
-        indices = raisedIdx;
-      }
-    }
-
-    if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+    Value res =
+        emitStoreAsScatter(op->getLoc(), mapping.lookup(value),
+                           mapping.lookup(memref), sIndices, builder, maps);
+    if (!res) {
       LLVM_DEBUG(llvm::dbgs()
                  << "memref.store is dependent on less dims than stored value: "
                  << *op << "\n");
       return failure();
-    }
-
-    update = builder.create<stablehlo::BroadcastInDimOp>(
-        op->getLoc(),
-        update.getType().cast<RankedTensorType>().clone(updateShape), update,
-        broadcastDims);
-
-    update = builder.create<stablehlo::ReshapeOp>(
-        op->getLoc(),
-        RankedTensorType::get(
-            {indices.getType().cast<RankedTensorType>().getShape()[0]},
-            update.getType().cast<RankedTensorType>().getElementType()),
-        update);
-
-    auto Ty = input.getType().cast<RankedTensorType>();
-    stablehlo::ScatterOp scatter = builder.create<stablehlo::ScatterOp>(
-        op->getLoc(), llvm::ArrayRef<Type>{Ty}, ValueRange{input}, indices,
-        ValueRange{update},
-        stablehlo::ScatterDimensionNumbersAttr::get(
-            storeOp.getContext(),
-            /*updateWindowDims*/ {},
-            /*insertedWindowDims*/ scatterDimsToOperandDims,
-            /*inputBatchingDims*/ {},
-            /*scatterIndicesBatchingDims*/ {},
-            /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
-            /*indexVectorDim*/ 1),
-        /*indicesAreSorted*/ false,
-        /*uniqueIndices*/ false);
-    Value res = scatter.getResult(0);
-
-    Block *updateBody = new Block();
-    scatter.getUpdateComputation().push_back(updateBody);
-
-    auto unrankedTy = RankedTensorType::get({}, value.getType());
-    updateBody->addArgument(unrankedTy, op->getLoc());
-    Value updateInBody = updateBody->addArgument(unrankedTy, op->getLoc());
-
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(updateBody);
-      builder.create<stablehlo::ReturnOp>(op->getLoc(), updateInBody);
     }
 
     mapping.map(memref, res);
@@ -1229,86 +1321,91 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  // // Inner for op
-  // if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-  //   if (!forOp.hasConstantBounds())
-  //     return failure();
-  //
-  //   Value iv = forOp.getInductionVar();
-  //   InductionVariableRange range = *getIVRange(iv);
-  //
-  //   auto ET = builder.getI64Type();
-  //   auto TT = RankedTensorType::get({}, ET);
-  //
-  //   Value lb = builder.create<stablehlo::ConstantOp>(
-  //       forOp.getLoc(), TT,
-  //       SplatElementsAttr::get(
-  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
-  //   Value ub = builder.create<stablehlo::ConstantOp>(
-  //       forOp.getLoc(), TT,
-  //       SplatElementsAttr::get(
-  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
-  //   Value step = builder.create<stablehlo::ConstantOp>(
-  //       forOp.getLoc(), TT,
-  //       SplatElementsAttr::get(
-  //           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
-  //
-  //   auto whileOp =
-  //       builder.create<stablehlo::WhileOp>(forOp.getLoc(), ValueRange{lb});
-  //
-  //   Block *cond = new Block(), *body = new Block();
-  //   whileOp->getRegion(0).push_back(cond);
-  //   whileOp->getRegion(1).push_back(body);
-  //
-  //   Value ivInCond = cond->addArgument(TT, iv.getLoc());
-  //   {
-  //     OpBuilder::InsertionGuard guard(builder);
-  //     builder.setInsertionPointToStart(cond);
-  //     Value cond = builder.create<stablehlo::CompareOp>(
-  //         forOp.getLoc(), ivInCond, step,
-  //         stablehlo::ComparisonDirection::LT);
-  //     builder.create<stablehlo::ReturnOp>(forOp.getLoc(), cond);
-  //   }
-  //   Value ivInBody = body->addArgument(TT, iv.getLoc());
-  //   {
-  //     OpBuilder::InsertionGuard guard(builder);
-  //     builder.setInsertionPointToStart(body);
-  //
-  //     mapping.map(iv, ivInBody);
-  //     maps[ivInBody] =
-  //         affine::AffineValueMap(AffineMap::get(op->getContext()), {});
-  //
-  //     // Is this the only condition?
-  //     SetVector<Value> mutatedMemrefs;
-  //     op->walk([&](affine::AffineStoreOp AS) {
-  //       mutatedMemrefs.insert(AS.getMemref());
-  //     });
-  //
-  //     // for (auto m : mutatedMemrefs) {
-  //     //   auto T = mapping.lookup(m).getType();
-  //     //   whileOp->insertOperands();
-  //     //   cond->addArgument(T, m.getLoc());
-  //     //   body->addArgument(T, m.getLoc());
-  //     // }
-  //
-  //     for (auto &innerOp : forOp.getBody()->without_terminator()) {
-  //
-  //       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder,
-  //       maps).failed())
-  //         return failure();
-  //     }
-  //
-  //     Value newIvInBody =
-  //         builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
-  //
-  //     SmallVector<Value> loopCarried = {newIvInBody};
-  //     for (auto m : mutatedMemrefs)
-  //       loopCarried.push_back(mapping.lookup(m));
-  //     builder.create<stablehlo::ReturnOp>(forOp.getLoc(), loopCarried);
-  //   }
-  //
-  //   return success();
-  // }
+  // Inner for op
+  if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+    if (!forOp.hasConstantBounds())
+      return failure();
+
+    Value iv = forOp.getInductionVar();
+    InductionVariableRange range{forOp.getConstantLowerBound(),
+                                 forOp.getConstantUpperBound(),
+                                 forOp.getStepAsInt()};
+
+    auto ET = builder.getI64Type();
+    auto TT = RankedTensorType::get({}, ET);
+
+    Value lb = builder.create<stablehlo::ConstantOp>(
+        forOp.getLoc(), TT,
+        SplatElementsAttr::get(
+            TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
+    Value ub = builder.create<stablehlo::ConstantOp>(
+        forOp.getLoc(), TT,
+        SplatElementsAttr::get(
+            TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
+    Value step = builder.create<stablehlo::ConstantOp>(
+        forOp.getLoc(), TT,
+        SplatElementsAttr::get(
+            TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+
+    SmallVector<Value> inits;
+    inits.push_back(lb);
+
+    Block *entryBlock = &op->getParentOfType<func::FuncOp>().getBody().front();
+
+    Block *cond = new Block(), *body = new Block();
+    Value ivInCond = cond->addArgument(TT, iv.getLoc());
+    Value ivInBody = body->addArgument(TT, iv.getLoc());
+
+    for (auto memref : entryBlock->getArguments()) {
+      Value mappedMemref = mapping.lookup(memref);
+      inits.push_back(mappedMemref);
+
+      cond->addArgument(mappedMemref.getType(), mappedMemref.getLoc());
+      Value memrefInBody =
+          body->addArgument(mappedMemref.getType(), mappedMemref.getLoc());
+      mapping.map(memref, memrefInBody);
+    }
+
+    auto whileOp = builder.create<stablehlo::WhileOp>(forOp.getLoc(), inits);
+
+    whileOp->getRegion(0).push_back(cond);
+    whileOp->getRegion(1).push_back(body);
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(cond);
+      Value cond = builder.create<stablehlo::CompareOp>(
+          forOp.getLoc(), ivInCond, ub, stablehlo::ComparisonDirection::LT);
+      builder.create<stablehlo::ReturnOp>(forOp.getLoc(), cond);
+    }
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(body);
+
+      mapping.map(iv, ivInBody);
+      maps[ivInBody] =
+          affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+
+      for (auto &innerOp : forOp.getBody()->without_terminator()) {
+        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+          return failure();
+      }
+
+      Value newIvInBody =
+          builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
+
+      SmallVector<Value> loopCarried = {newIvInBody};
+      for (auto memref : entryBlock->getArguments())
+        loopCarried.push_back(mapping.lookup(memref));
+      builder.create<stablehlo::ReturnOp>(forOp.getLoc(), loopCarried);
+    }
+
+    for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments())) {
+      mapping.map(memref, whileOp.getResult(i + 1));
+    }
+
+    return success();
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "cannot raise op to stablehlo: " << *op << "\n";);
 
