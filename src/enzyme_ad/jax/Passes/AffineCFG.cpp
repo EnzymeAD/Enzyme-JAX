@@ -3856,8 +3856,8 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
     if (!defop)
       return false;
 
-    if (!operand.hasOneUse()) {
-      if (!ifOp->isAncestor(defop)) {
+    if (!ifOp->isAncestor(defop)) {
+      if (!operand.hasOneUse() || ifOp->getBlock() != defop->getBlock()) {
         return false;
       }
     }
@@ -4025,6 +4025,28 @@ struct AffineIfYieldMovementPattern
     IRMapping mappingAfterIf;
 
     rewriter.setInsertionPointAfter(newIfOp);
+
+    for (auto &op : ifOp->getBlock()->getOperations()) {
+      if (&op == ifOp)
+        break;
+      if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
+        SmallVector<Value> operands;
+        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
+          if (valoperand)
+            operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
+          else
+            operands.push_back(newIfOp.getResult(idxop));
+        }
+        auto *newOp = rewriter.create(op.getLoc(), op.getName().getIdentifier(),
+                                      operands, op.getResultTypes(),
+                                      op.getAttrs(), op.getSuccessors());
+
+        mappingAfterIf.map(&op, newOp);
+        for (auto &&[prev, post] :
+             llvm::zip_equal(op.getResults(), newOp->getResults()))
+          mappingAfterIf.map(prev, post);
+      }
+    }
     for (auto &op : newIfOp.getThenBlock()->getOperations()) {
       if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
         SmallVector<Value> operands;
@@ -4052,24 +4074,8 @@ struct AffineIfYieldMovementPattern
       assert(op);
       if (!pair.first)
         newResults.push_back(newIfOp.getResult(pair.second));
-      else if (ifOp->isAncestor(op))
+      else
         newResults.push_back(mappingAfterIf.lookup(pair.first));
-      else {
-        assert(opsToMoveAfterIf.find(op) != opsToMoveAfterIf.end());
-
-        SmallVector<Value> operands;
-        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[op]) {
-          if (valoperand)
-            operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
-          else
-            operands.push_back(newIfOp.getResult(idxop));
-        }
-        auto *newOp = rewriter.create(
-            op->getLoc(), op->getName().getIdentifier(), operands,
-            op->getResultTypes(), op->getAttrs(), op->getSuccessors());
-        newResults.push_back(
-            newOp->getResult(cast<OpResult>(pair.first).getResultNumber()));
-      }
     }
 
     // Erase yield operations of prev if operation
