@@ -331,7 +331,7 @@ static MemRefVal convertToMemref(PtrVal addr) {
           MemRefLayoutAttrInterface{}, origMemrefType.getMemorySpace());
 
       auto ptr2memref = builder.create<enzymexla::Pointer2MemrefOp>(
-          addr.getLoc(), collapsedType, addr);
+          addr.getLoc(), collapsedType, basePtr);
       return cast<MemRefVal>(ptr2memref.getResult());
     }
   }
