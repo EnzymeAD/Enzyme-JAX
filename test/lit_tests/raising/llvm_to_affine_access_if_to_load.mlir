@@ -4,19 +4,9 @@
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 
-#alias_scope_domain = #llvm.alias_scope_domain<id = distinct[0]<>, description = "julia_iterate_interface_fluxes_150839">
-#alias_scope_domain1 = #llvm.alias_scope_domain<id = distinct[1]<>, description = "julia_iterate_interface_fluxes_150839">
-#alias_scope_domain2 = #llvm.alias_scope_domain<id = distinct[2]<>, description = "julia_iterate_interface_fluxes_150839">
 #set = affine_set<(d0) : (d0 - 1 >= 0)>
 #set1 = affine_set<(d0) : (-d0 + 89 >= 0)>
-#set2 = affine_set<(d0, d1, d2, d3) : (-d0 - d1 * 16 + 19 >= 0, d3 + d2 * 16 >= 0, d2 * -16 - d3 + 179 >= 0)>
-#set3 = affine_set<(d0, d1) : (d1 + d0 * 16 - 1 >= 0)>
-#set4 = affine_set<(d0, d1) : (d0 * -16 - d1 + 89 >= 0)>
-#set5 = affine_set<(d0) : (d0 - 19 == 0)>
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
-#alias_scope = #llvm.alias_scope<id = distinct[3]<>, domain = #alias_scope_domain>
-#alias_scope1 = #llvm.alias_scope<id = distinct[4]<>, domain = #alias_scope_domain1>
-#alias_scope2 = #llvm.alias_scope<id = distinct[5]<>, domain = #alias_scope_domain2>
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
 #tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_type_desc, access_type = #tbaa_type_desc, offset = 0>
 module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
