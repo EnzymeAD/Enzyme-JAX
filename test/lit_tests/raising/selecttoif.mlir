@@ -104,5 +104,6 @@ module {
 // CHECK-NEXT:      %20 = arith.subf %16, %19 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:      affine.store %20, %arg5[0, %arg8 + 19, %arg9 + 7] : memref<1x123x194xf64, 1>
 // CHECK-NEXT:    }
+// CHECK-NEXT:    return
 // CHECK-NEXT: }
 
