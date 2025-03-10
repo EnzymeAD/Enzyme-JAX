@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 
@@ -742,8 +743,26 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
 
-    // Store has less ivs than load.
+    // Store has less ivs than load which can signify a reduction that is not
+    // handled.
     if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+      LLVM_DEBUG(
+          llvm::dbgs()
+              << "affine.store is dependent on less dims than stored value: "
+              << *op << "\n";
+          auto flags = OpPrintingFlags(); for (auto iv
+                                               : accessValueMap.getOperands()) {
+            iv.printAsOperand(llvm::dbgs(), flags);
+            llvm::dbgs() << ", ";
+          } llvm::dbgs() << "\n";
+          accessValueMap.getAffineMap().dump();
+          for (auto iv
+               : updateValueMap.getOperands()) {
+            iv.printAsOperand(llvm::dbgs(), flags);
+            llvm::dbgs() << ", ";
+          } llvm::dbgs()
+          << "\n";
+          updateValueMap.getAffineMap().dump(););
       return failure();
     }
 
@@ -762,6 +781,99 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         op->getLoc(), operand, update, startIndicesValues);
 
     mapping.map(storeOp.getMemref(), newOperand.getResult());
+    return success();
+  }
+
+  if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
+    auto memref = loadOp.getMemref();
+
+    Value indices = nullptr;
+
+    SmallVector<int64_t> startIndexMap;
+    SmallVector<int64_t> sliceSizes;
+    SmallVector<int64_t> outputShape;
+    SmallVector<Value> ivs;
+    for (auto idx : loadOp.getIndices()) {
+      startIndexMap.push_back(startIndexMap.size());
+
+      auto raisedIdx = mapping.lookup(idx);
+      auto Ty = raisedIdx.getType().cast<RankedTensorType>();
+
+      SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
+                                        Ty.getShape().end());
+      indicesShape.push_back(1);
+
+      auto rank = Ty.getShape().size();
+      assert(rank <= 1);
+
+      sliceSizes.push_back(1);
+
+      if (rank == 0) {
+        raisedIdx = builder.create<stablehlo::ReshapeOp>(
+            op->getLoc(), Ty.clone({1}), raisedIdx);
+        indicesShape.push_back(1);
+      } else {
+        outputShape.push_back(Ty.getShape()[0]);
+
+        auto map = maps[raisedIdx];
+        assert(map.getNumResults() == 1);
+        auto iv = getIVForExpr(map, map.getAffineMap().getResult(0));
+        ivs.push_back(iv);
+      }
+
+      raisedIdx = builder.create<stablehlo::ReshapeOp>(
+          op->getLoc(), Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
+
+      if (indices) {
+        int64_t indicesSize =
+                    indices.getType().cast<RankedTensorType>().getShape()[0],
+                numDims =
+                    indices.getType().cast<RankedTensorType>().getShape()[1],
+                newSize =
+                    raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
+
+        indices = builder.create<stablehlo::BroadcastInDimOp>(
+            op->getLoc(), Ty.clone({indicesSize, newSize, numDims}), indices,
+            llvm::ArrayRef<int64_t>({0, 2}));
+        indices = builder.create<stablehlo::ReshapeOp>(
+            op->getLoc(), Ty.clone({indicesSize * newSize, numDims}), indices);
+        raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
+            op->getLoc(), Ty.clone({indicesSize, newSize}), raisedIdx,
+            llvm::ArrayRef<int64_t>({1, 0}));
+        raisedIdx = builder.create<stablehlo::ReshapeOp>(
+            op->getLoc(), Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+
+        indices = builder.create<stablehlo::ConcatenateOp>(
+            op->getLoc(), Ty.clone({indicesSize * newSize, numDims + 1}),
+            ValueRange{indices, raisedIdx}, 1);
+      } else {
+        indices = raisedIdx;
+      }
+    }
+
+    Value res = builder.create<stablehlo::GatherOp>(
+        op->getLoc(), mapping.lookup(memref), indices,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            loadOp.getContext(),
+            /*offsetDims*/ {},
+            /*collapsedSliceDims*/ startIndexMap,
+            /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {},
+            /*startIndexMap*/ startIndexMap,
+            /*indexVectorDim*/ 1),
+        sliceSizes);
+
+    auto OT = res.getType().cast<RankedTensorType>();
+    res = builder.create<stablehlo::ReshapeOp>(op->getLoc(),
+                                               OT.clone(outputShape), res);
+
+    mapping.map(loadOp.getResult(), res);
+
+    affine::AffineValueMap outputMap(
+        AffineMap::getMultiDimIdentityMap(ivs.size(), op->getContext()), ivs);
+
+    maps[res] = outputMap;
+
     return success();
   }
 
