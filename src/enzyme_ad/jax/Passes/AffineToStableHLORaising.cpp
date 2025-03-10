@@ -1006,9 +1006,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     if (!ifOp.elseBlock() || ifOp->getNumResults() == 0 ||
         llvm::any_of(*ifOp.thenBlock(),
-                     [](Operation &op) { return !mlir::isPure(&op); }) ||
+                     [ifOp](Operation &op) { return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op); }) ||
         llvm::any_of(*ifOp.elseBlock(),
-                     [](Operation &op) { return !mlir::isPure(&op); })) {
+                     [ifOp](Operation &op) { return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op); })) {
       LLVM_DEBUG(llvm::dbgs()
                  << "cannot raise if yet (non-pure or yielded values): " << *op
                  << "\n");
