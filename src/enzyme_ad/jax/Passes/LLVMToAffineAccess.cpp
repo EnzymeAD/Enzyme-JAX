@@ -342,6 +342,8 @@ static AffineExpr alignTo(AffineExpr expr, uint64_t a) {
   return (expr + a - 1).floorDiv(a) * a;
 }
 
+using BlockersTy = llvm::SmallSetVector<Value, 8>;
+
 // TODO To preserve correctness, we need to keep track of values for which
 // converting indexing to the index type preserves the semantics, i.e. no
 // overflows or underflows or trucation etc and insert a runtime guard against
@@ -364,6 +366,9 @@ struct AffineExprBuilder {
   SmallVector<Value> symbolsForScope;
   unsigned scopedIllegalSymbols = 0;
   bool scoped = false;
+
+  BlockersTy blockers;
+  BlockersTy getBlockers() { return blockers; }
 
   bool isLegal() {
     return illegalSymbols.size() == 0 ||
@@ -585,6 +590,8 @@ struct AffineExprBuilder {
       illegalSymbols.insert(v);
       return getAffineSymbolExpr(getSymbolPosition(v), context);
     }
+
+    blockers.insert(v);
 
     return failure();
   }
@@ -1051,199 +1058,9 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
-namespace mlir {
-LogicalResult
-convertLLVMToAffineAccess(Operation *op,
-                          const DataLayoutAnalysis &dataLayoutAnalysis,
-                          bool legalizeSymbols) {
-  if (!legalizeSymbols && !op->hasTrait<OpTrait::AffineScope>()) {
-    LLVM_DEBUG(llvm::errs() << "Must be called with an affine scope root when "
-                               "not legelizing symbols\n");
-    return failure();
-  }
-
-  MLIRContext *context = op->getContext();
-
-  MemrefConverter mc;
-  IndexConverter ic;
-
-  SmallVector<std::unique_ptr<AffineAccessBuilder>> accessBuilders;
-  auto handleOp = [&](Operation *op, PtrVal addr) {
-    LLVM_DEBUG(llvm::dbgs() << "Building affine access for " << op
-                            << " for address " << addr << "\n");
-    accessBuilders.push_back(
-        std::make_unique<AffineAccessBuilder>(op, legalizeSymbols));
-    AffineAccessBuilder &aab = *accessBuilders.back();
-    auto dl = dataLayoutAnalysis.getAtOrAbove(op);
-    auto res = aab.build(dl, addr);
-    if (failed(res))
-      accessBuilders.pop_back();
-  };
-  op->walk([&](LLVM::StoreOp store) {
-    PtrVal addr = store.getAddr();
-    handleOp(store, addr);
-  });
-  op->walk([&](LLVM::LoadOp load) {
-    PtrVal addr = load.getAddr();
-    handleOp(load, addr);
-  });
-
-  // TODO should also gather other mem operations such as memory intrinsics
-  // TODO should we shrink the scope to where no other memory operations
-  // exist?
-
-  if (legalizeSymbols) {
-    SmallPtrSet<Block *, 8> blocksToScope;
-    for (auto &aabp : accessBuilders)
-      for (auto illegalSym : aabp->illegalSymbols)
-        blocksToScope.insert(illegalSym.getParentBlock());
-    SmallPtrSet<Block *, 8> innermostBlocks;
-    for (Block *b : blocksToScope) {
-      SmallVector<Block *> toRemove;
-      bool isInnermost = true;
-      for (Block *existing : innermostBlocks) {
-        if (existing->getParent()->isProperAncestor(b->getParent()))
-          toRemove.push_back(existing);
-        if (b->getParent()->isAncestor(existing->getParent()))
-          isInnermost = false;
-      }
-      for (Block *r : toRemove)
-        innermostBlocks.erase(r);
-      if (isInnermost)
-        innermostBlocks.insert(b);
-    }
-
-    // TODO this looks terribly slow
-    for (Block *b : innermostBlocks) {
-      SmallPtrSet<Value, 6> symbols;
-      for (auto &aabp : accessBuilders)
-        aabp->collectSymbolsForScope(b->getParent(), symbols);
-      SmallVector<Value, 6> symbolsVec(symbols.begin(), symbols.end());
-      auto scope = insertAffineScope(b, symbolsVec);
-      for (auto &aabp : accessBuilders) {
-        aabp->rescope(scope);
-      }
-    }
-  }
-
-  IRMapping mapping;
-  for (auto &aabp : accessBuilders) {
-    AffineAccessBuilder &aab = *aabp;
-    // TODO add a test where some operations are left illegal
-    if (!aab.isLegal())
-      continue;
-
-    auto mao = aab.getMap();
-
-    auto isAligned = [&](auto op, llvm::TypeSize tySize) {
-      if (auto alignment = op.getAlignment())
-        return *alignment % tySize == 0;
-      return false;
-    };
-
-    auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
-    if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
-      IRRewriter rewriter(load);
-
-      Type ty = load.getType();
-      auto tySize = dl.getTypeSize(ty);
-      auto memref0 = mc(aab.base);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         load.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
-      }
-      if (mao.map.getResult(0).isMultipleOf(tySize) ||
-          isAligned(load, tySize)) {
-        auto expr = mao.map.getResult(0).floorDiv(tySize);
-        SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
-                                          load->getAttrs().end());
-        auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
-            load, memref,
-            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-            ic(mao.operands));
-        for (auto attr : attrs) {
-          newLoad->setAttr(attr.getName(), attr.getValue());
-        }
-      }
-
-    } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
-      Type ty = store.getValue().getType();
-      IRRewriter rewriter(store);
-      auto tySize = dl.getTypeSize(ty);
-      auto memref0 = mc(aab.base);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         store.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
-      }
-      if (mao.map.getResult(0).isMultipleOf(tySize) ||
-          isAligned(store, tySize)) {
-        auto expr = mao.map.getResult(0).floorDiv(tySize);
-        SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
-                                          store->getAttrs().end());
-        auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
-            store, store.getValue(), memref,
-            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-            ic(mao.operands));
-        for (auto attr : attrs) {
-          newStore->setAttr(attr.getName(), attr.getValue());
-        }
-      }
-    } else {
-      llvm_unreachable("Unknown operation to raise");
-    }
-  }
-
-  {
-    RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context,
-                                                     dataLayoutAnalysis);
-    GreedyRewriteConfig config;
-    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
-      return failure();
-  }
-  return success();
-}
-} // namespace mlir
-
-namespace mlir {
-void populateRemoveIVPatterns(RewritePatternSet &patterns) {
-  patterns.insert<mlir::transform::NormalizeLoop, mlir::transform::RemoveIVs>(
-      patterns.getContext());
-}
-} // namespace mlir
-
 namespace {
 LogicalResult splitParallelIf(affine::AffineParallelOp pop,
-                              affine::AffineIfOp ifOp,
-                              PatternRewriter &rewriter) {
+                              affine::AffineIfOp ifOp, RewriterBase &rewriter) {
   if (pop.getNumResults() != 0) {
     rewriter.notifyMatchFailure(ifOp, "non-zero result pop");
     return failure();
@@ -1368,6 +1185,7 @@ LogicalResult splitParallelIf(affine::AffineParallelOp pop,
   };
   clonePop(prePop);
   clonePop(postPop);
+  rewriter.eraseOp(pop);
 
   return success();
 }
@@ -1388,6 +1206,231 @@ struct SplitParallelIf : public OpRewritePattern<affine::AffineParallelOp> {
 };
 } // namespace
 
+namespace mlir {
+LogicalResult
+convertLLVMToAffineAccess(Operation *op,
+                          const DataLayoutAnalysis &dataLayoutAnalysis,
+                          bool legalizeSymbols) {
+  if (!legalizeSymbols && !op->hasTrait<OpTrait::AffineScope>()) {
+    LLVM_DEBUG(llvm::errs() << "Must be called with an affine scope root when "
+                               "not legelizing symbols\n");
+    return failure();
+  }
+
+  MLIRContext *context = op->getContext();
+
+  bool lastTimeEmpty = false;
+  while (true) {
+    MemrefConverter mc;
+    IndexConverter ic;
+
+    BlockersTy blockers;
+    SmallVector<std::unique_ptr<AffineAccessBuilder>> accessBuilders;
+    auto handleOp = [&](Operation *op, PtrVal addr) {
+      LLVM_DEBUG(llvm::dbgs() << "Building affine access for " << op
+                              << " for address " << addr << "\n");
+      accessBuilders.push_back(
+          std::make_unique<AffineAccessBuilder>(op, legalizeSymbols));
+      AffineAccessBuilder &aab = *accessBuilders.back();
+      auto dl = dataLayoutAnalysis.getAtOrAbove(op);
+      auto res = aab.build(dl, addr);
+      if (failed(res)) {
+        auto bs = aab.getBlockers();
+        blockers.insert(bs.begin(), bs.end());
+        accessBuilders.pop_back();
+      }
+    };
+    op->walk([&](LLVM::StoreOp store) {
+      PtrVal addr = store.getAddr();
+      handleOp(store, addr);
+    });
+    op->walk([&](LLVM::LoadOp load) {
+      PtrVal addr = load.getAddr();
+      handleOp(load, addr);
+    });
+
+    // TODO should also gather other mem operations such as memory intrinsics
+    // TODO should we shrink the scope to where no other memory operations
+    // exist?
+
+    if (legalizeSymbols) {
+      SmallPtrSet<Block *, 8> blocksToScope;
+      for (auto &aabp : accessBuilders)
+        for (auto illegalSym : aabp->illegalSymbols)
+          blocksToScope.insert(illegalSym.getParentBlock());
+      SmallPtrSet<Block *, 8> innermostBlocks;
+      for (Block *b : blocksToScope) {
+        SmallVector<Block *> toRemove;
+        bool isInnermost = true;
+        for (Block *existing : innermostBlocks) {
+          if (existing->getParent()->isProperAncestor(b->getParent()))
+            toRemove.push_back(existing);
+          if (b->getParent()->isAncestor(existing->getParent()))
+            isInnermost = false;
+        }
+        for (Block *r : toRemove)
+          innermostBlocks.erase(r);
+        if (isInnermost)
+          innermostBlocks.insert(b);
+      }
+
+      // TODO this looks terribly slow
+      for (Block *b : innermostBlocks) {
+        SmallPtrSet<Value, 6> symbols;
+        for (auto &aabp : accessBuilders)
+          aabp->collectSymbolsForScope(b->getParent(), symbols);
+        SmallVector<Value, 6> symbolsVec(symbols.begin(), symbols.end());
+        auto scope = insertAffineScope(b, symbolsVec);
+        for (auto &aabp : accessBuilders) {
+          aabp->rescope(scope);
+        }
+      }
+    }
+
+    unsigned legal = 0;
+    IRMapping mapping;
+    for (auto &aabp : accessBuilders) {
+      AffineAccessBuilder &aab = *aabp;
+      // TODO add a test where some operations are left illegal
+      if (!aab.isLegal())
+        continue;
+      legal++;
+
+      auto mao = aab.getMap();
+
+      auto isAligned = [&](auto op, llvm::TypeSize tySize) {
+        if (auto alignment = op.getAlignment())
+          return *alignment % tySize == 0;
+        return false;
+      };
+
+      auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
+      if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
+        IRRewriter rewriter(load);
+
+        Type ty = load.getType();
+        auto tySize = dl.getTypeSize(ty);
+        auto memref0 = mc(aab.base);
+        Value memref = memref0;
+        auto memrefTy = memref0.getType();
+        if (memrefTy.getElementType() != ty) {
+          if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+            memref = p2m.getOperand();
+          else
+            memref = rewriter.create<enzymexla::Memref2PointerOp>(
+                load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+                memref);
+          memref = rewriter
+                       .create<enzymexla::Pointer2MemrefOp>(
+                           load.getLoc(),
+                           MemRefType::get(memrefTy.getShape(), ty,
+                                           MemRefLayoutAttrInterface{},
+                                           memrefTy.getMemorySpace()),
+                           memref)
+                       .getResult();
+        }
+        if (mao.map.getResult(0).isMultipleOf(tySize) ||
+            isAligned(load, tySize)) {
+          auto expr = mao.map.getResult(0).floorDiv(tySize);
+          SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                            load->getAttrs().end());
+          auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+              load, memref,
+              AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
+                             expr),
+              ic(mao.operands));
+          for (auto attr : attrs) {
+            newLoad->setAttr(attr.getName(), attr.getValue());
+          }
+        }
+
+      } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
+        Type ty = store.getValue().getType();
+        IRRewriter rewriter(store);
+        auto tySize = dl.getTypeSize(ty);
+        auto memref0 = mc(aab.base);
+        Value memref = memref0;
+        auto memrefTy = memref0.getType();
+        if (memrefTy.getElementType() != ty) {
+          if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+            memref = p2m.getOperand();
+          else
+            memref = rewriter.create<enzymexla::Memref2PointerOp>(
+                store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+                memref);
+          memref = rewriter
+                       .create<enzymexla::Pointer2MemrefOp>(
+                           store.getLoc(),
+                           MemRefType::get(memrefTy.getShape(), ty,
+                                           MemRefLayoutAttrInterface{},
+                                           memrefTy.getMemorySpace()),
+                           memref)
+                       .getResult();
+        }
+        if (mao.map.getResult(0).isMultipleOf(tySize) ||
+            isAligned(store, tySize)) {
+          auto expr = mao.map.getResult(0).floorDiv(tySize);
+          SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                            store->getAttrs().end());
+          auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+              store, store.getValue(), memref,
+              AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
+                             expr),
+              ic(mao.operands));
+          for (auto attr : attrs) {
+            newStore->setAttr(attr.getName(), attr.getValue());
+          }
+        }
+      } else {
+        llvm_unreachable("Unknown operation to raise");
+      }
+    }
+
+    if (blockers.empty())
+      break;
+
+    if (lastTimeEmpty && (legal == 0))
+      break;
+
+    lastTimeEmpty = (legal == 0);
+
+    IRRewriter rewriter(context);
+    for (Value blocker : blockers) {
+      if (auto ifOp = blocker.getDefiningOp<affine::AffineIfOp>()) {
+        if (auto pop =
+                dyn_cast<affine::AffineParallelOp>(ifOp->getParentOp())) {
+          if (succeeded(splitParallelIf(pop, ifOp, rewriter)))
+            break;
+        }
+      }
+    }
+    RewritePatternSet patterns(context);
+    enzyme::populateAffineCFGPatterns(patterns);
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(op, std::move(patterns), config))) {
+      return failure();
+    }
+  }
+
+  {
+    RewritePatternSet patterns(context);
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context,
+                                                     dataLayoutAnalysis);
+    GreedyRewriteConfig config;
+    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
+      return failure();
+  }
+  return success();
+}
+} // namespace mlir
+
+namespace mlir {
+void populateRemoveIVPatterns(RewritePatternSet &patterns) {
+  patterns.insert<mlir::transform::NormalizeLoop, mlir::transform::RemoveIVs>(
+      patterns.getContext());
+}
+} // namespace mlir
+
 // This should be scheduled on individual functions
 struct LLVMToAffineAccessPass
     : public enzyme::impl::LLVMToAffineAccessPassBase<LLVMToAffineAccessPass> {
@@ -1397,7 +1440,6 @@ struct LLVMToAffineAccessPass
     auto context = &getContext();
     RewritePatternSet patterns(context);
     populateRemoveIVPatterns(patterns);
-    patterns.add<SplitParallelIf>(context);
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
