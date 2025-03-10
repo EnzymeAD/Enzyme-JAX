@@ -3857,9 +3857,9 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
       return false;
 
     if (!operand.hasOneUse()) {
-    if (!ifOp->isAncestor(defop)) {
-      return false;
-    }
+      if (!ifOp->isAncestor(defop)) {
+        return false;
+      }
     }
 
     if (!isReadNone(operand.getDefiningOp()))
@@ -3926,7 +3926,8 @@ std::pair<Value, size_t> checkOperands(
 }
 
 // Forked from CanonicalizeFor
-struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp> {
+struct AffineIfYieldMovementPattern
+    : public OpRewritePattern<affine::AffineIfOp> {
   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
@@ -3936,10 +3937,10 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
       return failure();
 
     // Extract yield operations from both regions
-    auto thenYield =
-        cast<affine::AffineYieldOp>(ifOp.getThenRegion().front().getTerminator());
-    auto elseYield =
-        cast<affine::AffineYieldOp>(ifOp.getElseRegion().front().getTerminator());
+    auto thenYield = cast<affine::AffineYieldOp>(
+        ifOp.getThenRegion().front().getTerminator());
+    auto elseYield = cast<affine::AffineYieldOp>(
+        ifOp.getElseRegion().front().getTerminator());
 
     // List of replacement values for each of the original if's results
     // There are two kinds of replacements:
@@ -3987,10 +3988,9 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
       resultTypes.push_back(operand.getType());
     }
 
-    auto newIfOp = rewriter.create<affine::AffineIfOp>(ifOp.getLoc(), resultTypes,
-                                              ifOp.getIntegerSet(),
-                                              ifOp.getOperands(),
-                                              /*hasElse=*/true);
+    auto newIfOp = rewriter.create<affine::AffineIfOp>(
+        ifOp.getLoc(), resultTypes, ifOp.getIntegerSet(), ifOp.getOperands(),
+        /*hasElse=*/true);
 
     // Move operations from the original then block to the new then block
 
@@ -4008,7 +4008,8 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(thenYield.getLoc(), ifYieldOperands);
+      rewriter.create<affine::AffineYieldOp>(thenYield.getLoc(),
+                                             ifYieldOperands);
       rewriter.eraseOp(thenYield);
     }
 
@@ -4016,7 +4017,8 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(elseYield.getLoc(), elseYieldOperands);
+      rewriter.create<affine::AffineYieldOp>(elseYield.getLoc(),
+                                             elseYieldOperands);
       rewriter.eraseOp(elseYield);
     }
 
@@ -4053,7 +4055,7 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
       else if (ifOp->isAncestor(op))
         newResults.push_back(mappingAfterIf.lookup(pair.first));
       else {
-        assert (opsToMoveAfterIf.find(op) != opsToMoveAfterIf.end());
+        assert(opsToMoveAfterIf.find(op) != opsToMoveAfterIf.end());
 
         SmallVector<Value> operands;
         for (auto &&[valoperand, idxop] : opsToMoveAfterIf[op]) {
@@ -4062,10 +4064,11 @@ struct AffineIfYieldMovementPattern : public OpRewritePattern<affine::AffineIfOp
           else
             operands.push_back(newIfOp.getResult(idxop));
         }
-        auto *newOp = rewriter.create(op->getLoc(), op->getName().getIdentifier(),
-                                      operands, op->getResultTypes(),
-                                      op->getAttrs(), op->getSuccessors());
-        newResults.push_back(newOp->getResult(cast<OpResult>(pair.first).getResultNumber()));
+        auto *newOp = rewriter.create(
+            op->getLoc(), op->getName().getIdentifier(), operands,
+            op->getResultTypes(), op->getAttrs(), op->getSuccessors());
+        newResults.push_back(
+            newOp->getResult(cast<OpResult>(pair.first).getResultNumber()));
       }
     }
 
@@ -4080,8 +4083,7 @@ void AffineCFGPass::runOnOperation() {
   mlir::enzyme::addSingleIter(rpl, getOperation()->getContext());
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
           ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
-          CanonicalizeIndexCast<IndexCastUIOp>,
-          AffineIfYieldMovementPattern,
+          CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
