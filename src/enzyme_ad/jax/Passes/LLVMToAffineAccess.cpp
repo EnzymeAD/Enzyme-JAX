@@ -1099,8 +1099,6 @@ convertLLVMToAffineAccess(Operation *op,
   IndexConverter ic;
 
   SmallVector<std::unique_ptr<AffineAccessBuilder>> accessBuilders;
-  SmallVector<std::pair<Operation *, PtrVal>>
-      remainingMemOps; // load/store which cannot use affine conversion
   auto handleOp = [&](Operation *op, PtrVal addr) {
     LLVM_DEBUG(llvm::dbgs() << "Building affine access for " << op
                             << " for address " << addr << "\n");
@@ -1111,7 +1109,6 @@ convertLLVMToAffineAccess(Operation *op,
     auto res = aab.build(dl, addr);
     if (failed(res)) {
       accessBuilders.pop_back();
-      remainingMemOps.push_back(std::make_pair(op, addr));
     }
   };
   op->walk([&](LLVM::StoreOp store) {
@@ -1256,121 +1253,99 @@ convertLLVMToAffineAccess(Operation *op,
     }
   }
 
-  // Raise remaining load/stores to memref.load/memref.store
-  for (const std::pair<Operation *, PtrVal> &p : remainingMemOps) {
-    Operation *memOp = p.first;
-    PtrVal addr = p.second;
-
-    LLVM_DEBUG(llvm::dbgs() << "Building memref access for " << memOp
+  auto handleMemrefOp = [&](Operation *op, PtrVal addr) {
+    LLVM_DEBUG(llvm::dbgs() << "Building memref access for " << op
                             << " for address " << addr << "\n");
-    auto dl = dataLayoutAnalysis.getAtOrAbove(memOp);
-    if (auto load = dyn_cast<LLVM::LoadOp>(memOp)) {
+    auto dl = dataLayoutAnalysis.getAtOrAbove(op);
+
+    auto processMemrefIndices = [&](IRRewriter &rewriter, PtrVal &addr, Type ty,
+                                    Location loc,
+                                    SmallVector<Value> &indices) -> Value {
+      auto tySize = dl.getTypeSize(ty);
+
+      auto memref0 = mc(addr);
+      Value memref = memref0;
+      auto memrefTy = memref0.getType();
+
+      if (memrefTy.getElementType() != ty) {
+        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+          memref = p2m.getOperand();
+        else
+          memref = rewriter.create<enzymexla::Memref2PointerOp>(
+              loc, LLVM::LLVMPointerType::get(ty.getContext()), memref);
+        memref = rewriter
+                     .create<enzymexla::Pointer2MemrefOp>(
+                         loc,
+                         MemRefType::get(memrefTy.getShape(), ty,
+                                         MemRefLayoutAttrInterface{},
+                                         memrefTy.getMemorySpace()),
+                         memref)
+                     .getResult();
+      }
+
+      indices.clear();
+      // If this is a 1D memref and we have GEP indices, use them
+      if (memrefTy.getRank() == 1 && addr.getDefiningOp<LLVM::GEPOp>()) {
+        auto gepOp = addr.getDefiningOp<LLVM::GEPOp>();
+        if (!gepOp.getIndices().empty()) {
+          auto gepIndex = gepOp.getIndices()[0];
+          Value indexVal;
+          if (auto intAttr = dyn_cast<IntegerAttr>(gepIndex)) {
+            indexVal = rewriter.create<arith::ConstantOp>(
+                loc, intAttr.getType(), intAttr);
+          } else {
+            indexVal = cast<Value>(gepIndex);
+          }
+          // Use convertToIndex through the IndexConverter (ic)
+          indices.push_back(ic(indexVal));
+        }
+      }
+
+      return memref;
+    };
+
+    SmallVector<Value> indices;
+    Value memref;
+    indices.clear();
+    SmallVector<NamedAttribute> attrs(op->getAttrs().begin(),
+                                      op->getAttrs().end());
+
+    // Instruction specific dispatch
+    if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
       IRRewriter rewriter(load);
-
       Type ty = load.getType();
-      auto tySize = dl.getTypeSize(ty);
-
-      auto memref0 = mc(addr);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
-
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         load.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
+      memref = processMemrefIndices(rewriter, addr, ty, load.getLoc(), indices);
+      auto newLoad =
+          rewriter.replaceOpWithNewOp<memref::LoadOp>(load, memref, indices);
+      for (auto attr : attrs) {
+        newLoad->setAttr(attr.getName(), attr.getValue());
       }
-
-      SmallVector<Value> indices;
-      // If this is a 1D memref and we have GEP indices, use them
-      if (memrefTy.getRank() == 1 && addr.getDefiningOp<LLVM::GEPOp>()) {
-        auto gepOp = addr.getDefiningOp<LLVM::GEPOp>();
-        if (!gepOp.getIndices().empty()) {
-          auto gepIndex = gepOp.getIndices()[0];
-          Value indexVal;
-          if (auto intAttr = dyn_cast<IntegerAttr>(gepIndex)) {
-            indexVal = rewriter.create<arith::ConstantOp>(
-                load.getLoc(), intAttr.getType(), intAttr);
-          } else {
-            indexVal = cast<Value>(gepIndex);
-          }
-          // Use convertToIndex through the IndexConverter (ic)
-          indices.push_back(ic(indexVal));
-        }
-
-        SmallVector<NamedAttribute> attrs(memOp->getAttrs().begin(),
-                                          memOp->getAttrs().end());
-        auto newLoad =
-            rewriter.replaceOpWithNewOp<memref::LoadOp>(load, memref, indices);
-        for (auto attr : attrs) {
-          newLoad->setAttr(attr.getName(), attr.getValue());
-        }
-      }
-    } else if (auto store = dyn_cast<LLVM::StoreOp>(memOp)) {
-
+    } else if (auto store = dyn_cast<LLVM::StoreOp>(op)) {
       IRRewriter rewriter(store);
-
       Type ty = store.getValue().getType();
-      auto tySize = dl.getTypeSize(ty);
 
-      auto memref0 = mc(addr);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
+      memref =
+          processMemrefIndices(rewriter, addr, ty, store.getLoc(), indices);
 
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         store.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
+      auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
+          store, store.getValue(), memref, indices);
+      for (auto attr : attrs) {
+        newStore->setAttr(attr.getName(), attr.getValue());
       }
-
-      SmallVector<Value> indices;
-      // If this is a 1D memref and we have GEP indices, use them
-      if (memrefTy.getRank() == 1 && addr.getDefiningOp<LLVM::GEPOp>()) {
-        auto gepOp = addr.getDefiningOp<LLVM::GEPOp>();
-        if (!gepOp.getIndices().empty()) {
-          auto gepIndex = gepOp.getIndices()[0];
-          Value indexVal;
-          if (auto intAttr = dyn_cast<IntegerAttr>(gepIndex)) {
-            indexVal = rewriter.create<arith::ConstantOp>(
-                load.getLoc(), intAttr.getType(), intAttr);
-          } else {
-            indexVal = cast<Value>(gepIndex);
-          }
-          // Use convertToIndex through the IndexConverter (ic)
-          indices.push_back(ic(indexVal));
-        }
-
-        SmallVector<NamedAttribute> attrs(memOp->getAttrs().begin(),
-                                          memOp->getAttrs().end());
-        auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
-            store, store.getValue(), memref, indices);
-        for (auto attr : attrs) {
-          newStore->setAttr(attr.getName(), attr.getValue());
-        }
-      }
+    } else {
+      llvm_unreachable("unknown LLVM OpCode encountered");
     }
-  }
+  };
+
+  // Raise remaining loads and stores to memref
+  op->walk([&](LLVM::StoreOp store) {
+    PtrVal addr = store.getAddr();
+    handleMemrefOp(store, addr);
+  });
+  op->walk([&](LLVM::LoadOp load) {
+    PtrVal addr = load.getAddr();
+    handleMemrefOp(load, addr);
+  });
 
   {
     RewritePatternSet patterns(context);
