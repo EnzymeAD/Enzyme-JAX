@@ -494,7 +494,7 @@ struct AffineExprBuilder {
       default:
         LLVM_DEBUG(llvm::dbgs()
                    << "Unknown affine binary expression" << bOpExpr << "\n");
-      } 
+      }
     }
     // const, dim or symbol
     return true;
