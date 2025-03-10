@@ -718,7 +718,6 @@ private:
     assert(indices.size() > 0);
     Type currentType = gep.getElemType();
     auto expr = getExpr(indices[0]);
-    LLVM_DEBUG(llvm::dbgs() << "hey" << "\n");
     if (failed(expr))
       return std::nullopt;
     AffineExpr offset = (*expr) * dataLayout.getTypeSize(currentType);
@@ -1121,14 +1120,10 @@ convertLLVMToAffineAccess(Operation *op,
   };
   op->walk([&](LLVM::StoreOp store) {
     PtrVal addr = store.getAddr();
-    LLVM_DEBUG(llvm::dbgs() << "Init store for " << store << " for address "
-                            << addr << "\n");
     handleOp(store, addr);
   });
   op->walk([&](LLVM::LoadOp load) {
     PtrVal addr = load.getAddr();
-    LLVM_DEBUG(llvm::dbgs()
-               << "Init load for " << load << " for address " << addr << "\n");
     handleOp(load, addr);
   });
 
