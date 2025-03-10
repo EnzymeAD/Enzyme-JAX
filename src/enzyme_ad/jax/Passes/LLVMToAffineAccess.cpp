@@ -466,6 +466,40 @@ struct AffineExprBuilder {
     return failure();
   }
 
+  static bool isStrictlyAffine(AffineExpr expr) {
+
+    if (AffineBinaryOpExpr bOpExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
+      bool ret_flag = false;
+      switch (bOpExpr.getKind()) {
+      case mlir::AffineExprKind::Add:
+        // do nothing
+        break;
+      case mlir::AffineExprKind::Mul: {
+        bool lhsConst = isa<AffineConstantExpr>(bOpExpr.getLHS());
+        bool rhsConst = isa<AffineConstantExpr>(bOpExpr.getRHS());
+
+        // either LHS or RHS has to be a constant
+        if (!lhsConst && !rhsConst)
+          return false;
+        break;
+      }
+      case mlir::AffineExprKind::CeilDiv:
+      case mlir::AffineExprKind::FloorDiv:
+      case mlir::AffineExprKind::Mod: {
+        bool rhsDim = isa<AffineDimExpr>(bOpExpr.getRHS());
+        if (rhsDim)
+          return false;
+        break;
+      }
+      default:
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Unknown affine binary expression" << bOpExpr << "\n");
+      } 
+    }
+    // const, dim or symbol
+    return true;
+  }
+
   template <typename... Ts>
   inline FailureOr<AffineExpr>
   buildBinOpExpr(Operation *op,
@@ -476,7 +510,15 @@ struct AffineExprBuilder {
       auto rhs = buildExpr(op->getOperand(1));
       if (failed(lhs) || failed(rhs))
         return failure();
-      return ((*lhs).*handler)(*rhs);
+
+      // check if the resulting binOp is strictly affine
+      AffineExpr result = ((*lhs).*handler)(*rhs);
+
+      if (!isStrictlyAffine(result)) {
+        return failure();
+      }
+
+      return result;
     }
     return failure();
   }
@@ -546,8 +588,6 @@ struct AffineExprBuilder {
                op, &AffineExpr::operator-)));
       RIS((buildBinOpExpr<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp, arith::RemUIOp>(
                op, &AffineExpr::operator%)));
-      // TODO need to check that we dont end up with dim * dim or other invalid
-      // expression
       RIS((buildBinOpExpr<LLVM::MulOp, arith::MulIOp>(
                op, &AffineExpr::operator*)));
       RIS((buildBinOpExpr<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp, arith::DivSIOp>(
@@ -591,7 +631,10 @@ struct AffineExprBuilder {
       return getAffineConstantExpr(constIndex.getInt(), user->getContext());
     } else {
       auto expr = buildExpr(cast<Value>(index));
-      LLVM_DEBUG(if (succeeded(expr)) expr->dump());
+      LLVM_DEBUG({
+        if (succeeded(expr))
+          expr->dump();
+      });
       return expr;
     }
   }
@@ -675,6 +718,7 @@ private:
     assert(indices.size() > 0);
     Type currentType = gep.getElemType();
     auto expr = getExpr(indices[0]);
+    LLVM_DEBUG(llvm::dbgs() << "hey" << "\n");
     if (failed(expr))
       return std::nullopt;
     AffineExpr offset = (*expr) * dataLayout.getTypeSize(currentType);
@@ -1077,10 +1121,14 @@ convertLLVMToAffineAccess(Operation *op,
   };
   op->walk([&](LLVM::StoreOp store) {
     PtrVal addr = store.getAddr();
+    LLVM_DEBUG(llvm::dbgs() << "Init store for " << store << " for address "
+                            << addr << "\n");
     handleOp(store, addr);
   });
   op->walk([&](LLVM::LoadOp load) {
     PtrVal addr = load.getAddr();
+    LLVM_DEBUG(llvm::dbgs()
+               << "Init load for " << load << " for address " << addr << "\n");
     handleOp(load, addr);
   });
 
