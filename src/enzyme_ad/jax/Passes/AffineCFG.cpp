@@ -3092,6 +3092,10 @@ struct SplitParallelInductions
             if (functionOf)
               exprs.push_back(E);
           }
+        } else if (auto AA = dyn_cast<affine::AffineApplyOp>(U)) {
+          operands = AA.getMapOperands();
+          auto map = AA.getMap();
+          exprs.append(map.getResults().begin(), map.getResults().end());
         } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
           for (auto UU : cstOp.getResult().getUsers()) {
             users.emplace_back(UU, cstOp->getResult(0));
@@ -3352,6 +3356,15 @@ struct SplitParallelInductions
             rewriter.modifyOpInPlace(AS, [&]() {
               AS.setMap(newMap);
               AS->insertOperands(2 + map.getNumDims(), newIv);
+            });
+          } else if (auto AA = dyn_cast<affine::AffineApplyOp>(U)) {
+            auto operands = AA.getMapOperands();
+            auto map = AA.getMap();
+            auto newMap = getNewMap(iv, map, operands, baseExpr);
+
+            rewriter.modifyOpInPlace(AA, [&]() {
+              AA.setMap(newMap);
+              AA->insertOperands(map.getNumDims(), newIv);
             });
           } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
             auto operands = AI.getOperands();
@@ -3626,6 +3639,25 @@ struct MergeParallelInductions
               exprs.push_back(E);
           }
           numDims = AS.getAffineMap().getNumDims();
+          affineUsers[iv.getArgNumber()].push_back(U);
+        } else if (auto AA = dyn_cast<affine::AffineApplyOp>(U)) {
+          operands = AA.getMapOperands();
+          for (auto E : AA.getMap().getResults()) {
+            bool functionOf = false;
+            for (size_t i = 0; i < operands.size(); i++) {
+              if (operands[i] != iv)
+                continue;
+              if (i < AA.getMap().getNumDims()) {
+                functionOf |= E.isFunctionOfDim(i);
+              } else {
+                functionOf |=
+                    E.isFunctionOfSymbol(i - AA.getMap().getNumDims());
+              }
+            }
+            if (functionOf)
+              exprs.push_back(E);
+          }
+          numDims = AA.getMap().getNumDims();
           affineUsers[iv.getArgNumber()].push_back(U);
         } else if (auto AI = dyn_cast<affine::AffineIfOp>(U)) {
           operands = AI.getOperands();
