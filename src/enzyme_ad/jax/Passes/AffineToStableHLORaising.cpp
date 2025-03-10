@@ -751,14 +751,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           llvm::dbgs()
               << "affine.store is dependent on less dims than stored value: "
               << *op << "\n";
-          auto flags = OpPrintingFlags(); for (auto iv
-                                               : accessValueMap.getOperands()) {
+          auto flags = OpPrintingFlags();
+          for (auto iv : accessValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
+          } llvm::dbgs()
+          << "\n";
           accessValueMap.getAffineMap().dump();
-          for (auto iv
-               : updateValueMap.getOperands()) {
+          for (auto iv : updateValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
           } llvm::dbgs()
@@ -1006,9 +1006,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     if (!ifOp.elseBlock() || ifOp->getNumResults() == 0 ||
         llvm::any_of(*ifOp.thenBlock(),
-                     [ifOp](Operation &op) { return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op); }) ||
-        llvm::any_of(*ifOp.elseBlock(),
-                     [ifOp](Operation &op) { return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op); })) {
+                     [ifOp](Operation &op) {
+                       return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
+                     }) ||
+        llvm::any_of(*ifOp.elseBlock(), [ifOp](Operation &op) {
+          return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
+        })) {
       LLVM_DEBUG(llvm::dbgs()
                  << "cannot raise if yet (non-pure or yielded values): " << *op
                  << "\n");
