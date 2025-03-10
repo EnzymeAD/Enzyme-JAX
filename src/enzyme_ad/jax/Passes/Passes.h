@@ -24,6 +24,8 @@ class DominanceInfo;
 
 namespace enzyme {
 
+void populateAffineCFGPatterns(RewritePatternSet &rpl);
+
 #define GEN_PASS_DECL
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 

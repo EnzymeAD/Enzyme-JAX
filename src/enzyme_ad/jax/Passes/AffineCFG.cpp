@@ -1,3 +1,5 @@
+#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -10,10 +12,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include <deque>
+#include <isl/set.h>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-cfg"
@@ -2044,6 +2048,38 @@ static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
   rewriter.eraseOp(terminator);
 }
 
+struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    IslAnalysis ia;
+    isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
+    isl_set *outsideIf = ia.getDomain(ifOp);
+    isl_set *inElse =
+        isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
+
+    bool succeeded = false;
+    if (isl_set_is_empty(inThen)) {
+      Operation *term = ifOp.getElseBlock()->getTerminator();
+      rewriter.inlineBlockBefore(ifOp.getElseBlock(), ifOp);
+      rewriter.replaceOp(ifOp, term->getOperands());
+      rewriter.eraseOp(term);
+      succeeded = true;
+    } else if (isl_set_is_empty(inElse)) {
+      Operation *term = ifOp.getThenBlock()->getTerminator();
+      rewriter.inlineBlockBefore(ifOp.getThenBlock(), ifOp);
+      rewriter.replaceOp(ifOp, term->getOperands());
+      rewriter.eraseOp(term);
+      succeeded = true;
+    }
+    isl_set_free(inThen);
+    isl_set_free(inElse);
+    isl_set_free(outsideIf);
+
+    return success(succeeded);
+  }
+};
+
 struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
 
@@ -3839,20 +3875,26 @@ struct AddAddCstEnd : public OpRewritePattern<arith::AddIOp> {
   }
 };
 
-void AffineCFGPass::runOnOperation() {
-  mlir::RewritePatternSet rpl(getOperation()->getContext());
-  mlir::enzyme::addSingleIter(rpl, getOperation()->getContext());
+void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
+  MLIRContext *context = rpl.getContext();
+  mlir::enzyme::addSingleIter(rpl, context);
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
           ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
           CanonicalizeIndexCast<IndexCastUIOp>,
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
-          MoveSelectToAffine, AffineIfSimplification, CombineAffineIfs,
-          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
-          CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);
-  rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
+          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
+          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
+          AddAddCstEnd>(context, 2);
+  rpl.add<SplitParallelInductions>(context, 1);
+}
+
+void AffineCFGPass::runOnOperation() {
+  mlir::RewritePatternSet rpl(getOperation()->getContext());
+  populateAffineCFGPatterns(rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
