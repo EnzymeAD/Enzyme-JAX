@@ -120,6 +120,38 @@ struct ArithRaisingPass
 
 #undef RAISE_UNARY
 
+    op->walk([=](math::AtanOp atanOp) {
+      // atan %a -> atan2(%a, 1.0)
+      auto ty = dyn_cast<RankedTensorType>(atanOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(atanOp);
+
+      Attribute oneAttr0;
+      if (isa<IntegerType>(ty.getElementType()))
+        oneAttr0 = builder.getIntegerAttr(ty.getElementType(), 1);
+      else if (isa<FloatType>(ty.getElementType()))
+        oneAttr0 = builder.getFloatAttr(ty.getElementType(), 1);
+      else if (auto CT = dyn_cast<ComplexType>(ty.getElementType()))
+        oneAttr0 = complex::NumberAttr::get(CT, 1, 0);
+      else
+        return;
+
+      DenseElementsAttr oneAttr;
+      if (auto complexAttr = dyn_cast<complex::NumberAttr>(oneAttr0))
+        oneAttr = DenseElementsAttr::get(ty, oneAttr0);
+      else
+        oneAttr = DenseElementsAttr::get(ty, oneAttr0);
+
+      Value one =
+          builder.create<stablehlo::ConstantOp>(atanOp.getLoc(), oneAttr);
+      Value res = builder.create<stablehlo::Atan2Op>(atanOp.getLoc(),
+                                                     atanOp.getOperand(), one);
+      atanOp.replaceAllUsesWith(res);
+      atanOp.erase();
+    });
+
     op->walk([=](arith::MaxNumFOp maxOp) {
       // maxnumf %a,%b -> select(isnan(%a), %b, max(%a, %b))
       if (!use_stablehlo ||

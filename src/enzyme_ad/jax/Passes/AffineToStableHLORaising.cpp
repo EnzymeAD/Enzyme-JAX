@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -910,7 +911,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
           arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
           math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp,
-          math::IsNaNOp>(op)) {
+          math::IsNaNOp, math::AtanOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
@@ -1090,6 +1091,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         return failure();
     }
 
+    return success();
+  }
+
+  if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
     return success();
   }
 
