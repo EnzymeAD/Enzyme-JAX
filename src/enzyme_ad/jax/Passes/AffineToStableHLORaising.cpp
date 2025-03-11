@@ -822,8 +822,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+      LLVM_DEBUG(llvm::dbgs() << "Failed to affine map to slice: " << *op << "\n");
       return failure();
+    }
 
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
@@ -944,8 +946,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+      LLVM_DEBUG(llvm::dbgs() << "Failed to affine map to slice: " << *op << "\n");
       return failure();
+    }
 
     bool emitAsScatter =
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; });
