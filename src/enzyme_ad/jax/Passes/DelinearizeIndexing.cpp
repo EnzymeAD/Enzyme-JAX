@@ -101,7 +101,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
   if (!foundAllUses)
     return failure();
 
-  LLVM_DEBUG(llvm::dbgs() << "all good 2\n");
   IRRewriter rewriter(ctx);
 
   for (unsigned shapeIdx :
@@ -149,10 +148,8 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
     }
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "all good 3\n");
   rewriteMemrefCallback(rewriter);
 
-  LLVM_DEBUG(llvm::dbgs() << "all good 4\n");
   for (auto &ainfo : affineAccesses) {
     if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
       rewriter.setInsertionPoint(load);
@@ -187,7 +184,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
     }
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "all good 5\n");
   return success();
 }
 
@@ -214,30 +210,30 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
     return failure();
   }
 
-  // Count users by type for debugging
-  unsigned affineLoads = 0, affineStores = 0, memrefLoads = 0, memrefStores = 0,
-           others = 0;
-  for (auto user : atAddr.getResult().getUsers()) {
-    if (isa<affine::AffineLoadOp>(user))
-      affineLoads++;
-    else if (isa<affine::AffineStoreOp>(user))
-      affineStores++;
-    else if (isa<memref::LoadOp>(user))
-      memrefLoads++;
-    else if (isa<memref::StoreOp>(user))
-      memrefStores++;
-    else
-      others++;
-  }
-
-  LLVM_DEBUG(llvm::dbgs() << "Users: " << affineLoads << " affine loads, "
-                          << affineStores << " affine stores, " << memrefLoads
-                          << " memref loads, " << memrefStores
-                          << " memref stores, " << others << " others\n");
+  // // Count users by type for debugging
+  // unsigned affineLoads = 0, affineStores = 0, memrefLoads = 0, memrefStores = 0,
+  //          others = 0;
+  // for (auto user : atAddr.getResult().getUsers()) {
+  //   if (isa<affine::AffineLoadOp>(user))
+  //     affineLoads++;
+  //   else if (isa<affine::AffineStoreOp>(user))
+  //     affineStores++;
+  //   else if (isa<memref::LoadOp>(user))
+  //     memrefLoads++;
+  //   else if (isa<memref::StoreOp>(user))
+  //     memrefStores++;
+  //   else
+  //     others++;
+  // }
+  //
+  // LLVM_DEBUG(llvm::dbgs() << "Users: " << affineLoads << " affine loads, "
+  //                         << affineStores << " affine stores, " << memrefLoads
+  //                         << " memref loads, " << memrefStores
+  //                         << " memref stores, " << others << " others\n");
 
   if (auto ba = dyn_cast<BlockArgument>(m2p.getSource())) {
-    if (isa<FunctionOpInterface>(ba.getOwner()->getParentOp())){
-        if(&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
+    if (isa<FunctionOpInterface>(ba.getOwner()->getParentOp())) {
+      if (&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
 
         auto memref = atAddr.getResult();
         return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
@@ -246,7 +242,8 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
           atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
               atAddr, newMt, atAddr.getSource());
         });
-      }}
+      }
+    }
   }
 
   return failure();
