@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
@@ -1162,6 +1163,29 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
+  }
+
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    Block *tmp = new Block();
+    OpBuilder tmpB(apply.getContext());
+    tmpB.setInsertionPointToStart(tmp);
+    auto expanded = affine::expandAffineMap(tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
+    bool failed = false;
+    for (auto &innerOp : *tmp) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed()) {
+	failed = true;
+	break;
+      }
+    }
+    if (!failed) {
+      mapping.map(apply.getResult(), (*expanded)[0]);
+      for (auto &innerOp : *tmp) {
+        for (auto res : innerOp.getResults())
+	  mapping.erase(res);
+      }
+    }
+    delete tmp;
+    return failure(failed);
   }
 
   // unary ops
