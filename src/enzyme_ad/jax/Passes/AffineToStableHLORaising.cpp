@@ -618,8 +618,11 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     indicesShape.push_back(1);
 
     auto rank = Ty.getShape().size();
-    if (rank > 1)
+    if (rank > 1) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "failed to raised load (indices with rank > 1)\n");
       return nullptr;
+    }
 
     sliceSizes.push_back(1);
 
@@ -631,6 +634,16 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
       auto map = maps[raisedIdx];
       assert(map.getNumResults() == 1);
       auto iv = getIVForExpr(map, map.getAffineMap().getResult(0));
+
+      if (std::find(ivs.begin(), ivs.end(), iv) != ivs.end()) {
+        LLVM_DEBUG(
+            llvm::dbgs()
+                << "failed to raise load: two indices depend on the same iv: ";
+            iv.printAsOperand(llvm::dbgs(), OpPrintingFlags());
+            llvm::dbgs() << "\n";);
+        return nullptr;
+      }
+
       ivs.push_back(iv);
     }
 
@@ -1129,9 +1142,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value res = emitLoadAsGather(op->getLoc(), mapping.lookup(memref), lIndices,
                                  builder, maps);
     if (!res) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "failed to raised load (indices with rank > 1): " << *op
-                 << "\n");
       return failure();
     }
     mapping.map(loadOp.getResult(), res);
