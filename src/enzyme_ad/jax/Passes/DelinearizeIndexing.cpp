@@ -30,6 +30,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
+#include <algorithm>
 #include <cstdint>
 
 #include "mlir/IR/Region.h"
@@ -51,9 +52,25 @@ namespace {
 struct AccessInfo {
   affine::MemRefAccess access;
   AffineMap map;
+  bool is_affine;
+  // memref loads and stores
+  Operation *mOpInst;
+  Value linear_key;
+  SmallVector<Value> linear_vals;
 
   AccessInfo(affine::MemRefAccess access, AffineMap map = AffineMap())
-      : access(access), map(map) {}
+      : is_affine(true), access(access), map(map) {}
+
+  AccessInfo(memref::LoadOp load)
+      : is_affine(false), access(nullptr), map(nullptr) {
+    linear_key = load.getIndices()[0]; // there's only one index (for now)
+    mOpInst = load;
+  }
+  AccessInfo(memref::StoreOp store)
+      : is_affine(false), access(nullptr), map(nullptr) {
+    linear_key = store.getIndices()[0]; // there's only one index(for now)
+    mOpInst = store;
+  }
 };
 
 LogicalResult
@@ -70,6 +87,10 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       accesses.push_back({MemRefAccess(load), load.getAffineMap()});
     } else if (auto store = dyn_cast<AffineStoreOp>(user)) {
       accesses.push_back({MemRefAccess(store), store.getAffineMap()});
+    } else if (auto load = dyn_cast<memref::LoadOp>(user)) {
+      accesses.push_back({load});
+    } else if (auto store = dyn_cast<memref::StoreOp>(user)) {
+      accesses.push_back({store});
     } else {
       foundAllUses = false;
       break;
@@ -86,27 +107,43 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
     int64_t cst = shape[shapeIdx];
     unsigned resultId = 0;
     for (auto &ainfo : accesses) {
-      auto access = ainfo.access;
-      AffineMap map = ainfo.map;
-      AffineExpr expr = map.getResult(resultId);
-      LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
-                              << " with expr " << expr << "\n");
-      auto mod = expr % cst;
-      auto floor = expr.floorDiv(cst);
-      LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
+      if (ainfo.is_affine) {
+        auto access = ainfo.access;
+        AffineMap map = ainfo.map;
+        AffineExpr expr = map.getResult(resultId);
+        LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
+                                << " with expr " << expr << "\n");
+        auto mod = expr % cst;
+        auto floor = expr.floorDiv(cst);
+        LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
+        LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
 
-      SmallVector<AffineExpr> exprs(map.getResults().begin(),
-                                    map.getResults().end());
-      exprs.erase(std::next(exprs.begin(), resultId));
-      exprs.insert(std::next(exprs.begin(), resultId), mod);
-      exprs.insert(std::next(exprs.begin(), resultId), floor);
-      ainfo.map =
-          AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
-      LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
-      AffineValueMap avm;
-      access.getAccessMap(&avm);
-      avm.reset(ainfo.map, avm.getOperands());
+        SmallVector<AffineExpr> exprs(map.getResults().begin(),
+                                      map.getResults().end());
+        exprs.erase(std::next(exprs.begin(), resultId));
+        exprs.insert(std::next(exprs.begin(), resultId), mod);
+        exprs.insert(std::next(exprs.begin(), resultId), floor);
+        ainfo.map =
+            AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
+        LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
+        AffineValueMap avm;
+        access.getAccessMap(&avm);
+        avm.reset(ainfo.map, avm.getOperands());
+      } else {
+        // either memref ld/st (emit new index calc ops)
+        Value last_dim_key = ainfo.linear_key;
+        rewriter.setInsertionPoint(ainfo.mOpInst);
+        auto dim_size = rewriter.create<arith::ConstantIndexOp>(
+            ainfo.mOpInst->getLoc(), cst);
+        auto mod = rewriter.create<arith::RemSIOp>(ainfo.mOpInst->getLoc(),
+                                                   last_dim_key, dim_size);
+        auto floor = rewriter.create<arith::FloorDivSIOp>(
+            ainfo.mOpInst->getLoc(), last_dim_key, dim_size);
+        ainfo.linear_vals.push_back(mod);
+
+        // floor is the new last dim key
+        ainfo.linear_key = floor;
+      }
     }
   }
 
@@ -122,6 +159,19 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
                                                  store.getMemref(), ainfo.map,
                                                  store.getMapOperands());
+    } else if (auto load = dyn_cast<memref::LoadOp>(ainfo.mOpInst)) {
+      ainfo.linear_vals.push_back(ainfo.linear_key);
+      std::reverse(ainfo.linear_vals.begin(), ainfo.linear_vals.end());
+      rewriter.setInsertionPoint(load);
+      rewriter.replaceOpWithNewOp<memref::LoadOp>(load, load.getMemref(),
+                                                  ainfo.linear_vals);
+    } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
+
+      ainfo.linear_vals.push_back(ainfo.linear_key);
+      std::reverse(ainfo.linear_vals.begin(), ainfo.linear_vals.end());
+      rewriter.setInsertionPoint(load);
+      rewriter.replaceOpWithNewOp<memref::StoreOp>(store, store.getMemref(),
+                                                   ainfo.linear_vals);
     } else {
       llvm_unreachable("unexpected");
     }
