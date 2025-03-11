@@ -145,19 +145,9 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
       range.step = rangeDyn->step;
       break;
     case AffineExprKind::Mul:
-      // %i = (0) to (180) step 1
-      // -%i = (-0) to (-180) (step -1)
-      if (const_ < 0) {
-        // (i) in (lb) to (ub)
-        // (-i) in (-ub) to (-lb) (step -1)
-        range.lb = rangeDyn->lb * const_;
-        range.ub = rangeDyn->ub * const_;
-        range.step = rangeDyn->step * const_;
-      } else {
-        range.lb = rangeDyn->lb * const_;
-        range.ub = rangeDyn->ub * const_;
-        range.step = rangeDyn->step * const_;
-      }
+      range.lb = rangeDyn->lb * const_;
+      range.ub = rangeDyn->ub * const_;
+      range.step = rangeDyn->step * const_;
       break;
     default:
       // unsupported
@@ -208,23 +198,22 @@ emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
 //
 // with begin:end:step corresponding to the range of the iv i.
 static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
-                                      SmallVectorImpl<int64_t> &startIndices,
-                                      SmallVectorImpl<int64_t> &limitIndices,
                                       SmallVectorImpl<int64_t> &strides,
                                       SmallVectorImpl<int64_t> &reverseDims) {
   auto rank = accessValueMap.getNumResults();
 
-  startIndices.reserve(rank);
-  limitIndices.reserve(rank);
   strides.reserve(rank);
 
   for (unsigned i = 0; i < rank; i++) {
     auto expr = accessValueMap.getResult(i);
 
     if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
-      auto const_ = constExpr.getValue();
-      startIndices.push_back(const_);
-      limitIndices.push_back(const_ + 1);
+      strides.push_back(1);
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, expr);
+    if (affine::isAffineForInductionVar(iv)) {
       strides.push_back(1);
       continue;
     }
@@ -236,13 +225,9 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
 
     if (range->step < 0) {
       // 0:-1:-180 -> -179:1:1
-      startIndices.push_back(range->ub - range->step);
-      limitIndices.push_back(range->lb - range->step);
       strides.push_back(-range->step);
       reverseDims.push_back(i);
     } else {
-      startIndices.push_back(range->lb);
-      limitIndices.push_back(range->ub);
       strides.push_back(range->step);
     }
   }
@@ -831,23 +816,20 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto inputTen = mapping.lookup(access.memref);
 
     auto rank = access.getRank();
-    SmallVector<int64_t> outputShape;
-    outputShape.reserve(rank);
+    SmallVector<int64_t> outputShape = affineMapShape(accessValueMap);
 
-    SmallVector<int64_t> startIndices;
-    SmallVector<int64_t> limitIndices;
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    bool emitAsGather =
-        llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
-          return affine::isAffineForInductionVar(iv);
-        });
-
-    if (!emitAsGather && affineMapToSlice(accessValueMap, startIndices,
-                                          limitIndices, strides, reverseDims)
-                             .failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
       return failure();
+
+    bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
+      return affine::isAffineForInductionVar(iv);
+    });
+    bool emitAsGather = dynIndices && llvm::any_of(strides, [](int64_t stride) {
+                          return stride != 1;
+                        });
 
     if (emitAsGather) {
       SmallVector<Value> lIndices;
@@ -865,19 +847,55 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
     }
 
-    for (auto [lb, ub, step] :
-         llvm::zip_equal(startIndices, limitIndices, strides)) {
-      outputShape.push_back((ub - lb) / step);
-    }
-
     auto T = RankedTensorType::get(
         outputShape,
         inputTen.getType().cast<RankedTensorType>().getElementType());
 
-    auto sliceOp = builder.create<stablehlo::SliceOp>(
-        op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+    Value newVal;
 
-    Value newVal = sliceOp.getResult();
+    if (dynIndices) {
+      SmallVector<Value> startIndices;
+
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+
+        auto iv = getIVForExpr(accessValueMap, E);
+        AffineExpr exprToEmit = E;
+        if (affine::isAffineParallelInductionVar(iv)) {
+          auto r = computeExprRange(accessValueMap, E);
+          auto lb = r->step < 0 ? r->ub - r->step : r->lb;
+          exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+        }
+
+        auto [startIndex, _] =
+            expandAffineExpr(builder, op->getLoc(), exprToEmit,
+                             accessValueMap.getOperands(), mapping);
+
+        startIndices.push_back(startIndex);
+      }
+
+      newVal = builder.create<stablehlo::DynamicSliceOp>(
+          op->getLoc(), T, inputTen, startIndices, outputShape);
+    } else {
+      SmallVector<int64_t> startIndices;
+      SmallVector<int64_t> limitIndices;
+
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
+          startIndices.push_back(constOp.getValue());
+          limitIndices.push_back(constOp.getValue() + 1);
+          continue;
+        }
+
+        auto range = computeExprRange(accessValueMap, E);
+        startIndices.push_back(range->step < 0 ? range->ub - range->step
+                                               : range->lb);
+        limitIndices.push_back(range->step < 0 ? range->lb - range->step
+                                               : range->ub);
+      }
+
+      newVal = builder.create<stablehlo::SliceOp>(
+          op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+    }
 
     newVal = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), newVal,
                                                   reverseDims);
@@ -922,24 +940,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
 
-    SmallVector<int64_t> startIndices;
-    SmallVector<int64_t> limitIndices;
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    bool emitAsScatter =
-        llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
-          return affine::isAffineForInductionVar(iv);
-        });
-
-    if (!emitAsScatter && affineMapToSlice(accessValueMap, startIndices,
-                                           limitIndices, strides, reverseDims)
-                              .failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
       return failure();
 
-    emitAsScatter = emitAsScatter || llvm::any_of(strides, [](int64_t stride) {
-                      return stride != 1;
-                    });
+    bool emitAsScatter =
+        llvm::any_of(strides, [](int64_t stride) { return stride != 1; });
 
     if (emitAsScatter) {
       // Cannot emit as a dynamic_update_slice, emit as scatter instead
@@ -955,18 +963,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
                                      builder, maps);
       if (!res) {
-        LLVM_DEBUG(
-            llvm::dbgs()
-                << "affine.store is dependent on less dims than stored value: "
-                << *op << "\n";
-            auto flags = OpPrintingFlags();
-            for (auto iv
-                 : accessValueMap.getOperands()) {
-              iv.printAsOperand(llvm::dbgs(), flags);
-              llvm::dbgs() << ", ";
-            } llvm::dbgs()
-            << "\n";
-            accessValueMap.getAffineMap().dump();
+        LLVM_DEBUG(llvm::dbgs() << "affine.store (scatter) is dependent on "
+                                   "less dims than stored value: "
+                                << *op << "\n";
+                   auto flags = OpPrintingFlags();
+                   for (auto iv
+                        : accessValueMap.getOperands()) {
+                     iv.printAsOperand(llvm::dbgs(), flags);
+                     llvm::dbgs() << ", ";
+                   } llvm::dbgs()
+                   << "\n";
+                   accessValueMap.getAffineMap().dump();
 
         );
         return failure();
@@ -990,19 +997,49 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         update.getType().cast<RankedTensorType>().getShape().size(), -1);
     SmallVector<int64_t> updateShape;
 
-    for (auto [E, lb, ub, stride] :
-         llvm::zip_equal(accessValueMap.getAffineMap().getResults(),
-                         startIndices, limitIndices, strides)) {
-      updateShape.push_back((ub - lb) / stride);
+    for (auto [E, stride] :
+         llvm::zip_equal(accessValueMap.getAffineMap().getResults(), strides)) {
 
-      startIndicesValues.push_back(
-          builder
-              .create<stablehlo::ConstantOp>(
-                  op->getLoc(), unrankedTensorType,
-                  SplatElementsAttr::get(
-                      unrankedTensorType,
-                      ArrayRef<Attribute>(IntegerAttr::get(Ty, lb))))
-              .getResult());
+      Value startIndex;
+      if (E.isSymbolicOrConstant()) {
+        startIndex =
+            builder
+                .create<stablehlo::ConstantOp>(
+                    op->getLoc(), unrankedTensorType,
+                    SplatElementsAttr::get(
+                        unrankedTensorType,
+                        ArrayRef<Attribute>(IntegerAttr::get(
+                            Ty, E.cast<AffineConstantExpr>().getValue()))))
+                .getResult();
+        updateShape.push_back(1);
+      } else {
+
+        unsigned dim = 0;
+        for (unsigned e = accessValueMap.getAffineMap().getNumDims(); dim < e;
+             ++dim) {
+          if (E.isFunctionOfDim(dim))
+            break;
+        }
+
+        auto iv = accessValueMap.getOperands()[dim];
+
+        AffineExpr exprToEmit = E;
+        if (affine::isAffineParallelInductionVar(iv)) {
+          auto r = computeExprRange(accessValueMap, E);
+          auto lb = r->step < 0 ? r->ub - r->step : r->lb;
+          exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+          updateShape.push_back(r->getNumIters());
+        } else {
+          updateShape.push_back(1);
+        }
+
+        auto [startIndex_, _] =
+            expandAffineExpr(builder, iv.getLoc(), exprToEmit,
+                             accessValueMap.getOperands(), mapping);
+        startIndex = startIndex_;
+      }
+
+      startIndicesValues.push_back(startIndex);
 
       if (E.isSymbolicOrConstant())
         continue;
