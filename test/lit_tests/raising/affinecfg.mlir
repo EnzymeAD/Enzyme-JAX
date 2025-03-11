@@ -47,12 +47,9 @@ func.func @kernel_nussinov(%arg0: i32, %arg2: memref<i32>) {
 }
 }
 
-// CHECK: #set = affine_set<(d0) : (d0 + 40 >= 0)>
 // CHECK:   func.func @kernel_nussinov(%[[arg0:.+]]: i32, %[[arg1:.+]]: memref<i32>) {
 // CHECK-NEXT:     affine.for %[[arg2:.+]] = 0 to 60 {
-// CHECK-NEXT:       affine.if #set(%[[arg2]]) {
-// CHECK-NEXT:         affine.store %[[arg0]], %[[arg1]][] : memref<i32>
-// CHECK-NEXT:       }
+// CHECK-NEXT:       affine.store %[[arg0]], %[[arg1]][] : memref<i32>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }
