@@ -994,7 +994,7 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ op.getHasSideEffectAttr(),
             /*backend_config*/ dattr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
@@ -1006,7 +1006,7 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ op.getHasSideEffectAttr(),
             /*backend_config*/ backendstr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
