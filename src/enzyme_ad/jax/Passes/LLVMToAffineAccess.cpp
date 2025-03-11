@@ -406,10 +406,6 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
       return failure();
     SmallVector<Value> preoperands = operands;
 
-    llvm::errs() << "ld: " << ld << "\n";
-    for (int i = 0; i < operands.size(); i++)
-      llvm::errs() << " i: " << i << " op: " << operands[i] << "\n";
-
     AffineExpr exprs[1] = {expr};
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
