@@ -689,12 +689,13 @@ struct AffineExprBuilder {
           if (!cexpr) return failure();
           if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
             return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(), op->getContext());
-          } else {
-            assert(isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp>(
-                         op));
+          } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp>(
+                         op)) {
             return (*lhs).floorDiv(
                 getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
-          }
+          } else {
+		  llvm_unreachable("unknown operation");
+	  }
         } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp, arith::RemUIOp>(op)) {
           return (*lhs) % (*rhs);
         } else if (isa<arith::OrIOp>(op)) {
