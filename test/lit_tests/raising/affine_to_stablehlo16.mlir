@@ -31,11 +31,11 @@ module {
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<92> : tensor<i64>
 // CHECK-NEXT:    %c_3 = stablehlo.constant dense<7> : tensor<i64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:    %1 = arith.muli %0, %c_1 overflow<nsw> : tensor<16xi64>
-// CHECK-NEXT:    %2 = arith.addi %1, %c_0 : tensor<16xi64>
-// CHECK-NEXT:    %3 = arith.muli %0, %c overflow<nsw> : tensor<16xi64>
-// CHECK-NEXT:    %4 = arith.addi %2, %3 : tensor<16xi64>
-// CHECK-NEXT:    %5 = arith.addi %4, %c_1 : tensor<16xi64>
+// CHECK-NEXT:    %1 = stablehlo.multiply %0, %c_1 : tensor<16xi64>
+// CHECK-NEXT:    %2 = stablehlo.add %1, %c_0 : tensor<16xi64>
+// CHECK-NEXT:    %3 = stablehlo.multiply %0, %c : tensor<16xi64>
+// CHECK-NEXT:    %4 = stablehlo.add %2, %3 : tensor<16xi64>
+// CHECK-NEXT:    %5 = stablehlo.add %4, %c_1 : tensor<16xi64>
 // CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<16xi64>) -> tensor<16x1xi64>
 // CHECK-NEXT:    %7 = "stablehlo.gather"(%arg0, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<194xf64>, tensor<16x1xi64>) -> tensor<16xf64>
 // CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %7, dims = [2] : (tensor<16xf64>) -> tensor<16x1x16xf64>
