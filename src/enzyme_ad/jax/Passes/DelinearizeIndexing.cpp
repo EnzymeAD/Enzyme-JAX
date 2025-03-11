@@ -211,7 +211,8 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   }
 
   // // Count users by type for debugging
-  // unsigned affineLoads = 0, affineStores = 0, memrefLoads = 0, memrefStores = 0,
+  // unsigned affineLoads = 0, affineStores = 0, memrefLoads = 0, memrefStores =
+  // 0,
   //          others = 0;
   // for (auto user : atAddr.getResult().getUsers()) {
   //   if (isa<affine::AffineLoadOp>(user))
@@ -227,7 +228,8 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   // }
   //
   // LLVM_DEBUG(llvm::dbgs() << "Users: " << affineLoads << " affine loads, "
-  //                         << affineStores << " affine stores, " << memrefLoads
+  //                         << affineStores << " affine stores, " <<
+  //                         memrefLoads
   //                         << " memref loads, " << memrefStores
   //                         << " memref stores, " << others << " others\n");
 
