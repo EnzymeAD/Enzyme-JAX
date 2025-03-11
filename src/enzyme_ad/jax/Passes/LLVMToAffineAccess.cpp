@@ -285,84 +285,94 @@ static Value convertToIndex(Value v) {
       .getResult();
 }
 
-struct GEPOfMemRefLoad
-    : public OpRewritePattern<memref::LoadOp> {
+struct GEPOfMemRefLoad : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
   const DataLayoutAnalysis &dl;
-  GEPOfMemRefLoad(MLIRContext *context,
-                                  const DataLayoutAnalysis &dl)
+  GEPOfMemRefLoad(MLIRContext *context, const DataLayoutAnalysis &dl)
       : OpRewritePattern<memref::LoadOp>(context), dl(dl) {}
 
   LogicalResult matchAndRewrite(memref::LoadOp ld,
                                 PatternRewriter &rewriter) const override {
     auto dataLayout = dl.getAtOrAbove(ld);
-    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1) return failure();
+    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1)
+      return failure();
     auto ptr = ld.getMemRef().getDefiningOp<enzymexla::Pointer2MemrefOp>();
-    if (!ptr) return failure();
+    if (!ptr)
+      return failure();
     auto gep = ptr.getOperand().getDefiningOp<LLVM::GEPOp>();
-    if (!gep) return failure();
+    if (!gep)
+      return failure();
     Type currentType = gep.getElemType();
-    if (currentType != ld.getType()) return failure();
+    if (currentType != ld.getType())
+      return failure();
 
-    auto ptr2 = rewriter.create<enzymexla::Pointer2MemrefOp>(ptr.getLoc(), ptr.getType(), gep.getBase());
+    auto ptr2 = rewriter.create<enzymexla::Pointer2MemrefOp>(
+        ptr.getLoc(), ptr.getType(), gep.getBase());
     SmallVector<Value, 1> indices;
     for (auto gidx : gep.getIndices()) {
-          if (auto intv = dyn_cast<IntegerAttr>(gidx)) {
-            auto val =
-                rewriter.create<arith::ConstantOp>(gep.getLoc(), intv.getType(), intv);
-            indices.push_back(convertToIndex(val));
-          } else if (auto val = dyn_cast<Value>(gidx)) {
-            indices.push_back(convertToIndex(val));
-          }
+      if (auto intv = dyn_cast<IntegerAttr>(gidx)) {
+        auto val = rewriter.create<arith::ConstantOp>(gep.getLoc(),
+                                                      intv.getType(), intv);
+        indices.push_back(convertToIndex(val));
+      } else if (auto val = dyn_cast<Value>(gidx)) {
+        indices.push_back(convertToIndex(val));
+      }
     }
-    if (indices.size() != 1) return failure();
+    if (indices.size() != 1)
+      return failure();
     SmallVector<Value, 1> idx2;
     for (auto midx : ld.getIndices())
-	   idx2.push_back(midx);
+      idx2.push_back(midx);
     idx2[0] = rewriter.create<arith::AddIOp>(gep.getLoc(), idx2[0], indices[0]);
     rewriter.modifyOpInPlace(ld, [&]() {
-	ld.setMemRef(ptr2);
-	ld.getIndicesMutable().assign(idx2);	
+      ld.setMemRef(ptr2);
+      ld.getIndicesMutable().assign(idx2);
     });
     return success();
   }
 };
 
-struct IndexCastAddSub
-    : public OpRewritePattern<arith::IndexCastOp> {
+struct IndexCastAddSub : public OpRewritePattern<arith::IndexCastOp> {
   using OpRewritePattern<arith::IndexCastOp>::OpRewritePattern;
-  
+
   LogicalResult matchAndRewrite(arith::IndexCastOp cst,
                                 PatternRewriter &rewriter) const override {
     auto op = cst.getOperand().getDefiningOp();
-    if (!op) return failure();
-    if (!isa<arith::AddIOp, arith::SubIOp>(op)) return failure();
-    if (!isa<IndexType>(cst.getType())) return failure();
+    if (!op)
+      return failure();
+    if (!isa<arith::AddIOp, arith::SubIOp>(op))
+      return failure();
+    if (!isa<IndexType>(cst.getType()))
+      return failure();
     if (cast<IntegerType>(cst.getOperand().getType()).getWidth() < 32)
-	    return failure();
+      return failure();
 
     if (isa<arith::AddIOp>(op)) {
-	    rewriter.replaceOpWithNewOp<arith::AddIOp>(cst, 
-			    rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(), op->getOperand(0)),
-			    rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(), op->getOperand(1))
-			    );
+      rewriter.replaceOpWithNewOp<arith::AddIOp>(
+          cst,
+          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                              op->getOperand(0)),
+          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                              op->getOperand(1)));
     } else {
-	    rewriter.replaceOpWithNewOp<arith::SubIOp>(cst, 
-			    rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(), op->getOperand(0)),
-			    rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(), op->getOperand(1))
-			    );
+      rewriter.replaceOpWithNewOp<arith::SubIOp>(
+          cst,
+          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                              op->getOperand(0)),
+          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                              op->getOperand(1)));
     }
     return success();
   }
 };
 
-struct MemrefLoadAffineApply
-    : public OpRewritePattern<memref::LoadOp> {
+struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
-  
+
   LogicalResult matchAndRewrite(memref::LoadOp ld,
                                 PatternRewriter &rewriter) const override {
-    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1) return failure();
+    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1)
+      return failure();
     SmallVector<std::pair<bool, Value>> todo;
     todo.emplace_back(false, ld.getIndices()[0]);
     SmallVector<std::pair<bool, Value>> irreducible;
@@ -370,38 +380,39 @@ struct MemrefLoadAffineApply
     SmallVector<Value> operands;
     AffineExpr expr = rewriter.getAffineConstantExpr(0);
     while (todo.size()) {
-	auto cur = todo.pop_back_val();
-	if (isValidIndex(cur.second)) {
-	  auto d2 = rewriter.getAffineSymbolExpr(operands.size());
-	  operands.push_back(cur.second);
-	  if (cur.first)
-	    expr = expr - d2;
-	  else
-	    expr = expr + d2;
-	  continue;
-	}
-	if (auto add = cur.second.getDefiningOp<arith::AddIOp>()) {
-	  todo.emplace_back(cur.first, add.getLhs());
-	  todo.emplace_back(cur.first, add.getRhs());
-	  continue;
-	}
-	if (auto add = cur.second.getDefiningOp<arith::SubIOp>()) {
-	  todo.emplace_back(cur.first, add.getLhs());
-	  todo.emplace_back(!cur.first, add.getRhs());
-	  continue;
-	}
-	irreducible.push_back(cur);
+      auto cur = todo.pop_back_val();
+      if (isValidIndex(cur.second)) {
+        auto d2 = rewriter.getAffineSymbolExpr(operands.size());
+        operands.push_back(cur.second);
+        if (cur.first)
+          expr = expr - d2;
+        else
+          expr = expr + d2;
+        continue;
+      }
+      if (auto add = cur.second.getDefiningOp<arith::AddIOp>()) {
+        todo.emplace_back(cur.first, add.getLhs());
+        todo.emplace_back(cur.first, add.getRhs());
+        continue;
+      }
+      if (auto add = cur.second.getDefiningOp<arith::SubIOp>()) {
+        todo.emplace_back(cur.first, add.getLhs());
+        todo.emplace_back(!cur.first, add.getRhs());
+        continue;
+      }
+      irreducible.push_back(cur);
     }
-    if (operands.size() == 0) return failure();
+    if (operands.size() == 0)
+      return failure();
     SmallVector<Value> preoperands = operands;
 
     llvm::errs() << "ld: " << ld << "\n";
-    for (int i=0; i<operands.size(); i++)
-    llvm::errs() << " i: " << i << " op: " << operands[i] << "\n";
+    for (int i = 0; i < operands.size(); i++)
+      llvm::errs() << " i: " << i << " op: " << operands[i] << "\n";
 
-     AffineExpr exprs[1] = { expr }; 
-     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(), exprs,
-                              rewriter.getContext());
+    AffineExpr exprs[1] = {expr};
+    auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
+                              exprs, rewriter.getContext());
 
     auto *scope = affine::getAffineScope(ld)->getParentOp();
     DominanceInfo DI(scope);
@@ -409,45 +420,54 @@ struct MemrefLoadAffineApply
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);
-     
-    if (preoperands.size() == 1)  {
-	Attribute attr;
-	if (matchPattern(preoperands[0], m_Constant(&attr))) return failure();
-	if (preoperands == operands) return failure();
+
+    if (preoperands.size() == 1) {
+      Attribute attr;
+      if (matchPattern(preoperands[0], m_Constant(&attr)))
+        return failure();
+      if (preoperands == operands)
+        return failure();
     }
 
     map = mlir::enzyme::recreateExpr(map);
-    Value app = rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
+    Value app =
+        rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
     for (auto &&[negated, val] : irreducible) {
       if (negated)
-	app = rewriter.create<arith::SubIOp>(ld.getLoc(), app, val);
+        app = rewriter.create<arith::SubIOp>(ld.getLoc(), app, val);
       else
-	app = rewriter.create<arith::AddIOp>(ld.getLoc(), app, val);
+        app = rewriter.create<arith::AddIOp>(ld.getLoc(), app, val);
     }
     Value idx2[] = {app};
-    rewriter.modifyOpInPlace(ld, [&]() {
-	ld.getIndicesMutable().assign(idx2);	
-    });
+    rewriter.modifyOpInPlace(ld,
+                             [&]() { ld.getIndicesMutable().assign(idx2); });
     return success();
   }
 };
 
-struct SelectCSE
-    : public OpRewritePattern<arith::SelectOp> {
+struct SelectCSE : public OpRewritePattern<arith::SelectOp> {
   using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
-  
+
   LogicalResult matchAndRewrite(arith::SelectOp sel,
                                 PatternRewriter &rewriter) const override {
     auto lhs = sel.getTrueValue().getDefiningOp();
-    if (!lhs) return failure();
+    if (!lhs)
+      return failure();
     auto rhs = sel.getFalseValue().getDefiningOp();
-    if (!rhs) return failure();
+    if (!rhs)
+      return failure();
 
-    if (lhs->getName() != rhs->getName()) return failure();
-    if (!isa<arith::AddIOp, arith::SubIOp>(lhs)) return failure();
+    if (lhs->getName() != rhs->getName())
+      return failure();
+    if (!isa<arith::AddIOp, arith::SubIOp>(lhs))
+      return failure();
 
-    auto op0 = rewriter.create<arith::SelectOp>(lhs->getLoc(), sel.getCondition(), lhs->getOperand(0), rhs->getOperand(0));
-    auto op1 = rewriter.create<arith::SelectOp>(rhs->getLoc(), sel.getCondition(), rhs->getOperand(1), rhs->getOperand(1));
+    auto op0 = rewriter.create<arith::SelectOp>(
+        lhs->getLoc(), sel.getCondition(), lhs->getOperand(0),
+        rhs->getOperand(0));
+    auto op1 = rewriter.create<arith::SelectOp>(
+        rhs->getLoc(), sel.getCondition(), rhs->getOperand(1),
+        rhs->getOperand(1));
     if (isa<arith::AddIOp>(lhs)) {
       rewriter.replaceOpWithNewOp<arith::AddIOp>(sel, op0, op1);
     } else {
@@ -1312,109 +1332,120 @@ convertLLVMToAffineAccess(Operation *op,
       Type ty = load.getType();
       auto tySize = dl.getTypeSize(ty);
       if (aab.isLegal() && aab.base) {
-      auto memref0 = mc(aab.base);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         load.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
-      }
-    
-    	auto mao = aab.getMap();
-      if (mao.map.getResult(0).isMultipleOf(tySize) ||
-          isAligned(load, tySize)) {
-        auto expr = mao.map.getResult(0).floorDiv(tySize);
-        SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
-                                          load->getAttrs().end());
-        auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
-            load, memref,
-            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-            ic(mao.operands));
-        for (auto attr : attrs) {
-          newLoad->setAttr(attr.getName(), attr.getValue());
+        auto memref0 = mc(aab.base);
+        Value memref = memref0;
+        auto memrefTy = memref0.getType();
+        if (memrefTy.getElementType() != ty) {
+          if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+            memref = p2m.getOperand();
+          else
+            memref = rewriter.create<enzymexla::Memref2PointerOp>(
+                load.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+                memref);
+          memref = rewriter
+                       .create<enzymexla::Pointer2MemrefOp>(
+                           load.getLoc(),
+                           MemRefType::get(memrefTy.getShape(), ty,
+                                           MemRefLayoutAttrInterface{},
+                                           memrefTy.getMemorySpace()),
+                           memref)
+                       .getResult();
         }
-	continue;
-      }
-      }
-     
 
-        SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
-                                          load->getAttrs().end());
-	Value idxs[1] = {
-		rewriter.create<arith::ConstantIndexOp>(load.getLoc(), 0)
-	};
-        auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
-            load, rewriter.create<enzymexla::Pointer2MemrefOp>(load.getLoc(),
-		   MemRefType::get({ShapedType::kDynamic}, ty, MemRefLayoutAttrInterface{}, rewriter.getIndexAttr(load.getAddr().getType().getAddressSpace())),
-		   load.getAddr()), idxs);
-        for (auto attr : attrs) {
-          newLoad->setAttr(attr.getName(), attr.getValue());
+        auto mao = aab.getMap();
+        if (mao.map.getResult(0).isMultipleOf(tySize) ||
+            isAligned(load, tySize)) {
+          auto expr = mao.map.getResult(0).floorDiv(tySize);
+          SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                            load->getAttrs().end());
+          auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+              load, memref,
+              AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
+                             expr),
+              ic(mao.operands));
+          for (auto attr : attrs) {
+            newLoad->setAttr(attr.getName(), attr.getValue());
+          }
+          continue;
         }
+      }
+
+      SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                        load->getAttrs().end());
+      Value idxs[1] = {
+          rewriter.create<arith::ConstantIndexOp>(load.getLoc(), 0)};
+      auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
+          load,
+          rewriter.create<enzymexla::Pointer2MemrefOp>(
+              load.getLoc(),
+              MemRefType::get({ShapedType::kDynamic}, ty,
+                              MemRefLayoutAttrInterface{},
+                              rewriter.getIndexAttr(
+                                  load.getAddr().getType().getAddressSpace())),
+              load.getAddr()),
+          idxs);
+      for (auto attr : attrs) {
+        newLoad->setAttr(attr.getName(), attr.getValue());
+      }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
       auto tySize = dl.getTypeSize(ty);
       if (aab.isLegal() && aab.base) {
-      auto memref0 = mc(aab.base);
-      Value memref = memref0;
-      auto memrefTy = memref0.getType();
-      if (memrefTy.getElementType() != ty) {
-        if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-          memref = p2m.getOperand();
-        else
-          memref = rewriter.create<enzymexla::Memref2PointerOp>(
-              store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
-              memref);
-        memref = rewriter
-                     .create<enzymexla::Pointer2MemrefOp>(
-                         store.getLoc(),
-                         MemRefType::get(memrefTy.getShape(), ty,
-                                         MemRefLayoutAttrInterface{},
-                                         memrefTy.getMemorySpace()),
-                         memref)
-                     .getResult();
-      }
-    	auto mao = aab.getMap();
-      if (mao.map.getResult(0).isMultipleOf(tySize) ||
-          isAligned(store, tySize)) {
-        auto expr = mao.map.getResult(0).floorDiv(tySize);
-        SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
-                                          store->getAttrs().end());
-        auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
-            store, store.getValue(), memref,
-            AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(), expr),
-            ic(mao.operands));
-        for (auto attr : attrs) {
-          newStore->setAttr(attr.getName(), attr.getValue());
+        auto memref0 = mc(aab.base);
+        Value memref = memref0;
+        auto memrefTy = memref0.getType();
+        if (memrefTy.getElementType() != ty) {
+          if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+            memref = p2m.getOperand();
+          else
+            memref = rewriter.create<enzymexla::Memref2PointerOp>(
+                store.getLoc(), LLVM::LLVMPointerType::get(ty.getContext()),
+                memref);
+          memref = rewriter
+                       .create<enzymexla::Pointer2MemrefOp>(
+                           store.getLoc(),
+                           MemRefType::get(memrefTy.getShape(), ty,
+                                           MemRefLayoutAttrInterface{},
+                                           memrefTy.getMemorySpace()),
+                           memref)
+                       .getResult();
         }
-      }
-      continue;
+        auto mao = aab.getMap();
+        if (mao.map.getResult(0).isMultipleOf(tySize) ||
+            isAligned(store, tySize)) {
+          auto expr = mao.map.getResult(0).floorDiv(tySize);
+          SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                            store->getAttrs().end());
+          auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+              store, store.getValue(), memref,
+              AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
+                             expr),
+              ic(mao.operands));
+          for (auto attr : attrs) {
+            newStore->setAttr(attr.getName(), attr.getValue());
+          }
+        }
+        continue;
       }
 
-        SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
-                                          store->getAttrs().end());
-	Value idxs[1] = {
-		rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0)
-	};
-        auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
-            store, store.getValue(), rewriter.create<enzymexla::Pointer2MemrefOp>(store.getLoc(),
-		   MemRefType::get({ShapedType::kDynamic}, ty, MemRefLayoutAttrInterface{}, rewriter.getIndexAttr(store.getAddr().getType().getAddressSpace())),
-		   store.getAddr()), idxs);
-        for (auto attr : attrs) {
-          newStore->setAttr(attr.getName(), attr.getValue());
+      SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                        store->getAttrs().end());
+      Value idxs[1] = {
+          rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0)};
+      auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
+          store, store.getValue(),
+          rewriter.create<enzymexla::Pointer2MemrefOp>(
+              store.getLoc(),
+              MemRefType::get({ShapedType::kDynamic}, ty,
+                              MemRefLayoutAttrInterface{},
+                              rewriter.getIndexAttr(
+                                  store.getAddr().getType().getAddressSpace())),
+              store.getAddr()),
+          idxs);
+      for (auto attr : attrs) {
+        newStore->setAttr(attr.getName(), attr.getValue());
         }
     } else {
       llvm_unreachable("Unknown operation to raise");
@@ -1423,9 +1454,9 @@ convertLLVMToAffineAccess(Operation *op,
 
   {
     RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad>(context,
-                                                     dataLayoutAnalysis);
-    patterns.insert<IndexCastAddSub,MemrefLoadAffineApply, SelectCSE>(context);
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad>(
+        context, dataLayoutAnalysis);
+    patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE>(context);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
       return failure();
