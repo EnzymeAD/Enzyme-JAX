@@ -1178,7 +1178,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
     if (!failed) {
-      mapping.map(apply.getResult(), (*expanded)[0]);
+      mapping.map(apply.getResult(), mapping.lookup((*expanded)[0]));
       for (auto &innerOp : *tmp) {
         for (auto res : innerOp.getResults())
 	  mapping.erase(res);
