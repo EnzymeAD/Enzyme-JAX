@@ -2,14 +2,15 @@
 
 # Define the combinations of environment variables
 configs=(
-  "export ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
+  # "export ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
   "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
 )
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
+filename=eqsat_vs_enzyme_$(date '+%Y-%m-%d_%H:%M:%S').txt
 
-echo "Eqsat vs Enzyme" > eqsat_vs_enzyme.txt
-echo "--------------------------" >> eqsat_vs_enzyme.txt
+echo "Eqsat vs Enzyme" > $filename
+echo "--------------------------" >> $filename
 
 for model in "${models[@]}"; do
   for platform in "${platforms[@]}"; do
@@ -29,13 +30,13 @@ for model in "${models[@]}"; do
       # Time the command and redirect output to eqsat_vs_enzyme.txt
       echo "Running $EXPERIMENT_NAME..." | tee -a eqsat_vs_enzyme.txt
       START_TIME=$(date +%s)
-      eval "$COMMAND" >> eqsat_vs_enzyme.txt 2>&1
+      eval "$COMMAND" >> $filename 2>&1
       END_TIME=$(date +%s)
       DURATION=$((END_TIME - START_TIME))
 
       # Append the timing to eqsat_vs_enzyme.txt
-      echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> eqsat_vs_enzyme.txt
-      echo "--------------------------------" >> eqsat_vs_enzyme.txt
+      echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> $filename
+      echo "--------------------------------" >> $filename
     done
   done
 done

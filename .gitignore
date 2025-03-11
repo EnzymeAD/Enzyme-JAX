@@ -9,3 +9,5 @@ tmp
 .local
 .venv
 results_*.csv
+segmentation_*.txt
+eqsat_vs_enzyme_*.txt

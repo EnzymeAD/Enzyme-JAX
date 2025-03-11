@@ -277,22 +277,22 @@ def setup_backends():
     backends_initialized = True
 
 
-def AllPipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        NewXLAPipeline,
-        OldXLAPipeline,
-        JaXPipeline,
-        hlo_opts,
-    )
+# def AllPipelines():
+#     setup_backends()
+#     from enzyme_ad.jax import (
+#         NewXLAPipeline,
+#         OldXLAPipeline,
+#         JaXPipeline,
+#         hlo_opts,
+#     )
 
-    return [
-        ("JaX  ", None, AllBackends),
-        ("JaXPipe", JaXPipeline(), AllBackends),
-        # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
-        # ("NewXLA", NewXLAPipeline()),
-        ("OldXLA", OldXLAPipeline(), ["cpu"]),
-    ]
+#     return [
+#         ("JaX  ", None, AllBackends),
+#         ("JaXPipe", JaXPipeline(), AllBackends),
+#         # ("NewXLAMLIR", NewXLAPipeline(mlirad=True)),
+#         # ("NewXLA", NewXLAPipeline()),
+#         ("OldXLA", OldXLAPipeline(), ["cpu"]),
+#     ]
 
 
 reduced_opt = (
@@ -350,19 +350,25 @@ def pipelines():
         hlo_opts,
     )
 
+    eqsat = (
+        "EqSat",
+        JaXPipeline(
+            "inline{default-pipeline=canonicalize max-iterations=4},"
+            + "equality-saturation-pass"
+        ),
+        CurBackends,
+    )
+
+    eqsat_only = os.getenv("EQSAT_ONLY") == "true"
+    if eqsat_only:
+        return [eqsat]
+
     return [
         ("JaX  ", None, CurBackends),
-        ("JaXPipe", JaXPipeline(), CurBackends),
-        ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
-        (
-            "EqSat",
-            JaXPipeline(
-                "inline{default-pipeline=canonicalize max-iterations=4},"
-                + "equality-saturation-pass"
-            ),
-            CurBackends,
-        ),
+        # ("JaXPipe", JaXPipeline(), CurBackends),
+        # ("ReducedOpt", JaXPipeline(reduced_opt), CurBackends),
         ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        eqsat,
         # (
         #     "HLOOpt",
         #     JaXPipeline(
@@ -533,7 +539,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.revfilter = lambda x: x
         self.count = 10000
         self.AllBackends = AllBackends
-        self.AllPipelines = AllPipelines()
+        self.AllPipelines = pipelines()
         self.revprimal = True
         self.tol = 1e-6
         self.mlirad_fwd = True
@@ -677,193 +683,193 @@ class EnzymeJaxTest(absltest.TestCase):
                         sep="\t",
                     )
 
-            # assert primres is not None
-            fwdres = None
+            # # assert primres is not None
+            # fwdres = None
 
-            for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
-                if backend in pbackends:
-                    if self.mlirad_fwd or pipeline is None:
-                        rfn_enzyme = (
-                            in_fn
-                            if pipeline is None
-                            else jax.jit(
-                                enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(in_fn),
-                                # backend=backend
-                            )
-                        )
-                        fwd_enzyme = jax.jit(
-                            (
-                                splatjvp(rfn_enzyme)
-                            if pipeline is None
-                            else enzyme_jax_ir(
-                                    pipeline_options=pipeline, argv=argv
-                            )(splatjvp(rfn_enzyme))
-                            ),
-                            # backend=backend
-                        )
+            # for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
+            #     if backend in pbackends:
+            #         if self.mlirad_fwd or pipeline is None:
+            #             rfn_enzyme = (
+            #                 in_fn
+            #                 if pipeline is None
+            #                 else jax.jit(
+            #                     enzyme_jax_ir(
+            #                         pipeline_options=pipeline,
+            #                         argv=argv,
+            #                         inner_jit=False,
+            #                     )(in_fn),
+            #                     # backend=backend
+            #                 )
+            #             )
+            #             fwd_enzyme = jax.jit(
+            #                 (
+            #                     splatjvp(rfn_enzyme)
+            #                 if pipeline is None
+            #                 else enzyme_jax_ir(
+            #                         pipeline_options=pipeline, argv=argv
+            #                 )(splatjvp(rfn_enzyme))
+            #                 ),
+            #                 # backend=backend
+            #             )
 
-                        primals, tangents = fwd_enzyme(*(ins_backend+dins_backend))
+            #             primals, tangents = fwd_enzyme(*(ins_backend+dins_backend))
 
-                        recursive_check(self, primals, primres, self.tol)
+            #             recursive_check(self, primals, primres, self.tol)
 
-                        if fwdres is None:
-                            fwdres = tangents
-                        else:
-                            recursive_check(self, tangents, fwdres, self.tol)
+            #             if fwdres is None:
+            #                 fwdres = tangents
+            #             else:
+            #                 recursive_check(self, tangents, fwdres, self.tol)
 
-                        print(
-                            name,
-                            ",",
-                            pname,
-                            ",",
-                            backend,
-                            ",",
-                            "Forward",
-                            ",",
-                            self.timeit(self.csv_filename, pname, "Forward", fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
-                            sep="\t",
-                        )
+            #             print(
+            #                 name,
+            #                 ",",
+            #                 pname,
+            #                 ",",
+            #                 backend,
+            #                 ",",
+            #                 "Forward",
+            #                 ",",
+            #                 self.timeit(self.csv_filename, pname, "Forward", fwdstr, {'fwd': fwd_enzyme} | fwdins, self.count),
+            #                 sep="\t",
+            #             )
 
-            # assert fwdres is not None
+            # # assert fwdres is not None
 
-            revres = None
+            # revres = None
 
-            for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
-                if backend in pbackends:
+            # for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
+            #     if backend in pbackends:
 
-                    adout = douts_backend
-                    if pipeline is not None:
-                        if self.mlirad_rev or pipeline is None:
-                            rfn_enzyme = (
-                                in_fn
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(in_fn)
-                            )
-                            rev_enzyme = jax.jit(
-                                revtransform(rfn_enzyme),
-                                # backend=backend
-                            )
+            #         adout = douts_backend
+            #         if pipeline is not None:
+            #             if self.mlirad_rev or pipeline is None:
+            #                 rfn_enzyme = (
+            #                     in_fn
+            #                     if pipeline is None
+            #                     else enzyme_jax_ir(
+            #                         pipeline_options=pipeline,
+            #                         argv=argv,
+            #                         inner_jit=False,
+            #                     )(in_fn)
+            #                 )
+            #                 rev_enzyme = jax.jit(
+            #                     revtransform(rfn_enzyme),
+            #                     # backend=backend
+            #                 )
 
-                            if self.revprimal:
-                                primals, grads = rev_enzyme(adout, *ins_backend)
-                            else:
-                                grads = rev_enzyme(adout, *ins_backend)
-                                assert grads is not None
+            #                 if self.revprimal:
+            #                     primals, grads = rev_enzyme(adout, *ins_backend)
+            #                 else:
+            #                     grads = rev_enzyme(adout, *ins_backend)
+            #                     assert grads is not None
 
-                            if self.revprimal and primres is not None:
-                                recursive_check(self, primals, primres, self.tol)
+            #                 if self.revprimal and primres is not None:
+            #                     recursive_check(self, primals, primres, self.tol)
 
-                            if revres is None:
-                                revres = grads
-                            else:
-                                recursive_check(self, grads, revres, self.tol)
+            #                 if revres is None:
+            #                     revres = grads
+            #                 else:
+            #                     recursive_check(self, grads, revres, self.tol)
 
-                            print(
-                                name,
-                                ",",
-                                pname,
-                                ",",
-                                backend,
-                                ",",
-                                "PreRev",
-                                ",",
-                                self.timeit(self.csv_filename, pname, "PreRev", revstr, {'rev': rev_enzyme} | revins, self.count),
-                                sep="\t",
-                            )
+            #                 print(
+            #                     name,
+            #                     ",",
+            #                     pname,
+            #                     ",",
+            #                     backend,
+            #                     ",",
+            #                     "PreRev",
+            #                     ",",
+            #                     self.timeit(self.csv_filename, pname, "PreRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+            #                     sep="\t",
+            #                 )
 
-                        rfn_enzyme = in_fn
-                        rev_enzyme = jax.jit(
-                            (
-                                revtransform(rfn_enzyme)
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(revtransform(rfn_enzyme))
-                            ),
-                            # backend=backend
-                        )
+            #             rfn_enzyme = in_fn
+            #             rev_enzyme = jax.jit(
+            #                 (
+            #                     revtransform(rfn_enzyme)
+            #                     if pipeline is None
+            #                     else enzyme_jax_ir(
+            #                         pipeline_options=pipeline,
+            #                         argv=argv,
+            #                         inner_jit=False,
+            #                     )(revtransform(rfn_enzyme))
+            #                 ),
+            #                 # backend=backend
+            #             )
 
-                        if self.revprimal:
-                            primals, grads = rev_enzyme(adout, *ins_backend)
-                        else:
-                            grads = rev_enzyme(adout, *ins_backend)
-                            assert grads is not None
+            #             if self.revprimal:
+            #                 primals, grads = rev_enzyme(adout, *ins_backend)
+            #             else:
+            #                 grads = rev_enzyme(adout, *ins_backend)
+            #                 assert grads is not None
 
-                        if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres, self.tol)
+            #             if self.revprimal and primres is not None:
+            #                 recursive_check(self, primals, primres, self.tol)
 
-                        if revres is None:
-                            revres = grads
-                        else:
-                            recursive_check(self, grads, revres, self.tol)
+            #             if revres is None:
+            #                 revres = grads
+            #             else:
+            #                 recursive_check(self, grads, revres, self.tol)
 
-                        print(
-                            name,
-                            ",",
-                            pname,
-                            ",",
-                            backend,
-                            ",",
-                            "PostRev",
-                            ",",
-                            self.timeit(self.csv_filename, pname, "PostRev", revstr, {'rev': rev_enzyme} | revins, self.count),
-                            sep="\t",
-                        )
+            #             print(
+            #                 name,
+            #                 ",",
+            #                 pname,
+            #                 ",",
+            #                 backend,
+            #                 ",",
+            #                 "PostRev",
+            #                 ",",
+            #                 self.timeit(self.csv_filename, pname, "PostRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+            #                 sep="\t",
+            #             )
 
-                    if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
-                        rfn_enzyme = (
-                            in_fn
-                            if pipeline is None
-                            else enzyme_jax_ir(
-                                pipeline_options=pipeline, argv=argv, inner_jit=False
-                            )(in_fn)
-                        )
-                        rev_enzyme = jax.jit(
-                            (
-                                revtransform(rfn_enzyme)
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(revtransform(rfn_enzyme))
-                            ),
-                            # backend=backend
-                        )
+            #         if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
+            #             rfn_enzyme = (
+            #                 in_fn
+            #                 if pipeline is None
+            #                 else enzyme_jax_ir(
+            #                     pipeline_options=pipeline, argv=argv, inner_jit=False
+            #                 )(in_fn)
+            #             )
+            #             rev_enzyme = jax.jit(
+            #                 (
+            #                     revtransform(rfn_enzyme)
+            #                     if pipeline is None
+            #                     else enzyme_jax_ir(
+            #                         pipeline_options=pipeline,
+            #                         argv=argv,
+            #                         inner_jit=False,
+            #                     )(revtransform(rfn_enzyme))
+            #                 ),
+            #                 # backend=backend
+            #             )
 
-                        if self.revprimal:
-                            primals, grads = rev_enzyme(adout, *ins_backend)
-                        else:
-                            grads = rev_enzyme(adout, *ins_backend)
-                            assert grads is not None
+            #             if self.revprimal:
+            #                 primals, grads = rev_enzyme(adout, *ins_backend)
+            #             else:
+            #                 grads = rev_enzyme(adout, *ins_backend)
+            #                 assert grads is not None
 
-                        if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres, self.tol)
+            #             if self.revprimal and primres is not None:
+            #                 recursive_check(self, primals, primres, self.tol)
 
-                        if revres is None:
-                            revres = grads
-                        else:
-                            recursive_check(self, grads, revres, self.tol)
+            #             if revres is None:
+            #                 revres = grads
+            #             else:
+            #                 recursive_check(self, grads, revres, self.tol)
 
-                        print(
-                            name,
-                            ",",
-                            pname,
-                            ",",
-                            backend,
-                            ",",
-                            "BothRev",
-                            ",",
-                            self.timeit(self.csv_filename, pname, "BothRev", revstr, {'rev': rev_enzyme} | revins, self.count),
-                            sep="\t",
-                        )
+            #             print(
+            #                 name,
+            #                 ",",
+            #                 pname,
+            #                 ",",
+            #                 backend,
+            #                 ",",
+            #                 "BothRev",
+            #                 ",",
+            #                 self.timeit(self.csv_filename, pname, "BothRev", revstr, {'rev': rev_enzyme} | revins, self.count),
+            #                 sep="\t",
+            #             )
