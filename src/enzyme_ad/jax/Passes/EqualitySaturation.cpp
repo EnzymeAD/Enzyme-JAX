@@ -1250,7 +1250,7 @@ dfs(Operation *op,
     std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
     std::vector<Operation *> *blackboxIDToTensorInfo,
     std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-    Box<tensat::CppGraphConverter> &graph);
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph);
 
 tensat::TensorInfo *handleOperand(
     Value &operand,
@@ -1258,12 +1258,12 @@ tensat::TensorInfo *handleOperand(
     std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
     std::vector<Operation *> *blackboxIDToTensorInfo,
     std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-    Box<tensat::CppGraphConverter> &graph) {
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
   if (auto defOp = operand.getDefiningOp()) {
     // Use existing TensorInfo if already processed
     auto convertedOperand =
         dfs(defOp, opToTensorInfo, blockArgToTensorInfo, blackboxIDToTensorInfo,
-            blackboxIDToCapturedValues, graph);
+            blackboxIDToCapturedValues, builder, graph);
     int index = getValueIndex(defOp, operand);
     assert(index >= 0);
     if (index == 0) {
@@ -1303,7 +1303,7 @@ dfs(Operation *op,
     std::unordered_map<int, tensat::TensorInfo *> *blockArgToTensorInfo,
     std::vector<Operation *> *blackboxIDToTensorInfo,
     std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-    Box<tensat::CppGraphConverter> &graph) {
+    OpBuilder &builder, Box<tensat::CppGraphConverter> &graph) {
   // std::cout << "DFS AT " << op->getName().getStringRef().str() << "\n";
   if (opToTensorInfo->find(op) != opToTensorInfo->end()) {
     return opToTensorInfo->at(op);
@@ -1312,7 +1312,7 @@ dfs(Operation *op,
   auto handleOperandPartial = [&](auto operand) {
     return handleOperand(operand, opToTensorInfo, blockArgToTensorInfo,
                          blackboxIDToTensorInfo, blackboxIDToCapturedValues,
-                         graph);
+                         builder, graph);
   };
 
   bool blackboxed = false;
@@ -1667,7 +1667,7 @@ Box<tensat::CppGraphConverter> createEgraph(
 
   module.walk([&](func::ReturnOp op) {
     dfs(op, &opToTensorInfo, &blockArgToTensorInfo, blackboxIDToTensorInfo,
-        blackboxIDToCapturedValues, graph);
+        blackboxIDToCapturedValues, builder, graph);
   });
 
   // graph->print_rec_expr();
@@ -1754,11 +1754,9 @@ std::vector<Value> parseOpVec(std::vector<Value> &opVals, tensat::Node &seq) {
 void reconstructStablehlo(
     ModuleOp *root, std::vector<Operation *> *blackboxIDToTensorInfo,
     std::unordered_map<int, std::vector<Value>> *blackboxIDToCapturedValues,
-    rust::vec<tensat::Node> &nodes) {
+    rust::vec<tensat::Node> &nodes, OpBuilder &builder) {
   auto context = root->getContext();
   std::vector<Value> opVals;
-
-
 
   // Find funcOp to get the block.
   func::FuncOp funcOp;
@@ -1768,17 +1766,16 @@ void reconstructStablehlo(
       funcOp = cast<func::FuncOp>(op);
       break;
     }
-  } 
+  }
 
   auto &region = funcOp.getRegion();
   auto &block = funcOp.getRegion().front();
-
-  OpBuilder builder(&block, block.begin());
 
   // We don't clear the block here straight away, because this will
   // invalidate the old captured values in blackbox, and so the substitution
   // won't work. We instead put everything in a vector, and only clear the
   // block and insert everything at the very end.
+  std::vector<Operation *> opsToAdd;
 
   auto location = builder.getUnknownLoc();
 
@@ -2099,10 +2096,8 @@ void reconstructStablehlo(
       throw std::invalid_argument("unimplemented op");
     }
     if (newOp) {
-      if (newOp->getNumResults() > 0)
-          opVals.push_back(newOp->getResult(0));
-      else
-          opVals.push_back(nullptr);
+      opsToAdd.push_back(newOp);
+      opVals.push_back(newOp->getResult(0));
     } else {
       assert(node.op == tensat::Ops::Vec || node.op == tensat::Ops::Num ||
              node.op == tensat::Ops::Var);
@@ -2112,6 +2107,10 @@ void reconstructStablehlo(
       // some llvm no-op, but that would not be much better.
       opVals.push_back(nullptr);
     }
+  }
+  block.clear();
+  for (auto op : opsToAdd) {
+    block.push_back(op);
   }
 }
 
@@ -2501,7 +2500,7 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
 
   auto moduleOp = builder.create<ModuleOp>(builder.getUnknownLoc());
   moduleOp.push_back(funcOp);
-  reconstructStablehlo(&moduleOp, {}, {}, nodes);
+  reconstructStablehlo(&moduleOp, {}, {}, nodes, builder);
 
   // TODO: Ideally this should be just the rewrite we're considering instead of
   // the whole pass, but that makes the infra more complicated. In practice I
@@ -2658,7 +2657,7 @@ public:
       // of "
       //              << segmentedModules.size() << "\n";
       reconstructStablehlo(&segmentedModule.module, &blackboxIDToTensorInfo,
-                           &blackboxIDToCapturedValues, optimized);
+                           &blackboxIDToCapturedValues, optimized, builder);
 
       // llvm::errs() << "Segment " << i + 1 << " optimized successfully. \n";
     }
