@@ -1165,29 +1165,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
-    Block *tmp = new Block();
-    OpBuilder tmpB(apply.getContext());
-    tmpB.setInsertionPointToStart(tmp);
-    auto expanded = affine::expandAffineMap(tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
-    bool failed = false;
-    for (auto &innerOp : *tmp) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed()) {
-	failed = true;
-	break;
-      }
-    }
-    if (!failed) {
-      mapping.map(apply.getResult(), (*expanded)[0]);
-      for (auto &innerOp : *tmp) {
-        for (auto res : innerOp.getResults())
-	  mapping.erase(res);
-      }
-    }
-    delete tmp;
-    return failure(failed);
-  }
-
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
           arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
@@ -1639,6 +1616,17 @@ struct AffineToStableHLORaisingPass
     bool anyRaised = false;
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
+      kernelFunc.walk([](affine::AffineApplyOp applyOp) {
+        if (applyOp.getAffineMap().getNumResults() != 1)
+          return;
+
+        OpBuilder builder(applyOp);
+        auto expanded = affine::expandAffineMap(builder, applyOp.getLoc(), applyOp.getAffineMap(), applyOp.getOperands());
+        if (expanded) {
+          assert(expanded->size() == 1);
+          applyOp.getResult().replaceAllUsesWith((*expanded)[0]);
+        }
+      });
       anyRaised |= tryRaisingToStableHLO(kernelFunc);
       funcs.pop_back();
     }
