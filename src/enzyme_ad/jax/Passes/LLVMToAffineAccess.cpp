@@ -668,7 +668,12 @@ struct AffineExprBuilder {
     }
 
     if (op) {
-      if (op->getNumOperands() == 2 && isa<LLVM::AddOp, arith::AddIOp, LLVM::SubOp, arith::SubIOp, LLVM::MulOp, arith::MulIOp, LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp, arith::DivSIOp, LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp, arith::RemUIOp,arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp,arith::OrIOp>(op)) {
+      if (op->getNumOperands() == 2 &&
+          isa<LLVM::AddOp, arith::AddIOp, LLVM::SubOp, arith::SubIOp,
+              LLVM::MulOp, arith::MulIOp, LLVM::UDivOp, LLVM::SDivOp,
+              arith::DivUIOp, arith::DivSIOp, LLVM::URemOp, arith::RemSIOp,
+              LLVM::SRemOp, arith::RemUIOp, arith::ShRUIOp, arith::ShRSIOp,
+              LLVM::LShrOp, LLVM::AShrOp, arith::OrIOp>(op)) {
         auto lhs = buildExpr(op->getOperand(0));
         if (failed(lhs))
           return failure();
@@ -682,25 +687,31 @@ struct AffineExprBuilder {
           return (*lhs) - (*rhs);
         else if (isa<LLVM::MulOp, arith::MulIOp>(op))
           return (*lhs) * (*rhs);
-        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp, arith::DivSIOp>(op))
+        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
+                     arith::DivSIOp>(op))
           return (*lhs).floorDiv(*rhs);
-        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp>(op)) {
+        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                     LLVM::AShrOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
-          if (!cexpr) return failure();
+          if (!cexpr)
+            return failure();
           if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
-            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(), op->getContext());
-          } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp>(
-                         op)) {
+            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(),
+                                                  op->getContext());
+          } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                         LLVM::AShrOp>(op)) {
             return (*lhs).floorDiv(
                 getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
           } else {
-		  llvm_unreachable("unknown operation");
-	  }
-        } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp, arith::RemUIOp>(op)) {
+            llvm_unreachable("unknown operation");
+          }
+        } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
+                       arith::RemUIOp>(op)) {
           return (*lhs) % (*rhs);
         } else if (isa<arith::OrIOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
-          if (!cexpr) return failure();
+          if (!cexpr)
+            return failure();
           if (!lhs->isMultipleOf(2))
             return failure();
           if (!cexpr.getValue() != 1)
@@ -709,9 +720,9 @@ struct AffineExprBuilder {
         } else {
           llvm_unreachable("unknown operation");
         }
-      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp,
-           arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-           arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp, arith::ExtSIOp,
+                     arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp,
+                     arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
       }
     }
