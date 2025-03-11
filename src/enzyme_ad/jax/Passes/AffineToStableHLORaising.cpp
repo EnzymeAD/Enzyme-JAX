@@ -618,37 +618,41 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     indicesShape.push_back(1);
 
     auto rank = Ty.getShape().size();
-    if (rank > 1) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "failed to raised load (indices with rank > 1)\n");
-      return nullptr;
-    }
+    // if (rank > 1) {
+    //   LLVM_DEBUG(llvm::dbgs()
+    //              << "failed to raised load (indices with rank > 1)\n");
+    //   return nullptr;
+    // }
 
     sliceSizes.push_back(1);
 
-    std::optional<int64_t> dimToBroadcast = std::nullopt;
+    SmallVector<int64_t> dimsToBroadcast;
     if (rank == 0) {
       raisedIdx = builder.create<stablehlo::ReshapeOp>(
           loc, Ty.clone({1}), raisedIdx); // tensor<1xi64>
+      dimsToBroadcast.push_back(0);
       indicesShape.push_back(1);
     } else {
       auto map = maps[raisedIdx];
-      assert(map.getNumResults() == 1);
-      auto iv = getIVForExpr(map, map.getAffineMap().getResult(0));
 
-      unsigned ivPos = 0;
-      for (unsigned e = ivs.size(); ivPos < e; ++ivPos) {
-        if (ivs[ivPos] == iv) {
-          break;
+      for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
+        auto iv = getIVForExpr(map, E);
+
+        unsigned ivPos = 0;
+        for (unsigned e = ivs.size(); ivPos < e; ++ivPos) {
+          if (ivs[ivPos] == iv) {
+            break;
+          }
         }
-      }
 
-      if (ivPos == ivs.size()) {
-        outputShape.push_back(Ty.getShape()[0]);
-        ivs.push_back(iv);
-      } else {
-        // this dim is already present
-        dimToBroadcast = (int64_t)ivPos;
+        if (ivPos == ivs.size()) {
+          outputShape.push_back(Ty.getShape()[i]);
+          dimsToBroadcast.push_back(ivs.size());
+          ivs.push_back(iv);
+        } else {
+          // this dim is already present
+          dimsToBroadcast.push_back((int64_t)ivPos);
+        }
       }
     }
 
@@ -659,31 +663,34 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
           indicesTy.getShape().drop_back().begin(),
           indicesTy.getShape().drop_back().end());
 
-      if (dimToBroadcast.has_value()) {
-        raisedIdxShape.push_back(1);
-        raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
-            loc, Ty.clone(raisedIdxShape), raisedIdx,
-            llvm::ArrayRef<int64_t>{*dimToBroadcast});
-      } else {
-        int64_t raisedSz = Ty.getShape().size() == 0 ? 1 : Ty.getShape()[0];
-        raisedIdxShape.push_back(raisedSz);
-        raisedIdxShape.push_back(1);
-        raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
-            loc, Ty.clone(raisedIdxShape), raisedIdx,
-            llvm::ArrayRef<int64_t>({(int64_t)raisedIdxShape.size() - 2}));
-
-        SmallVector<int64_t> shape(indicesTy.getShape().drop_back().begin(),
-                                   indicesTy.getShape().drop_back().end());
-        shape.push_back(raisedSz);
-        shape.push_back(indicesTy.getShape()[indicesTy.getShape().size() - 1]);
-        SmallVector<int64_t> bDims;
-        for (int i = 0, e = indicesTy.getShape().size() - 1; i < e; ++i)
-          bDims.push_back(i);
-        bDims.push_back(shape.size() - 1);
-
-        indices = builder.create<stablehlo::BroadcastInDimOp>(
-            loc, Ty.clone(shape), indices, bDims);
+      for (auto [dim, bdim] : llvm::enumerate(dimsToBroadcast)) {
+        if (bdim >= raisedIdxShape.size()) {
+          raisedIdxShape.push_back(Ty.getShape()[dim]);
+        }
       }
+
+      raisedIdxShape.push_back(1);
+
+      raisedIdx = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone(raisedIdxShape), raisedIdx, dimsToBroadcast);
+
+      SmallVector<int64_t> shape(indicesTy.getShape().drop_back().begin(),
+                                 indicesTy.getShape().drop_back().end());
+
+      for (auto [dim, bdim] : llvm::enumerate(dimsToBroadcast)) {
+        if (bdim >= shape.size()) {
+          shape.push_back(Ty.getShape()[dim]);
+        }
+      }
+
+      shape.push_back(indicesTy.getShape()[indicesTy.getShape().size() - 1]);
+      SmallVector<int64_t> bDims;
+      for (int i = 0, e = indicesTy.getShape().size() - 1; i < e; ++i)
+        bDims.push_back(i);
+      bDims.push_back(shape.size() - 1);
+
+      indices = builder.create<stablehlo::BroadcastInDimOp>(
+          loc, Ty.clone(shape), indices, bDims);
 
       indicesTy = indices.getType().cast<RankedTensorType>();
       SmallVector<int64_t> newIndicesShape(
@@ -696,11 +703,13 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
           loc, Ty.clone(newIndicesShape), ValueRange{indices, raisedIdx},
           (int64_t)newIndicesShape.size() - 1);
     } else {
-      indices = builder.create<stablehlo::ReshapeOp>(
-          loc,
-          Ty.clone(
-              {raisedIdx.getType().cast<RankedTensorType>().getShape()[0], 1}),
-          raisedIdx);
+
+      auto S = raisedIdx.getType().cast<RankedTensorType>().getShape();
+      SmallVector<int64_t> shape(S.begin(), S.end());
+      shape.push_back(1);
+
+      indices =
+          builder.create<stablehlo::ReshapeOp>(loc, Ty.clone(shape), raisedIdx);
     }
   }
 

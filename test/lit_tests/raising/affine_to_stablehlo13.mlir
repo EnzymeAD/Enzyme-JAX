@@ -100,3 +100,21 @@ module {
 // CHECK-NEXT:    %3 = "stablehlo.gather"(%arg2, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf64>, tensor<10x2xi64>) -> tensor<10xf64>
 // CHECK-NEXT:    return %arg0, %arg1, %arg2, %3 : tensor<10xi64>, tensor<10xi64>, tensor<10x10xf64>, tensor<10xf64>
 // CHECK-NEXT:  }
+
+module {
+  func.func @multiple_ivs_per_index_lanes(%x: memref<10x10xi64>, %values: memref<10xf64>, %output: memref<10x10xf64>) {
+    affine.parallel (%i, %j) = (0, 0) to (10, 10) {
+      %0 = affine.load %x[%i, %j] : memref<10x10xi64> // tensor<10x10>
+      %xx = arith.index_cast %0 : i64 to index // tensor<10x10>
+      %val = memref.load %values[%xx] : memref<10xf64> // -> tensor<10x10xf64>
+      affine.store %val, %output[%i, %j] : memref<10x10xf64> // tensor<10x10>
+    }
+    return
+  }
+// CHECK:  func.func private @multiple_ivs_per_index_lanes_raised(%arg0: tensor<10x10xi64>, %arg1: tensor<10xf64>, %arg2: tensor<10x10xf64>) -> (tensor<10x10xi64>, tensor<10xf64>, tensor<10x10xf64>) {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<10x10xi64>) -> tensor<100x1xi64>
+// CHECK-NEXT:    %1 = "stablehlo.gather"(%arg1, %0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<10xf64>, tensor<100x1xi64>) -> tensor<100xf64>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<100xf64>) -> tensor<10x10xf64>
+// CHECK-NEXT:    return  %arg0, %arg1, %2 : tensor<10x10xi64>, tensor<10xf64>, tensor<10x10xf64>
+// CHECK-NEXT:  }
+}
