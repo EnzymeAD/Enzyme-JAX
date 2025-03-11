@@ -10,29 +10,6 @@ from enzyme_ad.jax import JaXPipeline, hlo_opts
 from test_utils import *
 import llama
 
-# Define the pipelines as per your framework
-pipelines = [
-    ("JaX", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
 
 # Load the tokenizer and model
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -61,7 +38,7 @@ class BertTransformerTest(EnzymeJaxTest):
         self.name = "bert"
         self.count = 200
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         # Input and output setup

@@ -93,7 +93,7 @@ class JAXMD(EnzymeJaxTest):
         self.name = "jaxmd40"
         self.count = 10
         # self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         self.ins = [
@@ -111,7 +111,6 @@ class JAXMD(EnzymeJaxTest):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
         self.douts = tuple(x.copy() for x in self.ins)
-        self.AllPipelines = pipelines()
         # No support for stablehlo.while atm
         # self.revfilter = justjax
         self.mlirad_rev = False

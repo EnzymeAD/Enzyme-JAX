@@ -10,30 +10,6 @@ from enzyme_ad.jax import JaXPipeline, hlo_opts
 from test_utils import *
 import llama
 
-# Define the pipelines as per your framework
-pipelines = [
-    ("JaX", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
-
 # Load the image processor and model
 processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224")
 model = FlaxViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
@@ -67,7 +43,7 @@ class VisionTransformerTest(EnzymeJaxTest):
         self.name = "vit"
         self.count = 10
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         # Input and output setup

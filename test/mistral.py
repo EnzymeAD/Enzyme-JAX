@@ -38,29 +38,6 @@ def create_custom_mistral_config(
 def create_custom_mistral_model(config: MistralConfig, input_shape: Tuple = (1, 1), seed: int = 0):
     return FlaxMistralModel(config, input_shape=input_shape, seed=seed)
 
-pipelines = [
-    ("JaX", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
-
 mistral_config = create_custom_mistral_config(
     hidden_size=512,
     num_hidden_layers=8,
@@ -90,7 +67,7 @@ class MistralTransformerTest(EnzymeJaxTest):
         self.name = "mistral"
         self.count = 1000
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         self.ins = [input_ids, attention_mask]

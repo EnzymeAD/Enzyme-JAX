@@ -10,30 +10,6 @@ from enzyme_ad.jax import JaXPipeline, hlo_opts, enzyme_jax_ir
 from test_utils import *
 import llama
 
-# Define the pipelines as per your framework
-pipelines = [
-    ("JaX", None, CurBackends),
-    ("JaXPipe", JaXPipeline(), CurBackends),
-    (
-        "HLOOpt",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "canonicalize,cse,enzyme-hlo-opt,cse"
-        ),
-        CurBackends,
-    ),
-    ("PartOpt", JaXPipeline(llama.partialopt), CurBackends),
-    ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
-
 # Load the image processor and model
 processor = AutoImageProcessor.from_pretrained("microsoft/resnet-50")
 model = FlaxResNetModel.from_pretrained("microsoft/resnet-50")
@@ -71,7 +47,7 @@ class ResNetTest(EnzymeJaxTest):
         self.name = "resnet"
         self.count = 1000
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         # Input and output setup
