@@ -410,7 +410,7 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
 
-    auto *scope = affine::getAffineScope(ld)->getParentOp();
+    auto scope = ld->getParentOfType<FunctionOpInterface>();
     DominanceInfo DI(scope);
     assert(map.getNumInputs() == operands.size());
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
