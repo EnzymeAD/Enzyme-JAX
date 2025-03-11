@@ -89,6 +89,14 @@ std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
   using EnclosingOpList = llvm::SmallVector<mlir::Operation *, 8>;
   EnclosingOpList enclosingOps;
   affine::getEnclosingAffineOps(*op, &enclosingOps);
+  for (auto op : enclosingOps) {
+    if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
+      if (ifOp.getElseRegion().isAncestor(op->getParentRegion()))
+        // the getIndexSet func does not handle if else regions correctly (it
+        // always assumes we are in the `then` of an if.
+        return {nullptr, {}};
+    }
+  }
 
   // The domain constraints can then be collected from the enclosing ops.
   mlir::affine::FlatAffineValueConstraints cst;
@@ -654,6 +662,8 @@ std::optional<SmallVector<isl_aff *>>
 IslAnalysis::getAffExprs(Operation *op, AffineValueMap avm) {
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
   auto [domain, cst] = ::getDomain(ctx, op);
+  if (!domain)
+    return std::nullopt;
   LLVM_DEBUG(isl_set_dump(domain));
   LLVM_DEBUG(cst.dump());
   AffineMap map = avm.getAffineMap();
@@ -745,6 +755,8 @@ IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
   auto [domain, cst] = getDomain(ctx, load);
+  if (!domain)
+    return;
   LLVM_DEBUG(isl_set_dump(domain));
   LLVM_DEBUG(cst.dump());
   AffineMap map = load.getMap();

@@ -28,9 +28,10 @@ public:
   ~IslAnalysis();
   IslAnalysis();
 
+  isl_ctx *getCtx() { return ctx; }
+
 private:
   isl_ctx *ctx;
-  DenseMap<Value, isl_id *> vToIdMap;
 };
 
 template <typename T> class IslScopeFree {

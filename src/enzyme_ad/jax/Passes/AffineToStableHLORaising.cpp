@@ -1429,6 +1429,8 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
       if (anyFailed)
         break;
     } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "cannot raise top level op yet: " << *bodyOp << "\n");
       anyFailed = true;
       break;
     }
