@@ -821,8 +821,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Failed to affine map to slice: " << *op << "\n");
       return failure();
+    }
 
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
@@ -943,8 +946,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed())
+    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Failed to affine map to slice: " << *op << "\n");
       return failure();
+    }
 
     bool emitAsScatter =
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; });
@@ -1162,6 +1168,30 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
+  }
+
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    Block *tmp = new Block();
+    OpBuilder tmpB(apply.getContext());
+    tmpB.setInsertionPointToStart(tmp);
+    auto expanded = affine::expandAffineMap(
+        tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
+    bool failed = false;
+    for (auto &innerOp : *tmp) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed()) {
+        failed = true;
+        break;
+      }
+    }
+    if (!failed) {
+      mapping.map(apply.getResult(), mapping.lookup((*expanded)[0]));
+      for (auto &innerOp : *tmp) {
+        for (auto res : innerOp.getResults())
+          mapping.erase(res);
+      }
+    }
+    delete tmp;
+    return failure(failed);
   }
 
   // unary ops
