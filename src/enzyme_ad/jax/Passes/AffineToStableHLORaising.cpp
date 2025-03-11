@@ -618,7 +618,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     indicesShape.push_back(1);
 
     auto rank = Ty.getShape().size();
-    assert(rank <= 1);
+    if (rank > 1)
+      return nullptr;
 
     sliceSizes.push_back(1);
 
@@ -708,8 +709,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     indicesShape.push_back(1);
 
     int64_t rank = Ty.getShape().size();
-
-    assert(rank <= 1);
+    if (rank > 0)
+      return nullptr;
 
     scatterDimsToOperandDims.push_back(i);
 
@@ -852,6 +853,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       Value res =
           emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
+      if (!res) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "failed to raise load (indices of rank > 1): " << *op
+                   << "\n");
+        return failure();
+      }
       mapping.map(loadOp.getResult(), res);
 
       return success();
@@ -1121,6 +1128,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value res = emitLoadAsGather(op->getLoc(), mapping.lookup(memref), lIndices,
                                  builder, maps);
+    if (!res) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "failed to raised load (indices with rank > 1): " << *op
+                 << "\n");
+      return failure();
+    }
     mapping.map(loadOp.getResult(), res);
 
     return success();
@@ -1189,9 +1202,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-          arith::ExtUIOp, arith::SIToFPOp, math::SqrtOp, math::RsqrtOp,
-          math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp, math::AbsIOp,
-          math::IsNaNOp, math::AtanOp>(op)) {
+          arith::ExtUIOp, arith::SIToFPOp, arith::FPToSIOp, math::SqrtOp,
+          math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp,
+          math::AbsIOp, math::IsNaNOp, math::AtanOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
@@ -1218,8 +1231,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::CmpIOp, arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp,
           arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
           arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
-          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, math::CopySignOp,
-          math::PowFOp>(op)) {
+          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, arith::RemFOp,
+          math::CopySignOp, math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
