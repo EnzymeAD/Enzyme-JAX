@@ -1446,7 +1446,7 @@ convertLLVMToAffineAccess(Operation *op,
           idxs);
       for (auto attr : attrs) {
         newStore->setAttr(attr.getName(), attr.getValue());
-        }
+      }
     } else {
       llvm_unreachable("Unknown operation to raise");
     }
