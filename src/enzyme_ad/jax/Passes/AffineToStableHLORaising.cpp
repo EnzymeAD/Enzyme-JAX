@@ -709,7 +709,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     indicesShape.push_back(1);
 
     int64_t rank = Ty.getShape().size();
-    if (rank > 0)
+    if (rank > 1)
       return nullptr;
 
     scatterDimsToOperandDims.push_back(i);
