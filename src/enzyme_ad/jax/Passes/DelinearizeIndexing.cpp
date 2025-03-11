@@ -55,20 +55,20 @@ struct AccessInfo {
   bool is_affine;
   // memref loads and stores
   Operation *mOpInst;
-  Value linear_key;
-  SmallVector<Value> linear_vals;
+  Value last_dim_key;
+  SmallVector<Value> updated_indices;
 
   AccessInfo(affine::MemRefAccess access, AffineMap map = AffineMap())
       : is_affine(true), access(access), map(map) {}
 
   AccessInfo(memref::LoadOp load)
       : is_affine(false), access(nullptr), map(nullptr) {
-    linear_key = load.getIndices()[0]; // there's only one index (for now)
+    last_dim_key = load.getIndices()[0]; // there's only one index (for now)
     mOpInst = load;
   }
   AccessInfo(memref::StoreOp store)
       : is_affine(false), access(nullptr), map(nullptr) {
-    linear_key = store.getIndices()[0]; // there's only one index(for now)
+    last_dim_key = store.getIndices()[0]; // there's only one index(for now)
     mOpInst = store;
   }
 };
@@ -131,7 +131,7 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
         avm.reset(ainfo.map, avm.getOperands());
       } else {
         // either memref ld/st (emit new index calc ops)
-        Value last_dim_key = ainfo.linear_key;
+        Value last_dim_key = ainfo.last_dim_key;
         rewriter.setInsertionPoint(ainfo.mOpInst);
         auto dim_size = rewriter.create<arith::ConstantIndexOp>(
             ainfo.mOpInst->getLoc(), cst);
@@ -139,10 +139,10 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
                                                    last_dim_key, dim_size);
         auto floor = rewriter.create<arith::FloorDivSIOp>(
             ainfo.mOpInst->getLoc(), last_dim_key, dim_size);
-        ainfo.linear_vals.push_back(mod);
+        ainfo.updated_indices.push_back(mod);
 
         // floor is the new last dim key
-        ainfo.linear_key = floor;
+        ainfo.last_dim_key = floor;
       }
     }
   }
@@ -160,18 +160,18 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
                                                  store.getMemref(), ainfo.map,
                                                  store.getMapOperands());
     } else if (auto load = dyn_cast<memref::LoadOp>(ainfo.mOpInst)) {
-      ainfo.linear_vals.push_back(ainfo.linear_key);
-      std::reverse(ainfo.linear_vals.begin(), ainfo.linear_vals.end());
+      ainfo.updated_indices.push_back(ainfo.last_dim_key);
+      std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(load);
       rewriter.replaceOpWithNewOp<memref::LoadOp>(load, load.getMemref(),
-                                                  ainfo.linear_vals);
+                                                  ainfo.updated_indices);
     } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
 
-      ainfo.linear_vals.push_back(ainfo.linear_key);
-      std::reverse(ainfo.linear_vals.begin(), ainfo.linear_vals.end());
+      ainfo.updated_indices.push_back(ainfo.last_dim_key);
+      std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(load);
       rewriter.replaceOpWithNewOp<memref::StoreOp>(store, store.getMemref(),
-                                                   ainfo.linear_vals);
+                                                   ainfo.updated_indices);
     } else {
       llvm_unreachable("unexpected");
     }
