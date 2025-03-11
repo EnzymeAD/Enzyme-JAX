@@ -2057,7 +2057,7 @@ struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
         isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
 
     bool succeeded = false;
-    if (isl_set_is_empty(inThen)) {
+    if (isl_set_is_empty(inThen) == isl_bool_true) {
       if (ifOp.hasElse()) {
         Operation *term = ifOp.getElseBlock()->getTerminator();
         rewriter.inlineBlockBefore(ifOp.getElseBlock(), ifOp);
@@ -2067,7 +2067,7 @@ struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
         rewriter.eraseOp(ifOp);
       }
       succeeded = true;
-    } else if (isl_set_is_empty(inElse)) {
+    } else if (isl_set_is_empty(inElse) == isl_bool_true) {
       Operation *term = ifOp.getThenBlock()->getTerminator();
       rewriter.inlineBlockBefore(ifOp.getThenBlock(), ifOp);
       rewriter.replaceOp(ifOp, term->getOperands());
