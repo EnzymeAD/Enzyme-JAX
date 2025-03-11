@@ -1,3 +1,5 @@
+#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -10,10 +12,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include <deque>
+#include <isl/set.h>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-cfg"
@@ -2043,6 +2047,38 @@ static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
   rewriter.replaceOp(op, results);
   rewriter.eraseOp(terminator);
 }
+
+struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    IslAnalysis ia;
+    isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
+    isl_set *outsideIf = ia.getDomain(ifOp);
+    isl_set *inElse =
+        isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
+
+    bool succeeded = false;
+    if (isl_set_is_empty(inThen)) {
+      Operation *term = ifOp.getElseBlock()->getTerminator();
+      rewriter.inlineBlockBefore(ifOp.getElseBlock(), ifOp);
+      rewriter.replaceOp(ifOp, term->getOperands());
+      rewriter.eraseOp(term);
+      succeeded = true;
+    } else if (isl_set_is_empty(inElse)) {
+      Operation *term = ifOp.getThenBlock()->getTerminator();
+      rewriter.inlineBlockBefore(ifOp.getThenBlock(), ifOp);
+      rewriter.replaceOp(ifOp, term->getOperands());
+      rewriter.eraseOp(term);
+      succeeded = true;
+    }
+    isl_set_free(inThen);
+    isl_set_free(inElse);
+    isl_set_free(outsideIf);
+
+    return success(succeeded);
+  }
+};
 
 struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
@@ -4116,20 +4152,235 @@ struct AffineIfYieldMovementPattern
   }
 };
 
-void AffineCFGPass::runOnOperation() {
-  mlir::RewritePatternSet rpl(getOperation()->getContext());
-  mlir::enzyme::addSingleIter(rpl, getOperation()->getContext());
+namespace {
+LogicalResult splitParallelIf(affine::AffineParallelOp pop,
+                              affine::AffineIfOp ifOp,
+                              PatternRewriter &rewriter) {
+  if (pop.getNumResults() != 0) {
+    rewriter.notifyMatchFailure(ifOp, "non-zero result pop");
+    return failure();
+  }
+
+  if (ifOp.getNumResults() == 0) {
+    rewriter.notifyMatchFailure(ifOp, "zero result if");
+    return failure();
+  }
+
+  IntegerSet cond = ifOp.getCondition();
+
+  if (cond.getNumSymbols() > 0) {
+    rewriter.notifyMatchFailure(ifOp, "if cond with symbols");
+    return failure();
+  }
+
+  bool allGood;
+  SmallVector<int64_t, 6> split;
+  split.reserve(pop.getNumDims());
+  SmallVector<int64_t, 6> lbsPre;
+  SmallVector<int64_t, 6> ubsPre;
+
+  allGood = true;
+  if (pop.getLowerBoundsMap().isConstant())
+    lbsPre = pop.getLowerBoundsMap().getConstantResults();
+  else
+    allGood = false;
+  if (pop.getUpperBoundsMap().isConstant())
+    ubsPre = pop.getUpperBoundsMap().getConstantResults();
+  else
+    allGood = false;
+  if (!allGood) {
+    rewriter.notifyMatchFailure(ifOp, "non const bound parallel");
+    return failure();
+  }
+
+  affine::FlatAffineValueConstraints cst;
+  SmallVector<Operation *> ops{ifOp};
+  if (failed(affine::getIndexSet(ops, &cst))) {
+    rewriter.notifyMatchFailure(ifOp, "getIndexSet failed");
+    return failure();
+  }
+
+  unsigned dim = 0;
+  uint64_t splitAt = 0;
+  bool preIsThen = false;
+  allGood = false;
+  for (unsigned i : llvm::seq(cst.getNumDimVars())) {
+    Value v = cst.getValue(i);
+    Value iv = nullptr;
+    for (auto [thisDim, thisIv] : llvm::enumerate(pop.getIVs())) {
+      if (v == thisIv) {
+        iv = thisIv;
+        dim = thisDim;
+        break;
+      }
+    }
+    if (!iv)
+      continue;
+
+    if (auto bound =
+            cst.getConstantBound64(mlir::presburger::BoundType::LB, i)) {
+      splitAt = *bound;
+      preIsThen = false;
+    } else if (auto bound =
+                   cst.getConstantBound64(mlir::presburger::BoundType::UB, i)) {
+      splitAt = *bound + 1;
+      preIsThen = true;
+    } else if (auto bound =
+                   cst.getConstantBound64(mlir::presburger::BoundType::EQ, i)) {
+      splitAt = *bound + 1;
+      preIsThen = true;
+      if (lbsPre[dim] >= splitAt || ubsPre[dim] <= splitAt) {
+        splitAt = *bound;
+        preIsThen = false;
+        // FIXME NOT SURE ABOUT THIS preIsThen
+      }
+    }
+
+    if (lbsPre[dim] >= splitAt || ubsPre[dim] <= splitAt)
+      continue;
+
+    allGood = true;
+    break;
+  }
+  if (!allGood) {
+    rewriter.notifyMatchFailure(ifOp, "couldn't find split");
+    return failure();
+  }
+
+  SmallVector<int64_t, 6> lbsPost = lbsPre;
+  SmallVector<int64_t, 6> ubsPost = ubsPre;
+  ubsPre[dim] = splitAt;
+  lbsPost[dim] = splitAt;
+
+  auto getBoundMaps = [&rewriter](auto vec) {
+    SmallVector<AffineMap> maps;
+    for (auto v : vec)
+      maps.push_back(AffineMap::getConstantMap(v, rewriter.getContext()));
+
+    return maps;
+  };
+
+  rewriter.setInsertionPoint(pop);
+  auto prePop = rewriter.create<affine::AffineParallelOp>(
+      pop.getLoc(), TypeRange(), ArrayRef<arith::AtomicRMWKind>(),
+      getBoundMaps(lbsPre), ValueRange(), getBoundMaps(ubsPre), ValueRange(),
+      pop.getSteps());
+  auto postPop = rewriter.create<affine::AffineParallelOp>(
+      pop.getLoc(), TypeRange(), ArrayRef<arith::AtomicRMWKind>(),
+      getBoundMaps(lbsPost), ValueRange(), getBoundMaps(ubsPost), ValueRange(),
+      pop.getSteps());
+
+  auto clonePop = [&rewriter, &pop](affine::AffineParallelOp newPop) {
+    rewriter.setInsertionPointToStart(newPop.getBody());
+    IRMapping mapping;
+    mapping.map(pop.getIVs(), newPop.getIVs());
+    for (auto &op : pop.getBody()->without_terminator()) {
+      rewriter.clone(op, mapping);
+    }
+  };
+  clonePop(prePop);
+  clonePop(postPop);
+  rewriter.eraseOp(pop);
+
+  return success();
+}
+
+struct SplitParallelIf : public OpRewritePattern<affine::AffineParallelOp> {
+  using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineParallelOp pop,
+                                PatternRewriter &rewriter) const override {
+    for (auto &op : pop.getBody()->without_terminator()) {
+      if (auto ifOp = dyn_cast<affine::AffineIfOp>(&op)) {
+        if (succeeded(splitParallelIf(pop, ifOp, rewriter)))
+          return success();
+#if 0
+
+        unsigned dimToSplit = 0;
+        uint64_t toSplitAt = 0;
+        allGood = false;
+        for (auto [cst, eq] : llvm::zip(cond.getConstraints(), cond.getEqFlags())) {
+
+          unsigned dim = 0;
+          if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(cst)) {
+            switch (binExpr.getKind()) {
+            case AffineExprKind::Add: {
+                AffineExpr other;
+                if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getLHS())) {
+                  dim = dimExpr.getPosition();
+                  other = binExpr.getRHS();
+                } else if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getRHS())) {
+                  dim = dimExpr.getPosition();
+                  other = binExpr.getLHS();
+                }
+                if (auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getRHS())) {
+                }
+            }
+            }
+          }
+
+          unsigned found = 0;
+          for (unsigned i = 0; i < cond.getNumDims(); i++) {
+            if (cst.isFunctionOfDim(i)) {
+              dim = i;
+              found++;
+            }
+          }
+          if (found != 1)
+            continue;
+          if (ifOp.getOperand(dim).getParentBlock()->getParentOp() != pop)
+            continue;
+
+          toSplitAt = cst.
+          allGood = true;
+        }
+
+        isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
+        isl_set *outsideIf = ia.getDomain(ifOp);
+        isl_set *inElse = isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
+        llvm::dbgs() << "INTHEN\n";
+        isl_set_dump(inThen);
+        llvm::dbgs() << "INELSE\n";
+        isl_set_dump(inElse);
+        llvm::dbgs() << "OUTSIDE\n";
+        isl_set_dump(outsideIf);
+
+        llvm::dbgs() << isl_set_is_box(inElse) << "\n";
+        llvm::dbgs() << isl_set_is_box(inThen) << "\n";
+        isl_fixed_box_dump(isl_set_get_lattice_tile(inElse));
+        isl_fixed_box_dump(isl_set_get_lattice_tile(inThen));
+        isl_fixed_box_dump(isl_set_get_lattice_tile(outsideIf));
+        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(inElse));
+        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(inThen));
+        isl_fixed_box_dump(isl_set_get_simple_fixed_box_hull(outsideIf));
+#endif
+      }
+    }
+    return failure();
+  }
+};
+} // namespace
+
+void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
+  MLIRContext *context = rpl.getContext();
+  mlir::enzyme::addSingleIter(rpl, context);
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
           ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
           CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
-          MoveSelectToAffine, AffineIfSimplification, CombineAffineIfs,
-          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
-          CanonicalieForBounds, AddAddCstEnd>(getOperation()->getContext(), 2);
-  rpl.add<SplitParallelInductions>(getOperation()->getContext(), 1);
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
+          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
+          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
+          AddAddCstEnd>(context, 2);
+  rpl.add<SplitParallelInductions>(context, 1);
+}
+
+void AffineCFGPass::runOnOperation() {
+  mlir::RewritePatternSet rpl(getOperation()->getContext());
+  populateAffineCFGPatterns(rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
