@@ -381,7 +381,7 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
 // the corresponding AffineValueMap for the produced value.
 static std::tuple<Value, affine::AffineValueMap>
 expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
-                 ValueRange operands, IRMapping &mapping) {
+                 ValueRange operands, IRMapping &mapping, unsigned numDims) {
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     auto ET = builder.getI64Type();
     auto TT = RankedTensorType::get({}, ET);
@@ -395,9 +395,9 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
   if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
     AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
     auto [lhs, lhsMap] =
-        expandAffineExpr(builder, loc, lhsExpr, operands, mapping);
+        expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims);
     auto [rhs, rhsMap] =
-        expandAffineExpr(builder, loc, rhsExpr, operands, mapping);
+        expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims);
 
     affine::AffineValueMap outputMap =
         alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder);
@@ -484,6 +484,12 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
       llvm_unreachable("unsupported expansion of expr");
     }
     return {result, outputMap};
+  }
+
+  if (auto symExpr = dyn_cast<AffineSymbolExpr>(expr)) {
+    Value sym = operands[symExpr.getPosition() + numDims];
+    return {mapping.lookup(sym),
+            affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
   }
 
   if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
@@ -838,7 +844,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       SmallVector<Value> lIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
         auto [idx, idxMap] = expandAffineExpr(
-            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping);
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims());
         maps[idx] = idxMap;
         lIndices.push_back(idx);
       }
@@ -869,9 +876,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
         }
 
-        auto [startIndex, _] =
-            expandAffineExpr(builder, op->getLoc(), exprToEmit,
-                             accessValueMap.getOperands(), mapping);
+        auto [startIndex, _] = expandAffineExpr(
+            builder, op->getLoc(), exprToEmit, accessValueMap.getOperands(),
+            mapping, accessValueMap.getAffineMap().getNumDims());
 
         startIndices.push_back(startIndex);
       }
@@ -961,7 +968,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       SmallVector<Value> sIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
         auto [expandedIndex, indexMap] = expandAffineExpr(
-            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping);
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims());
         maps[expandedIndex] = indexMap;
         sIndices.push_back(expandedIndex);
       }
@@ -1039,9 +1047,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           updateShape.push_back(1);
         }
 
-        auto [startIndex_, _] =
-            expandAffineExpr(builder, iv.getLoc(), exprToEmit,
-                             accessValueMap.getOperands(), mapping);
+        auto [startIndex_, _] = expandAffineExpr(
+            builder, iv.getLoc(), exprToEmit, accessValueMap.getOperands(),
+            mapping, accessValueMap.getAffineMap().getNumDims());
         startIndex = startIndex_;
       }
 
@@ -1171,27 +1179,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
-    Block *tmp = new Block();
-    OpBuilder tmpB(apply.getContext());
-    tmpB.setInsertionPointToStart(tmp);
-    auto expanded = affine::expandAffineMap(
-        tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
-    bool failed = false;
-    for (auto &innerOp : *tmp) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed()) {
-        failed = true;
-        break;
-      }
-    }
-    if (!failed) {
-      mapping.map(apply.getResult(), mapping.lookup((*expanded)[0]));
-      for (auto &innerOp : *tmp) {
-        for (auto res : innerOp.getResults())
-          mapping.erase(res);
-      }
-    }
-    delete tmp;
-    return failure(failed);
+    auto [expanded, expandedMap] = expandAffineExpr(
+        builder, apply.getLoc(), apply.getAffineMap().getResult(0),
+        apply.getOperands(), mapping, apply.getAffineMap().getNumDims());
+    mapping.map(apply.getResult(), expanded);
+    maps[expanded] = expandedMap;
+    return success();
   }
 
   // unary ops
@@ -1338,8 +1331,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
     for (auto [constraint, eq] :
          llvm::zip_equal(is.getConstraints(), is.getEqFlags())) {
-      auto [expandedExpr, outputMap] = expandAffineExpr(
-          builder, ifOp.getLoc(), constraint, ifOp.getOperands(), mapping);
+      auto [expandedExpr, outputMap] =
+          expandAffineExpr(builder, ifOp.getLoc(), constraint,
+                           ifOp.getOperands(), mapping, is.getNumDims());
       Value zero = builder.create<stablehlo::ConstantOp>(
           ifOp.getLoc(), expandedExpr.getType().cast<ShapedType>(),
           SplatElementsAttr::get(
