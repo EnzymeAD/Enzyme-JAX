@@ -170,7 +170,7 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(load);
-      rewriter.replaceOpWithNewOp<memref::StoreOp>(store, store.getMemref(),
+      rewriter.replaceOpWithNewOp<memref::StoreOp>(store,store.getValue(), store.getMemref(),
                                                    ainfo.updated_indices);
     } else {
       llvm_unreachable("unexpected");
