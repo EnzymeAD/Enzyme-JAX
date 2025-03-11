@@ -89,6 +89,7 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::OrIOp, stablehlo::OrOp, mhlo::OrOp);
     RAISE_BINARY(arith::XOrIOp, stablehlo::XorOp, mhlo::XorOp);
     RAISE_BINARY(math::PowFOp, stablehlo::PowOp, mhlo::PowOp);
+    RAISE_BINARY(arith::RemFOp, stablehlo::RemOp, mhlo::RemOp);
 
 #undef RAISE_BINARY
 
@@ -227,6 +228,20 @@ struct ArithRaisingPass
         constOp.replaceAllUsesWith(newConstOp);
         constOp.erase();
       }
+    });
+    op->walk([=](arith::FPToSIOp addOp) {
+      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
+        return;
+      OpBuilder builder(addOp);
+      Value newAddOp;
+      newAddOp = builder.create<stablehlo::ConvertOp>(
+          addOp.getLoc(), addOp->getOperand(0),
+          addOp->getResult(0)
+              .getType()
+              .cast<RankedTensorType>()
+              .getElementType());
+      addOp.replaceAllUsesWith(newAddOp);
+      addOp.erase();
     });
     op->walk([=](arith::SIToFPOp addOp) {
       if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())

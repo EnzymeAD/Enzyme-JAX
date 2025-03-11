@@ -12,14 +12,13 @@ module {
 // CHECK:  func.func private @main_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>) {
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
 // CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<3x3xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %6 = stablehlo.concatenate %3, %5, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %7 = "stablehlo.gather"(%arg1, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %8, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
+// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %4 = stablehlo.concatenate %3, %2, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg1, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<9xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    return %7, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
 // CHECK-NEXT:  }
 
 module {
@@ -71,13 +70,51 @@ module {
 }
 // CHECK:  func.func private @load_indirect_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>, %arg2: tensor<3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>) {
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3x3xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %5 = stablehlo.concatenate %2, %4, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg1, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %8 = stablehlo.transpose %7, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %8, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
+// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %3 = stablehlo.concatenate %2, %1, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
+// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %5 = "stablehlo.gather"(%arg1, %4) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<9xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    return %7, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }
+
+module {
+  func.func @repeat_iv(%x: memref<10xi64>, %y: memref<10xi64>, %values: memref<10x10xf64>, %output: memref<10xf64>) {
+    affine.parallel (%i) = (0) to (10) {
+      %0 = affine.load %x[%i] : memref<10xi64>
+      %1 = affine.load %y[%i] : memref<10xi64>
+      %xx = arith.index_cast %0 : i64 to index
+      %yy = arith.index_cast %1 : i64 to index
+      %val = memref.load %values[%yy, %xx] : memref<10x10xf64> // -> tensor<10xf64>
+      affine.store %val, %output[%i] : memref<10xf64>
+    }
+    return
+  }
+}
+// CHECK:  func.func private @repeat_iv_raised(%arg0: tensor<10xi64>, %arg1: tensor<10xi64>, %arg2: tensor<10x10xf64>, %arg3: tensor<10xf64>) -> (tensor<10xi64>, tensor<10xi64>, tensor<10x10xf64>, tensor<10xf64>) {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<10xi64>) -> tensor<10x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<10xi64>) -> tensor<10x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %0, %1, dim = 1 : (tensor<10x1xi64>, tensor<10x1xi64>) -> tensor<10x2xi64>
+// CHECK-NEXT:    %3 = "stablehlo.gather"(%arg2, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf64>, tensor<10x2xi64>) -> tensor<10xf64>
+// CHECK-NEXT:    return %arg0, %arg1, %arg2, %3 : tensor<10xi64>, tensor<10xi64>, tensor<10x10xf64>, tensor<10xf64>
+// CHECK-NEXT:  }
+
+module {
+  func.func @multiple_ivs_per_index_lanes(%x: memref<10x10xi64>, %values: memref<10xf64>, %output: memref<10x10xf64>) {
+    affine.parallel (%i, %j) = (0, 0) to (10, 10) {
+      %0 = affine.load %x[%i, %j] : memref<10x10xi64> // tensor<10x10>
+      %xx = arith.index_cast %0 : i64 to index // tensor<10x10>
+      %val = memref.load %values[%xx] : memref<10xf64> // -> tensor<10x10xf64>
+      affine.store %val, %output[%i, %j] : memref<10x10xf64> // tensor<10x10>
+    }
+    return
+  }
+// CHECK:  func.func private @multiple_ivs_per_index_lanes_raised(%arg0: tensor<10x10xi64>, %arg1: tensor<10xf64>, %arg2: tensor<10x10xf64>) -> (tensor<10x10xi64>, tensor<10xf64>, tensor<10x10xf64>) {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<10x10xi64>) -> tensor<100x1xi64>
+// CHECK-NEXT:    %1 = "stablehlo.gather"(%arg1, %0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<10xf64>, tensor<100x1xi64>) -> tensor<100xf64>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<100xf64>) -> tensor<10x10xf64>
+// CHECK-NEXT:    return  %arg0, %arg1, %2 : tensor<10x10xi64>, tensor<10xf64>, tensor<10x10xf64>
+// CHECK-NEXT:  }
+}
