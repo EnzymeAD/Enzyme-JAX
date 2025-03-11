@@ -15,7 +15,6 @@
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
-#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
@@ -823,7 +822,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
-      LLVM_DEBUG(llvm::dbgs() << "Failed to affine map to slice: " << *op << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Failed to affine map to slice: " << *op << "\n");
       return failure();
     }
 
@@ -947,7 +947,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
-      LLVM_DEBUG(llvm::dbgs() << "Failed to affine map to slice: " << *op << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Failed to affine map to slice: " << *op << "\n");
       return failure();
     }
 
@@ -1173,19 +1174,20 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Block *tmp = new Block();
     OpBuilder tmpB(apply.getContext());
     tmpB.setInsertionPointToStart(tmp);
-    auto expanded = affine::expandAffineMap(tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
+    auto expanded = affine::expandAffineMap(
+        tmpB, apply.getLoc(), apply.getAffineMap(), apply.getOperands());
     bool failed = false;
     for (auto &innerOp : *tmp) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed()) {
-	failed = true;
-	break;
+        failed = true;
+        break;
       }
     }
     if (!failed) {
       mapping.map(apply.getResult(), mapping.lookup((*expanded)[0]));
       for (auto &innerOp : *tmp) {
         for (auto res : innerOp.getResults())
-	  mapping.erase(res);
+          mapping.erase(res);
       }
     }
     delete tmp;
