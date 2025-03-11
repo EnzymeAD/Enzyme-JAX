@@ -272,7 +272,6 @@ struct ConvertLLVMAllocaToMemrefAlloca
     return convertLLVMAllocaToMemrefAlloca(alloc, rewriter, dataLayout);
   }
 };
-} // namespace
 
 static Value convertToIndex(Value v) {
   OpBuilder builder(v.getContext());
@@ -286,6 +285,50 @@ static Value convertToIndex(Value v) {
       .create<arith::IndexCastOp>(v.getLoc(), builder.getIndexType(), v)
       .getResult();
 }
+
+struct GEPOfMemRefLoad
+    : public OpRewritePattern<memref::LoadOp> {
+  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+  const DataLayoutAnalysis &dl;
+  GEPOfMemRefLoad(MLIRContext *context,
+                                  const DataLayoutAnalysis &dl)
+      : OpRewritePattern<memref::LoadOp>(context), dl(dl) {}
+
+  LogicalResult matchAndRewrite(memref::LoadOp ld,
+                                PatternRewriter &rewriter) const override {
+    auto dataLayout = dl.getAtOrAbove(ld);
+    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1) return failure();
+    auto ptr = ld.getMemRef().getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!ptr) return failure();
+    auto gep = ptr.getOperand().getDefiningOp<LLVM::GEPOp>();
+    if (!gep) return failure();
+    Type currentType = gep.getElemType();
+    if (currentType != ld.getType()) return failure();
+
+    auto ptr2 = rewriter.create<enzymexla::Pointer2MemrefOp>(ptr.getLoc(), ptr.getType(), gep.getBase());
+    SmallVector<Value, 1> indices;
+    for (auto gidx : gep.getIndices()) {
+          if (auto intv = dyn_cast<IntegerAttr>(gidx)) {
+            auto val =
+                rewriter.create<arith::ConstantOp>(gep.getLoc(), intv.getType(), intv);
+            indices.push_back(convertToIndex(val));
+          } else if (auto val = dyn_cast<Value>(gidx)) {
+            indices.push_back(convertToIndex(val));
+          }
+    }
+    if (indices.size() != 1) return failure();
+    SmallVector<Value, 1> idx2;
+    for (auto midx : ld.getIndices())
+	   idx2.push_back(midx);
+    idx2[0] = rewriter.create<arith::AddIOp>(gep.getLoc(), idx2[0], indices[0]);
+    rewriter.modifyOpInPlace(ld, [&]() {
+	ld.setMemRef(ptr2);
+	ld.getIndicesMutable().assign(idx2);	
+    });
+    return success();
+  }
+};
+} // namespace
 
 static MemRefVal convertToMemref(PtrVal addr) {
   OpBuilder builder(addr.getContext());
@@ -305,6 +348,7 @@ static MemRefVal convertToMemref(PtrVal addr) {
   // Return with exact shape and size if
   // 1. addr is a gep
   // 2. the base addr was constructed using Memref2Pointer
+  /*
   if (auto gep = addr.getDefiningOp<LLVM::GEPOp>()) {
     auto basePtr = gep.getBase();
 
@@ -335,6 +379,7 @@ static MemRefVal convertToMemref(PtrVal addr) {
       return cast<MemRefVal>(ptr2memref.getResult());
     }
   }
+  */
   auto ptr2memref = builder.create<enzymexla::Pointer2MemrefOp>(
       addr.getLoc(),
       MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
@@ -1162,10 +1207,6 @@ convertLLVMToAffineAccess(Operation *op,
   for (auto &aabp : accessBuilders) {
     AffineAccessBuilder &aab = *aabp;
     // TODO add a test where some operations are left illegal
-    if (!aab.isLegal())
-      continue;
-
-    auto mao = aab.getMap();
 
     auto isAligned = [&](auto op, llvm::TypeSize tySize) {
       if (auto alignment = op.getAlignment())
@@ -1182,6 +1223,7 @@ convertLLVMToAffineAccess(Operation *op,
       auto memref0 = mc(aab.base);
       Value memref = memref0;
       auto memrefTy = memref0.getType();
+      if (aab.isLegal()) {
       if (memrefTy.getElementType() != ty) {
         if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
           memref = p2m.getOperand();
@@ -1198,6 +1240,8 @@ convertLLVMToAffineAccess(Operation *op,
                          memref)
                      .getResult();
       }
+    
+    	auto mao = aab.getMap();
       if (mao.map.getResult(0).isMultipleOf(tySize) ||
           isAligned(load, tySize)) {
         auto expr = mao.map.getResult(0).floorDiv(tySize);
@@ -1210,7 +1254,23 @@ convertLLVMToAffineAccess(Operation *op,
         for (auto attr : attrs) {
           newLoad->setAttr(attr.getName(), attr.getValue());
         }
+	continue;
       }
+      }
+     
+
+        SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
+                                          load->getAttrs().end());
+	Value idxs[1] = {
+		rewriter.create<arith::ConstantIndexOp>(load.getLoc(), 0)
+	};
+        auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
+            load, rewriter.create<enzymexla::Pointer2MemrefOp>(load.getLoc(),
+		   MemRefType::get({ShapedType::kDynamic}, ty, MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace()),
+		   load.getAddr()), idxs);
+        for (auto attr : attrs) {
+          newLoad->setAttr(attr.getName(), attr.getValue());
+        }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
       Type ty = store.getValue().getType();
@@ -1219,6 +1279,7 @@ convertLLVMToAffineAccess(Operation *op,
       auto memref0 = mc(aab.base);
       Value memref = memref0;
       auto memrefTy = memref0.getType();
+      if (aab.isLegal()) {
       if (memrefTy.getElementType() != ty) {
         if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
           memref = p2m.getOperand();
@@ -1235,6 +1296,7 @@ convertLLVMToAffineAccess(Operation *op,
                          memref)
                      .getResult();
       }
+    	auto mao = aab.getMap();
       if (mao.map.getResult(0).isMultipleOf(tySize) ||
           isAligned(store, tySize)) {
         auto expr = mao.map.getResult(0).floorDiv(tySize);
@@ -1248,6 +1310,21 @@ convertLLVMToAffineAccess(Operation *op,
           newStore->setAttr(attr.getName(), attr.getValue());
         }
       }
+      continue;
+      }
+
+        SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
+                                          store->getAttrs().end());
+	Value idxs[1] = {
+		rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0)
+	};
+        auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
+            store, store.getValue(), rewriter.create<enzymexla::Pointer2MemrefOp>(store.getLoc(),
+		   MemRefType::get({ShapedType::kDynamic}, ty, MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace()),
+		   store.getAddr()), idxs);
+        for (auto attr : attrs) {
+          newStore->setAttr(attr.getName(), attr.getValue());
+        }
     } else {
       llvm_unreachable("Unknown operation to raise");
     }
@@ -1349,7 +1426,7 @@ convertLLVMToAffineAccess(Operation *op,
 
   {
     RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca>(context,
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad>(context,
                                                      dataLayoutAnalysis);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
