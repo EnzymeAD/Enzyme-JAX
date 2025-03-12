@@ -428,9 +428,10 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     map = mlir::enzyme::recreateExpr(map);
     Value app;
     if (auto cst = dyn_cast<AffineConstantExpr>(map.getResult(0)))
-	app = rewriter.create<arith::ConstantIndexOp>(ld.getLoc(), cst.getValue());
+      app =
+          rewriter.create<arith::ConstantIndexOp>(ld.getLoc(), cst.getValue());
     else
-	app = rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
+      app = rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
 
     for (auto &&[negated, val] : irreducible) {
       if (negated)
