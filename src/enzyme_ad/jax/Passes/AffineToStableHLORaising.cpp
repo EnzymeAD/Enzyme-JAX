@@ -1548,17 +1548,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   return failure();
 }
 
-static void replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc,
-                                               func::FuncOp newFunc) {
-  auto modOp = oldFunc->getParentOfType<ModuleOp>();
-
-  SymbolTableCollection symbolTable;
-  symbolTable.getSymbolTable(modOp);
-
-  auto use_opt =
-      symbolTable.getSymbolTable(modOp).getSymbolUses(oldFunc, modOp);
-  for (auto use : *use_opt) {
-    auto user = dyn_cast<enzymexla::JITCallOp>(use.getUser());
+static void
+replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
+                                   llvm::ArrayRef<Operation *> users) {
+  for (auto op : users) {
+    auto user = dyn_cast<enzymexla::JITCallOp>(op);
 
     OpBuilder builder(user);
     auto newCall = builder.create<func::CallOp>(user->getLoc(), newFunc,
@@ -1583,10 +1577,11 @@ static void replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc,
     user->erase();
   }
 
-  symbolTable.getSymbolTable(modOp).erase(oldFunc);
+  oldFunc->erase();
 }
 
-static bool tryRaisingToStableHLO(func::FuncOp func) {
+static bool tryRaisingToStableHLO(func::FuncOp func,
+                                  ArrayRef<Operation *> users) {
   Block *body = &func->getRegion(0).front();
   Block *newBlock = new Block();
 
@@ -1683,7 +1678,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func) {
   builder.create<func::ReturnOp>(func->getLoc(), results);
   modOp.getBody()->push_back(newFunc);
 
-  replaceAffineFuncWithStableHLOFunc(func, newFunc);
+  replaceAffineFuncWithStableHLOFunc(func, newFunc, users);
 
   return true;
 }
@@ -1711,10 +1706,14 @@ struct AffineToStableHLORaisingPass
       }
     });
 
+    SymbolTableCollection symbolTable;
+    SymbolUserMap userMap(symbolTable, op);
+
     bool anyRaised = false;
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
-      anyRaised |= tryRaisingToStableHLO(kernelFunc);
+      ArrayRef<Operation *> users = userMap.getUsers(kernelFunc);
+      anyRaised |= tryRaisingToStableHLO(kernelFunc, users);
       funcs.pop_back();
     }
 
