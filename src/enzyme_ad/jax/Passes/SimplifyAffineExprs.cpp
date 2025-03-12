@@ -632,8 +632,7 @@ isl_set *IslAnalysis::getMemrefShape(MemRefType ty) {
         isl_space_copy(space), isl_val_int_from_si(ctx, ty.getDimSize(i)));
 
     set = isl_set_intersect(set, isl_aff_ge_set(isl_aff_copy(dim), lb));
-    set = isl_set_intersect(set, isl_aff_lt_set(isl_aff_copy(dim), ub));
-    isl_aff_free(dim);
+    set = isl_set_intersect(set, isl_aff_lt_set(dim, ub));
   }
   isl_space_free(space);
   isl_multi_aff_free(ma);
@@ -650,8 +649,12 @@ isl_map *IslAnalysis::getAccessMap(mlir::Operation *op) {
   isl_space *range = isl_space_set_alloc(ctx, 0, exprs->size());
   isl_space *space = isl_space_map_from_domain_and_range(domain, range);
   for (auto aff : *exprs) {
-    assert(isl_space_dim(isl_aff_get_space(aff), isl_dim_param) == 0 &&
+#ifndef NDEBUG
+    isl_space *affSpace = isl_aff_get_space(aff);
+    assert(isl_space_dim(affSpace, isl_dim_param) == 0 &&
            "only no-parameter aff supported currently");
+    isl_space_free(affSpace);
+#endif
     list = isl_aff_list_add(list, aff);
   }
   isl_multi_aff *maff = isl_multi_aff_from_aff_list(space, list);
