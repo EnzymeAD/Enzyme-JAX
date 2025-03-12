@@ -677,11 +677,11 @@ std::vector<int64_t> convolutionShapeComputation(
     output_shape[out_spatial_dims[i]] = out_dim;
   }
   output_shape[out_spec[1]] = output_feature_dim;
-  std::cout << "Computed Output Shape: ";
-  for (int64_t dim : output_shape) {
-    std::cout << dim << " ";
-  }
-  std::cout << std::endl;
+  // std::cout << "Computed Output Shape: ";
+  // for (int64_t dim : output_shape) {
+  //   std::cout << dim << " ";
+  // }
+  // std::cout << std::endl;
   return output_shape;
 }
 
@@ -1487,11 +1487,11 @@ dfs(Operation *op,
         convolution.getResult().getType().cast<mlir::ShapedType>();
     if (result_type.hasRank()) {
       auto shape = result_type.getShape();
-      llvm::errs() << "Result shape: [";
-      for (auto dim : shape) {
-        llvm::errs() << dim << " ";
-      }
-      llvm::errs() << "]\n";
+      // llvm::errs() << "Result shape: [";
+      // for (auto dim : shape) {
+      //   llvm::errs() << dim << " ";
+      // }
+      // llvm::errs() << "]\n";
     } else {
       llvm::errs() << "Result is unranked.\n";
     }
