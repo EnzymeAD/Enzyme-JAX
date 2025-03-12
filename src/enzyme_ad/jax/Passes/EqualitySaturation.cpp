@@ -206,10 +206,19 @@ public:
 
     std::string opName = op->getName().getStringRef().str();
 
-    // TODO: Have a whitelist instead?
-    if (op->getDialect()->getNamespace() != "stablehlo" ||
-        zeroCostOps.find(opName) != zeroCostOps.end() || isBlackboxed(op))
+    bool shouldReturnZeroCost = false;
+
+    if (op->getDialect()->getNamespace() != "stablehlo" || isBlackboxed(op)) {
       return {0, 0};
+    }
+
+    const char *zeroCostEnv = std::getenv("ZERO_COSTS");
+
+    if (zeroCostEnv && std::string(zeroCostEnv) != "false") {
+      if (zeroCostOps.find(opName) != zeroCostOps.end()) {
+        return {0, 0};
+      }
+    }
 
     if (runtimeCache.contains(op)) {
       return runtimeCache[op];
@@ -2502,10 +2511,10 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
   moduleOp.push_back(funcOp);
   reconstructStablehlo(&moduleOp, {}, {}, nodes, builder);
 
-  // TODO: Ideally this should be just the rewrite we're considering instead of
-  // the whole pass, but that makes the infra more complicated. In practice I
-  // don't think there should be multiple possible application rules, so this
-  // should be good enough.
+  // TODO: Ideally this should be just the rewrite we're considering instead
+  // of the whole pass, but that makes the infra more complicated. In practice
+  // I don't think there should be multiple possible application rules, so
+  // this should be good enough.
   PassManager pm(&context);
   pm.addPass(mlir::enzyme::createEnzymeHLOOptPass());
   if (failed(pm.run(moduleOp))) {
@@ -2565,8 +2574,8 @@ public:
 
         SmallVector<Type> argTypes(whileOp.getOperandTypes());
 
-        // Capture values originating from outer scope, and add as arguments to
-        // FuncOp
+        // Capture values originating from outer scope, and add as arguments
+        // to FuncOp
         SmallVector<Value> captured;
         body.walk([&](Operation *op) {
           for (auto value : op->getOperands()) {

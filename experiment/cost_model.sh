@@ -1,25 +1,25 @@
 #!/bin/bash
 
-# Define the combinations of environment variables
 configs=(
-  # "export ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
-  "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
+  "export FUSION_COSTS=true"
+  "export FUSION_COSTS=false"
+  "export FUSION_COSTS=false ZERO_COSTS=false"
 )
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
-filename=eqsat_vs_enzyme_$(date '+%Y-%m-%d_%H:%M:%S').txt
+filename=cost_model_$(date '+%Y-%m-%d_%H:%M:%S').txt
 
-echo "Eqsat vs Enzyme" > $filename
+echo "Cost model ablation" > $filename
 echo "--------------------------" >> $filename
 
 for model in "${models[@]}"; do
   for platform in "${platforms[@]}"; do
     for config in "${configs[@]}"; do
-      # Set environment variables for each configuration
       eval "$config"
       export EXPERIMENT_NAME="${model}_${config// /_}-${platform}"
       export KERAS_BACKEND="jax"
       export EQSAT_PLATFORM=$platform
+      export EQSAT_ONLY=true
 
       if [ "$platform" == "gpu" ]; then
         COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"
