@@ -258,6 +258,24 @@ struct ArithRaisingPass
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
+    op->walk([=](arith::ExtUI addOp) {
+      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
+        return;
+      if (!cast<RankedTensorType>(addOp.getOperand().getType())
+               .getElementType()
+               .isIntegerTy(1))
+        return;
+      OpBuilder builder(addOp);
+      Value newAddOp;
+      newAddOp = builder.create<stablehlo::ConvertOp>(
+          addOp.getLoc(), addOp->getOperand(0),
+          addOp->getResult(0)
+              .getType()
+              .cast<RankedTensorType>()
+              .getElementType());
+      addOp.replaceAllUsesWith(newAddOp);
+      addOp.erase();
+    });
     op->walk([=](enzyme::BroadcastOp broadcastOp) {
       OpBuilder builder(broadcastOp);
       Value newBroadcastOp;
