@@ -258,12 +258,12 @@ struct ArithRaisingPass
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
-    op->walk([=](arith::ExtUI addOp) {
+    op->walk([=](arith::ExtUIOp addOp) {
       if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
         return;
       if (!cast<RankedTensorType>(addOp.getOperand().getType())
                .getElementType()
-               .isIntegerTy(1))
+               .isInteger(1))
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
