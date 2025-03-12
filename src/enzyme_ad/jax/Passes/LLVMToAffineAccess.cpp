@@ -426,8 +426,13 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     }
 
     map = mlir::enzyme::recreateExpr(map);
-    Value app =
-        rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
+    Value app;
+    if (auto cst = dyn_cast<AffineConstantExpr>(map.getResult(0)))
+      app =
+          rewriter.create<arith::ConstantIndexOp>(ld.getLoc(), cst.getValue());
+    else
+      app = rewriter.create<affine::AffineApplyOp>(ld.getLoc(), map, operands);
+
     for (auto &&[negated, val] : irreducible) {
       if (negated)
         app = rewriter.create<arith::SubIOp>(ld.getLoc(), app, val);
@@ -647,66 +652,6 @@ struct AffineExprBuilder {
     return getPosition(v, dimOperands, dimToPos);
   }
 
-  template <typename... Ts>
-  inline FailureOr<AffineExpr> buildPassthrough(Operation *op) {
-    if (isa<Ts...>(op)) {
-      assert(op->getNumOperands() == 1);
-      return buildExpr(op->getOperand(0));
-    }
-    return failure();
-  }
-
-  template <typename... Ts>
-  inline FailureOr<AffineExpr>
-  buildBinOpExpr(Operation *op,
-                 AffineExpr (AffineExpr::*handler)(AffineExpr) const) {
-    if (isa<Ts...>(op)) {
-      assert(op->getNumOperands() == 2);
-      auto lhs = buildExpr(op->getOperand(0));
-      auto rhs = buildExpr(op->getOperand(1));
-      if (failed(lhs) || failed(rhs))
-        return failure();
-      return ((*lhs).*handler)(*rhs);
-    }
-    return failure();
-  }
-
-  inline FailureOr<AffineExpr> buildOriAddOne(Operation *op) {
-    auto ori = dyn_cast<arith::OrIOp>(op);
-    if (!ori)
-      return failure();
-    auto lhs = buildExpr(op->getOperand(0));
-    auto rhs = buildExpr(op->getOperand(1));
-    if (failed(lhs) || failed(rhs))
-      return failure();
-    if (!lhs->isMultipleOf(2))
-      return failure();
-    auto cstExpr = dyn_cast<AffineConstantExpr>(*rhs);
-    if (!cstExpr || cstExpr.getValue() != 1)
-      return failure();
-    return *lhs + 1;
-  }
-
-  // TODO test this
-  FailureOr<AffineExpr> buildShift(Operation *op) {
-    if (op->getNumOperands() != 2)
-      return failure();
-    auto rhs = getConstant(op->getOperand(1));
-    if (!rhs)
-      return failure();
-    auto lhs = buildExpr(op->getOperand(0));
-    if (failed(lhs))
-      return failure();
-    if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
-      return (*lhs) * getAffineConstantExpr(1 << (*rhs), op->getContext());
-    } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp, LLVM::AShrOp>(
-                   op)) {
-      return (*lhs).floorDiv(
-          getAffineConstantExpr(1 << (*rhs), op->getContext()));
-    }
-    return failure();
-  }
-
   FailureOr<AffineExpr> buildExpr(Value v) {
     auto context = v.getContext();
     Operation *op = v.getDefiningOp();
@@ -728,28 +673,63 @@ struct AffineExprBuilder {
     }
 
     if (op) {
-      // clang-format off
-#define RIS(X) do { auto res = X; if (succeeded(res)) return *res; } while (0)
-      RIS((buildBinOpExpr<LLVM::AddOp, arith::AddIOp>(
-               op, &AffineExpr::operator+)));
-      RIS((buildBinOpExpr<LLVM::SubOp, arith::SubIOp>(
-               op, &AffineExpr::operator-)));
-      RIS((buildBinOpExpr<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp, arith::RemUIOp>(
-               op, &AffineExpr::operator%)));
-      // TODO need to check that we dont end up with dim * dim or other invalid
-      // expression
-      RIS((buildBinOpExpr<LLVM::MulOp, arith::MulIOp>(
-               op, &AffineExpr::operator*)));
-      RIS((buildBinOpExpr<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp, arith::DivSIOp>(
-               op, &AffineExpr::floorDiv)));
-      RIS((buildPassthrough<
-           LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp,
-           arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-           arith::IndexCastOp, arith::IndexCastUIOp>(op)));
-      RIS((buildShift(op)));
-      RIS((buildOriAddOne(op)));
-#undef RIS
-      // clang-format on
+      if (op->getNumOperands() == 2 &&
+          isa<LLVM::AddOp, arith::AddIOp, LLVM::SubOp, arith::SubIOp,
+              LLVM::MulOp, arith::MulIOp, LLVM::UDivOp, LLVM::SDivOp,
+              arith::DivUIOp, arith::DivSIOp, LLVM::URemOp, arith::RemSIOp,
+              LLVM::SRemOp, arith::RemUIOp, arith::ShRUIOp, arith::ShRSIOp,
+              LLVM::LShrOp, LLVM::AShrOp, arith::OrIOp>(op)) {
+        auto lhs = buildExpr(op->getOperand(0));
+        if (failed(lhs))
+          return failure();
+        auto rhs = buildExpr(op->getOperand(1));
+        if (failed(rhs))
+          return failure();
+
+        if (isa<LLVM::AddOp, arith::AddIOp>(op))
+          return (*lhs) + (*rhs);
+        else if (isa<LLVM::SubOp, arith::SubIOp>(op))
+          return (*lhs) - (*rhs);
+        else if (isa<LLVM::MulOp, arith::MulIOp>(op))
+          return (*lhs) * (*rhs);
+        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
+                     arith::DivSIOp>(op))
+          return (*lhs).floorDiv(*rhs);
+        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                     LLVM::AShrOp>(op)) {
+          auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
+          if (!cexpr)
+            return failure();
+          if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
+            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(),
+                                                  op->getContext());
+          } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                         LLVM::AShrOp>(op)) {
+            return (*lhs).floorDiv(
+                getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
+          } else {
+            llvm_unreachable("unknown operation");
+          }
+        } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
+                       arith::RemUIOp>(op)) {
+          return (*lhs) % (*rhs);
+        } else if (isa<arith::OrIOp>(op)) {
+          auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
+          if (!cexpr)
+            return failure();
+          if (!lhs->isMultipleOf(2))
+            return failure();
+          if (!cexpr.getValue() != 1)
+            return failure();
+          return *lhs + 1;
+        } else {
+          llvm_unreachable("unknown operation");
+        }
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp, arith::ExtSIOp,
+                     arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp,
+                     arith::IndexCastUIOp>(op)) {
+        return getExpr(op->getOperand(0));
+      }
     }
 
     // TODO We may find an affine op reduction block arg - we may be able to
