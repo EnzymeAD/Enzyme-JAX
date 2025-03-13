@@ -2524,7 +2524,7 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
   }
 };
 
-struct SelectExtractToExtractSelect
+struct SelectExtractElementToExtractElementSelect
     : public OpRewritePattern<LLVM::ExtractElementOp> {
   using OpRewritePattern<LLVM::ExtractElementOp>::OpRewritePattern;
 
@@ -2545,6 +2545,37 @@ struct SelectExtractToExtractSelect
         rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), a, idx);
     auto bExtract =
         rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), b, idx);
+
+    // Create new select with same condition and operands
+    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
+                                               cond, aExtract, bExtract);
+
+    // Replace old extract with new select
+    rewriter.replaceOp(op, newSelect);
+
+    return success();
+  }
+};
+
+struct SelectExtractValueToExtractValueSelect
+    : public OpRewritePattern<LLVM::ExtractValueOp> {
+  using OpRewritePattern<LLVM::ExtractValueOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ExtractValueOp op,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp = op.getContainer().getDefiningOp<SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    // Get select operands and extract position
+    auto cond = selectOp.getCondition();
+    auto a = selectOp.getTrueValue();
+    auto b = selectOp.getFalseValue();
+    auto idx = op.getPosition();
+
+    // Create new extract operations
+    auto aExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), a, idx);
+    auto bExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), b, idx);
 
     // Create new select with same condition and operands
     auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
@@ -2965,8 +2996,10 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
-          MoveWhileToFor, RemoveWhileSelect, SelectExtractToExtractSelect,
-          SelectTruncToTruncSelect, SelectI1Simplify,
+          MoveWhileToFor, RemoveWhileSelect,
+          SelectExtractElementToExtractElementSelect,
+          SelectExtractValueToExtractValueSelect, SelectTruncToTruncSelect,
+          SelectI1Simplify,
 
           MoveWhileDown, MoveWhileDown2,
 

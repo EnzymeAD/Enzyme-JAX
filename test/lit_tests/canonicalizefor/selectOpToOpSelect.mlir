@@ -66,3 +66,40 @@ func.func @test_extui_select_trunci(%arg0: i1, %arg1: i8, %arg2: i8) -> i8 {
 // CHECK-NOT: arith.extui
 // CHECK-NOT: arith.trunci
 // CHECK: arith.select %arg0, %arg1, %arg2 : i8
+
+// ----
+func.func @select_extractvalue_simple(%arg0: i1, %arg1: !llvm.array<2 x f64>, %arg2: !llvm.array<2 x f64>) -> f64 {
+  %0 = llvm.extractvalue %arg1[0] : !llvm.array<2 x f64> 
+  %1 = llvm.extractvalue %arg2[0] : !llvm.array<2 x f64> 
+  %2 = arith.select %arg0, %0, %1 : f64
+  return %2 : f64
+}
+// CHECK-LABEL:   func.func @select_extractvalue_simple(
+// CHECK-SAME:                                          %[[VAL_0:.*]]: i1,
+// CHECK-SAME:                                          %[[VAL_1:.*]]: !llvm.array<2 x f64>,
+// CHECK-SAME:                                          %[[VAL_2:.*]]: !llvm.array<2 x f64>) -> f64 {
+// CHECK:           %[[VAL_3:.*]] = llvm.extractvalue %[[VAL_1]][0] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_4:.*]] = llvm.extractvalue %[[VAL_2]][0] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_5:.*]] = arith.select %[[VAL_0]], %[[VAL_3]], %[[VAL_4]] : f64
+// CHECK:           return %[[VAL_5]] : f64
+// CHECK:         }
+
+// ----
+func.func @select_extractvalue_array(%cond: i1, %a: !llvm.array<2 x f64>, %b: !llvm.array<2 x f64>) -> (f64, f64) {
+  %sel = arith.select %cond, %a, %b {fastmathFlags = #llvm.fastmath<none>} : !llvm.array<2 x f64>
+  %e0 = llvm.extractvalue %sel[0] : !llvm.array<2 x f64>
+  %e1 = llvm.extractvalue %sel[1] : !llvm.array<2 x f64>
+  return %e0, %e1 : f64, f64
+}
+// CHECK-LABEL:   func.func @select_extractvalue_array(
+// CHECK-SAME:                                         %[[VAL_0:.*]]: i1,
+// CHECK-SAME:                                         %[[VAL_1:.*]]: !llvm.array<2 x f64>,
+// CHECK-SAME:                                         %[[VAL_2:.*]]: !llvm.array<2 x f64>) -> (f64, f64) {
+// CHECK:           %[[VAL_3:.*]] = llvm.extractvalue %[[VAL_1]][0] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_4:.*]] = llvm.extractvalue %[[VAL_2]][0] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_5:.*]] = arith.select %[[VAL_0]], %[[VAL_3]], %[[VAL_4]] : f64
+// CHECK:           %[[VAL_6:.*]] = llvm.extractvalue %[[VAL_1]][1] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_7:.*]] = llvm.extractvalue %[[VAL_2]][1] : !llvm.array<2 x f64>
+// CHECK:           %[[VAL_8:.*]] = arith.select %[[VAL_0]], %[[VAL_6]], %[[VAL_7]] : f64
+// CHECK:           return %[[VAL_5]], %[[VAL_8]] : f64, f64
+// CHECK:         }
