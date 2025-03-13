@@ -344,14 +344,13 @@ struct ArithRaisingPass
 
       Value newCmpOp;
       if (use_stablehlo) {
-        stablehlo::ComparisonType compType =
-            stablehlo::ComparisonType::UNSIGNED;
+        stablehlo::ComparisonType compType = stablehlo::ComparisonType::SIGNED;
         auto predicate = cmpOp.getPredicate();
-        if (predicate == arith::CmpIPredicate::sgt ||
-            predicate == arith::CmpIPredicate::sge ||
-            predicate == arith::CmpIPredicate::slt ||
-            predicate == arith::CmpIPredicate::sle)
-          compType = stablehlo::ComparisonType::SIGNED;
+        if (predicate == arith::CmpIPredicate::ugt ||
+            predicate == arith::CmpIPredicate::uge ||
+            predicate == arith::CmpIPredicate::ult ||
+            predicate == arith::CmpIPredicate::ule)
+          compType = stablehlo::ComparisonType::UNSIGNED;
 
         stablehlo::ComparisonDirection direction;
         switch (predicate) {
