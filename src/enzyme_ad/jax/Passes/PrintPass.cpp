@@ -32,6 +32,8 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
     OpPrintingFlags flags;
     if (debug)
       flags.enableDebugInfo(true, /*pretty*/ false);
+    if (generic)
+      flags.printGenericOpForm(true);
     if (use_stdout) {
       getOperation()->print(llvm::outs(), flags);
       llvm::outs() << "\n";
