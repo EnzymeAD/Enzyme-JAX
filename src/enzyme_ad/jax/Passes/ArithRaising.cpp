@@ -344,8 +344,7 @@ struct ArithRaisingPass
 
       Value newCmpOp;
       if (use_stablehlo) {
-        stablehlo::ComparisonType compType =
-            stablehlo::ComparisonType::SIGNED;
+        stablehlo::ComparisonType compType = stablehlo::ComparisonType::SIGNED;
         auto predicate = cmpOp.getPredicate();
         if (predicate == arith::CmpIPredicate::ugt ||
             predicate == arith::CmpIPredicate::uge ||
