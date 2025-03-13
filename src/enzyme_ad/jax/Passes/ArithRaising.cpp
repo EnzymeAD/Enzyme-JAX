@@ -118,9 +118,36 @@ struct ArithRaisingPass
     RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
     RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
     RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
-    RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
 
 #undef RAISE_UNARY
+
+    op->walk([=](math::CopySignOp copySignOp) {
+      auto ty = dyn_cast<RankedTensorType>(copySignOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      // The copysign returns a value with the magnitude of the first operand
+      // and the sign of the second operand.
+      OpBuilder builder(copySignOp);
+      auto loc = copySignOp.getLoc();
+      Value val = copySignOp.getLhs();
+      Value sign = copySignOp.getRhs();
+      Attribute constAttr = FloatAttr::get(ty.getElementType(), 0);
+      Value zero = builder.create<stablehlo::ConstantOp>(
+          loc, ty, SplatElementsAttr::get(ty, constAttr));
+      Value signPositive = builder.create<stablehlo::CompareOp>(
+          loc, sign, zero, stablehlo::ComparisonDirection::GE);
+      Value valPositive = builder.create<stablehlo::CompareOp>(
+          loc, val, zero, stablehlo::ComparisonDirection::GE);
+      Value notSameSign =
+          builder.create<stablehlo::XorOp>(loc, signPositive, valPositive);
+      Value negVal = builder.create<stablehlo::NegOp>(loc, val);
+      Value res =
+          builder.create<stablehlo::SelectOp>(loc, notSameSign, negVal, val);
+
+      copySignOp.replaceAllUsesWith(res);
+      copySignOp.erase();
+    });
 
     op->walk([=](math::AtanOp atanOp) {
       // atan %a -> atan2(%a, 1.0)
