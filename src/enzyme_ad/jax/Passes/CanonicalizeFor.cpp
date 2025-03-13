@@ -2563,7 +2563,6 @@ struct SelectExtractValueToExtractValueSelect
 
   LogicalResult matchAndRewrite(LLVM::ExtractValueOp op,
                                 PatternRewriter &rewriter) const override {
-    //auto selectOp = op.getVector().getDefiningOp<SelectOp>();
     auto selectOp = op.getContainer().getDefiningOp<SelectOp>();
     if (!selectOp)
       return failure();
@@ -2575,10 +2574,8 @@ struct SelectExtractValueToExtractValueSelect
     auto idx = op.getPosition();
 
     // Create new extract operations
-    auto aExtract =
-        rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), a, idx);
-    auto bExtract =
-        rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), b, idx);
+    auto aExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), a, idx);
+    auto bExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), b, idx);
 
     // Create new select with same condition and operands
     auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
@@ -2999,8 +2996,10 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
-          MoveWhileToFor, RemoveWhileSelect, SelectExtractElementToExtractElementSelect, SelectExtractValueToExtractValueSelect, 
-          SelectTruncToTruncSelect, SelectI1Simplify,
+          MoveWhileToFor, RemoveWhileSelect,
+          SelectExtractElementToExtractElementSelect,
+          SelectExtractValueToExtractValueSelect, SelectTruncToTruncSelect,
+          SelectI1Simplify,
 
           MoveWhileDown, MoveWhileDown2,
 
