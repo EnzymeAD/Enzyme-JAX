@@ -136,6 +136,11 @@ def PrintPass : Pass<"print"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Whether to print to stdout (vs stderr)">,
+      Option</*C++ variable name=*/"generic",
+      /*CLI argument=*/"generic",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to print to generic mlir form">,
       ];
 }
 
