@@ -1053,7 +1053,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     AffineMap affineMap = accessValueMap.getAffineMap();
     for (auto [S, E] : llvm::zip_equal(outputShape, affineMap.getResults())) {
-      if (!E.isSymbolicOrConstant()) {
+      if (!E.isSymbolicOrConstant() && affine::isAffineParallelInductionVar(
+                                           getIVForExpr(accessValueMap, E))) {
         dynExprs.push_back(E);
         dynShape.push_back(S);
       }
@@ -1618,10 +1619,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
 
       SmallVector<Value> loopCarried = {newIvInBody};
-      for (auto [iterArg, yieldedIterArgs] : llvm::zip(
-        forOp.getRegionIterArgs(),
-        forOp.getBody()->getTerminator()->getOperands()))
-          loopCarried.push_back(mapping.lookup(yieldedIterArgs));
+      for (auto [iterArg, yieldedIterArgs] :
+           llvm::zip(forOp.getRegionIterArgs(),
+                     forOp.getBody()->getTerminator()->getOperands()))
+        loopCarried.push_back(mapping.lookup(yieldedIterArgs));
 
       for (auto memref : entryBlock->getArguments())
         loopCarried.push_back(mapping.lookup(memref));

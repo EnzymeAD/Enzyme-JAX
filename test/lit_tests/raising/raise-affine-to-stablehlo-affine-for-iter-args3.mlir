@@ -22,13 +22,12 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
 // CHECK:           %[[VAL_3:.*]] = stablehlo.constant dense<18> : tensor<i64>
 // CHECK:           %[[VAL_4:.*]] = stablehlo.constant dense<0> : tensor<i64>
 // CHECK:           %[[VAL_5:.*]] = stablehlo.constant dense<5.000000e-01> : tensor<85x180xf64>
-// CHECK:           %[[VAL_6:.*]]:2 = stablehlo.while(%[[VAL_7:.*]] = %[[VAL_4]], %[[VAL_8:.*]] = %[[VAL_0]]) : tensor<i64>, tensor<85x180x18xf64>
-// CHECK:            cond {
-// CHECK:             %[[VAL_9:.*]] = stablehlo.compare  LT, %[[VAL_7]], %[[VAL_3]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK:             stablehlo.return %[[VAL_9]] : tensor<i1>
-// CHECK:           } do {
-// CHECK:             %[[VAL_10:.*]] = stablehlo.add %[[VAL_7]], %[[VAL_2]] : tensor<i64>
-// CHECK:             stablehlo.return %[[VAL_10]], %[[VAL_8]] : tensor<i64>, tensor<85x180x18xf64>
+// CHECK:           %[[VAL_6:.*]]:3 = stablehlo.while(%[[VAL_7:.*]] = %[[VAL_4]], %[[VAL_8:.*]] = %[[VAL_5]], %[[VAL_9:.*]] = %[[VAL_0]]) : tensor<i64>, tensor<85x180xf64>, tensor<85x180x18xf64>
+// CHECK:             %[[LD_RAW:.*]] = stablehlo.dynamic_slice %[[VAL_9]], %[[VAL_4]], %[[VAL_4]], %[[VAL_7]], sizes = [85, 180, 1] : (tensor<85x180x18xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<85x180x1xf64>
+// CHECK:             %[[LD:.*]] = stablehlo.reshape %[[LD_RAW]] : (tensor<85x180x1xf64>) -> tensor<85x180xf64>
+// CHECK:             %[[NEW_SUM:.*]] = arith.addf %[[LD]], %[[VAL_8]] : tensor<85x180xf64>
+// CHECK:             %[[NEW_IV:.*]] = stablehlo.add %[[VAL_7]], %[[VAL_2]] : tensor<i64>
+// CHECK:             stablehlo.return %[[NEW_IV]], %[[NEW_SUM]], %[[VAL_9]] : tensor<i64>, tensor<85x180xf64>, tensor<85x180x18xf64>
 // CHECK:           }
-// CHECK:           return %[[VAL_6]]#1, %[[VAL_5]] : tensor<85x180x18xf64>, tensor<85x180xf64>
+// CHECK:           return %[[VAL_6]]#2, %[[VAL_6]]#1 : tensor<85x180x18xf64>, tensor<85x180xf64>
 // CHECK:         }
