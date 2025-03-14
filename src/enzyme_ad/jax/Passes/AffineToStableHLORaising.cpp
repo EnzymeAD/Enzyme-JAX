@@ -549,6 +549,7 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
 
 struct ParallelContext {
   SmallVector<InductionVariableRange, 8> ranges;
+  SmallVector<Value, 8> ivs;
 
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
@@ -556,7 +557,39 @@ struct ParallelContext {
     return RankedTensorType::get(shape, elTy);
   }
 
-  Value getBroadcast(Value cst) { auto TT = getTensorType(cst.getType()); }
+  struct Broadcast {
+    Value v;
+    affine::AffineValueMap avm;
+  };
+
+  std::optional<Broadcast> getBroadcast(OpBuilder &b,
+                                        affine::AffineValueMap avm, Value v) {
+    auto CTT = dyn_cast<RankedTensorType>(v.getType());
+    if (!CTT)
+      return std::nullopt;
+    auto TT = getTensorType(CTT.getElementType());
+    assert(CTT.getElementType() == TT.getElementType());
+    if (CTT.getShape() == TT.getShape())
+      return Broadcast{v, avm};
+    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
+                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
+      return std::nullopt;
+    if (CTT.getRank() > TT.getRank())
+      return std::nullopt;
+
+    // TODO I haven't thought through how to broadcast non-scalars to the
+    // shape we need.
+    if (CTT.getRank() != 0)
+      return std::nullopt;
+    SmallVector<int64_t> dimsToBroadcast;
+    auto bc = b.create<stablehlo::BroadcastInDimOp>(v.getLoc(), TT, v,
+                                                    dimsToBroadcast);
+
+    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
+        TT.getRank() - CTT.getRank(), b.getContext());
+
+    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+  }
 
   std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
     ParallelContext newPc = *this;
@@ -565,6 +598,7 @@ struct ParallelContext {
       if (!ivr)
         return std::nullopt;
       newPc.ranges.push_back(*ivr);
+      newPc.ivs.push_back(iv);
     }
     return newPc;
   }
@@ -1535,11 +1569,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value iterArgInCond = cond->addArgument(TT, iterArg.getLoc());
       Value iterArgInBody = body->addArgument(TT, iterArg.getLoc());
       auto tensorInit = mapping.lookup(init);
-      tensorInit.dump();
-      inits.push_back(tensorInit);
+      auto broadcastInit =
+          pc.getBroadcast(builder, maps[tensorInit], tensorInit);
+      if (!broadcastInit)
+        return failure();
+      inits.push_back(broadcastInit->v);
       mapping.map(iterArg, iterArgInBody);
-      maps[iterArgInBody] = maps[tensorInit];
-      maps[tensorInit].getAffineMap().dump();
+      maps[iterArgInBody] = broadcastInit->avm;
     }
 
     for (auto memref : entryBlock->getArguments()) {
@@ -1592,9 +1628,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
       mapping.map(memref,
                   whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
-    for (auto [forRes, whileRes] :
-         llvm::zip(forOp.getResults(), llvm::drop_begin(whileOp.getResults())))
+    for (auto [forRes, forIterArg, whileRes] :
+         llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
+                   llvm::drop_begin(whileOp.getResults()))) {
       mapping.map(forRes, whileRes);
+      maps[whileRes] = maps[mapping.lookup(forIterArg)];
+    }
 
     return success();
   }
