@@ -153,6 +153,14 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_simplify"> {
   let patterns = ["GatherSimplify"];
 }
+def ApplyNotConstProp : EnzymeHLOPatternOp<
+    "not_const_prop"> {
+  let patterns = ["NotConstProp"];
+}
+def ApplyIsFiniteConstProp : EnzymeHLOPatternOp<
+    "is_finite_const_prop"> {
+  let patterns = ["IsFiniteConstProp"];
+}
 def ApplyLogConstProp : EnzymeHLOPatternOp<
     "log_const_prop">{
   let patterns = ["LogConstProp"];
@@ -645,6 +653,11 @@ def ApplyCSENegPatterns : EnzymeHLOPatternOp<
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
+}
+
+def CompareExtPatterns : EnzymeHLOPatternOp<
+    "compare_ext"> {
+  let patterns = ["CompareExt"];
 }
 
 def BroadcastInDimOpCanonPatterns : EnzymeHLOPatternOp<

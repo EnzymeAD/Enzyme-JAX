@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(llvm-to-affine-access)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(llvm-to-affine-access,canonicalize)" | FileCheck %s
 
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
@@ -132,11 +132,11 @@ module {
 // CHECK-NEXT:    scf.if %20 {
 // CHECK-NEXT:      %21 = arith.addi %12, %c-1_i64 : i64
 // CHECK-NEXT:      %22 = arith.muli %21, %c23862_i64 : i64
-// CHECK-NEXT:      %23 = arith.index_cast %10 : i64 to index
+// CHECK-NEXT:      %23 = arith.index_cast %22 : i64 to index
 // CHECK-NEXT:      %24 = arith.index_cast %5 : i64 to index
-// CHECK-NEXT:      %25 = arith.addi %24, %23 : index
-// CHECK-NEXT:      %26 = arith.index_cast %22 : i64 to index
-// CHECK-NEXT:      %27 = arith.addi %26, %25 : index
+// CHECK-NEXT:      %25 = arith.index_cast %10 : i64 to index
+// CHECK-NEXT:      %26 = arith.addi %24, %25 : index
+// CHECK-NEXT:      %27 = arith.addi %23, %26 : index
 // CHECK-NEXT:      %28 = arith.addi %27, %c3692 : index
 // CHECK-NEXT:      %29 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>
 // CHECK-NEXT:      %30 = memref.load %29[%28] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
@@ -148,14 +148,14 @@ module {
 // CHECK-NEXT:      %35 = arith.addi %22, %11 : i64
 // CHECK-NEXT:      affine.for %arg1 = 0 to 18 {
 // CHECK-NEXT:        %57 = arith.index_cast %arg1 : index to i64
-// CHECK-NEXT:        %58 = arith.index_cast %22 : i64 to index
+// CHECK-NEXT:        %58 = arith.index_cast %5 : i64 to index
 // CHECK-NEXT:        %59 = arith.index_cast %10 : i64 to index
-// CHECK-NEXT:        %60 = arith.index_cast %5 : i64 to index
+// CHECK-NEXT:        %60 = arith.index_cast %22 : i64 to index
 // CHECK-NEXT:        %61 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>
 // CHECK-NEXT:        %62 = affine.apply #map(%arg1)
-// CHECK-NEXT:        %63 = arith.addi %62, %58 : index
+// CHECK-NEXT:        %63 = arith.addi %62, %60 : index
 // CHECK-NEXT:        %64 = arith.subi %63, %59 : index
-// CHECK-NEXT:        %65 = arith.subi %64, %60 : index
+// CHECK-NEXT:        %65 = arith.subi %64, %58 : index
 // CHECK-NEXT:        %66 = memref.load %61[%65] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
 // CHECK-NEXT:        %67 = arith.addi %57, %c104_i64 : i64
 // CHECK-NEXT:        %68 = arith.muli %67, %c194_i64 : i64
@@ -165,20 +165,20 @@ module {
 // CHECK-NEXT:        %72 = "enzymexla.pointer2memref"(%71) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>
 // CHECK-NEXT:        memref.store %66, %72[%c0] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
 // CHECK-NEXT:      }
-// CHECK-NEXT:      %36 = arith.index_cast %22 : i64 to index
+// CHECK-NEXT:      %36 = arith.index_cast %5 : i64 to index
 // CHECK-NEXT:      %37 = arith.index_cast %10 : i64 to index
-// CHECK-NEXT:      %38 = arith.index_cast %5 : i64 to index
+// CHECK-NEXT:      %38 = arith.index_cast %22 : i64 to index
 // CHECK-NEXT:      %39 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>
-// CHECK-NEXT:      %40 = arith.addi %36, %c20169 : index
+// CHECK-NEXT:      %40 = arith.addi %38, %c20169 : index
 // CHECK-NEXT:      %41 = arith.subi %40, %37 : index
-// CHECK-NEXT:      %42 = arith.subi %41, %38 : index
+// CHECK-NEXT:      %42 = arith.subi %41, %36 : index
 // CHECK-NEXT:      %43 = memref.load %39[%42] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
 // CHECK-NEXT:      %44 = arith.addi %35, %c19988_i64 : i64
-// CHECK-NEXT:      %45 = arith.index_cast %10 : i64 to index
+// CHECK-NEXT:      %45 = arith.index_cast %22 : i64 to index
 // CHECK-NEXT:      %46 = arith.index_cast %5 : i64 to index
-// CHECK-NEXT:      %47 = arith.addi %46, %45 : index
-// CHECK-NEXT:      %48 = arith.index_cast %22 : i64 to index
-// CHECK-NEXT:      %49 = arith.addi %48, %47 : index
+// CHECK-NEXT:      %47 = arith.index_cast %10 : i64 to index
+// CHECK-NEXT:      %48 = arith.addi %46, %47 : index
+// CHECK-NEXT:      %49 = arith.addi %45, %48 : index
 // CHECK-NEXT:      %50 = arith.addi %49, %c19988 : index
 // CHECK-NEXT:      %51 = llvm.getelementptr inbounds %arg0[%44] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
 // CHECK-NEXT:      %52 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>

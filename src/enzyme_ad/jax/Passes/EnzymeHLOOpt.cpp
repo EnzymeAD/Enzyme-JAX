@@ -2319,11 +2319,18 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
   stablehlo::Tensor inputTen;
   RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
 
-  if (inputAttr.isSplat()) {
+  // only const prop if the constant has a single user to prevent create many
+  // constants
+  if (!inputAttr.isSplat() &&
+      !llvm::hasSingleElement(op->getResult(0).getUsers()))
+    return failure();
 
+  if (inputAttr.isSplat()) {
     ty = RankedTensorType::get(
         {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
-    inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(ty));
+    auto inputTy = RankedTensorType::get(
+        {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
+    inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
   } else {
     inputTen = mlir::stablehlo::constantOp(inputAttr);
   }
@@ -2342,6 +2349,24 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
 
   return success();
 }
+
+struct NotConstProp final : OpRewritePattern<mlir::stablehlo::NotOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::NotOp op,
+                                PatternRewriter &rewriter) const override {
+    return unaryConstProp<mlir::stablehlo::notOp>(op, rewriter);
+  }
+};
+
+struct IsFiniteConstProp final : OpRewritePattern<mlir::stablehlo::IsFiniteOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IsFiniteOp op,
+                                PatternRewriter &rewriter) const override {
+    return unaryConstProp<mlir::stablehlo::isFiniteOp>(op, rewriter);
+  }
+};
 
 struct LogConstProp final : OpRewritePattern<mlir::stablehlo::LogOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3089,6 +3114,22 @@ struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
       }
     }
 
+    SmallVector<Attribute> constants(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                IntegerAttr::ValueType, void>(
+            constants,
+            [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+              APInt res2(a);
+              res2 &= b;
+              return res2;
+            })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+
     return failure();
   }
 };
@@ -3113,6 +3154,22 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
         rewriter.replaceOp(op, op.getOperand(1 - i));
         return success();
       }
+    }
+
+    SmallVector<Attribute> constants(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                IntegerAttr::ValueType, void>(
+            constants,
+            [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+              APInt res2(a);
+              res2 |= b;
+              return res2;
+            })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
     }
 
     return failure();
@@ -6073,6 +6130,68 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
+struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
+  using OpRewritePattern<mlir::stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op.getLhs()
+             .getType()
+             .cast<RankedTensorType>()
+             .getElementType()
+             .isInteger())
+      return failure();
+
+    auto direction = op.getComparisonDirection();
+
+    auto lhsConvert = op.getLhs().getDefiningOp<mlir::stablehlo::ConvertOp>();
+    auto rhsConvert = op.getRhs().getDefiningOp<mlir::stablehlo::ConvertOp>();
+    if (!lhsConvert && !rhsConvert)
+      return failure();
+
+    auto isConvertFromBool = [](mlir::stablehlo::ConvertOp cvtOp) -> bool {
+      return cvtOp && cvtOp.getOperand()
+                          .getType()
+                          .cast<RankedTensorType>()
+                          .getElementType()
+                          .isInteger(1);
+    };
+
+    if (isConvertFromBool(lhsConvert) && isConvertFromBool(rhsConvert) &&
+        direction == stablehlo::ComparisonDirection::EQ) {
+      rewriter.replaceOpWithNewOp<stablehlo::AndOp>(op, lhsConvert.getOperand(),
+                                                    rhsConvert.getOperand());
+      return success();
+    }
+
+    if (isConvertFromBool(lhsConvert) &&
+        direction == stablehlo::ComparisonDirection::EQ) {
+      if (matchPattern(op.getRhs(), m_One())) {
+        rewriter.replaceAllUsesWith(op.getResult(), lhsConvert.getOperand());
+        return success();
+      } else if (matchPattern(op.getRhs(), m_Zero())) {
+        rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
+            op, lhsConvert.getOperand());
+        return success();
+      }
+    }
+
+    if (isConvertFromBool(rhsConvert) &&
+        direction == stablehlo::ComparisonDirection::EQ) {
+      if (matchPattern(op.getLhs(), m_One())) {
+        rewriter.replaceAllUsesWith(op.getResult(), rhsConvert.getOperand());
+        return success();
+      } else if (matchPattern(op.getLhs(), m_Zero())) {
+        rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
+            op, rhsConvert.getOperand());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct SelectOpUsedWithinIf final
     : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -7874,18 +7993,19 @@ struct EnzymeHLOOptPass
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<
-        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
-        DotReshapeDot, ConcatConstProp, DynamicUpdateSliceConstProp,
-        LogConstProp, LogPlusConstProp, ChloInfConstProp, GammaConstProp,
-        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, SliceConcat,
-        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-        BinBroadcastSplat<stablehlo::SubtractOp>,
-        BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+                 SliceElementwise, SliceReshapeElementwise, SlicePad,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
+                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
+                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
+                 GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+                 ReduceConcat, ConcatSlice, SliceConcat, SliceReshapeConcat,
+                 BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
@@ -8011,6 +8131,7 @@ struct EnzymeHLOOptPass
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
+        CompareExt,
         ConjComplexNegate,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
