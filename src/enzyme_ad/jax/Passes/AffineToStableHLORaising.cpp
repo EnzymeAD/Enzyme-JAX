@@ -1618,8 +1618,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
 
       SmallVector<Value> loopCarried = {newIvInBody};
-      for (auto iterArg : forOp.getRegionIterArgs())
-        loopCarried.push_back(mapping.lookup(iterArg));
+      for (auto [iterArg, yieldedIterArgs] : llvm::zip(
+        forOp.getRegionIterArgs(),
+        forOp.getBody()->getTerminator()->getOperands()))
+          loopCarried.push_back(mapping.lookup(yieldedIterArgs));
+
       for (auto memref : entryBlock->getArguments())
         loopCarried.push_back(mapping.lookup(memref));
       builder.create<stablehlo::ReturnOp>(forOp.getLoc(), loopCarried);
