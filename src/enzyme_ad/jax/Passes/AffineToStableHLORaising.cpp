@@ -1622,8 +1622,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto [iterArg, yieldedIterArgs] :
            llvm::zip(forOp.getRegionIterArgs(),
                      forOp.getBody()->getTerminator()->getOperands())) {
-        if (maps[mapping.lookup(iterArg)].getOperands() !=
-            maps[mapping.lookup(yieldedIterArgs)].getOperands()) {
+        if (maps[mapping.lookup(iterArg)] !=
+            maps[mapping.lookup(yieldedIterArgs)]) {
           LLVM_DEBUG(llvm::dbgs() << "invalid init for iterArg: ";
                      iterArg.printAsOperand(llvm::dbgs(), OpPrintingFlags());
                      llvm::dbgs() << "\n");
