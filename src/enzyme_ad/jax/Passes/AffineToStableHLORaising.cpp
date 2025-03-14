@@ -547,24 +547,55 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   return inBounds;
 }
 
+struct ParallelContext {
+  SmallVector<InductionVariableRange, 8> ranges;
+
+  RankedTensorType getTensorType(Type elTy) {
+    SmallVector<int64_t> shape = llvm::map_to_vector(
+        ranges, [&](auto range) { return range.getNumIters(); });
+    return RankedTensorType::get(shape, elTy);
+  }
+
+  Value getBroadcast(Value cst) { auto TT = getTensorType(cst.getType()); }
+
+  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
+    ParallelContext newPc = *this;
+    for (auto iv : parallelOp.getIVs()) {
+      auto ivr = getIVRange(iv);
+      if (!ivr)
+        return std::nullopt;
+      newPc.ranges.push_back(*ivr);
+    }
+    return newPc;
+  }
+
+  static std::optional<ParallelContext>
+  get(affine::AffineParallelOp parallelOp) {
+    ParallelContext pc;
+    return pc.add(parallelOp);
+  }
+};
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
-                        llvm::DenseMap<Value, affine::AffineValueMap> &maps);
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext pc);
 
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
-               DenseMap<Value, affine::AffineValueMap> &maps) {
+               DenseMap<Value, affine::AffineValueMap> &maps,
+               ParallelContext pc) {
   Block *thenBlock = &ifOp->getRegion(0).front(),
         *elseBlock = &ifOp->getRegion(1).front();
 
   for (auto &innerOp : thenBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
       return failure();
   }
 
   for (auto &innerOp : elseBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
       return failure();
   }
 
@@ -876,7 +907,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
-                        llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext pc) {
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
@@ -1374,7 +1406,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
 
     Value cond = mapping.lookup(ifOp.getCondition());
-    if (emitIfAsSelect(op, cond, maps[cond], builder, mapping, maps).failed())
+    if (emitIfAsSelect(op, cond, maps[cond], builder, mapping, maps, pc)
+            .failed())
       return failure();
 
     return success();
@@ -1427,7 +1460,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
 
-    if (emitIfAsSelect(op, cond, map, builder, mapping, maps).failed())
+    if (emitIfAsSelect(op, cond, map, builder, mapping, maps, pc).failed())
       return failure();
 
     return success();
@@ -1445,8 +1478,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       emitIVToStableHLO(builder, iv, *range, mapping, maps);
     }
 
+    auto newPc = pc.add(parallelOp);
+    if (!newPc)
+      return failure();
     for (auto &innerOp : parallelOp.getBody()->without_terminator()) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, *newPc)
+              .failed())
         return failure();
     }
 
@@ -1483,14 +1520,27 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         SplatElementsAttr::get(
             TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
 
-    SmallVector<Value> inits;
-    inits.push_back(lb);
-
     Block *entryBlock = &op->getParentOfType<func::FuncOp>().getBody().front();
 
     Block *cond = new Block(), *body = new Block();
     Value ivInCond = cond->addArgument(TT, iv.getLoc());
     Value ivInBody = body->addArgument(TT, iv.getLoc());
+
+    SmallVector<Value> inits;
+    inits.push_back(lb);
+
+    for (auto [init, iterArg] :
+         llvm::zip(forOp.getInits(), forOp.getRegionIterArgs())) {
+      auto TT = pc.getTensorType(init.getType());
+      Value iterArgInCond = cond->addArgument(TT, iterArg.getLoc());
+      Value iterArgInBody = body->addArgument(TT, iterArg.getLoc());
+      auto tensorInit = mapping.lookup(init);
+      tensorInit.dump();
+      inits.push_back(tensorInit);
+      mapping.map(iterArg, iterArgInBody);
+      maps[iterArgInBody] = maps[tensorInit];
+      maps[tensorInit].getAffineMap().dump();
+    }
 
     for (auto memref : entryBlock->getArguments()) {
       Value mappedMemref = mapping.lookup(memref);
@@ -1523,7 +1573,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           affine::AffineValueMap(AffineMap::get(op->getContext()), {});
 
       for (auto &innerOp : forOp.getBody()->without_terminator()) {
-        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps).failed())
+        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+                .failed())
           return failure();
       }
 
@@ -1531,14 +1582,19 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder.create<stablehlo::AddOp>(forOp.getLoc(), ivInBody, step);
 
       SmallVector<Value> loopCarried = {newIvInBody};
+      for (auto iterArg : forOp.getRegionIterArgs())
+        loopCarried.push_back(mapping.lookup(iterArg));
       for (auto memref : entryBlock->getArguments())
         loopCarried.push_back(mapping.lookup(memref));
       builder.create<stablehlo::ReturnOp>(forOp.getLoc(), loopCarried);
     }
 
-    for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments())) {
-      mapping.map(memref, whileOp.getResult(i + 1));
-    }
+    for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+      mapping.map(memref,
+                  whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
+    for (auto [forRes, whileRes] :
+         llvm::zip(forOp.getResults(), llvm::drop_begin(whileOp.getResults())))
+      mapping.map(forRes, whileRes);
 
     return success();
   }
@@ -1615,6 +1671,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
+  ParallelContext emptyPc;
   for (auto &it : body->without_terminator()) {
     Operation *bodyOp = &it;
     if (auto loopRoot = dyn_cast<affine::AffineParallelOp>(bodyOp)) {
@@ -1640,12 +1697,18 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
         emitIVToStableHLO(builder, iv, *range, mapping, maps);
       }
 
+      auto pc = ParallelContext::get(loopRoot);
+      if (!pc) {
+        anyFailed = true;
+        break;
+      }
+
       if (!anyFailed) {
         auto loopBody = loopRoot.getBody();
         for (auto &it : loopBody->without_terminator()) {
           Operation *op = &it;
           anyFailed |=
-              tryRaisingOpToStableHLO(op, mapping, builder, maps).failed();
+              tryRaisingOpToStableHLO(op, mapping, builder, maps, *pc).failed();
 
           if (anyFailed)
             break;
@@ -1653,7 +1716,8 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
       }
     } else if (auto constOp = dyn_cast<arith::ConstantOp>(bodyOp)) {
       anyFailed =
-          tryRaisingOpToStableHLO(bodyOp, mapping, builder, maps).failed();
+          tryRaisingOpToStableHLO(bodyOp, mapping, builder, maps, emptyPc)
+              .failed();
       if (anyFailed)
         break;
     } else {

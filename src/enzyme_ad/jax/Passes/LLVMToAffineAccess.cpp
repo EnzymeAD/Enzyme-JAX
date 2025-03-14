@@ -1467,9 +1467,11 @@ struct LLVMToAffineAccessPass
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
     // TODO in order to enable legalization we need to add an enzymexla.yield op
     // to terminate it with
-    if (failed(convertLLVMToAffineAccess(op, dataLayoutAnalysis, false))) {
-      signalPassFailure();
-      return;
-    }
+    op->walk([&](func::FuncOp f) {
+      if (failed(convertLLVMToAffineAccess(f, dataLayoutAnalysis, false))) {
+        signalPassFailure();
+        return;
+      }
+    });
   }
 };
