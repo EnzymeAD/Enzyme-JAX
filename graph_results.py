@@ -95,25 +95,288 @@ def plot_time(df):
         plt.show()
 
 
+def compute_relative_speedup(model_data):
+    """Compute relative speedups of DefOpt (Enzyme-JAX) and EqSat (Constable) against JAX"""
+    # Get the first stage available in this CSV (assuming one stage per CSV)
+    stages = model_data['stage'].unique()
+    if len(stages) == 0:
+        print("Error: No stages found in data")
+        return 0, 0
+        
+    stage = stages[0]
+    print(f"Using stage: {stage}")
+    
+    # Filter data for the stage
+    stage_data = model_data[model_data['stage'] == stage]
+    
+    # Calculate median runtimes for each pipeline
+    jax_median = np.median(stage_data[stage_data['pipeline'].str.strip() == 'JaX']['runtime_ms'])
+    defopt_median = np.median(stage_data[stage_data['pipeline'] == 'DefOpt']['runtime_ms'])
+    eqsat_median = np.median(stage_data[stage_data['pipeline'] == 'EqSat']['runtime_ms'])
+    
+    # Calculate relative speedups (negative values mean slowdowns)
+    defopt_speedup = (jax_median - defopt_median) / jax_median
+    eqsat_speedup = (jax_median - eqsat_median) / jax_median
+    
+    return defopt_speedup, eqsat_speedup
+
+
+def process_plot_data(model_file_pairs):
+    """Process data for a single plot"""
+    models = []
+    enzyme_speedups = []
+    constable_speedups = []
+    
+    for i in range(0, len(model_file_pairs), 2):
+        model_name = model_file_pairs[i]
+        csv_file = model_file_pairs[i+1]
+        
+        try:
+            df = pd.read_csv(csv_file)
+            if not {'pipeline', 'stage', 'runtime_ms'}.issubset(df.columns):
+                print(f"Error: File {csv_file} must contain 'pipeline', 'stage', and 'runtime_ms' columns.")
+                continue
+                
+            print(f"Processing {model_name} from {csv_file}...")
+            defopt_speedup, eqsat_speedup = compute_relative_speedup(df)
+            models.append(model_name)
+            enzyme_speedups.append(defopt_speedup)
+            constable_speedups.append(eqsat_speedup)
+            
+            print(f"{model_name}:")
+            print(f"  Enzyme-JAX speedup: {defopt_speedup*100:.2f}%")
+            print(f"  Constable speedup: {eqsat_speedup*100:.2f}%")
+            print()
+            
+        except FileNotFoundError:
+            print(f"Error: File '{csv_file}' not found.")
+            continue
+            
+    return models, enzyme_speedups, constable_speedups
+
+
+def plot_comparison(plot_groups):
+    """Plot multiple bar charts of speedups for different models and platforms"""
+    # Determine the number of plots
+    num_plots = len(plot_groups)
+    
+    if num_plots == 0:
+        print("Error: No valid plot data provided")
+        return
+    
+    # Find min/max y values across all plots for consistent y-axis scaling
+    all_enzyme_speedups = []
+    all_constable_speedups = []
+    
+    for title, file_model_pairs in plot_groups:
+        models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
+        all_enzyme_speedups.extend(enzyme_speedups)
+        all_constable_speedups.extend(constable_speedups)
+    
+    if not all_enzyme_speedups and not all_constable_speedups:
+        print("Error: No valid data to plot")
+        return
+    
+    all_speedups = all_enzyme_speedups + all_constable_speedups
+    min_val = min(min(all_speedups) * 100 if all_speedups else -15, -15)
+    max_val = max(max(all_speedups) * 100 if all_speedups else 45, 45)
+    
+    # Round to nearest 5%
+    min_val = np.floor(min_val / 5) * 5 - 5
+    max_val = np.ceil(max_val / 5) * 5 + 5
+    
+    # Keep y-range between -10 and 60 unless data exceeds that
+    min_val = max(min_val, -10)
+    max_val = min(max_val, 60)
+    
+    # Create a figure with multiple subplots side by side
+    # Make plots less tall (height reduced from 7 to 5)
+    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5), sharey=True)
+    
+    # Handle the case of a single plot
+    if num_plots == 1:
+        axes = [axes]
+    
+    for idx, (title, file_model_pairs) in enumerate(plot_groups):
+        ax = axes[idx]
+        models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
+        
+        # Skip empty datasets
+        if not models:
+            ax.text(0.5, 0.5, f"No data for {title}", 
+                    horizontalalignment='center', verticalalignment='center')
+            continue
+        
+        width = 0.3  # Bar width
+        x = np.arange(len(models))
+        
+        # Plot bars for Enzyme-JAX and Constable right next to each other
+        enzyme_bars = ax.bar(x - width/2, [s*100 for s in enzyme_speedups], width, 
+                             label='Enzyme-JAX', color='lightblue', edgecolor='black', linewidth=1)
+        constable_bars = ax.bar(x + width/2, [s*100 for s in constable_speedups], width, 
+                                label='Constable', color='green', edgecolor='black', linewidth=1)
+        
+        # Add grey grid lines
+        ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.7)
+        
+        # Bring the bars to the front to cover grid lines
+        for bar in enzyme_bars:
+            bar.set_zorder(10)
+        for bar in constable_bars:
+            bar.set_zorder(10)
+        
+        # Add JAX baseline
+        jax_line = ax.axhline(y=0, color='purple', linestyle='--', linewidth=2, 
+                              label='JAX' if idx == 0 else "_nolegend_")
+        jax_line.set_zorder(5)
+        
+        # Set x-axis labels
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=45, ha='right', rotation_mode='anchor')
+        
+        # Set plot title
+        ax.set_title(title)
+        
+        # Only set y-label on the leftmost plot
+        if idx == 0:
+            ax.set_ylabel('Relative speedup, %')
+    
+    # Set common y-axis limits and ticks
+    y_ticks = np.arange(np.ceil(min_val / 20) * 20, np.floor(max_val / 20) * 20 + 1, 20)
+    plt.setp(axes, ylim=(min_val, max_val), yticks=y_ticks)
+    
+    # Adjust layout first to make space for rotated x-labels
+    plt.tight_layout()
+    
+    # Add more space at the bottom for x-labels and legend
+    plt.subplots_adjust(bottom=0.25)
+    
+    # Add a single legend at the bottom of the figure (further down)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.05),
+               ncol=3, frameon=False, handletextpad=1.0, columnspacing=2.0)
+    
+    # Add a button to save the figure as PDF (positioned at the bottom, slightly lower than before)
+    save_ax = plt.axes([0.45, 0.005, 0.1, 0.04])  # Position for the button [left, bottom, width, height]
+    save_button = plt.Button(save_ax, 'Save PDF', color='lightgoldenrodyellow', hovercolor='0.975')
+    
+    def save_to_pdf(event):
+        # Generate filename based on current date/time
+        from datetime import datetime
+        import os
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"speedup_comparison_{timestamp}.pdf"
+        
+        # Temporarily hide the save button for the PDF export
+        save_button.ax.set_visible(False)
+        
+        # Save figure to current directory (button won't be visible in the saved file)
+        fig.savefig(filename, format='pdf', bbox_inches='tight')
+        abs_path = os.path.abspath(filename)
+        print(f"Saved figure as {abs_path}")
+        
+        # Make the button visible again for continued interaction
+        save_button.ax.set_visible(True)
+        fig.canvas.draw_idle()
+    
+    save_button.on_clicked(save_to_pdf)
+    plt.show()
+
+
 def main():
-    if len(sys.argv) != 3 or (sys.argv[1] not in ["hist", "time"]):
-        print("usage: ./graph_results.py <hist|time> <filename.csv>")
+    if len(sys.argv) < 2:
+        print("usage: ./graph_results.py <hist|time|compare> [options]")
+        print("  hist: plot histograms of runtimes")
+        print("    ./graph_results.py hist <filename.csv>")
+        print()
+        print("  time: plot time series of runtimes")
+        print("    ./graph_results.py time <filename.csv>")
+        print()
+        print("  compare: plot bar charts comparing speedups of multiple models across different platforms")
+        print("    ./graph_results.py compare -p <plot_title> <model_name> <csv_file> [<model_name> <csv_file> ...] [-p <plot_title> ...]")
+        print("    Example:")
+        print("      ./graph_results.py compare -p A100 Llama llama_a100.csv NasRNN nasrnn_a100.csv -p V100 Llama llama_v100.csv NasRNN nasrnn_v100.csv")
         sys.exit(1)
-    filename = sys.argv[2]
-    try:
-        df = pd.read_csv(filename)
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found.")
-        sys.exit(1)
+        
+    mode = sys.argv[1]
+    
+    if mode in ["hist", "time"]:
+        if len(sys.argv) != 3:
+            print(f"Error: {mode} mode requires exactly one CSV file.")
+            sys.exit(1)
+            
+        filename = sys.argv[2]
+        try:
+            df = pd.read_csv(filename)
+        except FileNotFoundError:
+            print(f"Error: File '{filename}' not found.")
+            sys.exit(1)
 
-    if not {'pipeline', 'stage', 'runtime_ms'}.issubset(df.columns):
-        print("Error: The input CSV must contain 'pipeline', 'stage', and 'runtime_ms' columns.")
-        sys.exit(1)
+        if not {'pipeline', 'stage', 'runtime_ms'}.issubset(df.columns):
+            print("Error: The input CSV must contain 'pipeline', 'stage', and 'runtime_ms' columns.")
+            sys.exit(1)
 
-    if sys.argv[1] == "hist":
-        plot_histograms(df)
+        if mode == "hist":
+            plot_histograms(df)
+        else:
+            plot_time(df)
+            
+    elif mode == "compare":
+        if len(sys.argv) < 4 or sys.argv[2] != "-p":
+            print("Error: compare mode requires -p flag followed by plot groups.")
+            print("Example: ./graph_results.py compare -p A100 Llama llama_a100.csv -p V100 Llama llama_v100.csv")
+            sys.exit(1)
+            
+        # Multi-plot mode with -p flags
+        plot_groups = []
+        current_plot = None
+        current_title = None
+        
+        i = 2
+        while i < len(sys.argv):
+            if sys.argv[i] == "-p":
+                # If we have a current plot group, add it before starting a new one
+                if current_title is not None and current_plot is not None:
+                    plot_groups.append((current_title, current_plot))
+                
+                # Start a new plot group
+                if i + 1 < len(sys.argv):
+                    current_title = sys.argv[i + 1]
+                    current_plot = []
+                    i += 2
+                else:
+                    print("Error: -p flag must be followed by a plot title")
+                    sys.exit(1)
+            else:
+                # Add file/model pairs to the current plot
+                if current_plot is None:
+                    print("Error: File/model pairs must follow a -p flag")
+                    sys.exit(1)
+                
+                if i + 1 < len(sys.argv) and sys.argv[i+1] != "-p":
+                    current_plot.append(sys.argv[i])     # Model name
+                    current_plot.append(sys.argv[i+1])   # CSV file
+                    i += 2
+                else:
+                    # Last item without a pair
+                    print(f"Error: Each model name must be followed by a CSV file. Missing CSV file for {sys.argv[i]}")
+                    sys.exit(1)
+        
+        # Add the last plot group if it exists
+        if current_title is not None and current_plot is not None:
+            plot_groups.append((current_title, current_plot))
+            
+        # Plot the groups
+        if plot_groups:
+            plot_comparison(plot_groups)
+        else:
+            print("Error: No valid plot groups found")
+            sys.exit(1)
+        
     else:
-        plot_time(df)
+        print(f"Error: Unknown mode '{mode}'. Use 'hist', 'time', or 'compare'.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

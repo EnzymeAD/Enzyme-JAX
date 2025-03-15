@@ -9,6 +9,8 @@ tmp
 .local
 .venv
 results_*.csv
+baseline_*.txt
 segmentation_*.txt
 eqsat_vs_enzyme_*.txt
 cost_model_*.txt
+speedup_comparison_*.pdf

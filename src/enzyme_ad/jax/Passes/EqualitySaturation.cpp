@@ -206,15 +206,13 @@ public:
 
     std::string opName = op->getName().getStringRef().str();
 
-    bool shouldReturnZeroCost = false;
-
     if (op->getDialect()->getNamespace() != "stablehlo" || isBlackboxed(op)) {
       return {0, 0};
     }
 
     const char *zeroCostEnv = std::getenv("ZERO_COSTS");
 
-    if (zeroCostEnv && std::string(zeroCostEnv) != "false") {
+    if (!zeroCostEnv || std::string(zeroCostEnv) != "false") {
       if (zeroCostOps.find(opName) != zeroCostOps.end()) {
         return {0, 0};
       }
