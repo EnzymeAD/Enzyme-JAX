@@ -117,7 +117,6 @@ void buildCommonPassPipeline(
   nvvmTargetOptions.optLevel = options.optLevel;
   pm.addPass(createGpuNVVMAttachTarget(nvvmTargetOptions));
   pm.addPass(createLowerAffinePass());
-  pm.addPass(createArithToLLVMConversionPass());
   ConvertIndexToLLVMPassOptions convertIndexToLLVMPassOpt;
   convertIndexToLLVMPassOpt.indexBitwidth = options.indexBitWidth;
   pm.addPass(createConvertIndexToLLVMPass(convertIndexToLLVMPassOpt));
@@ -172,6 +171,9 @@ void buildLowerToNVVMPassPipeline(
 
   // GPUModule-specific stuff
   buildGpuPassPipeline(pm, options);
+
+  // Moved here to address https://github.com/EnzymeAD/Enzyme-JAX/issues/482
+  pm.addPass(createArithToLLVMConversionPass());
 
   // Host post-GPUModule-specific stuff
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
