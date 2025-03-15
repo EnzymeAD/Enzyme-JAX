@@ -189,7 +189,8 @@ public:
       return failure();
 
     if (callee.getLeafReference() == "__nv_isnand" ||
-        callee.getLeafReference() == "__nv_isnan") {
+        callee.getLeafReference() == "__nv_isnan" ||
+        callee.getLeafReference() == "__nv_isnanf") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
           rewriter.create<math::IsNaNOp>(op.getLoc(), op->getOperands()[0]));
@@ -197,7 +198,8 @@ public:
     }
 
     if (callee.getLeafReference() == "__nv_isfinited" ||
-        callee.getLeafReference() == "__nv_isfinite") {
+        callee.getLeafReference() == "__nv_isfinite" ||
+        callee.getLeafReference() == "__nv_isfinitef") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
           rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
@@ -205,7 +207,8 @@ public:
     }
 
     if (callee.getLeafReference() == "__nv_isinfd" ||
-        callee.getLeafReference() == "__nv_isinf") {
+        callee.getLeafReference() == "__nv_isinf" ||
+        callee.getLeafReference() == "__nv_isinff") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
           rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
@@ -524,6 +527,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                        "__nv_fmaxf");
   populateOpPatterns<arith::MinNumFOp>(converter, patterns, "__nv_fmin",
                                        "__nv_fminf");
+  populateOpPatterns<math::TruncOp>(converter, patterns, "__nv_trunc",
+                                    "__nv_truncf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
