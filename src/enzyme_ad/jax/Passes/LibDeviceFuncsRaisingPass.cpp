@@ -198,13 +198,14 @@ public:
     }
 
     if (callee.getLeafReference() == "__nv_isfinited" ||
-        callee.getLeafReference() == "__nv_isfinite") ||
-        callee.getLeafReference() == "__nv_isfinitef" {
-      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
-          op, op->getResultTypes(),
-          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
-      return success();
-    }
+        callee.getLeafReference() == "__nv_isfinite")
+      || callee.getLeafReference() == "__nv_isfinitef" {
+        rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+            op, op->getResultTypes(),
+            rewriter.create<math::IsFiniteOp>(op.getLoc(),
+                                              op->getOperands()[0]));
+        return success();
+      }
 
     if (callee.getLeafReference() == "__nv_isinfd" ||
         callee.getLeafReference() == "__nv_isinf" ||
@@ -528,7 +529,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   populateOpPatterns<arith::MinNumFOp>(converter, patterns, "__nv_fmin",
                                        "__nv_fminf");
   populateOpPatterns<math::TruncOp>(converter, patterns, "__nv_trunc",
-                                       "__nv_truncf");
+                                    "__nv_truncf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
