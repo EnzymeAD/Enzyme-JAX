@@ -23,11 +23,13 @@ module {
 // CHECK-NEXT:      stablehlo.return %1 : tensor<i1>
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:      %1 = stablehlo.dynamic_slice %iterArg_2, %iterArg, %c_1, sizes = [1, 10] : (tensor<4x10xf32>, tensor<i64>, tensor<i64>) -> tensor<1x10xf32>
-// CHECK-NEXT:      %2 = arith.mulf %1, %1 : tensor<1x10xf32>
-// CHECK-NEXT:      %3 = stablehlo.multiply %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      %4 = stablehlo.dynamic_update_slice %iterArg_3, %2, %3, %c_1 : (tensor<16x10xf32>, tensor<1x10xf32>, tensor<i64>, tensor<i64>) -> tensor<16x10xf32>
-// CHECK-NEXT:      %5 = stablehlo.add %iterArg, %c : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %5, %iterArg_2, %4 : tensor<i64>, tensor<4x10xf32>, tensor<16x10xf32>
+// CHECK-NEXT:      %2 = stablehlo.reshape %1 : (tensor<1x10xf32>) -> tensor<10xf32>
+// CHECK-NEXT:      %3 = arith.mulf %2, %2 : tensor<10xf32>
+// CHECK-NEXT:      %4 = stablehlo.multiply %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:      %5 = stablehlo.reshape %3 : (tensor<10xf32>) -> tensor<1x10xf32>
+// CHECK-NEXT:      %6 = stablehlo.dynamic_update_slice %iterArg_3, %5, %4, %c_1 : (tensor<16x10xf32>, tensor<1x10xf32>, tensor<i64>, tensor<i64>) -> tensor<16x10xf32>
+// CHECK-NEXT:      %7 = stablehlo.add %iterArg, %c : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %7, %iterArg_2, %6 : tensor<i64>, tensor<4x10xf32>, tensor<16x10xf32>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return %0#1, %0#2 : tensor<4x10xf32>, tensor<16x10xf32>
 // CHECK-NEXT:  }
