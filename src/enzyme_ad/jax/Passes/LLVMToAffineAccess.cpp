@@ -348,13 +348,13 @@ struct IndexCastAddSub : public OpRewritePattern<arith::IndexCastOp> {
       return failure();
 
     auto lhs = rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(0));
+                                                   op->getOperand(0));
     auto rhs = rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(1));
+                                                   op->getOperand(1));
     if (isa<arith::AddIOp>(op)) {
-      rewriter.replaceOpWithNewOp<arith::AddIOp>(cst,lhs,rhs);
+      rewriter.replaceOpWithNewOp<arith::AddIOp>(cst, lhs, rhs);
     } else {
-      rewriter.replaceOpWithNewOp<arith::SubIOp>(cst,lhs,rhs);
+      rewriter.replaceOpWithNewOp<arith::SubIOp>(cst, lhs, rhs);
     }
     return success();
   }
