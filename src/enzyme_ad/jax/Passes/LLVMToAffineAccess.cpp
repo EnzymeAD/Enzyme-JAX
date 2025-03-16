@@ -347,20 +347,14 @@ struct IndexCastAddSub : public OpRewritePattern<arith::IndexCastOp> {
     if (cast<IntegerType>(cst.getOperand().getType()).getWidth() < 32)
       return failure();
 
+    auto lhs = rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                                   op->getOperand(0));
+    auto rhs = rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
+                                                   op->getOperand(1));
     if (isa<arith::AddIOp>(op)) {
-      rewriter.replaceOpWithNewOp<arith::AddIOp>(
-          cst,
-          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(0)),
-          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(1)));
+      rewriter.replaceOpWithNewOp<arith::AddIOp>(cst, lhs, rhs);
     } else {
-      rewriter.replaceOpWithNewOp<arith::SubIOp>(
-          cst,
-          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(0)),
-          rewriter.create<arith::IndexCastOp>(cst.getLoc(), cst.getType(),
-                                              op->getOperand(1)));
+      rewriter.replaceOpWithNewOp<arith::SubIOp>(cst, lhs, rhs);
     }
     return success();
   }
