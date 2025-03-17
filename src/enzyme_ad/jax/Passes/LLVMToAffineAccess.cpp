@@ -1251,11 +1251,11 @@ convertLLVMToAffineAccess(Operation *op,
   // exist?
 
   if (legalizeSymbols) {
-    SmallPtrSet<Block *, 8> blocksToScope;
+    SetVector<Block *> blocksToScope;
     for (auto &aabp : accessBuilders)
       for (auto illegalSym : aabp->illegalSymbols)
         blocksToScope.insert(illegalSym.getParentBlock());
-    SmallPtrSet<Block *, 8> innermostBlocks;
+    SetVector<Block *> innermostBlocks;
     for (Block *b : blocksToScope) {
       SmallVector<Block *> toRemove;
       bool isInnermost = true;
@@ -1266,7 +1266,7 @@ convertLLVMToAffineAccess(Operation *op,
           isInnermost = false;
       }
       for (Block *r : toRemove)
-        innermostBlocks.erase(r);
+        innermostBlocks.remove(r);
       if (isInnermost)
         innermostBlocks.insert(b);
     }
