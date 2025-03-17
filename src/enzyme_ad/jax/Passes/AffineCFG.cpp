@@ -3980,7 +3980,8 @@ std::pair<Value, size_t> checkOperands(
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
 
-  opsToMoveAfterIf.try_emplace(opToMove, SmallVector<std::pair<Value, size_t>>());
+  opsToMoveAfterIf.try_emplace(opToMove,
+                               SmallVector<std::pair<Value, size_t>>());
   SmallVector<std::pair<Value, size_t>> newresults;
 
   for (auto [index, operands] : llvm::enumerate(
@@ -3991,7 +3992,7 @@ std::pair<Value, size_t> checkOperands(
         ifOp, thenOperand, elseOperand, opsToMoveAfterIf, ifYieldOperands,
         elseYieldOperands, thenOperationsToYieldIndex, rewriter));
   }
-  
+
   opsToMoveAfterIf[opToMove] = std::move(newresults);
 
   return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
