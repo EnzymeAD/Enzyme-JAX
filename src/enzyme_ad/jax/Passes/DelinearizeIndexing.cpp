@@ -103,48 +103,65 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
 
   IRRewriter rewriter(ctx);
 
-  for (unsigned shapeIdx :
-       llvm::reverse(llvm::seq<unsigned>(1, shape.size()))) {
-    int64_t cst = shape[shapeIdx];
-    unsigned resultId = 0;
+  if (shape.size() == 0) {
     for (auto &ainfo : affineAccesses) {
       auto access = ainfo.access;
       AffineMap map = ainfo.map;
-      AffineExpr expr = map.getResult(resultId);
-      LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
-                              << " with expr " << expr << "\n");
-      auto mod = expr % cst;
-      auto floor = expr.floorDiv(cst);
-      LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
-
-      SmallVector<AffineExpr> exprs(map.getResults().begin(),
-                                    map.getResults().end());
-      exprs.erase(std::next(exprs.begin(), resultId));
-      exprs.insert(std::next(exprs.begin(), resultId), mod);
-      exprs.insert(std::next(exprs.begin(), resultId), floor);
-      ainfo.map =
-          AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
-      LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
-      AffineValueMap avm;
-      access.getAccessMap(&avm);
-      avm.reset(ainfo.map, avm.getOperands());
+      for (auto expr : map.getResults()) {
+        auto cst = dyn_cast<AffineConstantExpr>(expr);
+        if (cst.getValue() != 0)
+          return failure();
+      }
+      ainfo.map = AffineMap::get(map.getNumDims(), map.getNumSymbols(), {},
+                                 map.getContext());
     }
+    if (memrefAccesses.size())
+      return failure();
+  } else {
 
-    for (auto &ainfo : memrefAccesses) {
-      // either memref ld/st (emit new index calc ops)
-      Value last_dim_key = ainfo.last_dim_key;
-      rewriter.setInsertionPoint(ainfo.mOpInst);
-      auto dim_size =
-          rewriter.create<arith::ConstantIndexOp>(ainfo.mOpInst->getLoc(), cst);
-      auto mod = rewriter.create<arith::RemUIOp>(ainfo.mOpInst->getLoc(),
-                                                 last_dim_key, dim_size);
-      auto floor = rewriter.create<arith::DivUIOp>(ainfo.mOpInst->getLoc(),
+    for (unsigned shapeIdx :
+         llvm::reverse(llvm::seq<unsigned>(1, shape.size()))) {
+      int64_t cst = shape[shapeIdx];
+      unsigned resultId = 0;
+      for (auto &ainfo : affineAccesses) {
+        auto access = ainfo.access;
+        AffineMap map = ainfo.map;
+        AffineExpr expr = map.getResult(resultId);
+        LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
+                                << " with expr " << expr << "\n");
+        auto mod = expr % cst;
+        auto floor = expr.floorDiv(cst);
+        LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
+        LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
+
+        SmallVector<AffineExpr> exprs(map.getResults().begin(),
+                                      map.getResults().end());
+        exprs.erase(std::next(exprs.begin(), resultId));
+        exprs.insert(std::next(exprs.begin(), resultId), mod);
+        exprs.insert(std::next(exprs.begin(), resultId), floor);
+        ainfo.map =
+            AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
+        LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
+        AffineValueMap avm;
+        access.getAccessMap(&avm);
+        avm.reset(ainfo.map, avm.getOperands());
+      }
+
+      for (auto &ainfo : memrefAccesses) {
+        // either memref ld/st (emit new index calc ops)
+        Value last_dim_key = ainfo.last_dim_key;
+        rewriter.setInsertionPoint(ainfo.mOpInst);
+        auto dim_size = rewriter.create<arith::ConstantIndexOp>(
+            ainfo.mOpInst->getLoc(), cst);
+        auto mod = rewriter.create<arith::RemUIOp>(ainfo.mOpInst->getLoc(),
                                                    last_dim_key, dim_size);
-      ainfo.updated_indices.push_back(mod);
+        auto floor = rewriter.create<arith::DivUIOp>(ainfo.mOpInst->getLoc(),
+                                                     last_dim_key, dim_size);
+        ainfo.updated_indices.push_back(mod);
 
-      // floor is the new last dim key
-      ainfo.last_dim_key = floor;
+        // floor is the new last dim key
+        ainfo.last_dim_key = floor;
+      }
     }
   }
 
@@ -202,11 +219,6 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
                    [](int64_t size) { return size == ShapedType::kDynamic; })) {
     LLVM_DEBUG(llvm::dbgs()
                << "Failed: shape has dynamic dimensions beyond the first\n");
-    return failure();
-  }
-
-  if (shape.size() <= 1) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed: shape size <= 1\n");
     return failure();
   }
 
