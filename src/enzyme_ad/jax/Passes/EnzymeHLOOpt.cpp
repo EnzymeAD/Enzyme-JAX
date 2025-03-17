@@ -32,6 +32,8 @@
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "llvm/ADT/MapVector.h"
+
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_ENZYMEHLOOPTPASS
@@ -1083,7 +1085,7 @@ struct FullReduceReshapeOrTranspose final
 
     RankedTensorType changeType = nullptr;
     SmallVector<Operation *> reshapeOrTransposes;
-    DenseMap<Operation *, int> toclone;
+    llvm::MapVector<Operation *, int> toclone;
     {
       SmallVector<Value> todo = {op.getInputs()[0]};
       while (todo.size()) {
