@@ -2836,16 +2836,13 @@ std::pair<Value, size_t> checkOperands(
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
 
-  SmallVector<std::pair<Value, size_t>> newoperandsinit;
-  auto newoperandsiter = opsToMoveAfterIf.try_emplace(opToMove, std::move(newoperandsinit)).first;
-
-  SmallVector<std::pair<Value, size_t>> &newoperands = newoperandsiter->second;
+  opsToMoveAfterIf.try_emplace(opToMove, SmallVector<std::pair<Value, size_t>>());
 
   for (auto [index, operands] : llvm::enumerate(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
                            operandElse.getDefiningOp()->getOperands()))) {
     auto [thenOperand, elseOperand] = operands;
-    newoperands.push_back(checkOperands(
+    opsToMoveAfterIf[opToMove].push_back(checkOperands(
         ifOp, thenOperand, elseOperand, opsToMoveAfterIf, ifYieldOperands,
         elseYieldOperands, thenOperationsToYieldIndex, rewriter));
   }
