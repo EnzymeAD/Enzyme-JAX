@@ -215,7 +215,7 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   auto shape = newMt.getShape();
 
   // Only the first rank can be dynamic
-  if (llvm::any_of(llvm::drop_begin(shape),
+  if (shape.size() && llvm::any_of(llvm::drop_begin(shape),
                    [](int64_t size) { return size == ShapedType::kDynamic; })) {
     LLVM_DEBUG(llvm::dbgs()
                << "Failed: shape has dynamic dimensions beyond the first\n");

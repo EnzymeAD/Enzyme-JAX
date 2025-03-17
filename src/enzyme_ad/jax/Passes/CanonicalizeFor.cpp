@@ -22,6 +22,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "llvm/ADT/MapVector.h"
+
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_SCFCANONICALIZEFOR
@@ -2809,7 +2811,7 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
 
 std::pair<Value, size_t> checkOperands(
     scf::IfOp ifOp, Value operandIf, Value operandElse,
-    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
         &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
@@ -2834,11 +2836,10 @@ std::pair<Value, size_t> checkOperands(
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
   }
 
-  opsToMoveAfterIf.insert(
-      std::make_pair(opToMove, SmallVector<std::pair<Value, size_t>>()));
+  SmallVector<std::pair<Value, size_t>> newoperandsinit;
+  auto newoperandsiter = opsToMoveAfterIf.try_emplace(opToMove, std::move(newoperandsinit)).first;
 
-  SmallVector<std::pair<Value, size_t>> &newoperands =
-      opsToMoveAfterIf.at(opToMove);
+  SmallVector<std::pair<Value, size_t>> &newoperands = newoperandsiter->second;
 
   for (auto [index, operands] : llvm::enumerate(
            llvm::zip_equal(operandIf.getDefiningOp()->getOperands(),
@@ -2888,7 +2889,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    std::map<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
         opsToMoveAfterIf;
 
     // A list of operands defined within the if block, which have been promoted
