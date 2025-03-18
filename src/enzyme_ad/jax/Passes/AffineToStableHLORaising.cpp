@@ -1005,13 +1005,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       SmallVector<Value> startIndices;
 
       for (auto E : accessValueMap.getAffineMap().getResults()) {
-
-        auto iv = getIVForExpr(accessValueMap, E);
         AffineExpr exprToEmit = E;
-        if (affine::isAffineParallelInductionVar(iv)) {
-          auto r = computeExprRange(accessValueMap, E);
-          auto lb = r->step < 0 ? r->ub - r->step : r->lb;
-          exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+        if (!E.isSymbolicOrConstant()) {
+          auto iv = getIVForExpr(accessValueMap, E);
+          if (affine::isAffineParallelInductionVar(iv)) {
+            auto r = computeExprRange(accessValueMap, E);
+            auto lb = r->step < 0 ? r->ub - r->step : r->lb;
+            exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+          }
         }
 
         auto [startIndex, _] = expandAffineExpr(
