@@ -206,6 +206,15 @@ public:
       return success();
     }
 
+    if (callee.getLeafReference() == "__nv_finited" ||
+        callee.getLeafReference() == "__nv_finite" ||
+        callee.getLeafReference() == "__nv_finitef") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+      return success();
+    }
+
     if (callee.getLeafReference() == "__nv_isinfd" ||
         callee.getLeafReference() == "__nv_isinf" ||
         callee.getLeafReference() == "__nv_isinff") {
