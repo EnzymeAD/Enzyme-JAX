@@ -1296,10 +1296,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (isa<ub::PoisonOp>(op)) {
     affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
-    auto ET = op->getResult(0).getType();
+    Type ET = op->getResult(0).getType();
     auto unrankedTensorType = RankedTensorType::get({}, ET);
 
-    if (!ET.isInteger() && !ET.isF32() && !ET.isF64() && !ET.isF16())
+    if (!ET.isInteger() && !ET.isa<FloatType>())
       return failure();
 
     auto newConst = builder.create<stablehlo::ConstantOp>(
