@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -1292,6 +1293,30 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  if (isa<ub::PoisonOp>(op)) {
+    affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
+
+    Type ET = op->getResult(0).getType();
+    auto unrankedTensorType = RankedTensorType::get({}, ET);
+
+    if (!ET.isInteger() && !ET.isa<FloatType>())
+      return failure();
+
+    auto newConst = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(
+                ET.isInteger() ? (Attribute)IntegerAttr::get(ET, 0)
+                               : (Attribute)FloatAttr::get(ET, APFloat(0.0)))));
+
+    auto newVal = newConst.getResult();
+    mapping.map(op->getResult(0), newVal);
+    maps[newVal] = accessMap;
+
+    return success();
+  }
+
   if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
     affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
@@ -1766,7 +1791,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
             break;
         }
       }
-    } else if (auto constOp = dyn_cast<arith::ConstantOp>(bodyOp)) {
+    } else if (isa<arith::ConstantOp, ub::PoisonOp>(bodyOp)) {
       anyFailed =
           tryRaisingOpToStableHLO(bodyOp, mapping, builder, maps, emptyPc)
               .failed();
