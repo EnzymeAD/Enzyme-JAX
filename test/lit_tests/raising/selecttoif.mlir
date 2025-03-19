@@ -1,6 +1,11 @@
 // RUN: enzymexlamlir-opt --affine-cfg --split-input-file --allow-unregistered-dialect %s | FileCheck %s
 
-#set3 = affine_set<(d0, d1, d2, d3) : (-d0 - d1 * 16 + 102 >= 0, d3 + d2 * 16 >= 0, d2 * -16 - d3 + 179 >= 0)>
+
+// CHECK: select
+// CHECK: select
+// CHECK-NOT: select
+
+#set3 = affine_set<(d0, d1, d2, d3) : (-d0 - d1 * 16 + d3 + 102 >= 0, d3 + d2 * 16 >= 0, d2 * -16 - d3 + 179 >= 0)>
 module {
   func.func private @"##call__Z33gpu__split_explicit_free_surface_16CompilerMetadataI16OffsetStaticSizeI14_1_180__1_103_E12DynamicCheckvv7NDRangeILi2E10StaticSizeI7_12__7_ES4_I8_16__16_E5TupleI5Int64S8_E13KernelOffsetsIS9_EEE20ImmersedBoundaryGridI7Float648Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridISF_SG_SH_SI_28StaticVerticalDiscretizationI11OffsetArrayISF_Li1E13CuTracedArrayISF_Li1ELi1E5_35__EESL_ISF_Li1ESM_ISF_Li1ELi1E5_34__EESO_SQ_E8TripolarIS8_S8_S8_ESL_ISF_Li2ESM_ISF_Li2ELi1E10_194__123_EESV_SV_SV_vE16GridFittedBottomI5FieldI6CenterSZ_vvvvSL_ISF_Li3ESM_ISF_Li3ELi1E13_194__123__1_EESF_vvvE23CenterImmersedConditionEvvvESF_S11_SY_I4FaceSZ_vvvvS11_SF_vvvESY_ISZ_S16_vvvvS11_SF_vvvE21ForwardBackwardScheme#1287$par125"(%arg0: memref<34xf64, 1>, %arg1: memref<123x194xf64, 1>, %arg2: memref<123x194xf64, 1>, %arg3: memref<123x194xf64, 1>, %arg4: memref<1x123x194xf64, 1>, %arg5: memref<1x123x194xf64, 1>, %arg6: memref<1x123x194xf64, 1>, %arg7: memref<1x123x194xf64, 1>) {
     %c-12 = arith.constant -12 : index 
@@ -72,38 +77,3 @@ module {
     return
   }  
 }
-
-// CHECK: #set = affine_set<(d0) : (d0 - 179 == 0)>
-// CHECK:   func.func private @"##call__Z33gpu__split_explicit_free_surface_16CompilerMetadataI16OffsetStaticSizeI14_1_180__1_103_E12DynamicCheckvv7NDRangeILi2E10StaticSizeI7_12__7_ES4_I8_16__16_E5TupleI5Int64S8_E13KernelOffsetsIS9_EEE20ImmersedBoundaryGridI7Float648Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridISF_SG_SH_SI_28StaticVerticalDiscretizationI11OffsetArrayISF_Li1E13CuTracedArrayISF_Li1ELi1E5_35__EESL_ISF_Li1ESM_ISF_Li1ELi1E5_34__EESO_SQ_E8TripolarIS8_S8_S8_ESL_ISF_Li2ESM_ISF_Li2ELi1E10_194__123_EESV_SV_SV_vE16GridFittedBottomI5FieldI6CenterSZ_vvvvSL_ISF_Li3ESM_ISF_Li3ELi1E13_194__123__1_EESF_vvvE23CenterImmersedConditionEvvvESF_S11_SY_I4FaceSZ_vvvvS11_SF_vvvESY_ISZ_S16_vvvvS11_SF_vvvE21ForwardBackwardScheme#1287$par125"(%arg0: memref<34xf64, 1>, %arg1: memref<123x194xf64, 1>, %arg2: memref<123x194xf64, 1>, %arg3: memref<123x194xf64, 1>, %arg4: memref<1x123x194xf64, 1>, %arg5: memref<1x123x194xf64, 1>, %arg6: memref<1x123x194xf64, 1>, %arg7: memref<1x123x194xf64, 1>) {
-// CHECK-NEXT:     %cst = arith.constant 0.000000e+00 : f64
-// CHECK-NEXT:     affine.parallel (%arg8, %arg9) = (0, 0) to (103, 180) {
-// CHECK-NEXT:      %0 = affine.load %arg0[26] {alignment = 16 : i64, ordering = 0 : i64} : memref<34xf64, 1>
-// CHECK-NEXT:      %1 = affine.load %arg4[0, %arg8 + 19, 7] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %2 = affine.load %arg2[%arg8 + 19, 7] : memref<123x194xf64, 1>
-// CHECK-NEXT:      %3 = affine.load %arg6[0, %arg8 + 19, 7] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %4 = affine.load %arg4[0, %arg8 + 19, 186] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %5 = affine.load %arg2[%arg8 + 19, 186] : memref<123x194xf64, 1>
-// CHECK-NEXT:      %6 = affine.load %arg6[0, %arg8 + 19, 186] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %7 = affine.load %arg4[0, %arg8 + 19, %arg9 + 8] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %8 = affine.load %arg2[%arg8 + 19, %arg9 + 8] : memref<123x194xf64, 1>
-// CHECK-NEXT:      %9 = affine.load %arg6[0, %arg8 + 19, %arg9 + 8] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %10 = affine.load %arg4[0, %arg8 + 19, %arg9 + 7] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %11 = affine.load %arg2[%arg8 + 19, %arg9 + 7] : memref<123x194xf64, 1>
-// CHECK-NEXT:      %12 = affine.load %arg6[0, %arg8 + 19, %arg9 + 7] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:      %13:6 = affine.if #set(%arg9) -> (f64, f64, f64, f64, f64, f64) {
-// CHECK-NEXT:        affine.yield %1, %2, %3, %4, %5, %6 : f64, f64, f64, f64, f64, f64
-// CHECK-NEXT:      } else {
-// CHECK-NEXT:        affine.yield %7, %8, %9, %10, %11, %12 : f64, f64, f64, f64, f64, f64
-// CHECK-NEXT:      }
-// CHECK-NEXT:      %14 = arith.cmpf ole, %0, %13#0 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %15 = arith.mulf %13#1, %13#2 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %16 = arith.select %14, %cst, %15 : f64
-// CHECK-NEXT:      %17 = arith.cmpf ole, %0, %13#3 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %18 = arith.mulf %13#4, %13#5 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %19 = arith.select %17, %cst, %18 : f64
-// CHECK-NEXT:      %20 = arith.subf %16, %19 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      affine.store %20, %arg5[0, %arg8 + 19, %arg9 + 7] : memref<1x123x194xf64, 1>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    return
-// CHECK-NEXT: }
-
