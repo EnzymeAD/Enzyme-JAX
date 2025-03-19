@@ -292,7 +292,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     return {};
 
   llvmModule->setDataLayout(JIT->getDataLayout());
-  llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
+  llvmModule->setTargetTriple(JIT->getTargetTriple());
 
   auto LibA =
       JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
