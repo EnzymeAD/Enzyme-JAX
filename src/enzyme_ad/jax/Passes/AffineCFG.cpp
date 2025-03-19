@@ -225,6 +225,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             op = newV;
   };
 
+  SmallVector<Operation **> operationContext;
   std::function<Value(Value, bool)> fix = [&](Value v,
                                               bool index) -> Value /*legal*/ {
     if (isValidSymbolInt(v, /*recur*/ false))
@@ -243,9 +244,13 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       return nullptr;
     }
     Operation *front = nullptr;
+    operationContext.push_back(&front);
+    if (front)
+      assert(front->getBlock());
     SmallVector<Value> ops;
     opsTodos.push_back(&ops);
     std::function<void(Operation *)> getAllOps = [&](Operation *todo) {
+      assert(todo->getBlock());
       for (auto v : todo->getOperands()) {
         if (llvm::all_of(op->getRegions(), [&](Region &r) {
               return !r.isAncestor(v.getParentRegion());
@@ -258,28 +263,54 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             getAllOps(&o2);
       }
     };
+
+    if (front)
+      assert(front->getBlock());
     getAllOps(op);
+
+    if (front)
+      assert(front->getBlock());
+
     for (auto o : ops) {
+      if (front)
+        assert(front->getBlock());
       Operation *next;
       if (auto *op = o.getDefiningOp()) {
+        assert(op->getBlock());
+        if (front)
+          assert(front->getBlock());
         if (Value nv = fix(o, index)) {
           op = nv.getDefiningOp();
         } else {
+          operationContext.pop_back();
           return nullptr;
         }
         next = op->getNextNode();
+        assert(next->getBlock());
+        if (front)
+          assert(front->getBlock());
       } else {
         auto BA = o.cast<BlockArgument>();
         if (index && isAffineForArg(BA)) {
         } else if (!isValidSymbolInt(o, /*recur*/ false)) {
+          operationContext.pop_back();
           return nullptr;
         }
         next = &BA.getOwner()->front();
+        assert(next->getBlock());
+        if (front)
+          assert(front->getBlock());
       }
+      if (front)
+        assert(front->getBlock());
+      if (next)
+        assert(next->getBlock());
       if (front == nullptr)
         front = next;
       else if (DI.dominates(front, next))
         front = next;
+      if (front)
+        assert(front->getBlock());
     }
     opsTodos.pop_back();
     if (!front)
@@ -287,9 +318,19 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     assert(front);
     PatternRewriter::InsertionGuard B(rewriter);
     rewriter.setInsertionPoint(front);
+    if (front)
+      assert(front->getBlock());
     auto cloned = rewriter.clone(*op);
     replaceOp(op, cloned);
+    if (front)
+      assert(front->getBlock());
+    for (auto op_ptr : operationContext) {
+      if (*op_ptr == op)
+        *op_ptr = cloned;
+    }
     rewriter.replaceOp(op, cloned->getResults());
+
+    operationContext.pop_back();
     return cloned->getResult(0);
   };
   auto renumberOneSymbol = [&](Value v) {
