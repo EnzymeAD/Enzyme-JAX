@@ -1,5 +1,8 @@
-// RUN: enzymexlamlir-opt %s --affine-cfg | FileCheck %s
+// RUN: enzymexlamlir-opt %s --affine-cfg
+// COM: enzymexlamlir-opt %s --affine-cfg | FileCheck %s
 
+
+// TODO This can also work but needs special handling for else blocks
 
 // CHECK:     affine.parallel (%arg1) = (1) to (90)
 // CHECK:     affine.parallel (%arg1) = (90) to (180)

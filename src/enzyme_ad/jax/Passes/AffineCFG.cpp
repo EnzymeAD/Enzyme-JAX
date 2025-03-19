@@ -2141,6 +2141,13 @@ LogicalResult splitParallelIf(affine::AffineParallelOp pop,
     return failure();
   }
 
+  SmallVector<AffineIfOp> ifOps;
+  pop->walk([&](AffineIfOp ifOp) {
+    ifOps.push_back(ifOp);
+  });
+  if (llvm::any_of(ifOps, [&](AffineIfOp ifOp) { return ifOp.hasElse(); }))
+    return failure();
+
   SmallVector<int64_t, 6> lbsPost = lbsPre;
   SmallVector<int64_t, 6> ubsPost = ubsPre;
   ubsPre[dim] = splitAt;
@@ -4312,11 +4319,12 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
           MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
-          SplitParallelIf, CombineAffineIfs, MergeNestedAffineParallelLoops,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          AddAddCstEnd>(context, 2);
-  rpl.add<SplitParallelInductions>(context, 1);
+          AddAddCstEnd>(context, 3);
+  rpl.add<SplitParallelInductions>(context, 2);
+  rpl.add<SplitParallelIf>(context, 1);
 }
 
 void AffineCFGPass::runOnOperation() {
