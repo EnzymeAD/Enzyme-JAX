@@ -225,7 +225,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             op = newV;
   };
 
-  SmallVector<Operation**> operationContext;
+  SmallVector<Operation **> operationContext;
   std::function<Value(Value, bool)> fix = [&](Value v,
                                               bool index) -> Value /*legal*/ {
     if (isValidSymbolInt(v, /*recur*/ false))
