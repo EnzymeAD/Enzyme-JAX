@@ -1,7 +1,7 @@
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -2115,13 +2115,13 @@ LogicalResult splitParallelIf(affine::AffineParallelOp pop,
       continue;
 
     if (auto bound =
-                   cst.getConstantBound64(mlir::presburger::BoundType::EQ, i)) {
+            cst.getConstantBound64(mlir::presburger::BoundType::EQ, i)) {
       splitAt = *bound + 1;
       if (ubsPre[dim] <= splitAt)
         splitAt = *bound;
       preIsThen = true;
     } else if (auto bound =
-            cst.getConstantBound64(mlir::presburger::BoundType::LB, i)) {
+                   cst.getConstantBound64(mlir::presburger::BoundType::LB, i)) {
       splitAt = *bound;
       preIsThen = false;
     } else if (auto bound =
@@ -2142,9 +2142,7 @@ LogicalResult splitParallelIf(affine::AffineParallelOp pop,
   }
 
   SmallVector<AffineIfOp> ifOps;
-  pop->walk([&](AffineIfOp ifOp) {
-    ifOps.push_back(ifOp);
-  });
+  pop->walk([&](AffineIfOp ifOp) { ifOps.push_back(ifOp); });
   if (llvm::any_of(ifOps, [&](AffineIfOp ifOp) { return ifOp.hasElse(); }))
     return failure();
 
