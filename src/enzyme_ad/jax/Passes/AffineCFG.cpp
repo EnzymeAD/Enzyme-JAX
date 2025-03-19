@@ -260,7 +260,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     };
     getAllOps(op);
     for (auto o : ops) {
-      Operation *next;
+      Operation *next = nullptr;
       if (auto *op = o.getDefiningOp()) {
         if (Value nv = fix(o, index)) {
           op = nv.getDefiningOp();
@@ -268,6 +268,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
           return nullptr;
         }
         next = op->getNextNode();
+        assert(next);
       } else {
         auto BA = o.cast<BlockArgument>();
         if (index && isAffineForArg(BA)) {
@@ -275,6 +276,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
           return nullptr;
         }
         next = &BA.getOwner()->front();
+        assert(next);
       }
       if (front == nullptr)
         front = next;
