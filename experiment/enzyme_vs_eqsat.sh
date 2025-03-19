@@ -7,7 +7,8 @@ configs=(
 )
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
-filename=eqsat_vs_enzyme_$(date '+%Y-%m-%d_%H:%M:%S').txt
+datetime=$(date '+%Y-%m-%d_%H:%M:%S')
+filename=enzyme_vs_eqsat_$datetime.txt
 
 echo "Eqsat vs Enzyme" > $filename
 echo "--------------------------" >> $filename
@@ -17,7 +18,7 @@ for model in "${models[@]}"; do
     for config in "${configs[@]}"; do
       # Set environment variables for each configuration
       eval "$config"
-      export EXPERIMENT_NAME="${model}_${config// /_}-${platform}"
+      export EXPERIMENT_NAME="${model}_enzyme-ablation-${platform}_$datetime"
       export KERAS_BACKEND="jax"
       export EQSAT_PLATFORM=$platform
 

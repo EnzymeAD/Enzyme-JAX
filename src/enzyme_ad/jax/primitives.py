@@ -716,7 +716,7 @@ def _enzyme_primal_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
-    pipeline_options
+    pipeline_options,
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -754,16 +754,21 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
-        lowered_func = lower(
-            jax.jit(mfunc, **jit_options),
-            avals_in,
-            ctx.module_context.lowering_parameters,
-            kwargs=avals_inkw,
-        )
-        mhlo = lowered_func.compiler_ir(dialect="stablehlo")
-        source = mhlo.operation.get_asm(enable_debug_info=True)
-        kept = lowered_func.compile()._executable._kept_var_idx
+        if type(mfunc) == type(""):
+            avals_in = avals
+            kept = [i for (i, v) in enumerate(orig_shapes)]
+            source = mfunc
+        else:
+            (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
+            lowered_func = lower(
+                jax.jit(mfunc, **jit_options),
+                avals_in,
+                ctx.module_context.lowering_parameters,
+                kwargs=avals_inkw,
+            )
+            mhlo = lowered_func.compiler_ir(dialect="stablehlo")
+            source = mhlo.operation.get_asm(enable_debug_info=True)
+            kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(
             arg
             for (i, arg) in enumerate(in_args)
@@ -810,6 +815,18 @@ def _enzyme_primal_lowering(
                 mod.regions[0].blocks[0].append(f)
                 if f.sym_name.value == name:
                     fn = f
+            if fn is None:
+                raise AssertionError(
+                    "Could not find function named "
+                    + name
+                    + " in post opt module "
+                    + str(nmod)
+                    + ", pre opt module was "
+                    + str(source)
+                    + ' pipeline was "'
+                    + pass_pipeline
+                    + '"'
+                )
             for f in pushtop[::-1]:
                 f.move_before(next(mod.regions[0].blocks[0].__iter__()))
             if True:
@@ -1166,6 +1183,69 @@ def cpp_call(
         out_shapes=out_shapes,
         lang=LANG_CPP,
         pipeline_options=pipeline_options
+    )
+
+def to_jax_type(mlir_type):
+    import jax._src.interpreters.mlir
+
+    et = mlir_type.element_type
+    for jtype, mcall in jax._src.interpreters.mlir._dtype_to_ir_type.items():
+        mtype = mcall()  # mlir_type.context)
+        if mtype == et:
+            return jax.core.ShapedArray(mlir_type.shape, jtype)
+    assert False
+
+
+def hlo_call(
+    *args,
+    source: str,
+    argv: tuple[str] = (),
+    passes: str = "",
+):
+    fn = "main"
+    with jax_mlir.make_ir_context():
+        nmod = ir.Module.parse(source)
+        func = None
+        names = []
+        for f in nmod.body:
+            names.append(f.sym_name.value)
+            if f.sym_name.value == fn:
+                func = f
+        if func is None:
+            raise AssertionError(
+                f"Could not find desired function {fn} options are {names}"
+            )
+        in_tys = list(
+            map(lambda x: to_jax_type(x.type), func.regions[0].blocks[0].arguments)
+        )
+        out_shapes = list(
+            map(
+                lambda x: to_jax_type(x.type),
+                func.regions[0]
+                .blocks[0]
+                .operations[len(func.regions[0].blocks[0].operations) - 1]
+                .operands,
+            )
+        )
+        args_flat, in_tree = jax.tree_util.tree_flatten(args)
+        assert len(args_flat) == len(in_tys)
+        for jarg, hloty in zip(args_flat, in_tys):
+            assert jarg.shape == hloty.shape
+            assert jarg.dtype == hloty.dtype
+
+    mfunc = source
+    jit_options = {}
+    out_idx_map = {i: -1 for (i, v) in enumerate(out_shapes)}
+    in_idx_map = {i: i for (i, v) in enumerate(in_tys)}
+
+    return _enzyme_primal_p.bind(
+        *args,
+        source=(in_tree, in_idx_map, out_idx_map, mfunc, jit_options),
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=LANG_MHLO,
+        pipeline_options=JaXPipeline(passes),
     )
 
 

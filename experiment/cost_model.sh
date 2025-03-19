@@ -3,23 +3,30 @@
 configs=(
   "export FUSION_COSTS=true"
   "export FUSION_COSTS=false"
-  "export FUSION_COSTS=false ZERO_COSTS=false"
+  "export FUSION_COSTS=true ZERO_COSTS=false"
 )
-platforms=("cpu" "gpu")
-models=("llama" "maxtext" "jaxmd")
-filename=cost_model_$(date '+%Y-%m-%d_%H:%M:%S').txt
+config_names=(
+  "baseline"
+  "no-fusion"
+  "no-zero"
+)
+platforms=("cpu") # "gpu")
+models=("llama" "nasrnn") # "maxtext" "jaxmd")
+datetime=$(date '+%Y-%m-%d_%H:%M:%S')
+filename=cost_model_$datetime.txt
 
 echo "Cost model ablation" > $filename
 echo "--------------------------" >> $filename
 
 for model in "${models[@]}"; do
   for platform in "${platforms[@]}"; do
-    for config in "${configs[@]}"; do
+    for i in "${!configs[@]}"; do
+      config="${configs[$i]}"
+      config_name="${config_names[$i]}"
       eval "$config"
-      export EXPERIMENT_NAME="${model}_${config// /_}-${platform}"
+      export EXPERIMENT_NAME="${model}_cost-model_${config_name}-${platform}_${datetime}"
       export KERAS_BACKEND="jax"
       export EQSAT_PLATFORM=$platform
-      export EQSAT_ONLY=true
 
       if [ "$platform" == "gpu" ]; then
         COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"

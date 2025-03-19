@@ -3,7 +3,8 @@
 thresholds=(10 25 100 500 1000 5000)
 platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
-filename=segmentation_$(date '+%Y-%m-%d_%H:%M:%S').txt
+datetime=$(date '+%Y-%m-%d_%H:%M:%S')
+filename=segmentation_$datetime.txt
 
 echo "Segmentation" > $filename
 echo "--------------------------" >> $filename
@@ -27,7 +28,7 @@ run_experiment() {
 for model in "${models[@]}"; do
   for platform in "${platforms[@]}"; do
     for threshold in "${thresholds[@]}"; do
-      export EXPERIMENT_NAME="${model}_tau=${threshold}-${platform}"
+      export EXPERIMENT_NAME="${model}_tau=${threshold}-${platform}_${datetime}"
       export SEGMENTATION_THRESHOLD=$threshold
       export EQSAT_PLATFORM=$platform
       export EQSAT_ONLY=true

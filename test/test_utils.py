@@ -344,8 +344,6 @@ slice_reshape_pad<1>;
 def pipelines():
     setup_backends()
     from enzyme_ad.jax import (
-        NewXLAPipeline,
-        OldXLAPipeline,
         JaXPipeline,
         hlo_opts,
     )
@@ -546,7 +544,8 @@ class EnzymeJaxTest(absltest.TestCase):
         self.mlirad_rev = True
         EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
         if EXPERIMENT_NAME:
-            self.csv_filename = f"results_{EXPERIMENT_NAME}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
+            # self.csv_filename = f"results_{EXPERIMENT_NAME}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
+            self.csv_filename = f"results_{EXPERIMENT_NAME}.csv"
         else:
             self.csv_filename = f"results_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.csv"
 
