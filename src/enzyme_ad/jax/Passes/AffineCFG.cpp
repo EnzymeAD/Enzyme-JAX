@@ -1811,6 +1811,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
                                 PatternRewriter &rewriter) const final {
     if (isAffine(loop)) {
       OpBuilder builder(loop);
+      llvm::errs() << " running loop: " << *loop->getParentOfType<FunctionOpInterface>() << "\n";
 
       SmallVector<Value> lbs;
       {
@@ -4175,6 +4176,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
 }
 
 void AffineCFGPass::runOnOperation() {
+  llvm::errs() << " running affinecfg: " << *getOperation() << "\n";
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
   GreedyRewriteConfig config;
