@@ -71,6 +71,12 @@ jobs:
         timeout-minutes: 180
         run: |
           bazel build --color=yes //:enzymexlamlir-opt --test_output=errors
+      - name: Upload enzymexlamlir-opt
+        uses: actions/upload-artifact@v4
+        with:
+          name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/enzymexlamlir-opt"
+          retention-days: 90
       - name: Build wheel
         timeout-minutes: 240
         run: |
