@@ -46,6 +46,7 @@ public:
             LLVM::LLVMScalableVectorType>(llvmNDVectorTy)) {
       return failure();
     }
+
     Operation *newOp = rewriter.create(
         op->getLoc(), rewriter.getStringAttr(TargetOp::getOperationName()),
         operands, op->getResultTypes(), attrConvert.getAttrs());
@@ -169,6 +170,44 @@ public:
 
     rewriter.replaceOpWithNewOp<TargetOp>(op, op->getResults().getTypes(),
                                           op->getOperands());
+    return success();
+  }
+
+private:
+  StringAttr funcName;
+};
+
+template <typename TargetOp>
+class CallToOpIntAdaptRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  CallToOpIntAdaptRaising(MLIRContext *context, StringRef funcNameStr)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        funcName(StringAttr::get(context, funcNameStr)) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() != funcName)
+      return failure();
+
+    auto newOp = rewriter.create<TargetOp>(
+        op->getLoc(), op->getOperand(0).getType(), op->getOperands());
+    auto sourceType = op->getOperand(0).getType().cast<IntegerType>();
+    auto targetType = op->getResultTypes()[0].cast<IntegerType>();
+    if (targetType.getWidth() > sourceType.getWidth()) {
+      rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, targetType,
+                                                  newOp->getResult(0));
+    } else if (targetType.getWidth() < sourceType.getWidth()) {
+      rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, targetType,
+                                                   newOp->getResult(0));
+    } else {
+      rewriter.replaceOp(op, newOp);
+    }
+
     return success();
   }
 
@@ -390,6 +429,14 @@ using CmpIOpLowering =
 using CmpFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
                                     AttrConvertFastMathFromLLVM>;
+using CountLeadingZerosOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CountLeadingZerosOp,
+                                    LLVM::CountLeadingZerosOp>;
+using CountTrailingZerosOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CountTrailingZerosOp,
+                                    LLVM::CountTrailingZerosOp>;
+using CtPopOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CtPopOp, LLVM::CtPopOp>;
 
 struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
   using OpRewritePattern<LLVM::ConstantOp>::OpRewritePattern;
@@ -463,6 +510,12 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
+                                                                   "__nv_clz");
+  patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
+      context, "__nv_clzll");
+  patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popc");
+  patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
                                     "__nv_fmod");
@@ -549,10 +602,8 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,
-               // CountLeadingZerosOpLowering,
-               // CountTrailingZerosOpLowering,
-               // CtPopFOpLowering,
-               Exp2OpLowering,
+               CountLeadingZerosOpLowering, CountTrailingZerosOpLowering,
+               CtPopFOpLowering, Exp2OpLowering,
                // ExpM1OpLowering,
                ExpOpLowering, FPowIOpLowering, FloorOpLowering, FmaOpLowering,
                Log10OpLowering, Log2OpLowering, LogOpLowering, PowFOpLowering,
