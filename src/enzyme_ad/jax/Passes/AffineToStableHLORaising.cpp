@@ -1373,7 +1373,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         Operation::create(op->getLoc(), op->getName(), {T}, {newOperand},
                           op->getAttrs(), OpaqueProperties(nullptr), {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
-    maps[newOp->getResult(0)] = maps[newOperand];
+
+    maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
     builder.insert(newOp);
     return success();
@@ -1670,7 +1671,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
          llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
                    llvm::drop_begin(whileOp.getResults()))) {
       mapping.map(forRes, whileRes);
-      maps[whileRes] = maps[mapping.lookup(forIterArg)];
+      maps[whileRes] = maps.lookup(mapping.lookup(forIterArg));
     }
 
     return success();
