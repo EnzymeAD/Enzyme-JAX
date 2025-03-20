@@ -490,6 +490,12 @@ make_enum!(MlirRewrites ALL_REWRITES {
     SliceSlice,
     SliceBroadcast,
     SliceTranspose,
+    SliceAdd,
+    SliceSub,
+    SliceMul,
+    SliceDiv,
+    SliceMin,
+    SliceMax,
     SlicePad,
     SliceConcat,
     PadSimplify,
@@ -497,23 +503,33 @@ make_enum!(MlirRewrites ALL_REWRITES {
     AddPadToConcat,
     MulPadToConcat,
     ReshapePad,
+    PadReshapePad,
     ConcatAppendingReshape,
     TanhPadPush,
     ExpPadPush,
     TransposePad,
     ConcatPushAdd,
     ConcatPushMul,
+    ConcatFuse0,
+    ConcatFuse1,
+    ConcatFuse2Left,
+    ConcatFuse2Right,
+    ConcatFuse2Both,
+    ConcatToBroadcast2,
+    ConcatToBroadcast3,
+    ConcatToBroadcast4,
+    ConcatToBroadcast5,
     ReshapeEmptyBroadcast,
     BroadcastReshape,
     BroadcastToReshape,
     BroadcastPad,
     ConcatPad2,
     ConcatPad3,
-    SliceSimplify,
+    // SliceSimplify,
     TransposeTranspose,
     TransposeDotReorder,
-    TransposeConvolution,
-    ConvolutionTranspose,
+    // TransposeConvolution,
+    // ConvolutionTranspose,
     DotTransposeLeft,
     DotTransposeRight,
     DotTransposeBoth,
@@ -523,15 +539,42 @@ make_enum!(MlirRewrites ALL_REWRITES {
     DivPadPad,
     MaxPadPad,
     MinPadPad,
+    AddAddPadPadLeft,
+    AddAddPadPadRight,
+    MulMulPadPadLeft,
+    MulMulPadPadRight,
     AddPadPadToConcat,
     PadPad,
     SliceDotGeneral,
     SliceReshape,
     SliceReshapePad,
     SliceReshapeConcat,
+    SliceReshapeAdd,
+    SliceReshapeSub,
+    SliceReshapeMul,
+    SliceReshapeDiv,
+    SliceReshapeMin,
+    SliceReshapeMax,
     SliceReshapeTranspose,
     SliceReshapeDotGeneral,
     SliceReshapeSlice,
+    BroadcastInDimOpCanon,
+    BroadcastInDimOpCanonNested,
+    ReshapeOpCanon,
+    MergeConsecutiveReshapes,
+    TransposeIsReshape,
+    ReorderAddReshape,
+    ReorderAddTranspose,
+    ReorderSubReshape,
+    ReorderSubTranspose,
+    ReorderMulReshape,
+    ReorderMulTranspose,
+    ReorderDivReshape,
+    ReorderDivTranspose,
+    ReorderMinReshape,
+    ReorderMinTranspose,
+    ReorderMaxReshape,
+    ReorderMaxTranspose,
 });
 
 impl MlirRewrites {
@@ -543,35 +586,109 @@ impl MlirRewrites {
         let ast_string = match self {
             MlirRewrites::NoopSlice => "(SliceOp ?x ?si ?li ?s)",
             MlirRewrites::SliceSlice => "(SliceOp (SliceOp ?x ?a ?b ?c) ?d ?e ?f)",
+            // blackbox: DynamicSliceToStatic
+            // blackbox: DynamicUpdateSliceElim
+            // blackbox: DynamicUpdateToConcat
+            // blackbox: SliceOfDynamicUpdate
             MlirRewrites::SliceBroadcast => "(SliceOp (BroadcastInDimOp ?x ?a ?b) ?c ?d ?e)",
             MlirRewrites::SliceTranspose => "(SliceOp (TransposeOp ?x ?a) ?b ?c ?d)",
+            // the following are special cases of SliceElementwise
+            MlirRewrites::SliceAdd => "(SliceOp (AddOp ?x ?y) ?b ?c ?d)",
+            MlirRewrites::SliceSub => "(SliceOp (SubtractOp ?x ?y) ?b ?c ?d)",
+            MlirRewrites::SliceMul => "(SliceOp (MulOp ?x ?y) ?b ?c ?d)",
+            MlirRewrites::SliceDiv => "(SliceOp (DivOp ?x ?y) ?b ?c ?d)",
+            MlirRewrites::SliceMin => "(SliceOp (MinOp ?x ?y) ?b ?c ?d)",
+            MlirRewrites::SliceMax => "(SliceOp (MaxOp ?x ?y) ?b ?c ?d)",
             MlirRewrites::SlicePad => "(SliceOp (PadOp ?x ?a ?b ?c ?d) ?e ?f ?g)",
+            // blackbox: ReduceToReshape
+            // blackbox: ReducePad
+            // blackbox: ConvertConcat
+            // blackbox: ConvertConvertFloat
+            // blackbox: ReduceConcat
+            // blackbox: FullReduceReshapeOrTranspose
             MlirRewrites::SliceConcat => "(SliceOp (ConcatenateOp ?x ?a) ?b ?c ?d)",
+            // unimplemented (in enzyme): DotReshapeDot
             MlirRewrites::PadSimplify => "(PadOp ?x ?a ?b ?c ?d)",
+            // blackbox: ShiftRightLogicalSimplify
             MlirRewrites::NegativePadToSlice => "(PadOp ?x ?pv ?epl ?eph ?ip)",
+            // BinopPadToConcat
             MlirRewrites::AddPadToConcat => "(AddOp (PadOp ?x ?a ?b ?c ?d) ?y)",
             MlirRewrites::MulPadToConcat => "(MulOp (PadOp ?x ?a ?b ?c ?d) ?y)",
+            // blackbox: ReshapeIota
             MlirRewrites::ReshapePad => "(ReshapeOp (PadOp ?x ?a ?b ?c ?d) ?s)",
+            // todo: DotReshapePad (check) (unused)
+            // blackbox (constant): ZeroProductReshapePad
+            MlirRewrites::PadReshapePad => "(ReshapeOp (PadOp ?x ?a ?b ?c ?d) ?s)",
+            // blackbox: BinopConstReshapePad
             MlirRewrites::ConcatAppendingReshape => "(ConcatenateOp ?x ?a)",
+            // UnaryPadPush
             MlirRewrites::TanhPadPush => "(TanhOp (PadOp ?x ?a ?b ?c ?d))",
             MlirRewrites::ExpPadPush => "(ExpOp (PadOp ?x ?a ?b ?c ?d))",
             MlirRewrites::TransposePad => "(TransposeOp (PadOp ?x ?pv ?epl ?eph ?ip) ?p)",
+            // ConcatPushBinop
             MlirRewrites::ConcatPushAdd => "(ConcatenateOp (Vec (AddOp ?a ?b) (AddOp ?c ?d)) ?e)",
             MlirRewrites::ConcatPushMul => "(ConcatenateOp (Vec (MulOp ?a ?b) (MulOp ?c ?d)) ?e)",
+            // special cases of ConcatFuse
+            MlirRewrites::ConcatFuse0 => "(ConcatenateOp ?a ?b)",
+            MlirRewrites::ConcatFuse1 => "(ConcatenateOp (Vec ?x) ?a)",
+            MlirRewrites::ConcatFuse2Left => "(ConcatenateOp (Vec (ConcatenateOp ?a ?b) ?c) ?d)",
+            MlirRewrites::ConcatFuse2Right => "(ConcatenateOp (Vec ?a (ConcatenateOp ?b ?c)) ?d)",
+            MlirRewrites::ConcatFuse2Both => "(ConcatenateOp (Vec (ConcatenateOp ?a ?b) (ConcatenateOp ?c ?d)) ?e)",
+            // special cases of ConcatToBroadcast
+            MlirRewrites::ConcatToBroadcast2 => "(ConcatenateOp (Vec ?a ?a) ?b)",
+            MlirRewrites::ConcatToBroadcast3 => "(ConcatenateOp (Vec ?a ?a ?a) ?b)",
+            MlirRewrites::ConcatToBroadcast4 => "(ConcatenateOp (Vec ?a ?a ?a ?a) ?b)",
+            MlirRewrites::ConcatToBroadcast5 => "(ConcatenateOp (Vec ?a ?a ?a ?a ?a) ?b)",
+            // blackbox (constant): ConcatConstProp
             MlirRewrites::ReshapeEmptyBroadcast => "(ReshapeOp (BroadcastInDimOp ?a ?b ?c) ?d)",
             MlirRewrites::BroadcastReshape => "(BroadcastInDimOp (ReshapeOp ?a ?b) ?c ?d)",
             MlirRewrites::BroadcastToReshape => "(BroadcastInDimOp ?a ?b ?c)",
             MlirRewrites::BroadcastPad => "(BroadcastInDimOp (PadOp ?a ?b ?c ?d ?e) ?f ?g)",
+            // blackbox: ScatterToDynamicUpdateSlice
+            // blackbox (constant): AddSimplify
+            // blackbox (constant): SubSimplify
+            // blackbox (constant): NegateSimplify
+            // blackbox (constant): AndSimplify
+            // blackbox (constant): OrSimplify
+            // blackbox (constant): MulSimplify
+            // blackbox (constant): DivSimplify
+            // blackbox (Constant): RemSimplify
+            // blackbox (constant): PowSimplify
+            // blackbox (constant): IotaSimplify
+            // blackbox (constant): ConcatToPad
+            // special cases of ConcatPad
             MlirRewrites::ConcatPad2 => "(ConcatenateOp (Vec (PadOp ?x ?a ?b ?c ?d) (PadOp ?y ?e ?f ?g ?h)) ?i)",
             MlirRewrites::ConcatPad3 => "(ConcatenateOp (Vec (PadOp ?x ?a ?b ?c ?d) (PadOp ?y ?e ?f ?g ?h) (PadOp ?z ?i ?j ?k ?l)) ?m)",
-            MlirRewrites::SliceSimplify => "(SliceOp ?x ?a ?b ?c)",
+            // blackbox (constant): ConvertSimplify
+            // blackbox (constant): SliceSimplify
+            // blackbox (constant): BroadcastInDimSimplify
+            // blackbox (constant): DotGeneralSimplify
+            // blackbox (constant): TransposeSimplify
+            // blackbox (constant): MaxSimplify
+            // blackbox (constant): MinSimplify
+            // blackbox (constant): CosSimplify
+            // blackbox (constant): SinSimplify
+            // blackbox (constant): SqrtSimplify
+            // blackbox (constant): TanhSimplify
+            // blackbox (constant): ExpSimplify
+            // blackbox (constant): BinBroadcastSplat
+            // blackbox: Allfinite (unused)
+            // blackbox: NoNan (unused)
             MlirRewrites::TransposeTranspose => "(TransposeOp (TransposeOp ?x ?a) ?b)",
+            // blackbox: TransposeConvert
             MlirRewrites::TransposeDotReorder => "(TransposeOp (DotGeneralOp ?a ?b ?c ?d ?e ?f ?g) ?h)",
-            MlirRewrites::TransposeConvolution => "(TransposeOp (ConvolutionOp ?a ?b ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s) ?t)",
-            MlirRewrites::ConvolutionTranspose => "(ConvolutionOp (TransposeOp ?x ?a) (TransposeOp ?y ?b) ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s)",
+            // blackbox: TransposeConvolution
+            // blackbox: ConvolutionTranspose
+            // MlirRewrites::TransposeConvolution => "(TransposeOp (ConvolutionOp ?a ?b ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s) ?t)",
+            // MlirRewrites::ConvolutionTranspose => "(ConvolutionOp (TransposeOp ?x ?a) (TransposeOp ?y ?b) ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p ?q ?r ?s)",
+            // blackbox: TransposeEinsum
+            // blackbox: EinsumTranspose
+            // the following three cover DotTranspose
             MlirRewrites::DotTransposeLeft => "(DotGeneralOp (TransposeOp ?x ?a) ?b ?c ?d ?e ?f ?g)",
             MlirRewrites::DotTransposeRight => "(DotGeneralOp ?a (TransposeOp ?y ?b) ?c ?d ?e ?f ?g)",
             MlirRewrites::DotTransposeBoth => "(DotGeneralOp (TransposeOp ?x ?a) (TransposeOp ?y ?b) ?c ?d ?e ?f ?g)",
+            // blackbox: BroadcastReduce
+            // BinopPadPad
             MlirRewrites::AddPadPad => "(AddOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
             MlirRewrites::SubPadPad => "(SubtractOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
             MlirRewrites::MulPadPad => "(MulOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
@@ -579,14 +696,69 @@ impl MlirRewrites {
             MlirRewrites::MinPadPad => "(MinOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
             MlirRewrites::MaxPadPad => "(MaxOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
             MlirRewrites::AddPadPadToConcat => "(AddOp (PadOp ?a ?b ?c ?d ?e) (PadOp ?f ?g ?h ?i ?j))",
+            // BinopBinopPadPad
+            MlirRewrites::AddAddPadPadLeft => "(AddOp (PadOp ?a ?b ?c ?d ?e) (AddOp (PadOp ?f ?g ?h ?i ?j) ?k))",
+            MlirRewrites::AddAddPadPadRight => "(AddOp (PadOp ?a ?b ?c ?d ?e) (AddOp ?f (PadOp ?g ?h ?i ?j ?k)))",
+            MlirRewrites::MulMulPadPadLeft => "(MulOp (PadOp ?a ?b ?c ?d ?e) (MulOp (PadOp ?f ?g ?h ?i ?j) ?k))",
+            MlirRewrites::MulMulPadPadRight => "(MulOp (PadOp ?a ?b ?c ?d ?e) (MulOp ?f (PadOp ?g ?h ?i ?j ?k)))",
+            // blackbox (constant): BinopBinopPadConst
+            // blackbox (constant): MulZeroPad
+            // blackbox (constant) : DivZeroPad
             MlirRewrites::PadPad => "(PadOp (PadOp ?a ?b ?c ?d ?e) ?f ?g ?h ?i)",
             MlirRewrites::SliceDotGeneral => "(SliceOp (DotGeneralOp ?a ?b ?c ?d ?e ?f ?g) ?h ?i ?j)",
+            // todo: PadDotGeneral (check) (unused)
             MlirRewrites::SliceReshape => "(SliceOp (ReshapeOp ?a ?b) ?c ?d ?e)",
             MlirRewrites::SliceReshapePad => "(SliceOp (ReshapeOp (PadOp ?a ?b ?c ?d ?e) ?f) ?g ?h ?i)",
             MlirRewrites::SliceReshapeConcat => "(SliceOp (ReshapeOp (ConcatenateOp ?a ?b) ?c) ?d ?e ?f)",
+            // SliceReshapeElementwise
+            MlirRewrites::SliceReshapeAdd => "(SliceOp (ReshapeOp (AddOp ?x ?y) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeSub => "(SliceOp (ReshapeOp (SubtractOp ?x ?y) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeMul => "(SliceOp (ReshapeOp (MulOp ?x ?y) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeDiv => "(SliceOp (ReshapeOp (DivOp ?x ?y) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeMin => "(SliceOp (ReshapeOp (MinOp ?x ?y) ?c) ?d ?e ?f)",
+            MlirRewrites::SliceReshapeMax => "(SliceOp (ReshapeOp (MaxOp ?x ?y) ?c) ?d ?e ?f)",
             MlirRewrites::SliceReshapeTranspose => "(SliceOp (ReshapeOp (TransposeOp ?a ?b) ?c) ?d ?e ?f)",
             MlirRewrites::SliceReshapeDotGeneral => "(SliceOp (ReshapeOp (DotGeneralOp ?a ?b c ?d ?e ?f ?g) ?h) ?i ?j ?k)",
             MlirRewrites::SliceReshapeSlice => "(SliceOp (ReshapeOp (SliceOp ?a ?b ?c ?d) ?e) ?f ?g ?h)",
+            // blackbox (constant): GatherSimplify
+            // cse, ConstPropThroughBarrier
+            // blackbox: CompareOpCanon
+            // blackbox: SelectOpCanon
+            MlirRewrites::BroadcastInDimOpCanon => "(BroadcastInDimOp ?x ?y ?z)",
+            MlirRewrites::BroadcastInDimOpCanonNested => "(BroadcastInDimOp (BroadcastInDimOp ?a ?b ?c) ?y ?z)",
+            // blackbox (constant): ConcatenateOpCanon
+            // blackbox: ConvertOpCanon
+            // blackbox: DynamicBroadcastInDimOpNotActuallyDynamic
+            // blackbox: ChainedDynamicBroadcastInDimCanonicalization
+            // blackbox: DynamicBroadcastInDimAllDimsNonExpanding
+            // blackbox: NoopReduceopCanon
+            // blackbox: EmptyReduceOpCanon
+            // blackbox: DynamicReshapeOpCanon
+            // blackbox: GetTupleElementOpCanon
+            // blackbox: RealOpCanon
+            // blackbox: ImagOpCanon
+            // blackbox: GetDimensionSizeOpCanon
+            // blackbox: GatherOpCanon
+            MlirRewrites::ReshapeOpCanon => "(ReshapeOp ?x ?y)",
+            MlirRewrites::MergeConsecutiveReshapes => "(ReshapeOp (ReshapeOp ?x ?y) ?b)",
+            MlirRewrites::TransposeIsReshape => "(TransposeOp ?x ?y)",
+            // blackbox: IfInline
+            // blackbox: IfToSelect
+            // blackbox: ZeroExtentTensorCanon
+            // ReorderElementwiseAndShapeOp
+            MlirRewrites::ReorderAddReshape => "(AddOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderAddTranspose => "(AddOp (TransposeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderSubReshape => "(SubtractOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderSubTranspose => "(SubtractOp (TransposeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMulReshape => "(MulOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMulTranspose => "(MulOp (TransposeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderDivReshape => "(DivOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderDivTranspose => "(DivOp (TransposeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMinReshape => "(MinOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMinTranspose => "(MinOp (TransposeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMaxReshape => "(MaxOp (ReshapeOp ?x ?y) ?c)",
+            MlirRewrites::ReorderMaxTranspose => "(MaxOp (TransposeOp ?x ?y) ?c)",
+
         };
         ast_string.parse().unwrap()
     }
