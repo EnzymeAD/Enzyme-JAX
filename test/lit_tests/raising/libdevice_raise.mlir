@@ -713,5 +713,82 @@ module {
       llvm.return
     }
   }
+
+  gpu.module @test_module_48 {
+    llvm.func @__nv_clz(i32) -> i32
+    llvm.func @__nv_clzll(i64) -> i32
+    // CHECK-LABEL: @gpu_clz
+    llvm.func @gpu_clz(%arg0: i32) -> i32 {
+      // CHECK: math.ctlz
+      %0 = llvm.call @__nv_clz(%arg0) : (i32) -> i32
+      llvm.return %0 : i32
+    }
+
+    // CHECK-LABEL: @gpu_clzll
+    llvm.func @gpu_clzll(%arg0: i64) -> i32 {
+      // CHECK: math.ctlz
+      // CHECK: arith.trunci
+      %0 = llvm.call @__nv_clzll(%arg0): (i64) -> i32
+      llvm.return %0 : i32
+    }
+  }
+
+  gpu.module @test_module_49 {
+    llvm.func @__nv_popc(i32) -> i32
+    llvm.func @__nv_popcll(i64) -> i32
+    // CHECK-LABEL: @gpu_popc
+    llvm.func @gpu_popc(%arg0: i32) -> i32 {
+      // CHECK: math.ctpop
+      %0 = llvm.call @__nv_popc(%arg0) : (i32) -> i32
+      llvm.return %0 : i32
+    }
+
+    // CHECK-LABEL: @gpu_popcll
+    llvm.func @gpu_popcll(%arg0: i64) -> i32 {
+      // CHECK: math.ctpop
+      // CHECK: arith.trunci
+      %0 = llvm.call @__nv_popcll(%arg0): (i64) -> i32
+      llvm.return %0 : i32
+    }
+  }
+
+  gpu.module @test_module_50 {
+    // CHECK-LABEL: @llvm_ctlz32
+    llvm.func @llvm_ctlz32(%arg0: i32) -> i32 {
+      // CHECK: math.ctlz
+      %0 = "llvm.intr.ctlz"(%arg0) {is_zero_poison = false} : (i32) -> i32
+      llvm.return %0 : i32
+    }
+    // CHECK-LABEL: @llvm_ctlz64
+    llvm.func @llvm_ctlz64(%arg0: i64) -> i64 {
+      // CHECK: math.ctlz
+      %0 = "llvm.intr.ctlz"(%arg0) {is_zero_poison = false} : (i64) -> i64
+      llvm.return %0 : i64
+    }
+    // CHECK-LABEL: @llvm_cttz32
+    llvm.func @llvm_cttz32(%arg0: i32) -> i32 {
+      // CHECK: math.cttz
+      %0 = "llvm.intr.cttz"(%arg0) {is_zero_poison = false} : (i32) -> i32
+      llvm.return %0 : i32
+    }
+    // CHECK-LABEL: @llvm_cttz64
+    llvm.func @llvm_cttz64(%arg0: i64) -> i64 {
+      // CHECK: math.cttz
+      %0 = "llvm.intr.cttz"(%arg0) {is_zero_poison = false} : (i64) -> i64
+      llvm.return %0 : i64
+    }
+    // CHECK-LABEL: @llvm_ctpop32
+    llvm.func @llvm_ctpop32(%arg0: i32) -> i32 {
+      // CHECK: math.ctpop
+      %0 = "llvm.intr.ctpop"(%arg0) {is_zero_poison = false} : (i32) -> i32
+      llvm.return %0 : i32
+    }
+    // CHECK-LABEL: @llvm_ctpop64
+    llvm.func @llvm_ctpop64(%arg0: i64) -> i64 {
+      // CHECK: math.ctpop
+      %0 = "llvm.intr.ctpop"(%arg0) {is_zero_poison = false} : (i64) -> i64
+      llvm.return %0 : i64
+    }
+  }
 }
 
