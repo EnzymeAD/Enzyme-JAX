@@ -645,7 +645,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     Value b = mapping.lookup(thenVal);
     Value c = mapping.lookup(elseVal);
 
-    auto mapA = map, mapB = maps[b], mapC = maps[c];
+    auto mapA = map, mapB = maps.lookup(b), mapC = maps.lookup(c);
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
@@ -699,7 +699,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
       dimsToBroadcast.push_back(0);
       indicesShape.push_back(1);
     } else {
-      auto map = maps[raisedIdx];
+      auto map = maps.lookup(raisedIdx);
 
       for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
         auto iv = getIVForExpr(map, E);
@@ -818,7 +818,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
   Value indices = nullptr;
 
-  affine::AffineValueMap updateValueMap = maps[update];
+  affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = update.getType().cast<RankedTensorType>();
   SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
@@ -826,7 +826,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   SmallVector<int64_t> scatterDimsToOperandDims;
 
   for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
-    auto idxMap = maps[raisedIdx];
+    auto idxMap = maps.lookup(raisedIdx);
 
     auto Ty = raisedIdx.getType().cast<RankedTensorType>();
     SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
@@ -1144,7 +1144,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto Ty = builder.getI64Type();
     auto unrankedTensorType = RankedTensorType::get({}, Ty);
 
-    affine::AffineValueMap updateValueMap = maps[update];
+    affine::AffineValueMap updateValueMap = maps.lookup(update);
 
     // for each dim in update, where it will
     // be located in broadcastedupdate
@@ -1373,7 +1373,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         Operation::create(op->getLoc(), op->getName(), {T}, {newOperand},
                           op->getAttrs(), OpaqueProperties(nullptr), {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
-    maps[newOp->getResult(0)] = maps[newOperand];
+    maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
     builder.insert(newOp);
     return success();
@@ -1393,7 +1393,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value a = mapping.lookup(op->getOperand(0)),
           b = mapping.lookup(op->getOperand(1));
 
-    auto mapA = maps[a], mapB = maps[b];
+    auto mapA = maps.lookup(a), mapB = maps.lookup(b);
     auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder);
     assert(a.getType() == b.getType());
 
@@ -1424,7 +1424,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           b = mapping.lookup(op->getOperand(1)),
           c = mapping.lookup(op->getOperand(2));
 
-    auto mapA = maps[a], mapB = maps[b], mapC = maps[c];
+    auto mapA = maps.lookup(a), mapB = maps.lookup(b), mapC = maps.lookup(c);
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
@@ -1467,7 +1467,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
 
     Value cond = mapping.lookup(ifOp.getCondition());
-    if (emitIfAsSelect(op, cond, maps[cond], builder, mapping, maps, pc)
+    if (emitIfAsSelect(op, cond, maps.lookup(cond), builder, mapping, maps, pc)
             .failed())
       return failure();
 
@@ -1597,7 +1597,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value iterArgInBody = body->addArgument(TT, iterArg.getLoc());
       auto tensorInit = mapping.lookup(init);
       auto broadcastInit =
-          pc.getBroadcast(builder, maps[tensorInit], tensorInit);
+          pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
       if (!broadcastInit)
         return failure();
       inits.push_back(broadcastInit->v);
@@ -1648,8 +1648,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto [iterArg, yieldedIterArgs] :
            llvm::zip(forOp.getRegionIterArgs(),
                      forOp.getBody()->getTerminator()->getOperands())) {
-        if (maps[mapping.lookup(iterArg)] !=
-            maps[mapping.lookup(yieldedIterArgs)]) {
+        if (maps.lookup(mapping.lookup(iterArg)) !=
+            maps.lookup(mapping.lookup(yieldedIterArgs))) {
           LLVM_DEBUG(llvm::dbgs() << "invalid init for iterArg: ";
                      iterArg.printAsOperand(llvm::dbgs(), OpPrintingFlags());
                      llvm::dbgs() << "\n");
@@ -1670,7 +1670,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
          llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
                    llvm::drop_begin(whileOp.getResults()))) {
       mapping.map(forRes, whileRes);
-      maps[whileRes] = maps[mapping.lookup(forIterArg)];
+      maps[whileRes] = maps.lookup(mapping.lookup(forIterArg));
     }
 
     return success();
