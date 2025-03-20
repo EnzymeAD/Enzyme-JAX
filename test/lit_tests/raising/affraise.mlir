@@ -30,7 +30,7 @@ module {
 // CHECK:   func.func @withinif(%[[arg0:.+]]: memref<?xf64>, %[[arg1:.+]]: i32, %[[arg2:.+]]: memref<?xf64>, %[[arg3:.+]]: i1) {
 // CHECK-DAG:     %[[V0:.+]] = arith.index_cast %[[arg1]] : i32 to index
 // CHECK-NEXT:     scf.if %[[arg3]] {
-// CHECK-NEXT:       affine.for %[[arg4:.+]] = 1 to %[[V0]] {
+// CHECK-NEXT:       affine.parallel (%[[arg4:.+]]) = (1) to (symbol(%[[V0]])) {
 // CHECK-NEXT:         %[[V1:.+]] = affine.load %[[arg0]][%[[arg4]]] : memref<?xf64>
 // CHECK-NEXT:         affine.store %[[V1]], %[[arg2]][%[[arg4]]] : memref<?xf64>
 // CHECK-NEXT:       }
