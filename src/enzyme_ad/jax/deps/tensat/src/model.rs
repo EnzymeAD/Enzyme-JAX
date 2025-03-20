@@ -42,6 +42,9 @@ define_language! {
       "NegOp"              = NegOp([Id; 1]), // input
       "TanhOp"             = TanhOp([Id; 1]), // input
       "ExpOp"              = ExpOp([Id; 1]), // input
+      "SinOp"              = SinOp([Id; 1]), // input
+      "CosOp"              = CosOp([Id; 1]), // input
+      "TanOp"              = TanOp([Id; 1]), // input
       // MISC OPS
       "IotaOp"             = IotaOp([Id; 2]), // iota_dimension, output_shape
       // "ConstantOp"         = ConstantOp([Id; 0]),
@@ -134,6 +137,9 @@ impl Mdl {
             Mdl::NegOp(x) => Mdl::NegOp(x.map(f)),
             Mdl::TanhOp(x) => Mdl::TanhOp(x.map(f)),
             Mdl::ExpOp(x) => Mdl::ExpOp(x.map(f)),
+            Mdl::SinOp(x) => Mdl::SinOp(x.map(f)),
+            Mdl::CosOp(x) => Mdl::CosOp(x.map(f)),
+            Mdl::TanOp(x) => Mdl::TanOp(x.map(f)),
             Mdl::IotaOp(x) => Mdl::IotaOp(x.map(f)),
             Mdl::DynamicUpdateSliceOp(x) => Mdl::DynamicUpdateSliceOp(x.map(f)),
             Mdl::DynamicSliceOp(x) => Mdl::DynamicSliceOp(x.map(f)),

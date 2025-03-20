@@ -178,7 +178,9 @@ bool isBlackboxed(Operation *op) {
       isa<stablehlo::BroadcastInDimOp>(op) || isa<stablehlo::ReshapeOp>(op) ||
       isa<stablehlo::DotGeneralOp>(op) || isa<stablehlo::ConcatenateOp>(op) ||
       isa<stablehlo::SliceOp>(op) || isa<stablehlo::PadOp>(op) ||
-      isa<func::ReturnOp>(op) || isa<stablehlo::ConvolutionOp>(op)) {
+      isa<func::ReturnOp>(op) || isa<stablehlo::ConvolutionOp>(op) ||
+      isa<stablehlo::SineOp>(op) || isa<stablehlo::CosineOp>(op) ||
+      isa<stablehlo::TanOp>(op)) {
     return false;
   } else {
     return true;
@@ -983,6 +985,18 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
   //                             builder.getF32Type()),
   //       int_args[0]);
   //   break;
+  case tensat::Ops::SinOp:
+    mlirOp = builder.create<stablehlo::SineOp>(builder.getUnknownLoc(),
+                                                     operands[0]);
+    break;
+  case tensat::Ops::CosOp:
+    mlirOp = builder.create<stablehlo::CosineOp>(builder.getUnknownLoc(),
+                                                       operands[0]);
+    break;
+  case tensat::Ops::TanOp:
+    mlirOp = builder.create<stablehlo::TanOp>(builder.getUnknownLoc(),
+                                                    operands[0]);
+    break;
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
     assert(false);
@@ -1385,6 +1399,24 @@ dfs(Operation *op,
     tensorInfo = graph
                      ->new_exp_op(*handleOperandPartial(exp.getOperand()),
                                   mlirValueToTensatTensor(exp->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::SineOp>(op)) {
+    auto sin = cast<stablehlo::SineOp>(op);
+    tensorInfo = graph
+                     ->new_sin_op(*handleOperandPartial(sin.getOperand()),
+                                  mlirValueToTensatTensor(sin->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::CosineOp>(op)) {
+    auto cos = cast<stablehlo::CosineOp>(op);
+    tensorInfo = graph
+                     ->new_cos_op(*handleOperandPartial(cos.getOperand()),
+                                  mlirValueToTensatTensor(cos->getResult(0)))
+                     .into_raw();
+  } else if (isa<stablehlo::TanOp>(op)) {
+    auto tan = cast<stablehlo::TanOp>(op);
+    tensorInfo = graph
+                     ->new_tan_op(*handleOperandPartial(tan.getOperand()),
+                                  mlirValueToTensatTensor(tan->getResult(0)))
                      .into_raw();
   } else if (isa<stablehlo::TransposeOp>(op)) {
     auto transpose = cast<stablehlo::TransposeOp>(op);
@@ -1813,6 +1845,15 @@ void reconstructStablehlo(
     case Ops::TanhOp:
       newOp = createUnaryOp<stablehlo::TanhOp>(builder, opVals, node);
       break;
+    case Ops::SinOp:
+      newOp = createUnaryOp<stablehlo::SineOp>(builder, opVals, node);
+      break; 
+    case Ops::CosOp:
+      newOp = createUnaryOp<stablehlo::CosineOp>(builder, opVals, node);
+      break; 
+    case Ops::TanOp:
+      newOp = createUnaryOp<stablehlo::TanOp>(builder, opVals, node);
+      break; 
     case Ops::ExpOp:
       newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
       break;

@@ -26,3 +26,13 @@
 (ConcatenateOp (Vec (MulOp ?x ?y) (MulOp ?z ?w)) ?i)<=>(MulOp (ConcatenateOp (Vec ?x ?z) ?i) (ConcatenateOp (Vec ?y ?w) ?i))
 
 (ConcatenateOp (Vec (ConcatenateOp (Vec ?x ?y) 1) (ConcatenateOp (Vec ?z ?w) 1)) 0)<=>(ConcatenateOp (Vec (ConcatenateOp (Vec ?x ?z) 0) (ConcatenateOp (Vec ?y ?w) 0)) 1)
+(TanOp ?x)=>(DivOp (SinOp ?x) (CosOp ?x))
+(SinOp (NegOp ?x))=>(NegOp (SinOp ?x))
+(CosOp (NegOp ?x))=>(CosOp ?x)
+
+(TransposeOp (SinOp ?x) ?p)=>(SinOp (TransposeOp ?x ?p))
+(TransposeOp (CosOp ?x) ?p)=>(CosOp (TransposeOp ?x ?p))
+(TransposeOp (TanOp ?x) ?p)=>(TanOp (TransposeOp ?x ?p))
+
+(SinOp (AddOp ?x ?y))=>(AddOp (MulOp (SinOp ?x) (CosOp ?y)) (MulOp (CosOp ?x) (SinOp ?y)))
+(CosOp (AddOp ?x ?y))=>(SubtractOp (MulOp (CosOp ?x) (CosOp ?y)) (MulOp (SinOp ?x) (SinOp ?y)))

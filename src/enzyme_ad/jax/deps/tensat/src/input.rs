@@ -64,6 +64,9 @@ pub mod ffi {
         SSplit1,
         MatchRank,
         InferReshape,
+        SinOp,
+        CosOp,
+        TanOp,
     }
 
     #[derive(Debug, Clone)]
@@ -323,6 +326,21 @@ pub mod ffi {
         fn optimize(self: &CppGraphConverter) -> Vec<Node>;
         fn print_rec_expr(self: &CppGraphConverter);
         fn pretty_print_rec_expr(self: &CppGraphConverter, width: i32);
+        fn new_sin_op(
+            self: &mut CppGraphConverter,
+            inpt: &TensorInfo,
+            output: Tensor,
+        ) -> Box<TensorInfo>;
+        fn new_cos_op(
+            self: &mut CppGraphConverter,
+            inpt: &TensorInfo,
+            output: Tensor,
+        ) -> Box<TensorInfo>;
+        fn new_tan_op(
+            self: &mut CppGraphConverter,
+            inpt: &TensorInfo,
+            output: Tensor,
+        ) -> Box<TensorInfo>;
     }
 
     unsafe extern "C++" {
@@ -420,6 +438,9 @@ impl ffi::Ops {
             Mdl::SSplit1(_) => Ops::SSplit1,
             Mdl::MatchRank(_) => Ops::MatchRank,
             Mdl::InferReshape(_) => Ops::InferReshape,
+            Mdl::SinOp(_) => Ops::SinOp,
+            Mdl::CosOp(_) => Ops::CosOp,
+            Mdl::TanOp(_) => Ops::TanOp,
         }
     }
 }
@@ -1118,6 +1139,9 @@ impl CppGraphConverter {
                 Mdl::SSplit0(ops) => new_node(ops),
                 Mdl::SSplit1(ops) => new_node(ops),
                 Mdl::MatchRank(ops) => new_node(ops),
+                Mdl::SinOp(ops) => new_node(ops),
+                Mdl::CosOp(ops) => new_node(ops),
+                Mdl::TanOp(ops) => new_node(ops),
                 _ => unimplemented!(),
             };
 
@@ -1264,6 +1288,33 @@ impl CppGraphConverter {
 
         // println!("{}", best);
         self.convert_to_node(&egraph, &to_egraph, best)
+    }
+
+    pub fn new_sin_op(&mut self, inpt: &TensorInfo, output: ffi::Tensor) -> Box<TensorInfo> {
+        let new_node = Mdl::SinOp([inpt.id]);
+        let res = TensorInfo {
+            id: self.rec_expr.add(new_node),
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
+        };
+        Box::new(res)
+    }
+
+    pub fn new_cos_op(&mut self, inpt: &TensorInfo, output: ffi::Tensor) -> Box<TensorInfo> {
+        let new_node = Mdl::CosOp([inpt.id]);
+        let res = TensorInfo {
+            id: self.rec_expr.add(new_node),
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
+        };
+        Box::new(res)
+    }
+
+    pub fn new_tan_op(&mut self, inpt: &TensorInfo, output: ffi::Tensor) -> Box<TensorInfo> {
+        let new_node = Mdl::TanOp([inpt.id]);
+        let res = TensorInfo {
+            id: self.rec_expr.add(new_node),
+            tensor_data: CppGraphConverter::tensor_data(vec![output]),
+        };
+        Box::new(res)
     }
 }
 
