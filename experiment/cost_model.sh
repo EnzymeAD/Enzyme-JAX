@@ -11,9 +11,13 @@ config_names=(
   "no-zero"
 )
 platforms=("cpu") # "gpu")
-models=("llama" "nasrnn") # "maxtext" "jaxmd")
+models=("llama" "nasrnn" "maxtext") # "jaxmd")
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
+
+export STATS_FILENAME=stats_cost_model_$datetime.csv
+touch $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
 
 echo "Cost model ablation" > $filename
 echo "--------------------------" >> $filename

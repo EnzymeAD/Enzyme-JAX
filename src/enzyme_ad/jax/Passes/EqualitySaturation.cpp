@@ -986,16 +986,16 @@ createStableHloOp(OpBuilder &builder, tensat::Ops op,
   //       int_args[0]);
   //   break;
   case tensat::Ops::SinOp:
-    mlirOp = builder.create<stablehlo::SineOp>(builder.getUnknownLoc(),
-                                                     operands[0]);
+    mlirOp =
+        builder.create<stablehlo::SineOp>(builder.getUnknownLoc(), operands[0]);
     break;
   case tensat::Ops::CosOp:
     mlirOp = builder.create<stablehlo::CosineOp>(builder.getUnknownLoc(),
-                                                       operands[0]);
+                                                 operands[0]);
     break;
   case tensat::Ops::TanOp:
-    mlirOp = builder.create<stablehlo::TanOp>(builder.getUnknownLoc(),
-                                                    operands[0]);
+    mlirOp =
+        builder.create<stablehlo::TanOp>(builder.getUnknownLoc(), operands[0]);
     break;
   default:
     std::cout << "EGRAPH INVALID, UNSUPPORTED OP SHAPE REQUESTED" << "\n";
@@ -1847,13 +1847,13 @@ void reconstructStablehlo(
       break;
     case Ops::SinOp:
       newOp = createUnaryOp<stablehlo::SineOp>(builder, opVals, node);
-      break; 
+      break;
     case Ops::CosOp:
       newOp = createUnaryOp<stablehlo::CosineOp>(builder, opVals, node);
-      break; 
+      break;
     case Ops::TanOp:
       newOp = createUnaryOp<stablehlo::TanOp>(builder, opVals, node);
-      break; 
+      break;
     case Ops::ExpOp:
       newOp = createUnaryOp<stablehlo::ExpOp>(builder, opVals, node);
       break;
@@ -2568,6 +2568,23 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
                       builder, moduleOp);
 }
 
+void writeStats(double eqsatTime, int segments) {
+  const char *stats = getenv("STATS_FILENAME");
+  if (!stats)
+    return;
+
+  std::string fileName(stats);
+  std::string experimentName(getenv("EXPERIMENT_NAME"));
+
+  std::ofstream ofs(stats, std::ofstream::app);
+  ofs << std::setprecision(5);
+  ofs << experimentName << "," << eqsatTime << "," << segments << '\n';
+  ofs.close();
+
+  std::cout << "Wrote stats for " << experimentName << " to " << fileName
+            << std::endl;
+}
+
 namespace {
 class EqualitySaturationPass
     : public PassWrapper<EqualitySaturationPass, OperationPass<ModuleOp>> {
@@ -2717,6 +2734,7 @@ public:
     llvm::errs() << "EqualitySaturationPass completed in "
                  << llvm::format("%.3f", elapsed.count()) << " seconds with "
                  << segmentedModules.size() << " segments\n";
+    writeStats(elapsed.count(), segmentedModules.size());
   }
 };
 } // end anonymous namespace
