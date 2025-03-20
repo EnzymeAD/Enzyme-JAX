@@ -828,7 +828,9 @@ struct WhileToForHelper {
           if ((stepInt < 0) && (ubInt < lbInt)) {
             updateCmpNeOp = 1; // update to SGT
             lb = cmpRhs;
-            lb_addOne = true;
+
+            // add one only if we compare with the updated iv
+            lb_addOne = cmpIOp.getLhs().getDefiningOp() == addIOp;
           } else if ((stepInt > 0) && (lbInt < ubInt)) {
             updateCmpNeOp = 2; // update to SLT
             ub = cmpRhs;
@@ -1185,7 +1187,8 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     // Extract updated IV and stepSize
     Value updatedIV = conditionOp.getArgs()[updatedIVIndex];
     Value stepSize;
-    if (auto addOp = updatedIV.getDefiningOp<arith::AddIOp>()) {
+    auto addOp = updatedIV.getDefiningOp<arith::AddIOp>();
+    if (addOp) {
       if (addOp.getLhs() == IV) {
         stepSize = addOp.getRhs();
       } else if (addOp.getRhs() == IV) {
@@ -1218,6 +1221,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
 
     helper.loop = whileOp;
     helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
+    helper.addIOp = addOp;
     helper.step = stepSize;
     helper.lb = lowerBound;
     helper.ub = upperBound;
