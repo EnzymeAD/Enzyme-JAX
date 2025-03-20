@@ -1373,7 +1373,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         Operation::create(op->getLoc(), op->getName(), {T}, {newOperand},
                           op->getAttrs(), OpaqueProperties(nullptr), {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
-
     maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
     builder.insert(newOp);
