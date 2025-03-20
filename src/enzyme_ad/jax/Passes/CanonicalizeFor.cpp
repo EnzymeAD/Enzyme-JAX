@@ -834,6 +834,10 @@ struct WhileToForHelper {
           } else if ((stepInt > 0) && (lbInt < ubInt)) {
             updateCmpNeOp = 2; // update to SLT
             ub = cmpRhs;
+
+            // inclusive range if the cmpiop compares with the indVar, not the
+            // updated value
+            ub_addOne = cmpIOp.getLhs().getDefiningOp() != addIOp;
           } else
             return false;
         } else
