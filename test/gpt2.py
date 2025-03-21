@@ -49,7 +49,7 @@ class GPT2TransformerTest(EnzymeJaxTest):
         self.ins = [input_ids, attention_mask]
         self.dins = [input_ids, attention_mask]
         self.douts = [self.logits]
-        self.tol = 1e-4
+        self.tol = 5e-5
 
 # Running the tests with absltest
 if __name__ == "__main__":

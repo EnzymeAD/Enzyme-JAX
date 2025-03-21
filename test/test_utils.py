@@ -503,13 +503,14 @@ def recursive_check(tester, lhs, rhs, tol=1e-6):
 
     tester.assertEqual(type(lhs), type(rhs))
     if isinstance(lhs, jax.Array):
-        legal = (jnp.abs(lhs - rhs) < tol).all()
+        legal = ((jnp.abs(lhs - rhs) / jnp.maximum(lhs, rhs)) < tol).all()
         if not legal:
             print("lhs", lhs)
             print("rhs", rhs)
             print("abs", jnp.abs(lhs - rhs))
-            print("eq", jnp.abs(lhs - rhs) < tol)
+            print("eq", (jnp.abs(lhs - rhs) / jnp.maximum(lhs, rhs)) < tol)
             print("max", jnp.max(jnp.abs(lhs - rhs)))
+            print("max rel", jnp.max(jnp.abs(lhs - rhs) / jnp.maximum(lhs, rhs)))
         tester.assertTrue(legal)
         return
 

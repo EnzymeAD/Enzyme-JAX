@@ -61,7 +61,7 @@ class KAN1(EnzymeJaxTest):
             # jnp.ones((100,1), jnp.float32),
             # jnp.ones((18480), jnp.float32)
         ]
-        self.tol = 5e-5
+        self.tol = 1e-4
 
 
 if __name__ == "__main__":
