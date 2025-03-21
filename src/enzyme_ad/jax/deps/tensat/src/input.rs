@@ -1410,7 +1410,7 @@ fn extract_by_ilp(
 
         arg_vec.push("--initialize");
     }
-    let time_lim = "1000";
+    let time_lim = "100";
     let num_thread = "8";
     arg_vec.push("--time_lim_sec");
     arg_vec.push(time_lim);
