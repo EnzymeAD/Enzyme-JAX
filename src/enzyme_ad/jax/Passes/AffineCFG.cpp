@@ -1,3 +1,4 @@
+#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,6 +35,9 @@ using namespace mlir;
 using namespace mlir::arith;
 using namespace mlir::affine;
 using namespace mlir::enzyme;
+
+void populateAffineParallelizationPattern(MLIRContext &context,
+                                          RewritePatternSet &patterns);
 
 bool isValidSymbolInt(Value value, bool recur = true);
 bool isValidSymbolInt(Operation *defOp, bool recur) {
@@ -4218,6 +4222,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
+  populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
@@ -4631,4 +4636,216 @@ bool isReadNone(Operation *op) {
     return true;
   }
   return false;
+}
+
+// Vendored
+
+/// Returns true if `v` is allocated locally to `enclosingOp` -- i.e., it is
+/// allocated by an operation nested within `enclosingOp`.
+static bool isLocallyDefined(Value v, Operation *enclosingOp) {
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp)
+    return false;
+
+  if (hasSingleEffect<MemoryEffects::Allocate>(defOp, v) &&
+      enclosingOp->isProperAncestor(defOp))
+    return true;
+
+  // Aliasing ops.
+  auto viewOp = dyn_cast<ViewLikeOpInterface>(defOp);
+  return viewOp && isLocallyDefined(viewOp.getViewSource(), enclosingOp);
+}
+
+/// Returns the nesting depth of this statement, i.e., the number of loops
+/// surrounding this statement.
+static unsigned getNestingDepth(Operation *op) {
+  Operation *currOp = op;
+  unsigned depth = 0;
+  while ((currOp = currOp->getParentOp())) {
+    if (isa<AffineForOp>(currOp))
+      depth++;
+    if (auto parOp = dyn_cast<AffineParallelOp>(currOp))
+      depth += parOp.getNumDims();
+  }
+  return depth;
+}
+
+static bool isLoopMemoryParallel(AffineForOp forOp) {
+  // Any memref-typed iteration arguments are treated as serializing.
+  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
+    return false;
+
+  // Collect all load and store ops in loop nest rooted at 'forOp'.
+  SmallVector<Operation *, 8> loadAndStoreOps;
+  auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
+    if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
+      // Memrefs that are allocated inside `forOp` need not be considered.
+      if (!isLocallyDefined(readOp.getMemRef(), forOp))
+        loadAndStoreOps.push_back(op);
+    } else if (auto writeOp = dyn_cast<AffineWriteOpInterface>(op)) {
+      // Filter out stores the same way as above.
+      if (!isLocallyDefined(writeOp.getMemRef(), forOp))
+        loadAndStoreOps.push_back(op);
+    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
+               !hasSingleEffect<MemoryEffects::Allocate>(op) &&
+               !isMemoryEffectFree(op)) {
+      // Alloc-like ops inside `forOp` are fine (they don't impact parallelism)
+      // as long as they don't escape the loop (which has been checked above).
+      return WalkResult::interrupt();
+    }
+
+    return WalkResult::advance();
+  });
+
+  // Stop early if the loop has unknown ops with side effects.
+  if (walkResult.wasInterrupted())
+    return false;
+
+  // Dep check depth would be number of enclosing loops + 1.
+  unsigned depth = ::getNestingDepth(forOp) + 1;
+
+  // Check dependences between all pairs of ops in 'loadAndStoreOps'.
+  for (auto *srcOp : loadAndStoreOps) {
+    MemRefAccess srcAccess(srcOp);
+    for (auto *dstOp : loadAndStoreOps) {
+      MemRefAccess dstAccess(dstOp);
+      DependenceResult result =
+          checkMemrefAccessDependence(srcAccess, dstAccess, depth);
+      if (result.value != DependenceResult::NoDependence)
+        return false;
+    }
+  }
+  return true;
+}
+
+/// Returns true if `forOp' is a parallel loop. If `parallelReductions` is
+/// provided, populates it with descriptors of the parallelizable reductions and
+/// treats them as not preventing parallelization.
+static bool isLoopParallel(AffineForOp forOp,
+                           SmallVectorImpl<LoopReduction> *parallelReductions) {
+  unsigned numIterArgs = forOp.getNumIterOperands();
+
+  // Loop is not parallel if it has SSA loop-carried dependences and reduction
+  // detection is not requested.
+  if (numIterArgs > 0 && !parallelReductions)
+    return false;
+
+  // Find supported reductions of requested.
+  if (parallelReductions) {
+    getSupportedReductions(forOp, *parallelReductions);
+    // Return later to allow for identifying all parallel reductions even if the
+    // loop is not parallel.
+    if (parallelReductions->size() != numIterArgs)
+      return false;
+  }
+
+  // Check memory dependences.
+  return ::isLoopMemoryParallel(forOp);
+}
+
+struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
+
+  AffineParallelizePattern(bool parallelReductions, MLIRContext *context)
+      : OpRewritePattern(context), parallelReductions(parallelReductions) {}
+
+  LogicalResult matchAndRewrite(affine::AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<LoopReduction> reductions;
+    if (!::isLoopParallel(forOp, parallelReductions ? &reductions : nullptr))
+      return failure();
+
+    // Fail early if there are iter arguments that are not reductions.
+    unsigned numReductions = reductions.size();
+    if (numReductions != forOp.getNumIterOperands())
+      return failure();
+
+    Location loc = forOp.getLoc();
+    rewriter.setInsertionPoint(forOp);
+    AffineMap lowerBoundMap = forOp.getLowerBoundMap();
+    ValueRange lowerBoundOperands = forOp.getLowerBoundOperands();
+    AffineMap upperBoundMap = forOp.getUpperBoundMap();
+    ValueRange upperBoundOperands = forOp.getUpperBoundOperands();
+
+    // Creating empty 1-D affine.parallel op.
+    auto reducedValues = llvm::to_vector(llvm::map_range(
+        reductions, [](const LoopReduction &red) { return red.value; }));
+    auto reductionKinds = llvm::to_vector(llvm::map_range(
+        reductions, [](const LoopReduction &red) { return red.kind; }));
+    AffineParallelOp newPloop = rewriter.create<AffineParallelOp>(
+        loc, ValueRange(reducedValues).getTypes(), reductionKinds,
+        llvm::ArrayRef(lowerBoundMap), lowerBoundOperands,
+        llvm::ArrayRef(upperBoundMap), upperBoundOperands,
+        llvm::ArrayRef(forOp.getStepAsInt()));
+
+    Operation *yieldOp = forOp.getBody()->getTerminator();
+
+    // Handle the initial values of reductions because the parallel loop always
+    // starts from the neutral value.
+    SmallVector<Value> newResults;
+    newResults.reserve(numReductions);
+    for (unsigned i = 0; i < numReductions; ++i) {
+      Value init = forOp.getInits()[i];
+      // This works because we are only handling single-op reductions at the
+      // moment. A switch on reduction kind or a mechanism to collect operations
+      // participating in the reduction will be necessary for multi-op
+      // reductions.
+
+      Operation *reductionOp = yieldOp->getOperand(i).getDefiningOp();
+      assert(reductionOp &&
+             "yielded value is expected to be produced by an op");
+
+      IRMapping irMapping;
+      unsigned initPos =
+          forOp.getRegionIterArgs()[i] == reductionOp->getOperand(0) ? 0 : 1;
+      irMapping.map(reductionOp->getOperand(initPos), init);
+      irMapping.map(reductionOp->getOperand(1 - initPos),
+                    newPloop->getResult(i));
+      Operation *clonedReductionOp = rewriter.clone(*reductionOp, irMapping);
+      newResults.push_back(clonedReductionOp->getResult(0));
+    }
+    rewriter.inlineRegionBefore(forOp.getBodyRegion(), newPloop.getBodyRegion(),
+                                newPloop.getBodyRegion().end());
+    rewriter.replaceOp(forOp, newResults);
+
+    // Update the loop terminator to yield reduced values bypassing the
+    // reduction operation itself (now moved outside of the loop) and erase the
+    // block arguments that correspond to reductions. Note that the loop always
+    // has one "main" induction variable when coming from a non-parallel for.
+    IRMapping irMapping;
+    irMapping.map(yieldOp->getOperands(), reducedValues);
+    rewriter.setInsertionPoint(yieldOp);
+    Operation *clonedYield = rewriter.clone(*yieldOp, irMapping);
+
+    SetVector<Operation *> opsToErase;
+    for (unsigned i = 0; i < numReductions; ++i) {
+      Operation *reductionOp = yieldOp->getOperand(i).getDefiningOp();
+      opsToErase.insert(reductionOp);
+    }
+    rewriter.replaceOp(yieldOp, clonedYield);
+    for (Operation *op : opsToErase)
+      rewriter.eraseOp(op);
+
+    SmallVector<Value> iterArgReplacements;
+    llvm::append_range(
+        iterArgReplacements,
+        newPloop.getBodyRegion().getBlocks().front().getArguments());
+    iterArgReplacements.append(newPloop->getNumResults(), nullptr);
+    Block *origBlock = &newPloop.getBodyRegion().getBlocks().front();
+    if (!origBlock->empty())
+      rewriter.eraseOp(origBlock->getTerminator());
+
+    rewriter.mergeBlocks(&newPloop.getBodyRegion().getBlocks().back(),
+                         &newPloop.getBodyRegion().getBlocks().front(),
+                         iterArgReplacements);
+
+    return success();
+  }
+
+  bool parallelReductions = true;
+};
+
+void populateAffineParallelizationPattern(MLIRContext &context,
+                                          RewritePatternSet &patterns) {
+  patterns.insert<AffineParallelizePattern>(/*parallelReductions=*/true,
+                                            &context);
 }

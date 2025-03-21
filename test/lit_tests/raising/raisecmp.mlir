@@ -45,7 +45,7 @@ module {
 // CHECK-NEXT:    affine.parallel (%arg1) = (0) to (180) {
 // CHECK-NEXT:      %0 = affine.load %arg0[0, 7, %arg1 + 7] : memref<1x99x194xf64, 1>
 // CHECK-NEXT:      affine.store %0, %arg0[0, 6, %arg1 + 7] : memref<1x99x194xf64, 1>
-// CHECK-NEXT:      affine.for %arg2 = 0 to 6 {
+// CHECK-NEXT:      affine.parallel (%arg2) = (0) to (6) {
 // CHECK-NEXT:        %4 = affine.load %arg0[0, -%arg2 + 90, -%arg1 + 186] : memref<1x99x194xf64, 1>
 // CHECK-NEXT:        affine.store %4, %arg0[0, %arg2 + 92, %arg1 + 7] : memref<1x99x194xf64, 1>
 // CHECK-NEXT:      }
