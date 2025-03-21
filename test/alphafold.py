@@ -10,19 +10,6 @@ from typing import Tuple
 from absl.testing import absltest
 from test_utils import *
 
-pipelines = [
-    # ("JaX", None, CurBackends),
-    # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
-
 with open("test/exported_modules/alphafold.mlir") as f:
     code = f.read()
 
@@ -410,7 +397,7 @@ class AlphaFold(EnzymeJaxTest):
         self.name = "alphafold"
         self.count = 10
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         self.ins = args

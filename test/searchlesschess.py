@@ -6,24 +6,9 @@ import jax.scipy.stats as stats
 from absl.testing import absltest
 import enzyme_ad
 from enzyme_ad.jax import JaXPipeline, hlo_opts
-from blackjax.util import run_inference_algorithm
-import blackjax
 from typing import Tuple
 from absl.testing import absltest
 from test_utils import *
-
-pipelines = [
-    # ("JaX", None, CurBackends),
-    # ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
-    (
-        "EqSat",
-        JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
-            + "equality-saturation-pass"
-        ),
-        CurBackends,
-    ),
-]
 
 with open("test/exported_modules/searchless_chess_9m.mlir") as f:
     code = f.read()
@@ -142,7 +127,7 @@ class SearchlessChess9M(EnzymeJaxTest):
         self.name = "searchless_chess_9m"
         self.count = 10
         self.revprimal = False
-        self.AllPipelines = pipelines
+        self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
 
         self.ins = args
