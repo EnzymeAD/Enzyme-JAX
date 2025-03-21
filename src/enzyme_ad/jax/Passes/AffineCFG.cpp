@@ -2881,6 +2881,7 @@ struct MergeNestedAffineParallelIf
       rewriter.eraseOp(yld);
       rewriter.inlineBlockBefore(innerOp.getThenBlock(), innerOp);
       rewriter.replaceOp(innerOp, toRet);
+      rewriter.eraseOp(op);
     } else {
       affine::AffineIfOp newIf = rewriter.create<affine::AffineIfOp>(
           innerOp.getLoc(), innerOp.getResultTypes(),
@@ -4205,24 +4206,25 @@ struct AffineIfYieldMovementPattern
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
-  rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
-          ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
-          CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
-          /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
-          AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
-          MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
-          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
-          CombineAffineIfs, MergeNestedAffineParallelLoops,
-          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
-          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          AddAddCstEnd>(context, 2);
+  rpl.add</*SimplfyIntegerCastMath, */ 
+	  
+	  CanonicalizIfBounds,
+	  MoveIfToAffine, 
+	  AffineIfSimplification,
+	  
+	  MergeNestedAffineParallelIf,
+	  
+          
+	  MergeParallelInductions 
+		  
+    >(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
-  populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
+  //populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }
