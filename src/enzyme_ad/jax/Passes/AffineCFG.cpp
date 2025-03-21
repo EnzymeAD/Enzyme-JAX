@@ -3881,6 +3881,11 @@ struct MergeParallelInductions
       if (ivBeingMuled == -1)
         continue;
 
+      // Don't merge with an upper with only one iteration, [this is required to prevent infinte recursion].
+      if (!fixedUpperBounds[ivBeingMuled].isValue && fixedUpperBounds[ivBeingMuled].i_val == 1) {
+	  continue;
+      }
+
       bool legalPair = true;
       for (auto &&[indUsage2, operands2, numDim2] : pair.second) {
         if (indUsage2[ivBeingAdded] * upperBound != indUsage2[ivBeingMuled]) {
@@ -4204,8 +4209,35 @@ struct AffineIfYieldMovementPattern
 };
 
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
+}
+
+void AffineCFGPass::runOnOperation() {
+	llvm::errs() << "pre run: " << *getOperation() << "\n";
+  {
+  mlir::RewritePatternSet rpl(getOperation()->getContext());
+  
   MLIRContext *context = rpl.getContext();
-  mlir::enzyme::addSingleIter(rpl, context);
+  //mlir::enzyme::addSingleIter(rpl, context);
+  rpl.add</*SimplfyIntegerCastMath, */ 
+	  
+	  CanonicalizIfBounds,
+	  MoveIfToAffine, 
+	  AffineIfSimplification,
+	  
+//	  MergeNestedAffineParallelIf,
+	  
+          
+	  MergeParallelInductions 
+		  
+    >(context, 2);
+  rpl.add<SplitParallelInductions>(context, 1);
+  GreedyRewriteConfig config;
+  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  }
+  {
+  mlir::RewritePatternSet rpl(getOperation()->getContext());
+  MLIRContext *context = rpl.getContext();
+  //mlir::enzyme::addSingleIter(rpl, context);
   rpl.add</*SimplfyIntegerCastMath, */ 
 	  
 	  CanonicalizIfBounds,
@@ -4219,14 +4251,10 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
 		  
     >(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
-}
-
-void AffineCFGPass::runOnOperation() {
-  mlir::RewritePatternSet rpl(getOperation()->getContext());
-  populateAffineCFGPatterns(rpl);
-  //populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  }
+	llvm::errs() << "post run: " << *getOperation() << "\n";
 }
 
 bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
