@@ -57,6 +57,7 @@ namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
 void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
+void registerStablehloTransformExtension(mlir::DialectRegistry &registry);
 } // namespace enzyme
 } // namespace mlir
 
@@ -136,6 +137,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
 
   mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
   mlir::enzyme::registerRaisingTransformExtension(registry);
+  mlir::enzyme::registerStablehloTransformExtension(registry);
 
   mlir::registerLLVMDialectImport(registry);
   mlir::registerNVVMDialectImport(registry);

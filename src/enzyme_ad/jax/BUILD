@@ -394,12 +394,61 @@ gentbl_cc_library(
     ],
 )
 
+###
+# StableHLO Pattern <-> Transform Autogen
+#
+# Built as 3 separate pieces from the same TD file, to avoid a direct dependency
+# between StableHLO patterns and the upstream Transform dialect.
+#
+# StablehloOptPatternsIncGen - Raw rewrite patterns decl & implementation
+# StablehloOptPopulatePatternsIncGen - Methods & decls for adding StableHLO
+#   patterns to Transform (populateXPattern)
+# StablehloOptTransformOpsIncGen - The StableHLO transform extension ops
+
 gentbl_cc_library(
     name = "StablehloOptPatternsIncGen",
     tbl_outs = [
         (
             ["--gen-rewriters"],
             "Passes/StablehloOptPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/StablehloOptPatterns.td",
+    deps = [
+        ":StablehloOptPatternsTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "StablehloOptPopulatePatternsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-stablehlo-patterns-func-decls"],
+            "Passes/StablehloOptPopulatePatterns.h.inc",
+        ),
+        (
+            ["-gen-populate-stablehlo-patterns-func-defs"],
+            "Passes/StablehloOptPopulatePatterns.cpp.inc",
+        )
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+    td_file = "Passes/StablehloOptPatterns.td",
+    deps = [
+        ":StablehloOptPatternsTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "StablehloOptTransformOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls", "--op-include-regex=transform.apply_patterns.stablehlo."],
+            "TransformOps/StablehloTransformOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs", "--op-include-regex=transform.apply_patterns.stablehlo."],
+            "TransformOps/StablehloTransformOps.cpp.inc",
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
@@ -417,7 +466,28 @@ td_library(
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:TransformDialectTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
+cc_library(
+    name = "StablehloTransformOps",
+    srcs = ["TransformOps/StablehloTransformOps.cpp"],
+    hdrs = ["TransformOps/StablehloTransformOps.h"],
+    deps = [
+        ":StablehloOptTransformOpsIncGen",
+        ":XLADerivatives",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LinalgTransformOps",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFUtils",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
     ],
 )
 
@@ -451,6 +521,8 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":StablehloOptPopulatePatternsIncGen",
+        ":StablehloOptTransformOpsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
@@ -569,6 +641,7 @@ pybind_library(
     deps = [
         ":XLADerivatives",
         ":TransformOps",
+        ":StablehloTransformOps",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -701,6 +774,7 @@ pybind_extension(
     visibility = ["//visibility:public"],
     deps = [
         ":TransformOps",
+        ":StablehloTransformOps",
         ":clang_compile",
         ":compile_with_xla",
         ":cpu",
