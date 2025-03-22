@@ -3657,7 +3657,10 @@ struct MergeParallelInductions
           legal = false;
           fixedUpperBounds.push_back(ValueOrInt(0));
         }
+      } else {
+        legal = false;
       }
+
       if (legal)
         CanonicalBounds.insert(iv.getArgNumber());
     }
