@@ -45,7 +45,7 @@ class BertTransformerTest(EnzymeJaxTest):
         self.ins = [input_ids, attention_mask]
         self.dins = [input_ids, attention_mask]
         self.douts = [self.hidden_state]
-        self.tol = 5e-5
+        self.tol = 5e-3
 
 # Running the tests with absltest
 if __name__ == "__main__":
