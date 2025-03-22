@@ -493,7 +493,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, loadModRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -519,7 +520,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, loadFuncRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -584,7 +586,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, kernRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -593,8 +596,8 @@ void rewriteKernelCallABI(
     if (cuStreamSynchronizePtr) {
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
-      auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
+      auto addr_glob = builder.create<LLVM::IntToPtrOp>(
+          loc, ptrty, addr_glob_int.getResult());
       mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
       auto syncRes =
           builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
@@ -608,7 +611,8 @@ void rewriteKernelCallABI(
         auto addr_glob_int = builder.create<LLVM::ConstantOp>(
             loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
         auto addr_glob =
-            builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+            builder
+                .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
                 ->getResult(0);
         mlir::Value args[2] = {addr_glob, syncRes};
         builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
