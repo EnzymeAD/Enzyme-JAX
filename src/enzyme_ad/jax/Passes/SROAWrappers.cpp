@@ -155,7 +155,8 @@ struct SROAWrappersPass
            llvm::zip(oldRegion.getBlocks(), newRegion.getBlocks())) {
         b.setInsertionPointToEnd(&oldBlock);
         for (auto &op : newBlock) {
-          assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>());
+          assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>() ||
+                 op.getNumRegions() == 0);
           assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
           if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
             func.setVisibility(mlir::SymbolTable::Visibility::Private);
