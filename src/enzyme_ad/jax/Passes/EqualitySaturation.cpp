@@ -1013,6 +1013,8 @@ mlir::Type stringToMlirType(OpBuilder &builder, std::string &type) {
     return builder.getI32Type();
   else if (type == "i64")
     return builder.getI64Type();
+  else if (type == "ui8")
+    return builder.getIntegerType(8, false); 
   else if (type == "bf16")
     return builder.getBF16Type();
   else if (type == "f32")
@@ -1031,6 +1033,8 @@ mlir::Type tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
     return builder.getI32Type();
   case tensat::Type::i64:
     return builder.getI64Type();
+  case tensat::Type::ui8:
+    return builder.getIntegerType(8, false);
   case tensat::Type::bf16:
     return builder.getBF16Type();
   case tensat::Type::f32:
@@ -1043,19 +1047,21 @@ mlir::Type tensatTypeToMlirType(OpBuilder &builder, tensat::Type type) {
 }
 
 tensat::Type mlirTypeToTensatType(mlir::Type type) {
-  if (type.isInteger(1)) {
+  if (type.isInteger(1))
     return tensat::Type::i1;
-  } else if (type.isInteger(32)) {
+  else if (type.isInteger(32))
     return tensat::Type::i32;
-  } else if (type.isInteger(64)) {
+  else if (type.isInteger(64))
     return tensat::Type::i64;
-  } else if (type.isBF16()) {
+  else if (type.isUnsignedInteger(8))
+    return tensat::Type::ui8;
+  else if (type.isBF16())
     return tensat::Type::bf16;
-  } else if (type.isF32()) {
+  else if (type.isF32())
     return tensat::Type::f32;
-  } else if (type.isF64()) {
+  else if (type.isF64())
     return tensat::Type::f64;
-  } else {
+  else {
     type.dump();
     throw std::invalid_argument("unsupported MLIR type");
   }
@@ -1470,31 +1476,36 @@ dfs(Operation *op,
     //               << std::endl;
     //   }
   } else if (isa<stablehlo::DotGeneralOp>(op)) {
-    // we might need more guards here
     auto dot_general = cast<stablehlo::DotGeneralOp>(op);
     auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
 
-    mlir::ArrayAttr precision =
-        dot_general.getPrecisionConfig().value_or(mlir::ArrayAttr());
     rust::Vec<int64_t> precision_configs;
-    for (int i = 0; i < precision.size(); i++) {
-      auto precisionAttr =
-          precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
-      if (!precisionAttr)
-        continue; // Skip if it's not a PrecisionAttr, although such
-                  // attributes should not exist here
-      mlir::stablehlo::Precision val = precisionAttr.getValue();
-      switch (val) {
-      case mlir::stablehlo::Precision::DEFAULT:
-        precision_configs.push_back(0);
-        break;
-      case mlir::stablehlo::Precision::HIGH:
-        precision_configs.push_back(1);
-        break;
-      case mlir::stablehlo::Precision::HIGHEST:
-        precision_configs.push_back(2);
-        break;
+    
+    if (auto precisionConfigOpt = dot_general.getPrecisionConfig()) {
+      mlir::ArrayAttr precision = precisionConfigOpt.value();
+      for (int i = 0; i < precision.size(); i++) {
+        auto precisionAttr =
+            precision[i].dyn_cast<mlir::stablehlo::PrecisionAttr>();
+        if (!precisionAttr)
+          continue; // Skip if it's not a PrecisionAttr, although such
+                    // attributes should not exist here
+        mlir::stablehlo::Precision val = precisionAttr.getValue();
+        switch (val) {
+        case mlir::stablehlo::Precision::DEFAULT:
+          precision_configs.push_back(0);
+          break;
+        case mlir::stablehlo::Precision::HIGH:
+          precision_configs.push_back(1);
+          break;
+        case mlir::stablehlo::Precision::HIGHEST:
+          precision_configs.push_back(2);
+          break;
+        }
       }
+    } else {
+      // If precision config is not provided, use DEFAULT precision for both lhs and rhs
+      precision_configs.push_back(0);
+      precision_configs.push_back(0);
     }
 
     tensorInfo =
