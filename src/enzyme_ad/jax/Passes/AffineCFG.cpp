@@ -2881,6 +2881,7 @@ struct MergeNestedAffineParallelIf
       rewriter.eraseOp(yld);
       rewriter.inlineBlockBefore(innerOp.getThenBlock(), innerOp);
       rewriter.replaceOp(innerOp, toRet);
+      rewriter.eraseOp(op);
     } else {
       affine::AffineIfOp newIf = rewriter.create<affine::AffineIfOp>(
           innerOp.getLoc(), innerOp.getResultTypes(),
@@ -3878,6 +3879,13 @@ struct MergeParallelInductions
       }
       if (ivBeingMuled == -1)
         continue;
+
+      // Don't merge with an upper with only one iteration, [this is required to
+      // prevent infinte recursion].
+      if (!fixedUpperBounds[ivBeingMuled].isValue &&
+          fixedUpperBounds[ivBeingMuled].i_val == 1) {
+        continue;
+      }
 
       bool legalPair = true;
       for (auto &&[indUsage2, operands2, numDim2] : pair.second) {
