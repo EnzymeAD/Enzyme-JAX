@@ -3658,6 +3658,7 @@ struct MergeParallelInductions
           fixedUpperBounds.push_back(ValueOrInt(0));
         }
       } else {
+        fixedUpperBounds.push_back(ValueOrInt(0));
         legal = false;
       }
 
