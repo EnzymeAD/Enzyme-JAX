@@ -2814,6 +2814,10 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
       elseOperand.getDefiningOp()->getAttrDictionary())
     return false;
 
+  static int count = 0;
+  if (count > 310) return false;
+  count++;
+
   return true;
 }
 
@@ -3004,29 +3008,13 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
-          RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
-          MoveWhileToFor, RemoveWhileSelect,
-          SelectExtractElementToExtractElementSelect,
-          SelectExtractValueToExtractValueSelect, SelectTruncToTruncSelect,
-          SelectI1Simplify,
-
-          MoveWhileDown, MoveWhileDown2,
-
-          ReplaceRedundantArgs,
-
-          WhileShiftToInduction,
-
-          ForBreakAddUpgrade, RemoveUnusedResults,
-
-          MoveWhileAndDown,
-          // MoveWhileDown3 Infinite loops on current kernel code, disabling
-          // [and should fix] MoveWhileDown3,
-          MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
-          WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
-          MoveSideEffectFreeWhile>(getOperation()->getContext());
-  //	 WhileLICM,
+  rpl.add<
+	  IfYieldMovementPattern
+	  //, truncProp, ForOpInductionReplacement
+	>(getOperation()->getContext());
   GreedyRewriteConfig config;
   config.maxIterations = 247;
+  llvm::errs() << " pre can for:" << *getOperation() << "\n";
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  llvm::errs() << " post can for:" << *getOperation() << "\n";
 }
