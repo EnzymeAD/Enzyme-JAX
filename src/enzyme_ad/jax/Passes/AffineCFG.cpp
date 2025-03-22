@@ -3881,9 +3881,11 @@ struct MergeParallelInductions
       if (ivBeingMuled == -1)
         continue;
 
-      // Don't merge with an upper with only one iteration, [this is required to prevent infinte recursion].
-      if (!fixedUpperBounds[ivBeingMuled].isValue && fixedUpperBounds[ivBeingMuled].i_val == 1) {
-         continue;
+      // Don't merge with an upper with only one iteration, [this is required to
+      // prevent infinte recursion].
+      if (!fixedUpperBounds[ivBeingMuled].isValue &&
+          fixedUpperBounds[ivBeingMuled].i_val == 1) {
+        continue;
       }
 
       bool legalPair = true;
