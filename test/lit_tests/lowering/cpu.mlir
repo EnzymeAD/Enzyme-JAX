@@ -52,6 +52,6 @@ module {
 // CHECK-NEXT:   }
 
 // CHECK:  func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = enzymexla.jit_call @kern$par0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    %0 = enzymexla.jit_call @kern$par0 (%arg0) {backend_config = "", output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }
