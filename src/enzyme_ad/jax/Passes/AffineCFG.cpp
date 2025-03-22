@@ -3641,13 +3641,9 @@ struct MergeParallelInductions
           break;
         }
       }
-      bool seenub = false;
-      for (auto ub : op.getUpperBoundMap(iv.getArgNumber()).getResults()) {
-        if (seenub) {
-          legal = false;
-          break;
-        }
-        seenub = true;
+      auto ubMap = op.getUpperBoundMap(iv.getArgNumber());
+      if (ubMap.getNumResults() == 1) {
+        auto ub = ubMap.getResult(0);
         if (auto cst = ub.dyn_cast<AffineConstantExpr>()) {
           fixedUpperBounds.push_back(ValueOrInt(cst.getValue()));
         } else if (auto dim = ub.dyn_cast<AffineDimExpr>()) {
@@ -3661,7 +3657,11 @@ struct MergeParallelInductions
           legal = false;
           fixedUpperBounds.push_back(ValueOrInt(0));
         }
+      } else {
+        fixedUpperBounds.push_back(ValueOrInt(0));
+        legal = false;
       }
+
       if (legal)
         CanonicalBounds.insert(iv.getArgNumber());
     }
@@ -3802,7 +3802,6 @@ struct MergeParallelInductions
           numDims = map.getNumDims();
         } else {
           illegal.push_back(U);
-          break;
         }
         for (auto expr : exprs) {
           bool flegal = true;
