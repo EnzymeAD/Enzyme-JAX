@@ -4005,7 +4005,6 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
   return true;
 }
 
-
 std::pair<Value, size_t> checkOperands(
     affine::AffineIfOp ifOp, Value operandIf, Value operandElse,
     llvm::MapVector<Operation *, std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
@@ -4013,9 +4012,6 @@ std::pair<Value, size_t> checkOperands(
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
     PatternRewriter &rewriter) {
-
-  llvm::errs() << " operandIf: " << operandIf << "\n";
-  llvm::errs() << " operandElse: " << operandElse << "\n";
 
   if (operandIf == operandElse)
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
