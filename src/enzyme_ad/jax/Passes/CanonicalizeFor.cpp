@@ -2819,7 +2819,8 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
 
 std::pair<Value, size_t> checkOperands(
     scf::IfOp ifOp, Value operandIf, Value operandElse,
-    llvm::MapVector<Operation *, std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
+    llvm::MapVector<Operation *,
+                    std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
@@ -2842,7 +2843,8 @@ std::pair<Value, size_t> checkOperands(
 
   auto foundAfterIf = opsToMoveAfterIf.find(opToMove);
   if (foundAfterIf != opsToMoveAfterIf.end()) {
-    // We don't currently support the same if operand being moved after the if when paired with a different instruction for the else
+    // We don't currently support the same if operand being moved after the if
+    // when paired with a different instruction for the else
     if (foundAfterIf->second.first == operandElse)
       return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
     else {
@@ -2855,8 +2857,9 @@ std::pair<Value, size_t> checkOperands(
     }
   }
 
-  opsToMoveAfterIf.try_emplace(opToMove,
-                               std::make_pair(operandElse, SmallVector<std::pair<Value, size_t>>()));
+  opsToMoveAfterIf.try_emplace(
+      opToMove,
+      std::make_pair(operandElse, SmallVector<std::pair<Value, size_t>>()));
   SmallVector<std::pair<Value, size_t>> newresults;
 
   for (auto [index, operands] : llvm::enumerate(
@@ -2909,7 +2912,8 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    llvm::MapVector<Operation *, std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
+    llvm::MapVector<Operation *,
+                    std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         opsToMoveAfterIf;
 
     // A list of operands defined within the if block, which have been promoted
