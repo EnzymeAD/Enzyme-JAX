@@ -5,6 +5,7 @@ platforms=("cpu" "gpu")
 models=("llama" "maxtext" "jaxmd")
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=segmentation_$datetime.txt
+segmentation_size_csv="stats_segmentation_2025-03-23_11:58:22.csv"
 
 export STATS_FILENAME=stats_segmentation_$datetime.csv
 touch $STATS_FILENAME
@@ -34,23 +35,24 @@ for model in "${models[@]}"; do
         for threshold in "${thresholds[@]}"; do
             export EXPERIMENT_NAME="${model}_tau=${threshold}-${platform}_${datetime}"
             export SEGMENTATION_THRESHOLD=$threshold
+            read ILP_LIMIT SAT_LIMIT <<< $(python compute_time_limits.py --csv "$segmentation_size_csv" --model "$model" --tau "$threshold")
             export EQSAT_PLATFORM=$platform
             export EQSAT_ONLY=true
 
             if [ "$platform" == "gpu" ]; then
-                COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"
+                COMMAND="ILP_TIME_LIMIT=${ILP_LIMIT} SATURATION_TIME_LIMIT=${SAT_LIMIT} python test/${model}.py"
             else
-                COMMAND="JAX_PLATFORMS=cpu python test/${model}.py"
+                COMMAND="JAX_PLATFORMS=cpu ILP_TIME_LIMIT=${ILP_LIMIT} SATURATION_TIME_LIMIT=${SAT_LIMIT} python test/${model}.py"
             fi
 
             run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
+        done
+
+        unset SEGMENTATION_THRESHOLD
+        export SEGMENTATION_OFF=true
+        export EXPERIMENT_NAME="${model}_no_segmentation-${platform}"
+
+        run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
+        unset SEGMENTATION_OFF
     done
-
-    unset SEGMENTATION_THRESHOLD
-    export SEGMENTATION_OFF=true
-    export EXPERIMENT_NAME="${model}_no_segmentation-${platform}"
-
-    run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
-    unset SEGMENTATION_OFF
-  done
 done
