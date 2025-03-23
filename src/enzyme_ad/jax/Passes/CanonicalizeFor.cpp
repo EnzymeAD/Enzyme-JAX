@@ -2815,7 +2815,7 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
     return false;
 
   static int count = 0;
-  if (count > 310) return false;
+  if (count > 76) return false;
   count++;
 
   return true;
