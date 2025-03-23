@@ -1412,10 +1412,12 @@ fn extract_by_ilp(
 
         arg_vec.push("--initialize");
     }
-    let time_lim = "100";
+
+    let time_lim = env::var("ILP_TIME_LIMIT")
+        .unwrap_or("100".to_string());
     let num_thread = "8";
     arg_vec.push("--time_lim_sec");
-    arg_vec.push(time_lim);
+    arg_vec.push(&time_lim);
     arg_vec.push("--num_thread");
     arg_vec.push(num_thread);
 
