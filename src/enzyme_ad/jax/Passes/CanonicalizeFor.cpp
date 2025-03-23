@@ -2823,11 +2823,14 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
 
 std::pair<Value, size_t> checkOperands(
     scf::IfOp ifOp, Value operandIf, Value operandElse,
-    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *, std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
     PatternRewriter &rewriter) {
+
+  llvm::errs() << " operandIf: " << operandIf << "\n";
+  llvm::errs() << " operandElse: " << operandElse << "\n";
 
   if (operandIf == operandElse)
     return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
@@ -2844,12 +2847,23 @@ std::pair<Value, size_t> checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
 
-  if (opsToMoveAfterIf.find(opToMove) != opsToMoveAfterIf.end()) {
-    return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+  auto foundAfterIf = opsToMoveAfterIf.find(opToMove);
+  if (foundAfterIf != opsToMoveAfterIf.end()) {
+    // We don't currently support the same if operand being moved after the if when paired with a different instruction for the else
+    if (foundAfterIf->second.first == operandElse)
+      return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+    else {
+      if (!thenOperationsToYieldIndex.contains(key)) {
+        thenOperationsToYieldIndex[key] = ifYieldOperands.size();
+        ifYieldOperands.push_back(operandIf);
+        elseYieldOperands.push_back(operandElse);
+      }
+      return std::pair<Value, size_t>(nullptr, thenOperationsToYieldIndex[key]);
+    }
   }
 
   opsToMoveAfterIf.try_emplace(opToMove,
-                               SmallVector<std::pair<Value, size_t>>());
+                               std::make_pair(operandElse, SmallVector<std::pair<Value, size_t>>()));
   SmallVector<std::pair<Value, size_t>> newresults;
 
   for (auto [index, operands] : llvm::enumerate(
@@ -2861,7 +2875,7 @@ std::pair<Value, size_t> checkOperands(
         elseYieldOperands, thenOperationsToYieldIndex, rewriter));
   }
 
-  opsToMoveAfterIf[opToMove] = std::move(newresults);
+  opsToMoveAfterIf[opToMove].second = std::move(newresults);
 
   return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
 }
@@ -2902,7 +2916,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *, std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         opsToMoveAfterIf;
 
     // A list of operands defined within the if block, which have been promoted
@@ -2976,7 +2990,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     for (auto &op : newIfOp.thenBlock()->getOperations()) {
       if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
         SmallVector<Value> operands;
-        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
+        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op].second) {
           if (valoperand)
             operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
           else
