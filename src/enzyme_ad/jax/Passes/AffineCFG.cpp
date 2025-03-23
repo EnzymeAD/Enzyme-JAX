@@ -4007,7 +4007,8 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
 
 std::pair<Value, size_t> checkOperands(
     affine::AffineIfOp ifOp, Value operandIf, Value operandElse,
-    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *,
+                    std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         &opsToMoveAfterIf,
     SmallVector<Value> &ifYieldOperands, SmallVector<Value> &elseYieldOperands,
     DenseMap<std::pair<Value, Value>, size_t> &thenOperationsToYieldIndex,
@@ -4028,12 +4029,25 @@ std::pair<Value, size_t> checkOperands(
 
   Operation *opToMove = operandIf.getDefiningOp();
 
-  if (opsToMoveAfterIf.find(opToMove) != opsToMoveAfterIf.end()) {
-    return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+  auto foundAfterIf = opsToMoveAfterIf.find(opToMove);
+  if (foundAfterIf != opsToMoveAfterIf.end()) {
+    // We don't currently support the same if operand being moved after the if
+    // when paired with a different instruction for the else
+    if (foundAfterIf->second.first == operandElse)
+      return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+    else {
+      if (!thenOperationsToYieldIndex.contains(key)) {
+        thenOperationsToYieldIndex[key] = ifYieldOperands.size();
+        ifYieldOperands.push_back(operandIf);
+        elseYieldOperands.push_back(operandElse);
+      }
+      return std::pair<Value, size_t>(nullptr, thenOperationsToYieldIndex[key]);
+    }
   }
 
-  opsToMoveAfterIf.try_emplace(opToMove,
-                               SmallVector<std::pair<Value, size_t>>());
+  opsToMoveAfterIf.try_emplace(
+      opToMove,
+      std::make_pair(operandElse, SmallVector<std::pair<Value, size_t>>()));
   SmallVector<std::pair<Value, size_t>> newresults;
 
   for (auto [index, operands] : llvm::enumerate(
@@ -4045,7 +4059,7 @@ std::pair<Value, size_t> checkOperands(
         elseYieldOperands, thenOperationsToYieldIndex, rewriter));
   }
 
-  opsToMoveAfterIf[opToMove] = std::move(newresults);
+  opsToMoveAfterIf[opToMove].second = std::move(newresults);
 
   return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
 }
@@ -4077,7 +4091,8 @@ struct AffineIfYieldMovementPattern
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
-    llvm::MapVector<Operation *, SmallVector<std::pair<Value, size_t>>>
+    llvm::MapVector<Operation *,
+                    std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         opsToMoveAfterIf;
 
     // A list of operands defined within the if block, which have been promoted
@@ -4150,13 +4165,12 @@ struct AffineIfYieldMovementPattern
     IRMapping mappingAfterIf;
 
     rewriter.setInsertionPointAfter(newIfOp);
-
     for (auto &op : ifOp->getBlock()->getOperations()) {
       if (&op == ifOp)
         break;
       if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
         SmallVector<Value> operands;
-        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
+        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op].second) {
           if (valoperand)
             operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
           else
@@ -4175,7 +4189,7 @@ struct AffineIfYieldMovementPattern
     for (auto &op : newIfOp.getThenBlock()->getOperations()) {
       if (opsToMoveAfterIf.find(&op) != opsToMoveAfterIf.end()) {
         SmallVector<Value> operands;
-        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op]) {
+        for (auto &&[valoperand, idxop] : opsToMoveAfterIf[&op].second) {
           if (valoperand)
             operands.push_back(mappingAfterIf.lookupOrDefault(valoperand));
           else
@@ -4195,12 +4209,11 @@ struct AffineIfYieldMovementPattern
     // Replace uses of the original if operation with the new one
     SmallVector<Value> newResults;
     for (auto [idx, pair] : llvm::enumerate(originalYields)) {
-      auto op = pair.first.getDefiningOp();
-      assert(op);
-      if (!pair.first)
+      if (!pair.first) {
         newResults.push_back(newIfOp.getResult(pair.second));
-      else
+      } else {
         newResults.push_back(mappingAfterIf.lookup(pair.first));
+      }
     }
 
     // Erase yield operations of prev if operation
