@@ -497,9 +497,9 @@ def plot_cost_model(plot_groups):
         
         # Plot bars for the three cost model configurations
         baseline_bars = ax.bar(x - width, [s*100 for s in baseline_speedups], width, 
-                           label='Constable w/ base cost model', color='lightblue', edgecolor='black', linewidth=1)
+                           label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
         no_fusion_bars = ax.bar(x, [s*100 for s in no_fusion_speedups], width, 
-                            label='Constable w/o fusion costs', color='green', edgecolor='black', linewidth=1)
+                            label='Constable w/o fusion costs', color='darkturquoise', edgecolor='black', linewidth=1)
         no_zero_bars = ax.bar(x + width, [s*100 for s in no_zero_speedups], width, 
                           label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
         
