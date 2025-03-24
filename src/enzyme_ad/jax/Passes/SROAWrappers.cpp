@@ -70,6 +70,9 @@ struct SROAWrappersPass
         assert(oldBlock.getNumArguments() == 0);
         b.createBlock(&newRegion, newRegion.end());
         for (auto &op : oldBlock) {
+          // Working around bug in upstream llvm which was fixed in 800593a0
+          if (llvm::isa<mlir::LLVM::ModuleFlagsOp>(op))
+            continue;
           // FIXME in reality, this check should be whether the entirety
           // (all nested ops with all (transitively) used symbol as well) of
           // the op is translatable to llvm ir.
@@ -155,6 +158,9 @@ struct SROAWrappersPass
            llvm::zip(oldRegion.getBlocks(), newRegion.getBlocks())) {
         b.setInsertionPointToEnd(&oldBlock);
         for (auto &op : newBlock) {
+          // Working around bug in upstream llvm which was fixed in 800593a0
+          if (llvm::isa<mlir::LLVM::ModuleFlagsOp>(op))
+            continue;
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>() ||
                  op.getNumRegions() == 0);
           assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
