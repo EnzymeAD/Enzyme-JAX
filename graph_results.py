@@ -180,16 +180,12 @@ def plot_comparison(plot_groups):
         return
     
     all_speedups = all_enzyme_speedups + all_constable_speedups
-    min_val = min(min(all_speedups) * 100 if all_speedups else -15, -15)
-    max_val = max(max(all_speedups) * 100 if all_speedups else 45, 45)
+    min_val = min(min(all_speedups) * 100 if all_speedups else -10, -10)
+    max_val = max(max(all_speedups) * 100 if all_speedups else 60, 60)
     
     # Round to nearest 5%
     min_val = np.floor(min_val / 5) * 5 - 5
     max_val = np.ceil(max_val / 5) * 5 + 5
-    
-    # Keep y-range between -10 and 60 unless data exceeds that
-    min_val = max(min_val, -10)
-    max_val = min(max_val, 60)
     
     # Create a figure with multiple subplots side by side
     # Make plots less tall (height reduced from 7 to 5)
