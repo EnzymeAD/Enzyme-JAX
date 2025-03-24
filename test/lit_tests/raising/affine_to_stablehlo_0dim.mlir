@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --affine-to-stablehlo %s | FileCheck %s
+// RUN: enzymexlamlir-opt --raise-affine-to-stablehlo %s | FileCheck %s
 
 module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func private @"##call__Z25gpu__mask_immersed_field_16CompilerMetadataI10StaticSizeI11_16__16__4_E12DynamicCheckvv7NDRangeILi3ES0_I9_1__1__4_ES0_I11_16__16__1_EvvEE11OffsetArrayI7Float64Li3E13CuTracedArrayIS9_Li3ELi1E12_30__30__18_EE5TupleI4Face6CenterSF_E20ImmersedBoundaryGridIS9_8Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridIS9_SI_SJ_SK_28StaticVerticalDiscretizationIS8_IS9_Li1E12StepRangeLenIS9_14TwicePrecisionIS9_ESP_5Int64EESS_S9_S9_E8TripolarISQ_SQ_SQ_ES8_IS9_Li2ESA_IS9_Li2ELi1E8_30__30_EESX_SX_SX_vS9_E16GridFittedBottomI5FieldISF_SF_vvvvS8_IS9_Li3ESA_IS9_Li3ELi1E11_30__30__1_EES9_vvvE23CenterImmersedConditionEvvvE15CuTracedRNumberIS9_Li1EE#259$par5"(%arg0: memref<18x30x30xf64, 1>, %arg1: memref<1x30x30xf64, 1>, %arg2: memref<f64, 1>) {
