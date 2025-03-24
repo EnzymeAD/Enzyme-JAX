@@ -644,6 +644,8 @@ isl_map *IslAnalysis::getAccessMap(mlir::Operation *op) {
   auto exprs = getAffExprs(op);
   if (!exprs)
     return nullptr;
+  if (exprs->size() == 0)
+    return nullptr;
   isl_aff_list *list = isl_aff_list_alloc(ctx, exprs->size());
   isl_space *domain = isl_space_domain(isl_aff_get_space((*exprs)[0]));
   isl_space *range = isl_space_set_alloc(ctx, 0, exprs->size());

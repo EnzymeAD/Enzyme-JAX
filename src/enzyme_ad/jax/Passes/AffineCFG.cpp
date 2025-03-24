@@ -4222,6 +4222,109 @@ struct AffineIfYieldMovementPattern
   }
 };
 
+struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Ensure both regions exist and have single blocks
+    if (ifOp.getThenRegion().empty() || ifOp.getElseRegion().empty())
+      return failure();
+
+    auto thenBlock = &ifOp.getThenRegion().front();
+    auto elseBlock = &ifOp.getElseRegion().front();
+
+    if (thenBlock->getOperations().size() < 2)
+      return failure();
+    if (elseBlock->getOperations().size() < 2)
+      return failure();
+
+    // Extract yield operations from both regions
+    auto thenYield =
+        cast<scf::YieldOp>(ifOp.getThenRegion().front().getTerminator());
+    auto elseYield =
+        cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
+
+    auto thenStore = dyn_cast<affine::AffineStoreOp>(thenYield->getPrevNode());
+    if (!thenStore)
+      return failure();
+
+    auto elseStore = dyn_cast<affine::AffineStoreOp>(elseYield->getPrevNode());
+    if (!elseStore)
+      return failure();
+
+    if (thenStore.getAffineMap() != elseStore.getAffineMap())
+      return failure();
+    if (thenStore.getMapOperands() != elseStore.getMapOperands())
+      return failure();
+    if (thenStore.getMemref() != elseStore.getMemref())
+      return failure();
+
+    // Use SetVector to ensure uniqueness while preserving order
+    SmallVector<Value> ifYieldOperands, elseYieldOperands;
+
+    for (auto [thenYieldOperand, elseYieldOperand] :
+         llvm::zip(thenYield.getOperands(), elseYield.getOperands())) {
+      ifYieldOperands.push_back(thenYieldOperand);
+      elseYieldOperands.push_back(elseYieldOperand);
+    }
+
+    ifYieldOperands.push_back(thenStore.getValueToStore());
+    elseYieldOperands.push_back(elseStore.getValueToStore());
+
+    // Create a new if operation with the same condition
+    SmallVector<Type> resultTypes;
+
+    // Cannot do unique, as unique might differ for if-else
+    for (auto operand : ifYieldOperands) {
+      resultTypes.push_back(operand.getType());
+    }
+
+    auto newIfOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), resultTypes,
+                                              ifOp.getCondition(),
+                                              /*hasElse=*/true);
+
+    // Move operations from the original then block to the new then block
+
+    rewriter.eraseBlock(&newIfOp.getThenRegion().front());
+    if (ifOp.getElseRegion().getBlocks().size()) {
+      rewriter.eraseBlock(&newIfOp.getElseRegion().front());
+    }
+
+    rewriter.inlineRegionBefore(ifOp.getThenRegion(), newIfOp.getThenRegion(),
+                                newIfOp.getThenRegion().begin());
+    rewriter.inlineRegionBefore(ifOp.getElseRegion(), newIfOp.getElseRegion(),
+                                newIfOp.getElseRegion().begin());
+
+    // Create new yield in then block
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(newIfOp.thenBlock());
+      rewriter.create<scf::YieldOp>(thenYield.getLoc(), ifYieldOperands);
+      rewriter.eraseOp(thenYield);
+    }
+
+    // Create new yield in else block
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(newIfOp.elseBlock());
+      rewriter.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+      rewriter.eraseOp(elseYield);
+    }
+
+    rewriter.create<affine::AffineStoreOp>(
+        thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
+        thenStore.getMemref(), thenStore.getAffineMap(),
+        thenStore.getMapOperands());
+
+    rewriter.replaceOp(ifOp,
+                       newIfOp.getResults().slice(0, ifOp.getNumResults()));
+    rewriter.eraseOp(thenStore);
+    rewriter.eraseOp(elseStore);
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4235,7 +4338,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          AddAddCstEnd>(context, 2);
+          SinkStoreInIf, AddAddCstEnd>(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
