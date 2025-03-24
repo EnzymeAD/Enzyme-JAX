@@ -810,7 +810,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     id++;
     PassManager pm(submod.getContext());
     if (numGPUModule == 0) {
-      SmallVector<Operation*> toErase;
+      SmallVector<Operation *> toErase;
       submod.walk([&](LLVM::InlineAsmOp asmop) {
         if (asmop.getAsmString() == "exit;") {
           toErase.push_back(asmop);
