@@ -773,7 +773,7 @@ def plot_segmentation(plot_groups):
             platform = platform_match.group(1)
             
             # Find all relevant tau files
-            tau_files = find_all_tau_files(baseline_file, platform)
+            tau_files = find_all_tau_files(tau_file_example, platform)
             if not tau_files:
                 print(f"Warning: No tau files found for {model_name} on {platform}")
                 i += 3  # Skip to next model

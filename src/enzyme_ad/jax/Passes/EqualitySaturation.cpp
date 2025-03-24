@@ -1014,7 +1014,7 @@ mlir::Type stringToMlirType(OpBuilder &builder, std::string &type) {
   else if (type == "i64")
     return builder.getI64Type();
   else if (type == "ui8")
-    return builder.getIntegerType(8, false); 
+    return builder.getIntegerType(8, false);
   else if (type == "bf16")
     return builder.getBF16Type();
   else if (type == "f32")
@@ -1480,7 +1480,7 @@ dfs(Operation *op,
     auto dot_dim_attrs = dot_general.getDotDimensionNumbersAttr();
 
     rust::Vec<int64_t> precision_configs;
-    
+
     if (auto precisionConfigOpt = dot_general.getPrecisionConfig()) {
       mlir::ArrayAttr precision = precisionConfigOpt.value();
       for (int i = 0; i < precision.size(); i++) {
@@ -1503,7 +1503,8 @@ dfs(Operation *op,
         }
       }
     } else {
-      // If precision config is not provided, use DEFAULT precision for both lhs and rhs
+      // If precision config is not provided, use DEFAULT precision for both lhs
+      // and rhs
       precision_configs.push_back(0);
       precision_configs.push_back(0);
     }
@@ -2606,6 +2607,7 @@ public:
   }
 
   void runOnOperation() override {
+    std::cout << "TIME" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
@@ -2741,6 +2743,7 @@ public:
     recombineGraph(module, segmentedModules, builder);
 
     auto t1 = std::chrono::high_resolution_clock::now();
+    std::cout << "TIME 1" << std::endl;
     std::chrono::duration<double> elapsed = t1 - t0;
     llvm::errs() << "EqualitySaturationPass completed in "
                  << llvm::format("%.3f", elapsed.count()) << " seconds with "
