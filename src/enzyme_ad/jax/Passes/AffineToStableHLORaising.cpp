@@ -521,6 +521,10 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   if (!ty)
     return false;
 
+  // 0-dim memrefs are always legal to speculate (assuming non-null)
+  if (ty.getShape().size() == 0)
+    return true;
+
   IslAnalysis ia;
 
   isl_set *array = ia.getMemrefShape(ty);
