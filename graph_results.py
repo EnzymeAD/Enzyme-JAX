@@ -170,7 +170,10 @@ def plot_comparison(plot_groups):
     all_enzyme_speedups = []
     all_constable_speedups = []
     
-    for title, file_model_pairs in plot_groups:
+    for plot_group in plot_groups:
+        # For compare mode, we only need the first two elements of the tuple
+        title = plot_group[0]
+        file_model_pairs = plot_group[1]
         models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
         all_enzyme_speedups.extend(enzyme_speedups)
         all_constable_speedups.extend(constable_speedups)
@@ -180,16 +183,12 @@ def plot_comparison(plot_groups):
         return
     
     all_speedups = all_enzyme_speedups + all_constable_speedups
-    min_val = min(min(all_speedups) * 100 if all_speedups else -15, -15)
-    max_val = max(max(all_speedups) * 100 if all_speedups else 45, 45)
+    min_val = min(min(all_speedups) * 100 if all_speedups else -10, -10)
+    max_val = max(max(all_speedups) * 100 if all_speedups else 60, 60)
     
     # Round to nearest 5%
     min_val = np.floor(min_val / 5) * 5 - 5
     max_val = np.ceil(max_val / 5) * 5 + 5
-    
-    # Keep y-range between -10 and 60 unless data exceeds that
-    min_val = max(min_val, -10)
-    max_val = min(max_val, 60)
     
     # Create a figure with multiple subplots side by side
     # Make plots less tall (height reduced from 7 to 5)
@@ -199,7 +198,10 @@ def plot_comparison(plot_groups):
     if num_plots == 1:
         axes = [axes]
     
-    for idx, (title, file_model_pairs) in enumerate(plot_groups):
+    for idx, plot_group in enumerate(plot_groups):
+        # For compare mode, we only need the first two elements of the tuple
+        title = plot_group[0]
+        file_model_pairs = plot_group[1]
         ax = axes[idx]
         models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
         
@@ -467,11 +469,15 @@ def plot_cost_model(plot_groups):
     all_plot_data = []
     all_speedups = []
     
-    for title, file_model_pairs in plot_groups:
+    for title, file_model_pairs, show_no_fusion in plot_groups:
         models, baseline_speedups, no_fusion_speedups, no_zero_speedups = process_cost_model_data(file_model_pairs)
         if models:
-            all_plot_data.append((title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups))
-            all_speedups.extend(baseline_speedups + no_fusion_speedups + no_zero_speedups)
+            all_plot_data.append((title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups, show_no_fusion))
+            # Only include speedups for bars we'll actually show
+            all_speedups.extend(baseline_speedups)
+            if show_no_fusion:
+                all_speedups.extend(no_fusion_speedups)
+            all_speedups.extend(no_zero_speedups)
     
     if not all_plot_data:
         print("Error: No valid data to plot")
@@ -493,19 +499,33 @@ def plot_cost_model(plot_groups):
         axes = [axes]
     
     # Plot each dataset using the pre-processed data
-    for idx, (title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups) in enumerate(all_plot_data):
+    for idx, (title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups, show_no_fusion) in enumerate(all_plot_data):
         ax = axes[idx]
         
-        width = 0.25  # Bar width
-        x = np.arange(len(models))
-        
-        # Plot bars for the three cost model configurations
-        baseline_bars = ax.bar(x - width, [s*100 for s in baseline_speedups], width, 
-                           label='Constable w/ base cost model', color='lightblue', edgecolor='black', linewidth=1)
-        no_fusion_bars = ax.bar(x, [s*100 for s in no_fusion_speedups], width, 
-                            label='Constable w/o fusion costs', color='green', edgecolor='black', linewidth=1)
-        no_zero_bars = ax.bar(x + width, [s*100 for s in no_zero_speedups], width, 
-                          label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
+        # Adjust bar widths and positions based on how many bars we'll display
+        if show_no_fusion:
+            # Three bars: Baseline, No Fusion, No Zero
+            width = 0.25  # Bar width
+            x = np.arange(len(models))
+            
+            # Plot bars for all three cost model configurations
+            baseline_bars = ax.bar(x - width, [s*100 for s in baseline_speedups], width, 
+                               label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
+            no_fusion_bars = ax.bar(x, [s*100 for s in no_fusion_speedups], width, 
+                                label='Constable w/o fusion costs', color='darkturquoise', edgecolor='black', linewidth=1)
+            no_zero_bars = ax.bar(x + width, [s*100 for s in no_zero_speedups], width, 
+                              label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
+        else:
+            # Just two bars: Baseline and No Zero
+            width = 0.33  # Slightly wider bars when only showing 2
+            x = np.arange(len(models))
+            
+            # Plot only baseline and no-zero configurations
+            baseline_bars = ax.bar(x - width/2, [s*100 for s in baseline_speedups], width, 
+                               label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
+            no_zero_bars = ax.bar(x + width/2, [s*100 for s in no_zero_speedups], width, 
+                              label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
+            no_fusion_bars = []  # Empty list since we're not plotting these
         
         # Add grey grid lines
         ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.7)
@@ -516,7 +536,11 @@ def plot_cost_model(plot_groups):
         jax_line.set_zorder(5)
         
         # Bring the bars to the front to cover grid lines
-        for bar in baseline_bars + no_fusion_bars + no_zero_bars:
+        all_bars = baseline_bars + no_zero_bars
+        if show_no_fusion:
+            all_bars += no_fusion_bars
+            
+        for bar in all_bars:
             bar.set_zorder(10)
         
         # Set x-axis labels
@@ -541,9 +565,63 @@ def plot_cost_model(plot_groups):
     plt.subplots_adjust(bottom=0.25, wspace=0.3)
     
     # Add a single legend at the bottom of the figure - all labels in one row (horizontally)
+    # We need to collect all unique handles/labels from all plots
+    all_handles = []
+    all_labels = []
+    
+    # Check if any plots show no_fusion bars
+    any_show_no_fusion = any(data[5] for data in all_plot_data)
+    
+    # Get handles from first plot
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.05),
-               ncol=len(handles), frameon=False, handletextpad=1.0, columnspacing=2.0)
+    
+    # Find JAX handle (always included)
+    jax_handle = None
+    jax_label = None
+    baseline_handle = None
+    baseline_label = None
+    no_zero_handle = None
+    no_zero_label = None
+    
+    for h, l in zip(handles, labels):
+        if l == 'JAX':
+            jax_handle = h
+            jax_label = l
+        elif l == 'Constable w/ base cost model':
+            baseline_handle = h
+            baseline_label = l
+        elif l == 'Constable w/o zero costs':
+            no_zero_handle = h
+            no_zero_label = l
+    
+    # Add handles in specific order
+    if jax_handle:
+        all_handles.append(jax_handle)
+        all_labels.append(jax_label)
+    if baseline_handle:
+        all_handles.append(baseline_handle)
+        all_labels.append(baseline_label)
+    
+    # Only add no_fusion to legend if any plot shows it
+    if any_show_no_fusion:
+        # Find no_fusion handle from a plot that has it
+        for idx, data in enumerate(all_plot_data):
+            if data[5]:  # This plot shows no_fusion
+                h, l = axes[idx].get_legend_handles_labels()
+                for handle, label in zip(h, l):
+                    if label == 'Constable w/o fusion costs':
+                        all_handles.append(handle)
+                        all_labels.append(label)
+                        break
+                break
+    
+    if no_zero_handle:
+        all_handles.append(no_zero_handle)
+        all_labels.append(no_zero_label)
+    
+    # Create the legend with all needed handles
+    fig.legend(all_handles, all_labels, loc='lower center', bbox_to_anchor=(0.5, 0.05),
+               ncol=len(all_handles), frameon=False, handletextpad=1.0, columnspacing=2.0)
     
     # Add a button to save the figure as PDF
     save_ax = plt.axes([0.45, 0.005, 0.1, 0.04])
@@ -571,9 +649,503 @@ def plot_cost_model(plot_groups):
     save_button.on_clicked(save_to_pdf)
     plt.show()
 
+def find_all_tau_files(baseline_file, device_type):
+    """Find all tau files for a given model and device type"""
+    directory = os.path.dirname(baseline_file)
+    if directory == '':
+        directory = '.'
+    
+    basename = os.path.basename(baseline_file)
+    
+    # Extract model name from the filename (e.g., "resnet", "llama")
+    # Two patterns to match:
+    # 1. results_MODEL_cost-model_baseline-PLATFORM_DATE.csv
+    # 2. results_MODEL_tau=X-PLATFORM_DATE.csv
+    model_pattern = r'results_([^_]+)_'
+    match = re.search(model_pattern, basename)
+    
+    if not match:
+        print(f"Error: Cannot extract model name from filename: {basename}")
+        return []
+    
+    model = match.group(1)
+    platform = device_type.lower()  # cpu or gpu
+    
+    # Find all tau files for this model and platform
+    tau_pattern = re.compile(f"results_{model}_tau=(\d+)-{platform}_\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}:\d{{2}}:\d{{2}}\.csv")
+    
+    tau_files = []
+    for file in os.listdir(directory):
+        tau_match = tau_pattern.match(file)
+        if tau_match:
+            tau = int(tau_match.group(1))
+            tau_files.append((tau, os.path.join(directory, file)))
+    
+    # Sort by tau value
+    tau_files.sort(key=lambda x: x[0])
+    return tau_files
+
+def extract_optimization_time(stats_files, model, platform, tau=None):
+    """Extract optimization time for a specific model from stats files"""
+    # Pattern to match: model_tau=X-platform_DATE
+    if tau is not None:
+        experiment_pattern = f"{model}_tau={tau}-{platform}"
+    else:
+        experiment_pattern = f"{model}_no_segmentation-{platform}"
+    
+    matching_entries = []
+    
+    for stats_file in stats_files:
+        try:
+            df = pd.read_csv(stats_file)
+            if 'experiment_name' not in df.columns or 'eqsat_time' not in df.columns:
+                print(f"Warning: File {stats_file} does not have required columns")
+                continue
+                
+            matching_rows = df[df['experiment_name'].str.startswith(experiment_pattern)]
+            
+            if not matching_rows.empty:
+                # Take the last entry as requested
+                matching_entries.append(matching_rows.iloc[-1])
+                
+        except FileNotFoundError:
+            print(f"Error: Stats file '{stats_file}' not found.")
+            continue
+    
+    if len(matching_entries) > 1:
+        raise ValueError(f"Multiple entries found for experiment {experiment_pattern} across stats files")
+    elif len(matching_entries) == 0:
+        print(f"Warning: No entries found for experiment {experiment_pattern}")
+        return None
+    
+    return matching_entries[0]['eqsat_time']  # Return optimization time in seconds
+
+def plot_segmentation(plot_groups):
+    """Plot a grid of graphs showing speedup and optimization time vs segment size"""
+    # Each plot group now contains: (device_name, model_file_pairs, stats_files)
+    # Verify that each group has valid stats files
+    for device, model_file_pairs, stats_files in plot_groups:
+        verified_stats_files = []
+        for stats_file in stats_files:
+            if os.path.exists(stats_file):
+                verified_stats_files.append(stats_file)
+            else:
+                print(f"Warning: Stats file '{stats_file}' not found for device {device}")
+        
+        # Update the stats_files in the plot group with the verified ones
+        if not verified_stats_files:
+            print(f"Error: No valid stats files provided for device {device}")
+            return
+    
+    # Process all plot groups
+    device_models = {}  # Dictionary to organize by device -> models
+    device_stats_files = {}  # Dictionary to map device to its stats files
+    
+    for plot_group in plot_groups:
+        device = plot_group[0]  # Device name
+        file_model_pairs = plot_group[1]  # Model file pairs
+        stats_files = plot_group[2]  # Stats files for this device
+        
+        device_models[device] = []
+        device_stats_files[device] = stats_files
+        
+        i = 0
+        while i < len(file_model_pairs):
+            model_name = file_model_pairs[i]
+            # Need at least two files (baseline and one tau file)
+            if i + 2 > len(file_model_pairs):
+                print(f"Warning: Insufficient files for model {model_name}")
+                i += 1
+                continue
+                
+            baseline_file = file_model_pairs[i+1]
+            tau_file_example = file_model_pairs[i+2]  # Example tau file to determine platform (cpu/gpu)
+            
+            # Extract device type (cpu/gpu) from the filename
+            platform_pattern = r'-(cpu|gpu)'
+            platform_match = re.search(platform_pattern, os.path.basename(tau_file_example))
+            
+            if not platform_match:
+                print(f"Error: Cannot determine platform (cpu/gpu) from filename: {tau_file_example}")
+                i += 3  # Skip to next model
+                continue
+                
+            platform = platform_match.group(1)
+            
+            # Find all relevant tau files
+            tau_files = find_all_tau_files(baseline_file, platform)
+            if not tau_files:
+                print(f"Warning: No tau files found for {model_name} on {platform}")
+                i += 3  # Skip to next model
+                continue
+            
+            # Store data for this model
+            device_models[device].append((model_name, baseline_file, tau_files, platform))
+            
+            # Skip to next model (baseline + tau_example)
+            # The number of files per model is variable, so we need to count how many we've used
+            i += 3
+    
+    if not device_models:
+        print("Error: No valid data to plot")
+        return
+    
+    # Determine the layout of the grid (one row per device)
+    num_devices = len(device_models)
+    
+    # Create figure with subplots - one row per device
+    device_names = list(device_models.keys())
+    
+    # For each device, determine how many model plots we need
+    max_models_per_device = max(len(models) for models in device_models.values())
+    
+    if max_models_per_device == 0:
+        print("Error: No valid models to plot")
+        return
+    
+    # Create figure with subplots - one row per device, one column per model
+    # Make plots more square with more vertical space
+    # Also add extra height for legends, buttons, and to prevent title overlap
+    # Using a moderate height multiplier (1.5) for a balanced compact opening window
+    fig, axes = plt.subplots(num_devices, max_models_per_device, 
+                             figsize=(3.5 * max_models_per_device, 1.5 * num_devices + 1.0),
+                             squeeze=False)
+                             
+    # Apply initial layout to get proper axes positioning
+    plt.tight_layout()
+    # Adjust spacing for our needs - increased hspace to 1.2 for more vertical spacing between rows
+    plt.subplots_adjust(left=0.04, right=0.96, wspace=0.7, hspace=1.2, bottom=0.25, top=0.92)
+    
+    # For each device row
+    for device_idx, device in enumerate(device_names):
+        models_data = device_models[device]
+        
+        # For each model in this device
+        for model_idx, (model_name, baseline_file, tau_files, platform) in enumerate(models_data):
+            ax = axes[device_idx, model_idx]
+            
+            try:
+                # Read baseline file to get JAX performance
+                baseline_df = pd.read_csv(baseline_file)
+                jax_data = baseline_df[baseline_df['pipeline'].str.strip() == 'JaX']
+                
+                if jax_data.empty:
+                    print(f"Warning: No JAX data in {baseline_file}")
+                    continue
+                    
+                # Get median JAX runtime
+                stages = jax_data['stage'].unique()
+                if len(stages) == 0:
+                    print(f"Warning: No stages in JAX data for {baseline_file}")
+                    continue
+                    
+                stage = stages[0]  # Use first stage
+                jax_median = np.median(jax_data[jax_data['stage'] == stage]['runtime_ms'])
+                
+                # Process each tau file
+                taus = []
+                speedups = []
+                opt_times = []
+                segments = []
+                
+                for tau, tau_file in tau_files:
+                    taus.append(tau)
+                    
+                    # Extract model name to use in stats file lookup
+                    model_in_file = re.search(r'results_([^_]+)_', os.path.basename(tau_file)).group(1)
+                    
+                    # Get the stats files for this device
+                    device_specific_stats = device_stats_files[device]
+                    
+                    # Get optimization time from the device-specific stats files
+                    opt_time = extract_optimization_time(device_specific_stats, model_in_file, platform, tau)
+                    if opt_time is not None:
+                        opt_times.append(float(opt_time))
+                    else:
+                        print(f"Warning: No optimization time found for {model_in_file} tau={tau} on {platform}")
+                        opt_times.append(np.nan)
+                    
+                    # Get number of segments if available
+                    segment_count = None
+                    for stats_file in device_specific_stats:
+                        try:
+                            df = pd.read_csv(stats_file)
+                            if 'experiment_name' in df.columns and 'segments' in df.columns:
+                                matching_rows = df[df['experiment_name'] == f"{model_in_file}_tau={tau}-{platform}"]
+                                if not matching_rows.empty:
+                                    segment_count = matching_rows.iloc[-1]['segments']
+                                    break
+                        except:
+                            continue
+                    
+                    segments.append(segment_count if segment_count is not None else np.nan)
+                    
+                    # Get EqSat performance
+                    eqsat_df = pd.read_csv(tau_file)
+                    eqsat_data = eqsat_df[(eqsat_df['stage'] == stage) & (eqsat_df['pipeline'] == 'EqSat')]
+                    
+                    if eqsat_data.empty:
+                        print(f"Warning: No EqSat data in {tau_file}")
+                        speedups.append(np.nan)
+                        continue
+                        
+                    eqsat_median = np.median(eqsat_data['runtime_ms'])
+                    # Calculate relative speedup (EqSat vs JAX)
+                    speedup = (jax_median - eqsat_median) / jax_median
+                    speedups.append(speedup)
+                
+                # Plot the data
+                color1 = 'green'
+                color2 = 'blue'
+                
+                # Primary y-axis for speedup
+                ax1 = ax
+                ax1.set_xscale('log')  # Log scale for x-axis
+                
+                # Get min/max times to set appropriate y-axis scale
+                min_opt_time = min(opt_times) if opt_times else 0
+                max_opt_time = max(opt_times) if opt_times else 0
+                
+                # Plot the speedup data with smaller dots
+                line1 = ax1.plot(taus, [s*100 for s in speedups], marker='.', markersize=8, color=color1, label='Constable')
+                
+                # Only add y-axis label for leftmost plot in each row
+                if model_idx == 0:
+                    ax1.set_ylabel('Relative speedup, %', color=color1, fontsize=8)
+                ax1.tick_params(axis='y', labelcolor=color1, labelsize=7)
+                ax1.tick_params(axis='x', labelsize=7)
+                
+                # Adjust y-axis limits based on data to prevent cutoff
+                min_speedup = min([s*100 for s in speedups]) if speedups else 0
+                max_speedup = max([s*100 for s in speedups]) if speedups else 0
+                
+                # Calculate padding as a percentage of data range, with minimum padding
+                data_range = max(max_speedup - min_speedup, 20)  # Ensure minimum perceived range
+                padding = max(5, data_range * 0.15)  # At least 5% padding or 15% of range
+                
+                # Set y-axis limits with adequate padding
+                y_min = min(-10, min_speedup - padding)  # Lower limit with padding
+                
+                # Only go higher than 30% if data requires it
+                if max_speedup > 25:
+                    y_max = max_speedup + padding  # Upper limit with padding
+                else:
+                    y_max = 30  # Default upper limit of 30%
+                    
+                ax1.set_ylim(y_min, y_max)
+                
+                # Use wider-spaced ticks for the speedup axis
+                from matplotlib.ticker import MultipleLocator
+                # Use 15% increments instead of 10%
+                ax1.yaxis.set_major_locator(MultipleLocator(15))
+                
+                # Add JAX reference line
+                jax_line = ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.7, label='JAX')
+                
+                # Secondary y-axis for optimization time
+                ax2 = ax1.twinx()
+                # Manually insert values near zero to force axis to show more of the bottom
+                # This is a workaround to ensure space below the data points
+                dummy_taus = [min(taus)]
+                dummy_values = [0.001]  # Tiny value near zero to force axis extent
+                
+                # Plot both the real data and the dummy point (but only show the real data in legend)
+                # Use 'x' marker (cross) for optimization time
+                line2 = ax2.plot(taus, opt_times, marker='x', markersize=6, markeredgewidth=1.5, color=color2, label='Optimization time')
+                dummy_line = ax2.plot(dummy_taus, dummy_values, color='none', alpha=0)  # Invisible point
+                
+                # Set y-axis scale for optimization time with meaningful steps
+                # First, decide on minimum range based on data variation
+                data_range = max_opt_time - min_opt_time
+                
+                # Calculate padding as a percentage of the data range with minimum values
+                padding_percent = 0.3  # 30% padding on both sides
+                
+                # Force a fixed minimum y-value well below the data
+                # Always start optimization time axis from 0
+                y2_min = 0
+                
+                if data_range < 0.5:  # Very little variation
+                    # For very little variation, use a fixed range with extra bottom padding
+                    y2_max = max_opt_time + 4  # At least 4 seconds above the maximum
+                elif data_range < 2.0:  # Small variation
+                    # For small variation, ensure ample padding at top
+                    y2_max = max_opt_time + max(3.0, data_range)
+                elif data_range < 10.0:  # Medium variation
+                    # For medium variation, use percentage-based padding with minimum
+                    padding = max(4.0, data_range * padding_percent)
+                    y2_max = max_opt_time + padding
+                else:  # Large variation
+                    # For large variation, use generous percentage-based padding
+                    padding = max(5.0, data_range * padding_percent)
+                    y2_max = max_opt_time + padding
+                
+                ax2.set_ylim(y2_min, y2_max)
+                
+                # Use matplotlib's built-in AutoMinorLocator for nice ticks
+                from matplotlib.ticker import AutoMinorLocator, MaxNLocator
+                
+                # Force a specific padding value at the bottom
+                # Minimum time value should be max(0, min_opt_time - specific_padding)
+                # Calculate the actual full range after top padding is applied
+                full_range = y2_max - y2_min
+                
+                # Ensure the bottom 20-30% of the plot is empty space
+                desired_bottom_padding_pct = 0.25  # 25% of plot height as padding
+                
+                # Calculate the new y2_min to achieve this
+                required_y2_min = min_opt_time - (full_range * desired_bottom_padding_pct / (1 - desired_bottom_padding_pct))
+                
+                # Never go below zero
+                y2_min = max(0, required_y2_min)
+                
+                # Update axis limits
+                ax2.set_ylim(y2_min, y2_max)
+                
+                # Choose appropriate tick intervals based on the total axis range
+                total_range = y2_max - y2_min
+                
+                if total_range < 10:
+                    # For small total range, use 2-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(2))
+                elif total_range < 20:
+                    # For medium range, use 5-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(5))
+                elif total_range < 50:
+                    # For larger range, use 10-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(10))
+                elif total_range < 100:
+                    # For very large range, use 25-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(25))
+                elif total_range < 200:
+                    # For extremely large range, use 50-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(50))
+                elif total_range < 500:
+                    # For massive range, use 100-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(100))
+                else:
+                    # For enormous range, use 200-second ticks
+                    ax2.yaxis.set_major_locator(MultipleLocator(200))
+                
+                # Only add y-axis label for rightmost plot in each row
+                if model_idx == len(models_data) - 1:
+                    ax2.set_ylabel('Opt. time (s)', color=color2, fontsize=8)
+                ax2.tick_params(axis='y', labelcolor=color2, labelsize=7)
+                
+                # Set title and axis labels
+                ax1.set_title(f'{model_name}', fontsize=9)
+                # Only add x-axis label for bottom row
+                if device_idx == num_devices - 1:
+                    ax1.set_xlabel('Segment size', fontsize=8)
+                
+                # Add number of segments if available as text annotations
+                for i, (tau, segment) in enumerate(zip(taus, segments)):
+                    if not np.isnan(segment) and segment != 1:  # Only annotate if multiple segments
+                        ax1.annotate(f'{int(segment)}', 
+                                  xy=(tau, speedups[i]*100), 
+                                  xytext=(0, 5),
+                                  textcoords='offset points',
+                                  ha='center',
+                                  fontsize=6)
+                
+                # Add legend outside the plot
+                lines = line1 + line2 + [jax_line]
+                labels = [l.get_label() for l in lines]
+                
+                # We'll add a single centered legend for the entire figure later
+                pass
+                
+            except Exception as e:
+                print(f"Error plotting {model_name} on {device}: {str(e)}")
+                ax.text(0.5, 0.5, f"Error plotting {model_name}",
+                       ha='center', va='center', fontsize=8)
+            
+            # If we have fewer models than max, hide the empty plots
+            if model_idx >= len(models_data):
+                ax.axis('off')
+        
+        # Add device label for this row of plots
+        if len(models_data) > 0:
+            # Get the positions of the first and last plot in the row to determine row width
+            first_ax_pos = axes[device_idx, 0].get_position()
+            last_idx = min(len(models_data)-1, max_models_per_device-1)
+            last_ax_pos = axes[device_idx, last_idx].get_position()
+            
+            # Position the device label centered above the row of plots
+            # Further increased spacing between title and plots to 0.08
+            row_center_x = (first_ax_pos.x0 + last_ax_pos.x1) / 2
+            row_top_y = first_ax_pos.y1 + 0.06  # Slightly reduced space between title and plots
+            
+            # Add the device text directly without a background rectangle
+            fig.text(row_center_x, row_top_y, device,
+                    ha='center', va='center', fontsize=11, fontweight='bold')
+    
+    # Bottom margin, vertical spacing, and top margin are already adjusted above
+    
+    # Create a completely new set of lines with the correct styles for the legend
+    legend_fig = plt.figure(figsize=(1, 1))  # Create a dummy figure
+    legend_ax = legend_fig.add_subplot(111)
+    
+    # Create lines with the desired styles - update markers to match plot
+    gray_line = legend_ax.axhline(y=0, color='gray', linestyle='--', label='JAX')
+    green_line = legend_ax.plot([0], [0], '.-', markersize=8, color='green', label='Constable')[0]
+    blue_line = legend_ax.plot([0], [0], 'x-', markersize=6, markeredgewidth=1.5, color='blue', label='Optimization time')[0]
+    
+    # Close the dummy figure to prevent it from being displayed
+    plt.close(legend_fig)
+    
+    # Add the legend to the main figure
+    legend = fig.legend([gray_line, green_line, blue_line], 
+              ['JAX', 'Constable', 'Optimization time'],
+              loc='upper center', bbox_to_anchor=(0.5, 0.12),
+              ncol=3, frameon=False, fontsize=8)
+    
+    # Add a button to save the figure as PDF
+    # Position it properly below the legend with consistent spacing
+    # Get legend position and size to calculate button position
+    fig.canvas.draw()  # Ensure the figure is drawn so legend has the correct size
+    legend_bbox = legend.get_window_extent().transformed(fig.transFigure.inverted())
+    
+    # Position the button 0.2cm below the legend
+    # Convert 0.2cm to figure coordinates (depends on figure size in inches)
+    cm_to_inches = 0.393701  # 1 cm = 0.393701 inches
+    spacing_inches = 0.2 * cm_to_inches
+    fig_height_inches = fig.get_figheight()
+    spacing_fig_coords = spacing_inches / fig_height_inches
+    
+    button_left = 0.45
+    button_width = 0.1
+    button_height = 0.03
+    button_bottom = legend_bbox.y0 - spacing_fig_coords - button_height
+    
+    save_ax = plt.axes([button_left, button_bottom, button_width, button_height])
+    save_button = plt.Button(save_ax, 'Save PDF', color='lightgoldenrodyellow', hovercolor='0.975')
+    
+    def save_to_pdf(event):
+        # Generate filename based on current date/time
+        from datetime import datetime
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"segmentation_comparison_{timestamp}.pdf"
+        
+        # Temporarily hide the save button for the PDF export
+        save_button.ax.set_visible(False)
+        
+        # Save figure to current directory (button won't be visible in the saved file)
+        fig.savefig(filename, format='pdf', bbox_inches='tight')
+        abs_path = os.path.abspath(filename)
+        print(f"Saved figure as {abs_path}")
+        
+        # Make the button visible again for continued interaction
+        save_button.ax.set_visible(True)
+        fig.canvas.draw_idle()
+    
+    save_button.on_clicked(save_to_pdf)
+    plt.show()
+
 def main():
     if len(sys.argv) < 2:
-        print("usage: ./graph_results.py <hist|time|compare|cost_model> [options]")
+        print("usage: ./graph_results.py <hist|time|compare|cost_model|segmentation> [options]")
         print("  hist: plot histograms of runtimes")
         print("    ./graph_results.py hist <filename.csv>")
         print()
@@ -586,9 +1158,16 @@ def main():
         print("      ./graph_results.py compare -p A100 Llama llama_a100.csv NasRNN nasrnn_a100.csv -p V100 Llama llama_v100.csv NasRNN nasrnn_v100.csv")
         print()
         print("  cost_model: plot bar charts comparing cost model configurations")
-        print("    ./graph_results.py cost_model -p <plot_title> <model_name> <baseline_csv> [<model_name> <baseline_csv> ...] [-p <plot_title> ...]")
+        print("    ./graph_results.py cost_model -p <plot_title> <model_name> <baseline_csv> [<model_name> <baseline_csv> ...] [-p/-pn <plot_title> ...]")
+        print("    Use -p to show all three configurations (baseline, no-fusion, no-zero)")
+        print("    Use -pn to show only two configurations (baseline, no-zero) and hide the no-fusion bars")
         print("    Example:")
-        print("      ./graph_results.py cost_model -p Xeon Llama results_llama_cost-model_baseline-cpu_2025-03-19_19:58:50.csv NasRNN results_nasrnn_cost-model_baseline-cpu_2025-03-19_19:58:50.csv")
+        print("      ./graph_results.py cost_model -p Xeon Llama results_llama_cost-model_baseline-cpu_2025-03-19_19:58:50.csv -pn A100 NasRNN results_nasrnn_cost-model_baseline-gpu_2025-03-19_19:58:50.csv")
+        print()
+        print("  segmentation: plot grid of graphs showing speedup and optimization time vs segment size")
+        print("    ./graph_results.py segmentation -p <device> <model_name> <baseline_csv> <tau_file1> [<model_name> <baseline_csv> <tau_file1> ...] -stats <stats_file1> [<stats_file2> ...] [-p <device2> ...]")
+        print("    Example:")
+        print("      ./graph_results.py segmentation -p Threadripper ResNet beast/results_resnet_cost-model_baseline-cpu_2025-03-22_13:28:26.csv beast/results_resnet_tau=10-cpu_2025-03-23_15:00:06.csv -stats beast/stats_segmentation_2025-03-23_15:00:06.csv -p A100 ResNet a100/results_resnet_cost-model_baseline-gpu_2025-03-22_17:29:38.csv a100/results_resnet_tau=10-gpu_2025-03-24_03:03:48.csv -stats a100/stats_segmentation_2025-03-24_03:03:48.csv")
         sys.exit(1)
         
     mode = sys.argv[1]
@@ -620,25 +1199,30 @@ def main():
             print(f"Example: ./graph_results.py {mode} -p A100 Llama llama_a100.csv -p V100 Llama llama_v100.csv")
             sys.exit(1)
             
-        # Multi-plot mode with -p flags
+        # Multi-plot mode with -p/-pn flags
         plot_groups = []
         current_plot = None
         current_title = None
+        current_show_no_fusion = True  # Default to showing no_fusion bars
         
         i = 2
         while i < len(sys.argv):
-            if sys.argv[i] == "-p":
+            if sys.argv[i] == "-p" or sys.argv[i] == "-pn":
                 # If we have a current plot group, add it before starting a new one
                 if current_title is not None and current_plot is not None:
-                    plot_groups.append((current_title, current_plot))
+                    plot_groups.append((current_title, current_plot, current_show_no_fusion))
+                
+                # Determine if this group should show no_fusion bars
+                show_no_fusion = (sys.argv[i] == "-p")  # Show for -p, hide for -pn
                 
                 # Start a new plot group
                 if i + 1 < len(sys.argv):
                     current_title = sys.argv[i + 1]
                     current_plot = []
+                    current_show_no_fusion = show_no_fusion
                     i += 2
                 else:
-                    print("Error: -p flag must be followed by a plot title")
+                    print(f"Error: {sys.argv[i]} flag must be followed by a plot title")
                     sys.exit(1)
             else:
                 # Add file/model pairs to the current plot
@@ -657,20 +1241,111 @@ def main():
         
         # Add the last plot group if it exists
         if current_title is not None and current_plot is not None:
-            plot_groups.append((current_title, current_plot))
+            plot_groups.append((current_title, current_plot, current_show_no_fusion))
             
         # Plot the groups
         if plot_groups:
             if mode == "compare":
-                plot_comparison(plot_groups)
+                # For compare mode, we need to ensure plot_groups has the right format
+                # If we're coming from a cost_model parse with show_no_fusion flags
+                if len(plot_groups) > 0 and len(plot_groups[0]) == 3:
+                    # Remove the show_no_fusion flag
+                    compare_plot_groups = [(pg[0], pg[1]) for pg in plot_groups]
+                    plot_comparison(compare_plot_groups)
+                else:
+                    plot_comparison(plot_groups)
             else:  # cost_model
                 plot_cost_model(plot_groups)
         else:
             print("Error: No valid plot groups found")
             sys.exit(1)
+    
+    elif mode == "segmentation":
+        if len(sys.argv) < 6 or sys.argv[2] != "-p":
+            print("Error: segmentation mode requires -p flag followed by device, model names, files, and -stats.")
+            print("Example: ./graph_results.py segmentation -p Threadripper ResNet baseline.csv tau10.csv -stats stats_threadripper.csv -p A100 ...")
+            sys.exit(1)
+            
+        # Parse the arguments: -p <device> <model> <baseline> <tau_file> ... -stats <stats_file> ... -p <next_device> ...
+        plot_groups = []
+        current_plot = None
+        current_title = None
+        current_stats = None
+        expecting_stats = False
+        
+        i = 2
+        while i < len(sys.argv):
+            if sys.argv[i] == "-p":
+                # If we have a current plot group with models and stats, add it before starting a new one
+                if current_title is not None and current_plot is not None and current_stats is not None:
+                    plot_groups.append((current_title, current_plot, current_stats))
+                elif current_title is not None and current_plot is not None:
+                    print(f"Error: No stats files provided for device {current_title}")
+                    sys.exit(1)
+                
+                # Start a new plot group
+                if i + 1 < len(sys.argv):
+                    current_title = sys.argv[i + 1]
+                    current_plot = []
+                    current_stats = None
+                    expecting_stats = False
+                    i += 2
+                else:
+                    print("Error: -p flag must be followed by a device name")
+                    sys.exit(1)
+            elif sys.argv[i] == "-stats":
+                # Process stats files for the current device
+                if current_title is None:
+                    print("Error: -stats flag must follow a -p <device> section")
+                    sys.exit(1)
+                
+                current_stats = []
+                i += 1
+                expecting_stats = True
+                
+                # Collect stats files until we hit another flag or end of args
+                while i < len(sys.argv) and not sys.argv[i].startswith("-"):
+                    current_stats.append(sys.argv[i])
+                    i += 1
+                
+                if not current_stats:
+                    print(f"Error: No stats files provided after -stats for device {current_title}")
+                    sys.exit(1)
+                
+                expecting_stats = False
+            else:
+                # Add model triplets (model, baseline, tau_file) to the current plot
+                if current_plot is None:
+                    print("Error: Model information must follow a -p flag")
+                    sys.exit(1)
+                
+                # We need at least 3 values: model name, baseline file, tau file
+                if i + 2 < len(sys.argv) and not sys.argv[i+1].startswith("-") and not sys.argv[i+2].startswith("-"):
+                    current_plot.append(sys.argv[i])     # Model name
+                    current_plot.append(sys.argv[i+1])   # Baseline CSV
+                    current_plot.append(sys.argv[i+2])   # Tau CSV example
+                    i += 3
+                else:
+                    # Incomplete triplet
+                    print(f"Error: Each model requires a name, baseline file, and tau file.")
+                    sys.exit(1)
+        
+        # Add the last plot group if it exists
+        if current_title is not None and current_plot is not None and current_stats is not None:
+            plot_groups.append((current_title, current_plot, current_stats))
+        elif current_title is not None and current_plot is not None:
+            print(f"Error: No stats files provided for device {current_title}")
+            sys.exit(1)
+            
+        # Plot the segmentation data
+        if plot_groups:
+            plot_segmentation(plot_groups)
+        else:
+            print("Error: No valid plot groups found")
+            sys.exit(1)
         
     else:
-        print(f"Error: Unknown mode '{mode}'. Use 'hist', 'time', 'compare', or 'cost_model'.")
+        print(f"Error: Unknown mode '{mode}'. Use 'hist', 'time', 'compare', 'cost_model', or 'segmentation'.")
         sys.exit(1)
 
 if __name__ == "__main__":
