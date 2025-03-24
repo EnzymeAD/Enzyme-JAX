@@ -4234,9 +4234,10 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
     auto thenBlock = &ifOp.getThenRegion().front();
     auto elseBlock = &ifOp.getElseRegion().front();
 
-    if (thenBlock->getOperations().size() < 2) return failure();
-    if (elseBlock->getOperations().size() < 2) return failure();
-
+    if (thenBlock->getOperations().size() < 2)
+      return failure();
+    if (elseBlock->getOperations().size() < 2)
+      return failure();
 
     // Extract yield operations from both regions
     auto thenYield =
@@ -4245,14 +4246,19 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
         cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
 
     auto thenStore = dyn_cast<affine::AffineStoreOp>(thenYield->getPrevNode());
-    if (!thenStore) return failure();
+    if (!thenStore)
+      return failure();
 
     auto elseStore = dyn_cast<affine::AffineStoreOp>(elseYield->getPrevNode());
-    if (!elseStore) return failure();
+    if (!elseStore)
+      return failure();
 
-    if (thenStore.getAffineMap() != elseStore.getAffineMap()) return failure();
-    if (thenStore.getMapOperands() != elseStore.getMapOperands()) return failure();
-    if (thenStore.getMemref() != elseStore.getMemref()) return failure();
+    if (thenStore.getAffineMap() != elseStore.getAffineMap())
+      return failure();
+    if (thenStore.getMapOperands() != elseStore.getMapOperands())
+      return failure();
+    if (thenStore.getMemref() != elseStore.getMemref())
+      return failure();
 
     // Use SetVector to ensure uniqueness while preserving order
     SmallVector<Value> ifYieldOperands, elseYieldOperands;
@@ -4265,7 +4271,6 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
 
     ifYieldOperands.push_back(thenStore.getValueToStore());
     elseYieldOperands.push_back(elseStore.getValueToStore());
-
 
     // Create a new if operation with the same condition
     SmallVector<Type> resultTypes;
@@ -4307,9 +4312,13 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
       rewriter.eraseOp(elseYield);
     }
 
-    rewriter.create<affine::AffineStoreOp>(thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()), thenStore.getMemref(), thenStore.getAffineMap(), thenStore.getMapOperands());
+    rewriter.create<affine::AffineStoreOp>(
+        thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
+        thenStore.getMemref(), thenStore.getAffineMap(),
+        thenStore.getMapOperands());
 
-    rewriter.replaceOp(ifOp, newIfOp.getResults().slice(0, ifOp.getNumResults()));
+    rewriter.replaceOp(ifOp,
+                       newIfOp.getResults().slice(0, ifOp.getNumResults()));
     rewriter.eraseOp(thenStore);
     rewriter.eraseOp(elseStore);
     return success();
@@ -4329,8 +4338,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf,
-          AddAddCstEnd>(context, 2);
+          SinkStoreInIf, AddAddCstEnd>(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
