@@ -1,8 +1,8 @@
 #!/bin/bash
 
-thresholds=(10 25 100 500 1000 5000)
+thresholds=(5 10 25 100 500 1000 5000)
 platforms=("cpu" "gpu")
-models=("llama" "maxtext" "jaxmd")
+models=("llama" "maxtext" "jaxmd" "kan1" "kan2" "gemma" "bert" "maxtext" "searchlesschess" "nasrnn" "resnet')
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=segmentation_$datetime.txt
 segmentation_size_csv="stats_segmentation_2025-03-23_11:58:22.csv"
