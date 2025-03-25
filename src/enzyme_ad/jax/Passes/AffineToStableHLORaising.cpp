@@ -1858,7 +1858,13 @@ struct AffineToStableHLORaisingPass
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
       ArrayRef<Operation *> users = userMap.getUsers(kernelFunc);
-      anyRaised |= tryRaisingToStableHLO(kernelFunc, users);
+      bool raised = tryRaisingToStableHLO(kernelFunc, users);
+      anyRaised |= raised;
+      allRaised &= raised;
+      if (!raised && err_if_not_fully_raised) {
+        llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
+        signalPassFailure();
+      }
       funcs.pop_back();
     }
 
