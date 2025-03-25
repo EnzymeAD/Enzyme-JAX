@@ -22,6 +22,15 @@ def median_confidence_interval(data, confidence):
     data_sorted = sorted(data)
     return (data_sorted[lower_rank], data_sorted[upper_rank])
 
+def percentile_confidence_interval(data, confidence):
+    lower_percentile = (100 - confidence) / 2
+    upper_percentile = 100 - lower_percentile
+    
+    lower = np.percentile(data, lower_percentile)
+    upper = np.percentile(data, upper_percentile)
+    
+    return (lower, upper)
+
 
 def compute_stats(data):
     mean = np.mean(data)
@@ -29,7 +38,7 @@ def compute_stats(data):
     stdev = np.std(data)
     min_val = np.min(data)
     max_val = np.max(data)
-    median_ci = median_confidence_interval(data, 0.95)
+    median_ci = percentile_confidence_interval(data, 0.95)
     return mean, median, stdev, min_val, max_val, median_ci
 
 
@@ -104,183 +113,195 @@ def compute_relative_speedup(model_data):
     if len(stages) == 0:
         print("Error: No stages found in data")
         return 0, 0
-        
+
     stage = stages[0]
     print(f"Using stage: {stage}")
-    
+
     # Filter data for the stage
     stage_data = model_data[model_data['stage'] == stage]
-    
-    # Calculate median runtimes for each pipeline
     jax_median = np.median(stage_data[stage_data['pipeline'].str.strip() == 'JaX']['runtime_ms'])
     defopt_median = np.median(stage_data[stage_data['pipeline'] == 'DefOpt']['runtime_ms'])
     eqsat_median = np.median(stage_data[stage_data['pipeline'] == 'EqSat']['runtime_ms'])
-    
+
     # Calculate relative speedups (negative values mean slowdowns)
     defopt_speedup = (jax_median - defopt_median) / jax_median
     eqsat_speedup = (jax_median - eqsat_median) / jax_median
-    
+
     return defopt_speedup, eqsat_speedup
 
 
-def process_plot_data(model_file_pairs):
-    """Process data for a single plot"""
-    models = []
+def compute_relative_speedup_runs(run_files):
+    """
+    Given a list of CSV files (one per run), compute the speedups for each run and
+    return the mean and standard error (SEM) for Enzyme-JAX and Constable.
+    """
     enzyme_speedups = []
     constable_speedups = []
+    for f in run_files:
+        try:
+            df = pd.read_csv(f)
+            d_speedup, c_speedup = compute_relative_speedup(df)
+            enzyme_speedups.append(d_speedup)
+            constable_speedups.append(c_speedup)
+        except Exception as e:
+            print(f"Error processing {f}: {e}")
+    if len(enzyme_speedups) == 0 or len(constable_speedups) == 0:
+        return None, None, None, None
+    # Compute mean and standard error
+    enzyme_mean = np.mean(enzyme_speedups)
+    enzyme_std = np.std(enzyme_speedups)
+    enzyme_sem = enzyme_std / np.sqrt(len(enzyme_speedups))
+    
+    constable_mean = np.mean(constable_speedups)
+    constable_std = np.std(constable_speedups)
+    constable_sem = constable_std / np.sqrt(len(constable_speedups))
+    
+    return enzyme_mean, enzyme_sem, constable_mean, constable_sem
+
+
+def process_plot_data(model_file_pairs):
+    """
+    For each model, use the provided CSV file (e.g. with _run1.csv) to locate all
+    run files (e.g. _run1, _run2, _run3, ...), compute per-run speedups, and then
+    aggregate (mean and SEM) across runs.
+    """
+    models = []
+    enzyme_speedups = []  # Each entry: (mean, sem)
+    constable_speedups = []  # Each entry: (mean, sem)
     
     for i in range(0, len(model_file_pairs), 2):
         model_name = model_file_pairs[i]
         csv_file = model_file_pairs[i+1]
         
-        try:
-            df = pd.read_csv(csv_file)
-            if not {'pipeline', 'stage', 'runtime_ms'}.issubset(df.columns):
-                print(f"Error: File {csv_file} must contain 'pipeline', 'stage', and 'runtime_ms' columns.")
-                continue
-                
-            print(f"Processing {model_name} from {csv_file}...")
-            defopt_speedup, eqsat_speedup = compute_relative_speedup(df)
-            models.append(model_name)
-            enzyme_speedups.append(defopt_speedup)
-            constable_speedups.append(eqsat_speedup)
-            
-            print(f"{model_name}:")
-            print(f"  Enzyme-JAX speedup: {defopt_speedup*100:.2f}%")
-            print(f"  Constable speedup: {eqsat_speedup*100:.2f}%")
-            print()
-            
-        except FileNotFoundError:
-            print(f"Error: File '{csv_file}' not found.")
+        directory = os.path.dirname(csv_file) or '.'
+        basename = os.path.basename(csv_file)
+        # Expecting a filename like: results_MODEL_cost-model_baseline-PLATFORM_DATE_run1.csv
+        m = re.match(r"(.+)_run\d+\.csv", basename)
+        if not m:
+            print(f"Error: File {csv_file} does not match expected run pattern.")
             continue
-            
+        base_prefix = m.group(1)
+        
+        # Search the directory for all files with the same prefix and a _run<number>.csv suffix
+        run_files = []
+        for f in os.listdir(directory):
+            if re.match(re.escape(base_prefix) + r"_run\d+\.csv", f):
+                run_files.append(os.path.join(directory, f))
+        if not run_files:
+            print(f"Warning: No run files found for {csv_file}")
+            continue
+        
+        print(run_files)
+        
+        enzyme_mean, enzyme_sem, constable_mean, constable_sem = compute_relative_speedup_runs(run_files)
+        if enzyme_mean is None:
+            continue
+        
+        models.append(model_name)
+        enzyme_speedups.append((enzyme_mean, enzyme_sem))
+        constable_speedups.append((constable_mean, constable_sem))
+        
+        print(f"{model_name}:")
+        print(f"  Enzyme-JAX speedup: {enzyme_mean*100:.2f}% ± {enzyme_sem*100:.2f}%")
+        print(f"  Constable speedup: {constable_mean*100:.2f}% ± {constable_sem*100:.2f}%")
+        print()
+    
     return models, enzyme_speedups, constable_speedups
 
 
 def plot_comparison(plot_groups):
-    """Plot multiple bar charts of speedups for different models and platforms"""
-    # Determine the number of plots
+    """Plot bar charts comparing speedups for different models and platforms with error bars."""
     num_plots = len(plot_groups)
     
     if num_plots == 0:
         print("Error: No valid plot data provided")
         return
-    
-    # Find min/max y values across all plots for consistent y-axis scaling
-    all_enzyme_speedups = []
-    all_constable_speedups = []
-    
+
+    # Gather all speedups (means) to set consistent y-axis limits.
+    all_means = []
     for plot_group in plot_groups:
-        # For compare mode, we only need the first two elements of the tuple
         title = plot_group[0]
         file_model_pairs = plot_group[1]
         models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
-        all_enzyme_speedups.extend(enzyme_speedups)
-        all_constable_speedups.extend(constable_speedups)
+        # Extract means only
+        all_means.extend([s[0] for s in enzyme_speedups])
+        all_means.extend([s[0] for s in constable_speedups])
     
-    if not all_enzyme_speedups and not all_constable_speedups:
+    if not all_means:
         print("Error: No valid data to plot")
         return
     
-    all_speedups = all_enzyme_speedups + all_constable_speedups
-    min_val = min(min(all_speedups) * 100 if all_speedups else -10, -10)
-    max_val = max(max(all_speedups) * 100 if all_speedups else 60, 60)
-    
-    # Round to nearest 5%
+    # Calculate global min and max (in percentages)
+    all_speedups_pct = [v*100 for v in all_means]
+    min_val = min(all_speedups_pct)
+    max_val = max(all_speedups_pct)
+    # Extend limits slightly for padding
     min_val = np.floor(min_val / 5) * 5 - 5
     max_val = np.ceil(max_val / 5) * 5 + 5
     
-    # Create a figure with multiple subplots side by side
-    # Make plots less tall (height reduced from 7 to 5)
+    # Create a figure with one subplot per plot group
     fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5), sharey=True)
-    
-    # Handle the case of a single plot
     if num_plots == 1:
         axes = [axes]
     
     for idx, plot_group in enumerate(plot_groups):
-        # For compare mode, we only need the first two elements of the tuple
         title = plot_group[0]
         file_model_pairs = plot_group[1]
         ax = axes[idx]
         models, enzyme_speedups, constable_speedups = process_plot_data(file_model_pairs)
-        
-        # Skip empty datasets
         if not models:
-            ax.text(0.5, 0.5, f"No data for {title}", 
+            ax.text(0.5, 0.5, f"No data for {title}",
                     horizontalalignment='center', verticalalignment='center')
             continue
         
-        width = 0.3  # Bar width
+        width = 0.3  # width for each bar
         x = np.arange(len(models))
         
-        # Plot bars for Enzyme-JAX and Constable right next to each other
-        enzyme_bars = ax.bar(x - width/2, [s*100 for s in enzyme_speedups], width, 
-                             label='Enzyme-JAX', color='lightblue', edgecolor='black', linewidth=1)
-        constable_bars = ax.bar(x + width/2, [s*100 for s in constable_speedups], width, 
-                                label='Constable', color='green', edgecolor='black', linewidth=1)
+        # Prepare values and error bars (convert speedups to percentages)
+        enzyme_vals = [mean*100 for mean, sem in enzyme_speedups]
+        enzyme_err = [sem*100 for mean, sem in enzyme_speedups]
+        constable_vals = [mean*100 for mean, sem in constable_speedups]
+        constable_err = [sem*100 for mean, sem in constable_speedups]
         
-        # Add grey grid lines
+        enzyme_bars = ax.bar(x - width/2, enzyme_vals, width, yerr=enzyme_err,
+                             capsize=5, label='Enzyme-JAX', color='lightblue',
+                             edgecolor='black', linewidth=1)
+        constable_bars = ax.bar(x + width/2, constable_vals, width, yerr=constable_err,
+                                capsize=5, label='Constable', color='green',
+                                edgecolor='black', linewidth=1)
+        
+        # Add grid and baseline
         ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.7)
+        ax.axhline(y=0, color='purple', linestyle='--', linewidth=2,
+                   label='JAX' if idx == 0 else "_nolegend_")
         
-        # Bring the bars to the front to cover grid lines
-        for bar in enzyme_bars:
-            bar.set_zorder(10)
-        for bar in constable_bars:
-            bar.set_zorder(10)
-        
-        # Add JAX baseline
-        jax_line = ax.axhline(y=0, color='purple', linestyle='--', linewidth=2, 
-                              label='JAX' if idx == 0 else "_nolegend_")
-        jax_line.set_zorder(5)
-        
-        # Set x-axis labels
         ax.set_xticks(x)
         ax.set_xticklabels(models, rotation=45, ha='right', rotation_mode='anchor')
-        
-        # Set plot title
         ax.set_title(title)
-        
-        # Only set y-label on the leftmost plot
         if idx == 0:
             ax.set_ylabel('Relative speedup, %')
     
-    # Set common y-axis limits and ticks
-    y_ticks = np.arange(np.ceil(min_val / 20) * 20, np.floor(max_val / 20) * 20 + 1, 20)
-    plt.setp(axes, ylim=(min_val, max_val), yticks=y_ticks)
-    
-    # Adjust layout first to make space for rotated x-labels
+    plt.setp(axes, ylim=(min_val, max_val))
     plt.tight_layout()
-    
-    # Add more space at the bottom for x-labels and legend
     plt.subplots_adjust(bottom=0.25)
     
-    # Add a single legend at the bottom of the figure (further down)
+    # Place a single legend at the bottom
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.05),
                ncol=3, frameon=False, handletextpad=1.0, columnspacing=2.0)
     
-    # Add a button to save the figure as PDF (positioned at the bottom, slightly lower than before)
-    save_ax = plt.axes([0.45, 0.005, 0.1, 0.04])  # Position for the button [left, bottom, width, height]
+    # Optional: add a button to save the figure as PDF
+    save_ax = plt.axes([0.45, 0.005, 0.1, 0.04])
     save_button = plt.Button(save_ax, 'Save PDF', color='lightgoldenrodyellow', hovercolor='0.975')
     
     def save_to_pdf(event):
-        # Generate filename based on current date/time
         from datetime import datetime
-        import os
-        
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"speedup_comparison_{timestamp}.pdf"
-        
-        # Temporarily hide the save button for the PDF export
         save_button.ax.set_visible(False)
-        
-        # Save figure to current directory (button won't be visible in the saved file)
         fig.savefig(filename, format='pdf', bbox_inches='tight')
         abs_path = os.path.abspath(filename)
         print(f"Saved figure as {abs_path}")
-        
-        # Make the button visible again for continued interaction
         save_button.ax.set_visible(True)
         fig.canvas.draw_idle()
     
@@ -1350,3 +1371,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
