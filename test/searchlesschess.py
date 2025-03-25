@@ -125,7 +125,7 @@ class SearchlessChess9M(EnzymeJaxTest):
 
         self.fn = foo
         self.name = "searchless_chess_9m"
-        self.count = 10
+        self.count = 100
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

@@ -306,7 +306,7 @@ class Llama(EnzymeJaxTest):
 
         self.fn = partial(forward, config)
         self.name = "llama"
-        self.count = 1000
+        self.count = 100
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

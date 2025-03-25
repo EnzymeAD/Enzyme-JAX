@@ -14,6 +14,7 @@ platforms=("cpu") # "gpu")
 models=("llama" "nasrnn" "maxtext") # "jaxmd")
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
+num_repeats=10
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME
@@ -28,7 +29,6 @@ for model in "${models[@]}"; do
       config="${configs[$i]}"
       config_name="${config_names[$i]}"
       eval "$config"
-      export EXPERIMENT_NAME="${model}_cost-model_${config_name}-${platform}_${datetime}"
       export KERAS_BACKEND="jax"
       export EQSAT_PLATFORM=$platform
 
@@ -38,16 +38,18 @@ for model in "${models[@]}"; do
         COMMAND="JAX_PLATFORMS=cpu python test/${model}.py"
       fi
 
-      # Time the command and redirect output to eqsat_vs_enzyme.txt
-      echo "Running $EXPERIMENT_NAME..." | tee -a $filename
-      START_TIME=$(date +%s)
-      eval "$COMMAND" >> $filename 2>&1
-      END_TIME=$(date +%s)
-      DURATION=$((END_TIME - START_TIME))
+      for repeat in $(seq 1 $num_repeats); do
+        export EXPERIMENT_NAME="${model}_cost-model_${config_name}-${platform}_${datetime}_run${repeat}"
+        echo "Running $EXPERIMENT_NAME (repeat $repeat/$num_repeats)..." | tee -a $filename
 
-      # Append the timing to eqsat_vs_enzyme.txt
-      echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> $filename
-      echo "--------------------------------" >> $filename
+        START_TIME=$(date +%s)
+        eval "$COMMAND" >> $filename 2>&1
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+
+        echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> $filename
+        echo "--------------------------------" >> $filename
+      done
     done
   done
 done
