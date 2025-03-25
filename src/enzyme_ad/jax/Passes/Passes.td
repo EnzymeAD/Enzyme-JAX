@@ -522,6 +522,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
     "stablehlo::StablehloDialect",
     "func::FuncDialect",
   ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"err_if_not_fully_raised",
+        /*CLI argument=*/"err_if_not_fully_raised",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to throw a pass error if not fully raised">
+  ];
 }
 
 
