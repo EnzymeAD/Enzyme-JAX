@@ -26,6 +26,7 @@ for repeat in $(seq 1 $num_repeats); do
                 eval "$config"
                 export KERAS_BACKEND="jax"
                 export EQSAT_PLATFORM=$platform
+                export LIMIT_RULES="true"
 
                 if [ "$platform" == "gpu" ]; then
                     COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"

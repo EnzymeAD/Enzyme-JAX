@@ -27,6 +27,8 @@
 
 #include "stablehlo/dialect/TypeInference.h"
 
+#include <iostream>
+
 #define DEBUG_TYPE "enzyme"
 
 using namespace mlir;
@@ -6515,60 +6517,94 @@ namespace {
 struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
 
   void runOnOperation() override {
+    const char *limitStr = getenv("LIMIT_RULES");
+    bool limit = limitStr && (strcmp(limitStr, "true") == 0);
+
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
-             SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
-             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier>(context,
+    if (!limit) {
+      patterns
+          .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+               OrSimplify, NegateSimplify, MulSimplify, DivSimplify,
+               RemSimplify, PowSimplify, SqrtSimplify, CosSimplify, SinSimplify,
+               NoopSlice, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
+               NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
+               ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+               DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+               GatherSimplify, ConstPropThroughBarrier>(context,
                                                         PatternBenefit(65000));
+    }
 
-    patterns.add<IotaSimplify, BroadcastInDimSimplify>(
-        max_constant_expansion, context, PatternBenefit(65000));
+    patterns.add<BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape>(
+        context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp, ConcatFuse,
-                 ConcatToBroadcast, PadPad, PadReshapePad,
+    if (!limit) {
+      patterns.add<IotaSimplify, BroadcastInDimSimplify>(
+          max_constant_expansion, context, PatternBenefit(65000));
+    }
+
+    if (!limit) {
+      patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+                   ConcatConstProp, ScatterToDynamicUpdateSlice, ReduceConcat,
+                   BinBroadcastSplat<stablehlo::AddOp>,
+                   BinBroadcastSplat<stablehlo::SubtractOp>,
+                   BinBroadcastSplat<stablehlo::DivOp>,
+                   BinBroadcastSplat<stablehlo::MulOp>>(context);
+    }
+
+    if (!limit) {
+      patterns.add<SliceReshapeElementwise>(context);
+    }
+
+    patterns.add<SliceElementwise, SlicePad, SliceReshapePad, DotReshapeDot,
+                 ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
                  ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, SliceConcat, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+                 ConcatPushBinop<stablehlo::MulOp>, SliceConcat,
+                 SliceReshapeConcat>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad>(context);
 
-    if (passses & 512)
-      patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
-                   TransposeConvolution, EinsumTranspose, TransposeEinsum,
-                   ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota>(context);
+    if (passses & 512) {
+      if (!limit) {
+        patterns.add<TransposeDotReorder, ConvolutionTranspose,
+                     TransposeConvolution, EinsumTranspose, TransposeEinsum,
+                     ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
+                     ReshapeIota>(context);
+      }
+      patterns.add<DotTranspose>(context);
+    }
 
-    if (passses & 1024)
-      patterns.add<FullReduceReshapeOrTranspose>(context);
+    if (passses & 1024) {
+      if (!limit) {
+        patterns.add<FullReduceReshapeOrTranspose>(context);
+      }
+    }
 
     if (passses & 1)
       patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
           context);
-    if (passses & 2)
-      patterns.add<ReducePad, BroadcastPad>(context);
-    if (passses & 4)
-      patterns.add<MulZeroPad, DivZeroPad, ZeroProductReshapePad>(context);
-    if (passses & 8)
-      patterns.add<BinopConstReshapePad, BinopConstPad<stablehlo::AddOp>,
-                   BinopConstPad<stablehlo::SubtractOp>,
-                   BinopConstPad<stablehlo::MulOp>,
-                   BinopConstPad<stablehlo::DivOp>>(context);
 
+    if (passses & 2) {
+      if (!limit) {
+        patterns.add<ReducePad>(context);
+      }
+      patterns.add<BroadcastPad>(context);
+    }
+
+    if (passses & 4) {
+      if (!limit) {
+        patterns.add<MulZeroPad, DivZeroPad, ZeroProductReshapePad>(context);
+      }
+    }
+    if (passses & 8) {
+      if (!limit) {
+        patterns.add<BinopConstReshapePad, BinopConstPad<stablehlo::AddOp>,
+                     BinopConstPad<stablehlo::SubtractOp>,
+                     BinopConstPad<stablehlo::MulOp>,
+                     BinopConstPad<stablehlo::DivOp>>(context);
+      }
+    }
     if (passses & 16)
       patterns.add<
           BinopBinopPadPad<stablehlo::AddOp>, AddPadPadToConcat,
@@ -6600,15 +6636,21 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
                    CSE<stablehlo::NegOp>>(context, PatternBenefit(65000));
     }
 
-    if (passses & 256)
-      patterns.add<TransposeConvert>(context);
+    if (passses & 256) {
+      if (!limit) {
+        patterns.add<TransposeConvert>(context);
+      }
+    }
 
     if (passses & 2048)
       patterns.add<TransposeTranspose>(context);
 
-    if (passses & (2048 * 2))
-      patterns.add<BroadcastReduce, SliceDotGeneral, SliceReshapeDotGeneral>(
-          context);
+    if (passses & (2048 * 2)) {
+      if (!limit) {
+        patterns.add<BroadcastReduce>(context);
+        patterns.add<SliceDotGeneral, SliceReshapeDotGeneral>(context);
+      }
+    }
 
     if (passses & (2048 * 4)) {
       patterns.add<PadDotGeneral>(false, context);
@@ -6622,25 +6664,29 @@ struct EnzymeHLOOptPass : public EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
       patterns.add<DotReshapePad>(context);
     }
 
-    if (all_finite)
+    if (all_finite && !limit)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite)
       patterns.add<NoNan>(context);
 
     patterns
-        .add<CompareOpCanon, BroadcastInDimOpCanon, ConvertOpCanon,
-             DynamicBroadcastInDimOpNotActuallyDynamic,
-             ChainedDynamicBroadcastInDimCanonicalization,
-             DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
-             EmptyReduceOpCanon, DynamicReshapeOpCanon, GetTupleElementOpCanon,
-             RealOpCanon, ImagOpCanon, GetDimensionSizeOpCanon, GatherOpCanon,
-             ReshapeOpCanon, MergeConsecutiveReshapes, TransposeIsReshape,
-             IfInline, IfToSelect, ZeroExtentTensorCanon,
-             ReorderElementwiseAndShapeOp>(context);
-    patterns.add<SelectOpCanon>(max_constant_expansion, context,
-                                PatternBenefit(65000));
-    patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
-                                     PatternBenefit(65000));
+        .add<BroadcastInDimOpCanon, ReshapeOpCanon, MergeConsecutiveReshapes,
+             TransposeIsReshape, ReorderElementwiseAndShapeOp>(context);
+
+    if (!limit) {
+      patterns.add<CompareOpCanon, ConvertOpCanon,
+                   DynamicBroadcastInDimOpNotActuallyDynamic,
+                   ChainedDynamicBroadcastInDimCanonicalization,
+                   DynamicBroadcastInDimAllDimsNonExpanding, NoopReduceOpCanon,
+                   EmptyReduceOpCanon, DynamicReshapeOpCanon,
+                   GetTupleElementOpCanon, RealOpCanon, ImagOpCanon,
+                   GetDimensionSizeOpCanon, GatherOpCanon, IfInline, IfToSelect,
+                   ZeroExtentTensorCanon>(context);
+      patterns.add<SelectOpCanon>(max_constant_expansion, context,
+                                  PatternBenefit(65000));
+      patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
+                                       PatternBenefit(65000));
+    }
 
     GreedyRewriteConfig config;
     config.maxIterations = max_iterations;
