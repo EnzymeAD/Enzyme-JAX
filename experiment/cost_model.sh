@@ -2,19 +2,19 @@
 
 configs=(
   "export FUSION_COSTS=true"
-  "export FUSION_COSTS=false"
-  "export FUSION_COSTS=true ZERO_COSTS=false"
+  # "export FUSION_COSTS=false"
+  # "export FUSION_COSTS=true ZERO_COSTS=false"
 )
 config_names=(
   "baseline"
-  "no-fusion"
-  "no-zero"
+  # "no-fusion"
+  # "no-zero"
 )
 platforms=("cpu" "gpu")
 models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
-num_repeats=5
+num_repeats=12
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME
@@ -32,9 +32,11 @@ for repeat in $(seq 1 $num_repeats); do
                 eval "$config"
                 export KERAS_BACKEND="jax"
                 export EQSAT_PLATFORM=$platform
+                export ILP_TIME_LIMIT=10
+                export SATURATION_TIME_LIMIT=10
 
                 if [ "$platform" == "gpu" ]; then
-                    COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"
+                    COMMAND="python test/${model}.py"
                 else
                     COMMAND="JAX_PLATFORMS=cpu python test/${model}.py"
                 fi

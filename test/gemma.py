@@ -56,7 +56,7 @@ class GemmaTest(EnzymeJaxTest):
         # Setup for the test harness
         self.fn = gemma_forward
         self.name = "gemma"
-        self.count = 50  # Lower count due to model complexity
+        self.count = 50 
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

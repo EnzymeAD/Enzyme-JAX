@@ -36,7 +36,7 @@ class BertTransformerTest(EnzymeJaxTest):
         # Setup for the test harness
         self.fn = bert_forward
         self.name = "bert"
-        self.count = 100
+        self.count = 50
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
