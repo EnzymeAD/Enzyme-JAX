@@ -46,7 +46,7 @@ class KAN1(EnzymeJaxTest):
 
         self.fn = foo
         self.name = "KAN1"
-        self.count = 100
+        self.count = 50
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

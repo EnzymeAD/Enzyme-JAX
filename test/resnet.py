@@ -45,7 +45,7 @@ class ResNetTest(EnzymeJaxTest):
         # Setup for the test harness
         self.fn = resnet_forward
         self.name = "resnet"
-        self.count = 20  # Lower count due to larger model size
+        self.count = 50
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

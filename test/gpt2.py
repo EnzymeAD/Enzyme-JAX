@@ -40,7 +40,7 @@ class GPT2TransformerTest(EnzymeJaxTest):
         # Setup for the test harness
         self.fn = gpt2_forward
         self.name = "gpt2"
-        self.count = 100  # Number of iterations
+        self.count = 50
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
