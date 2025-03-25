@@ -23,33 +23,33 @@ echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
 echo "Cost model ablation" > $filename
 echo "--------------------------" >> $filename
 
-for model in "${models[@]}"; do
-  for platform in "${platforms[@]}"; do
-    for i in "${!configs[@]}"; do
-      config="${configs[$i]}"
-      config_name="${config_names[$i]}"
-      eval "$config"
-      export KERAS_BACKEND="jax"
-      export EQSAT_PLATFORM=$platform
+for repeat in $(seq 1 $num_repeats); do
+    for model in "${models[@]}"; do
+        for platform in "${platforms[@]}"; do
+            for i in "${!configs[@]}"; do
+                config="${configs[$i]}"
+                config_name="${config_names[$i]}"
+                eval "$config"
+                export KERAS_BACKEND="jax"
+                export EQSAT_PLATFORM=$platform
 
-      if [ "$platform" == "gpu" ]; then
-        COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"
-      else
-        COMMAND="JAX_PLATFORMS=cpu python test/${model}.py"
-      fi
+                if [ "$platform" == "gpu" ]; then
+                    COMMAND="CUDA_VISIBLE_DEVICES=2 python test/${model}.py"
+                else
+                    COMMAND="JAX_PLATFORMS=cpu python test/${model}.py"
+                fi
 
-      for repeat in $(seq 1 $num_repeats); do
-        export EXPERIMENT_NAME="${model}_cost-model_${config_name}-${platform}_${datetime}_run${repeat}"
-        echo "Running $EXPERIMENT_NAME (repeat $repeat/$num_repeats)..." | tee -a $filename
+                export EXPERIMENT_NAME="${model}_cost-model_${config_name}-${platform}_${datetime}_run${repeat}"
+                echo "Running $EXPERIMENT_NAME (repeat $repeat/$num_repeats)..." | tee -a $filename
 
-        START_TIME=$(date +%s)
-        eval "$COMMAND" >> $filename 2>&1
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
+                START_TIME=$(date +%s)
+                eval "$COMMAND" >> $filename 2>&1
+                END_TIME=$(date +%s)
+                DURATION=$((END_TIME - START_TIME))
 
-        echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> $filename
-        echo "--------------------------------" >> $filename
-      done
+                echo "$EXPERIMENT_NAME: ${DURATION} seconds" >> $filename
+                echo "--------------------------------" >> $filename
+            done
+        done
     done
-  done
 done
