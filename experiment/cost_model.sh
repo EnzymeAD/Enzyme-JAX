@@ -10,11 +10,11 @@ config_names=(
   "no-fusion"
   "no-zero"
 )
-platforms=("cpu") # "gpu")
-models=("llama" "nasrnn" "maxtext") # "jaxmd")
+platforms=("cpu" "gpu")
+models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
-num_repeats=10
+num_repeats=5
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME

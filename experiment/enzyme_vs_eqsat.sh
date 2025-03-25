@@ -6,10 +6,10 @@ configs=(
   "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
 )
 platforms=("cpu" "gpu")
-models=("llama" "maxtext" "jaxmd")
+models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=enzyme_vs_eqsat_$datetime.txt
-num_repeats=10
+num_repeats=5
 
 export STATS_FILENAME=stats_enzyme_vs_eqsat_$datetime.csv
 touch $STATS_FILENAME
