@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --split-input-file --pass-pipeline="builtin.module(raise-affine-to-stablehlo,enzyme-hlo-opt{max_constant_expansion=0})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --split-input-file --pass-pipeline="builtin.module(raise-affine-to-stablehlo{err_if_not_fully_raised=false},enzyme-hlo-opt{max_constant_expansion=0})" | FileCheck %s
 
 #set = affine_set<(d0) : (-d0 + 89 >= 0)>
 #set2 = affine_set<(d0) : (-d0 + 70 >= 0)>
