@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --split-input-file | FileCheck %s
 
 module {
  func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gc_16CompilerMetadataI10StaticSizeI13_180__85__20_E12DynamicCheckvv7NDRangeILi3ES0_I11_12__6__20_ES0_I11_16__16__1_EvvEE11OffsetArrayI7Float64Li3E13CuTracedArrayIS9_Li3ELi1E13_194__99__34_EE20ImmersedBoundaryGridIS9_8Periodic14RightConnected7Bounded28OrthogonalSphericalShellGridIS9_SE_SF_SG_28StaticVerticalDiscretizationIS8_IS9_Li1ESA_IS9_Li1ELi1E5_35__EES8_IS9_Li1ESA_IS9_Li1ELi1E5_34__EESK_SM_ES8_IS9_Li2ESA_IS9_Li2ELi1E9_194__99_EE8TripolarI5Int64SR_SR_EvE16GridFittedBottomI5FieldI6CenterSW_vvvvS8_IS9_Li3ESA_IS9_Li3ELi1E12_194__99__1_EES9_vvvE23CenterImmersedConditionEvvvEv5TupleI3ValILi3EES14_I2_eEv24CATKEVerticalDiffusivityI36VerticallyImplicitTimeDiscretization17CATKEMixingLengthIS9_ES9_v13CATKEEquationIS9_EE24DefaultBoundaryConditionI17BoundaryConditionI4FluxvEE13BuoyancyForceI16SeawaterBuoyancyIS9_25BoussinesqEquationOfStateI24TEOS10SeawaterPolynomialIS9_ES9_EvvE18NegativeZDirectionEv10NamedTupleI12__u___v___w_S13_ISC_SC_S8_IS9_Li3ESA_IS9_Li3ELi1E13_194__99__35_EEEE24SplitExplicitFreeSurfaceIS8_IS9_Li3ESA_IS9_Li3ELi1E13_194__187__1_EES1S_I8__U___V_S13_ISV_I4FaceSW_vvvvS1Z_S9_vvvESV_ISW_S20_vvvvS1Z_S9_vvvEEES1S_I12______U___V_S13_IS1Z_S21_S22_EES9_v18FixedSubstepNumberIS9_S13_IS9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_S9_EE21ForwardBackwardSchemeES1S_I12__T___S___e_S13_ISC_SC_SC_EES1S_I141___u____c____e___Le___J____previous_compute_time___previous_velocities____tupled_tracer_diffusivities____tupled_implicit_linear_coefficients_S13_IS1U_S1U_S1U_SC_SZ_16ReactantRefValueIS9_ES1S_I8__u___v_S13_ISC_SC_EES1S_I12__T___S___e_S13_IS1U_S1U_S1U_EES1S_I12__T___S___e_S13_I9ZeroFieldISR_Li3EES2L_SC_EEEES1S_I2__S13_ES1S_I53__time___last__t___last_stage__t___iteration___stage_S13_IS9_S9_S9_SR_SR_EE11zeroforcingE#860$par244"(%arg0: memref<34x99x194xf64, 1>, %arg1: memref<34xf64, 1>, %arg2: memref<35xf64, 1>, %arg3: memref<34xf64, 1>, %arg4: memref<99x194xf64, 1>, %arg5: memref<99x194xf64, 1>, %arg6: memref<99x194xf64, 1>, %arg7: memref<1x99x194xf64, 1>, %arg8: memref<34x99x194xf64, 1>, %arg9: memref<35x99x194xf64, 1>) {
@@ -333,3 +333,83 @@ module {
 // CHECK-NEXT:    %220 = stablehlo.dynamic_update_slice %arg0, %219, %c_12, %c_13, %c_14 : (tensor<34x99x194xf64>, tensor<20x85x180xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
 // CHECK-NEXT:    return %220, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9 : tensor<34x99x194xf64>, tensor<34xf64>, tensor<35xf64>, tensor<34xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<1x99x194xf64>, tensor<34x99x194xf64>, tensor<35x99x194xf64>
 // CHECK-NEXT:  }
+
+// -----
+
+#set = affine_set<(d0) : (d0 - 1 >= 0)>
+#set1 = affine_set<(d0) : (-d0 + 89 >= 0)>
+module {
+  func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
+    %c2_i64 = arith.constant 2 : i64
+    %c182_i64 = arith.constant 182 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c-1_i64 = arith.constant -1 : i64
+    affine.parallel (%arg1) = (0) to (180) {
+      // CHECK: stablehlo.slice %[[arg0:.+]] [0:1, 7:8, 7:187]
+      // CHECK: %[[argu:.+]] = stablehlo.dynamic_update_slice %[[arg0]]
+      %0 = affine.load %arg0[0, 7, %arg1 + 7] : memref<1x104x194xf64, 1>
+      affine.store %0, %arg0[0, 6, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %1:10 = affine.if #set(%arg1) -> (i64, i64, f64, f64, f64, f64, f64, f64, f64, f64) {
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 96:97, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 89:90, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 90:91, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 91:92, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 92:93, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 93:94, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 94:95, 8:188]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 95:96, 8:188]
+        %13 = affine.load %arg0[0, 96, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %14 = affine.load %arg0[0, 89, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %15 = affine.load %arg0[0, 90, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %16 = affine.load %arg0[0, 91, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %17 = affine.load %arg0[0, 92, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %18 = affine.load %arg0[0, 93, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %19 = affine.load %arg0[0, 94, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        %20 = affine.load %arg0[0, 95, -%arg1 + 187] : memref<1x104x194xf64, 1>
+        affine.yield %c-1_i64, %c182_i64, %13, %14, %15, %16, %17, %18, %19, %20 : i64, i64, f64, f64, f64, f64, f64, f64, f64, f64
+      } else {
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 96:97, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 89:90, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 90:91, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 91:92, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 92:93, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 93:94, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 94:95, 7:8]
+        // CHECK: stablehlo.slice %[[argu]] [0:1, 95:96, 7:8]
+        %13 = affine.load %arg0[0, 96, 7] : memref<1x104x194xf64, 1>
+        %14 = affine.load %arg0[0, 89, 7] : memref<1x104x194xf64, 1>
+        %15 = affine.load %arg0[0, 90, 7] : memref<1x104x194xf64, 1>
+        %16 = affine.load %arg0[0, 91, 7] : memref<1x104x194xf64, 1>
+        %17 = affine.load %arg0[0, 92, 7] : memref<1x104x194xf64, 1>
+        %18 = affine.load %arg0[0, 93, 7] : memref<1x104x194xf64, 1>
+        %19 = affine.load %arg0[0, 94, 7] : memref<1x104x194xf64, 1>
+        %20 = affine.load %arg0[0, 95, 7] : memref<1x104x194xf64, 1>
+        affine.yield %c1_i64, %c2_i64, %13, %14, %15, %16, %17, %18, %19, %20 : i64, i64, f64, f64, f64, f64, f64, f64, f64, f64
+      }
+      %2 = arith.sitofp %1#0 : i64 to f64
+      %3 = arith.mulf %2, %1#9 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %3, %arg0[0, 97, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %4 = arith.mulf %2, %1#8 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %4, %arg0[0, 98, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %5 = arith.mulf %2, %1#7 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %5, %arg0[0, 99, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %6 = arith.mulf %2, %1#6 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %6, %arg0[0, 100, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %7 = arith.mulf %2, %1#5 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %7, %arg0[0, 101, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %8 = arith.mulf %2, %1#4 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %8, %arg0[0, 102, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %9 = arith.mulf %2, %1#3 {fastmathFlags = #llvm.fastmath<none>} : f64
+      affine.store %9, %arg0[0, 103, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %10 = arith.mulf %2, %1#2 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %11 = affine.load %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
+      %12 = affine.if #set1(%arg1) -> f64 {
+        affine.yield %11 : f64
+      } else {
+        affine.yield %10 : f64
+      }
+      affine.store %12, %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
+    }
+    return
+  }
+}
