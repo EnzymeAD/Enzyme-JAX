@@ -3829,21 +3829,23 @@ struct MergeParallelInductions
         for (auto &&[indUsage, operands, numDims] : affineMapUsers[i])
           if (indUsage.count(idx))
             hasInvalidUse = true;
-        if (hasInvalidUse) {
-          bool onlyUsedInAdd = addIndices[i] != nullptr;
-          if (onlyUsedInAdd)
-            for (auto ilOp : illegal) {
-              if (!ilOp || !isa<MulIOp, ShLIOp>(ilOp)) {
-                onlyUsedInAdd = false;
-                break;
-              }
-              if (ilOp->getResult(0) == addIndices[i].getLhs() ||
-                  ilOp->getResult(0) == addIndices[i].getRhs()) {
-                continue;
-              }
+        if (hasInvalidUse && addIndices[i] != nullptr) {
+          bool onlyUsedInAdd = true;
+          for (auto ilOp : illegal) {
+            if (!ilOp)
+              continue;
+
+            if (!isa<MulIOp, ShLIOp>(ilOp)) {
               onlyUsedInAdd = false;
               break;
             }
+            if (ilOp->getResult(0) == addIndices[i].getLhs() ||
+                ilOp->getResult(0) == addIndices[i].getRhs()) {
+              continue;
+            }
+            onlyUsedInAdd = false;
+            break;
+          }
           if (!onlyUsedInAdd)
             affineMapUsers.erase(i);
         }
