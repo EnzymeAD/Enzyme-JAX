@@ -12,6 +12,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 
@@ -500,70 +501,6 @@ struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
-struct SelectExtractElementToExtractElementSelect
-    : public OpRewritePattern<LLVM::ExtractElementOp> {
-  using OpRewritePattern<LLVM::ExtractElementOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::ExtractElementOp op,
-                                PatternRewriter &rewriter) const override {
-    auto selectOp = op.getVector().getDefiningOp<LLVM::SelectOp>();
-    if (!selectOp)
-      return failure();
-
-    // Get select operands and extract position
-    auto cond = selectOp.getCondition();
-    auto a = selectOp.getTrueValue();
-    auto b = selectOp.getFalseValue();
-    auto idx = op.getPosition();
-
-    // Create new extract operations
-    auto aExtract =
-        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), a, idx);
-    auto bExtract =
-        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), b, idx);
-
-    // Create new select with same condition and operands
-    auto newSelect = rewriter.create<LLVM::SelectOp>(
-        selectOp.getLoc(), op.getType(), cond, aExtract, bExtract);
-
-    // Replace old extract with new select
-    rewriter.replaceOp(op, newSelect);
-
-    return success();
-  }
-};
-
-struct SelectExtractValueToExtractValueSelect
-    : public OpRewritePattern<LLVM::ExtractValueOp> {
-  using OpRewritePattern<LLVM::ExtractValueOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::ExtractValueOp op,
-                                PatternRewriter &rewriter) const override {
-    auto selectOp = op.getContainer().getDefiningOp<LLVM::SelectOp>();
-    if (!selectOp)
-      return failure();
-
-    // Get select operands and extract position
-    auto cond = selectOp.getCondition();
-    auto a = selectOp.getTrueValue();
-    auto b = selectOp.getFalseValue();
-    auto idx = op.getPosition();
-
-    // Create new extract operations
-    auto aExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), a, idx);
-    auto bExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), b, idx);
-
-    // Create new select with same condition and operands
-    auto newSelect = rewriter.create<LLVM::SelectOp>(
-        selectOp.getLoc(), op.getType(), cond, aExtract, bExtract);
-
-    // Replace old extract with new select
-    rewriter.replaceOp(op, newSelect);
-
-    return success();
-  }
-};
-
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -696,8 +633,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            // TruncFOpLowering,
            // ConstrainedTruncFOpLowering,
            TruncIOpLowering, UIToFPOpLowering, XOrIOpLowering>(converter);
-  patterns.add<SelectExtractElementToExtractElementSelect,
-               SelectExtractValueToExtractValueSelect>(context);
+  populateSelectExtractPatterns(patterns);
 }
 
 namespace {
