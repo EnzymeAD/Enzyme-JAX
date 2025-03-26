@@ -1,3 +1,4 @@
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
@@ -3062,6 +3063,7 @@ struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
         continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
                                                   op.getRhs());
+      return success();
     }
     return failure();
   }
@@ -4325,6 +4327,256 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+/// Lift memref read depending on an scf.if into the body of that scf.if. This
+/// proceeds by moving the operations in the backward slide of a `load` that
+/// are dominated by the `if` into both the "then" and the "else" branch, as
+/// long as all operations are pure.
+class LiftMemrefRead : public OpRewritePattern<memref::LoadOp> {
+public:
+  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::LoadOp loadOp,
+                                PatternRewriter &rewriter) const override {
+    SetVector<Operation *> backwardSlice;
+    DominanceInfo dominance;
+    BackwardSliceOptions options;
+    getBackwardSlice(loadOp.getOperation(), &backwardSlice, options);
+
+    Operation *conditional =
+        llvm::find_singleton<Operation>(backwardSlice, [](Operation *op, bool) {
+          return isa<affine::AffineIfOp, scf::IfOp>(op) ? op : nullptr;
+        });
+    if (!conditional || conditional->getRegion(1).empty() ||
+        conditional->getNumResults() == 0)
+      return rewriter.notifyMatchFailure(
+          loadOp, "not dependent on a conditional result");
+
+    auto toLift = llvm::filter_to_vector(backwardSlice, [&](Operation *op) {
+      return dominance.properlyDominates(conditional, op);
+    });
+    if (llvm::any_of(toLift, [](Operation *op) { return !isPure(op); }))
+      return rewriter.notifyMatchFailure(loadOp,
+                                         "non-pure operation on the path");
+
+    auto cloneIntoBlock = [&](unsigned blockNum) {
+      IRMapping mapping;
+      Block &targetBlock = conditional->getRegion(blockNum).front();
+      mapping.map(conditional->getResults(),
+                  targetBlock.getTerminator()->getOperands());
+      rewriter.setInsertionPoint(targetBlock.getTerminator());
+      for (Operation *op : toLift) {
+        rewriter.clone(*op, mapping);
+      }
+      Operation *clonedLoad = rewriter.clone(*loadOp.getOperation(), mapping);
+      return clonedLoad;
+    };
+
+    Operation *thenLoad = cloneIntoBlock(0);
+    Operation *elseLoad = cloneIntoBlock(1);
+
+    SmallVector<Type> types = llvm::to_vector(conditional->getResultTypes());
+    llvm::append_range(types, thenLoad->getResultTypes());
+    SmallVector<std::unique_ptr<Region>> regions;
+    regions.emplace_back(new Region);
+    regions.emplace_back(new Region);
+    rewriter.setInsertionPoint(conditional);
+    Operation *newConditional = rewriter.create(
+        conditional->getLoc(), conditional->getName().getIdentifier(),
+        conditional->getOperands(), types, conditional->getAttrs(),
+        BlockRange(), regions);
+
+    auto inlineBody = [&](unsigned regionNum, Operation *loadOp) {
+      rewriter.inlineRegionBefore(conditional->getRegion(regionNum),
+                                  newConditional->getRegion(regionNum),
+                                  newConditional->getRegion(regionNum).begin());
+
+      Operation *terminator =
+          newConditional->getRegion(regionNum).front().getTerminator();
+      SmallVector<Value> operands = llvm::to_vector(terminator->getOperands());
+      llvm::append_range(operands, loadOp->getResults());
+      rewriter.setInsertionPoint(terminator);
+      Operation *newTerminator = rewriter.create(
+          terminator->getLoc(), terminator->getName().getIdentifier(), operands,
+          terminator->getResultTypes(), terminator->getAttrs(),
+          terminator->getSuccessors());
+      rewriter.replaceOp(terminator, newTerminator);
+    };
+
+    inlineBody(0, thenLoad);
+    inlineBody(1, elseLoad);
+
+    unsigned numLoadResults = loadOp->getNumResults();
+    rewriter.replaceOp(loadOp,
+                       newConditional->getResults().take_back(numLoadResults));
+    rewriter.replaceOp(conditional,
+                       newConditional->getResults().drop_back(numLoadResults));
+    return success();
+  }
+};
+
+template <typename Derived, typename BinOp>
+struct FoldAffineApplyBase : public OpRewritePattern<BinOp> {
+  using Super = FoldAffineApplyBase<Derived, BinOp>;
+  using OpRewritePattern<BinOp>::OpRewritePattern;
+
+  LogicalResult extractApply(BinOp binOp, affine::AffineApplyOp &apply,
+                             Value &other, PatternRewriter &rewriter) const {
+    apply = binOp.getLhs().template getDefiningOp<affine::AffineApplyOp>();
+    other = binOp.getRhs();
+    if (!apply) {
+      apply = binOp.getRhs().template getDefiningOp<affine::AffineApplyOp>();
+      other = binOp.getLhs();
+    }
+    if (!apply)
+      return rewriter.notifyMatchFailure(binOp,
+                                         "no affine.apply-defined operands");
+    return success();
+  }
+
+  LogicalResult matchAndRewrite(BinOp binOp,
+                                PatternRewriter &rewriter) const override {
+    affine::AffineApplyOp apply;
+    Value other;
+    if (failed(static_cast<const Derived *>(this)->extractApply(
+            binOp, apply, other, rewriter)))
+      return failure();
+
+    AffineExpr expr = apply.getMap().getResult(0);
+    bool otherIsRHS = other == binOp.getRhs();
+    if (affine::isValidSymbol(other)) {
+      auto dimExpr = getAffineSymbolExpr(apply.getMap().getNumSymbols(),
+                                         this->getContext());
+      expr = static_cast<const Derived *>(this)->combineExprs(
+          otherIsRHS ? expr : dimExpr, otherIsRHS ? dimExpr : expr);
+      AffineMap updatedMap =
+          AffineMap::get(apply.getMap().getNumDims(),
+                         apply.getMap().getNumSymbols() + 1, expr);
+      SmallVector<Value> operands = llvm::to_vector(apply->getOperands());
+      operands.push_back(other);
+      rewriter.replaceOpWithNewOp<affine::AffineApplyOp>(binOp, updatedMap,
+                                                         operands);
+      return success();
+    }
+    if (affine::isValidDim(other)) {
+      auto dimExpr =
+          getAffineDimExpr(apply.getMap().getNumDims(), this->getContext());
+      expr = static_cast<const Derived *>(this)->combineExprs(
+          otherIsRHS ? expr : dimExpr, otherIsRHS ? dimExpr : expr);
+      AffineMap updatedMap =
+          AffineMap::get(apply.getMap().getNumDims() + 1,
+                         apply.getMap().getNumSymbols(), expr);
+      SmallVector<Value> operands = llvm::to_vector(apply.getDimOperands());
+      operands.push_back(other);
+      llvm::append_range(operands, apply.getSymbolOperands());
+      rewriter.replaceOpWithNewOp<affine::AffineApplyOp>(binOp, updatedMap,
+                                                         operands);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct FoldAffineApplyAdd
+    : FoldAffineApplyBase<FoldAffineApplyAdd, arith::AddIOp> {
+  using Super::Super;
+
+  AffineExpr combineExprs(AffineExpr lhs, AffineExpr rhs) const {
+    return lhs + rhs;
+  }
+};
+
+struct FoldAffineApplySub
+    : FoldAffineApplyBase<FoldAffineApplySub, arith::SubIOp> {
+  using Super::Super;
+
+  AffineExpr combineExprs(AffineExpr lhs, AffineExpr rhs) const {
+    return lhs - rhs;
+  }
+};
+
+template <typename Derived, typename BinOp>
+struct FoldAffineApplyConstRHS : public FoldAffineApplyBase<Derived, BinOp> {
+  using FoldAffineApplyBase<Derived, BinOp>::FoldAffineApplyBase;
+  using Super = FoldAffineApplyConstRHS<Derived, BinOp>;
+
+  LogicalResult extractApply(BinOp binOp, affine::AffineApplyOp &apply,
+                             Value &other, PatternRewriter &rewriter) const {
+    apply = binOp.getLhs().template getDefiningOp<affine::AffineApplyOp>();
+    other = binOp.getRhs();
+    llvm::APInt ignore;
+    return success(apply && matchPattern(other, m_ConstantInt(&ignore)));
+  }
+};
+
+struct FoldAffineApplyDiv
+    : FoldAffineApplyConstRHS<FoldAffineApplyDiv, arith::DivUIOp> {
+  using Super::Super;
+
+  AffineExpr combineExprs(AffineExpr lhs, AffineExpr rhs) const {
+    return lhs.floorDiv(rhs);
+  }
+};
+
+struct FoldAffineApplyRem
+    : FoldAffineApplyConstRHS<FoldAffineApplyRem, arith::RemUIOp> {
+  using Super::Super;
+
+  AffineExpr combineExprs(AffineExpr lhs, AffineExpr rhs) const {
+    return lhs % rhs;
+  }
+};
+
+struct FoldAffineApplyMul
+    : FoldAffineApplyBase<FoldAffineApplyMul, arith::MulIOp> {
+  using Super::Super;
+
+  LogicalResult extractApply(arith::MulIOp mulOp, affine::AffineApplyOp &apply,
+                             Value &other, PatternRewriter &rewriter) const {
+    if (failed(Super::extractApply(mulOp, apply, other, rewriter)))
+      return failure();
+    llvm::APInt ignore;
+    return success(matchPattern(other, m_ConstantInt(&ignore)));
+  }
+
+  AffineExpr combineExprs(AffineExpr lhs, AffineExpr rhs) const {
+    return lhs * rhs;
+  }
+};
+
+struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
+  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::LoadOp loadOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<affine::AffineApplyOp> applies;
+    for (Value index : loadOp.getIndices()) {
+      applies.push_back(index.getDefiningOp<affine::AffineApplyOp>());
+      if (!applies.back())
+        return rewriter.notifyMatchFailure(loadOp,
+                                           "operands is not an affine.apply");
+    }
+
+    SmallVector<Value> loadDimOperands, loadSymOperands;
+    SmallVector<AffineExpr> exprs;
+    for (affine::AffineApplyOp apply : applies) {
+      AffineExpr expr = apply.getMap().getResult(0);
+      expr = expr.shiftDims(apply.getMap().getNumDims(), loadDimOperands.size())
+                 .shiftSymbols(apply.getMap().getNumSymbols(),
+                               loadSymOperands.size());
+      exprs.push_back(expr);
+      llvm::append_range(loadDimOperands, apply.getDimOperands());
+      llvm::append_range(loadSymOperands, apply.getSymbolOperands());
+    }
+
+    AffineMap combinedMap =
+        AffineMap::inferFromExprList({exprs}, getContext())[0];
+    llvm::append_range(loadDimOperands, loadSymOperands);
+    rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+        loadOp, loadOp.getMemRef(), combinedMap, loadDimOperands);
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4338,7 +4590,10 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, AddAddCstEnd>(context, 2);
+          SinkStoreInIf, AddAddCstEnd, LiftMemrefRead>(context, 2);
+  rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
+          FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
+                                                                       2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
