@@ -3761,13 +3761,14 @@ struct BroadcastIotaSimplify
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp broadcast,
                                 PatternRewriter &rewriter) const final {
     auto operand = broadcast.getOperand();
+    DenseElementsAttr input;
+    matchPattern(operand, m_Constant(&input));
 
-    if (auto constant = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
-            operand.getDefiningOp())) {
-      auto elemType = constant.getType().getElementType();
+    if (input) {
+      auto elemType = input.getElementType();
 
-      if (auto int_attr_arr =
-              constant.getValue().tryGetValues<::mlir::IntegerAttr>()) {
+      if (auto int_attr_arr = input.tryGetValues<::mlir::IntegerAttr>();
+          llvm::succeeded(int_attr_arr)) {
         const auto end = int_attr_arr->end();
         auto curr = int_attr_arr->begin();
         auto next = int_attr_arr->begin();
@@ -3791,7 +3792,7 @@ struct BroadcastIotaSimplify
         }
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
-        rewriter.setInsertionPointAfter(constant);
+        rewriter.setInsertionPointAfter(operand.getDefiningOp());
 
         // find the dimension to broadcast in
         auto broadcast_dim = 0Z;
@@ -3811,19 +3812,19 @@ struct BroadcastIotaSimplify
             break;
         }
 
+        // build the replacement operations
         auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
                                                              broadcast_dim);
-        auto strideAttr = mlir::DenseElementsAttr::get(
-            constant.getType().cloneWith(result_shape, elemType),
+        auto stride_attr = mlir::DenseElementsAttr::get(
+            operand.getType().cloneWith(result_shape, elemType),
             rewriter.getIntegerAttr(elemType, diff));
-        auto startAttr = mlir::DenseElementsAttr::get(
-            constant.getType().cloneWith(result_shape, elemType),
+        auto start_attr = mlir::DenseElementsAttr::get(
+            operand.getType().cloneWith(result_shape, elemType),
             rewriter.getIntegerAttr(elemType, start));
-
         auto stride_const = rewriter.create<mlir::stablehlo::ConstantOp>(
-            loc, result_type, strideAttr);
+            loc, result_type, stride_attr);
         auto start_const = rewriter.create<mlir::stablehlo::ConstantOp>(
-            loc, result_type, startAttr);
+            loc, result_type, start_attr);
         auto mul =
             rewriter.create<mlir::stablehlo::MulOp>(loc, iota, stride_const);
 
