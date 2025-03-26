@@ -1091,7 +1091,6 @@ bool areValuesConnected(Value startVal, Value endVal,
     return false;
   }
   if (Operation *defOp = endVal.getDefiningOp()) {
-    // if (isa<arith::AddIOp, arith::SubIOp, arith::ShLIOp, arith::
     // Check all operands of defining operation
     for (Value operand : defOp->getOperands()) {
       if (areValuesConnected(startVal, operand, visited)) {
