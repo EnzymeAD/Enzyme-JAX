@@ -211,6 +211,7 @@ transpose_simplify<16>;
 reshape_empty_broadcast<1>;
 add_pad_pad_to_concat<1>;
 broadcast_reshape<1>;
+broadcast_iota_simplify;
 
 binary_op_transpose_simplify_add<1>;
 binary_op_transpose_simplify_sub<1>;
