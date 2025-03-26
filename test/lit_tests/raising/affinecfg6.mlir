@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --affine-cfg | FileCheck %s
+// RUN: enzymexlamlir-opt %s --affine-cfg --mlir-print-local-scope | FileCheck %s
 
 #map = affine_map<(d0) -> (d0 mod 5)>
 #map1 = affine_map<(d0) -> (d0 floordiv 5)>
@@ -15,7 +15,7 @@ module {
   }
 // CHECK:  func.func @split_iv(%arg0: memref<10xi64>) {
 // CHECK-NEXT:    affine.parallel (%arg1, %arg2) = (0, 0) to (2, 5) {
-// CHECK-NEXT:      %0 = arith.addi %arg2, %arg1 : index
+// CHECK-NEXT:      %0 = affine.apply affine_map<(d0, d1) -> (d0 + d1)>(%arg1, %arg2)
 // CHECK-NEXT:      %1 = arith.index_cast %0 : index to i64
 // CHECK-NEXT:      affine.store %1, %arg0[%arg2 + %arg1 * 5] : memref<10xi64>
 // CHECK-NEXT:    }
