@@ -1,14 +1,14 @@
 #!/bin/bash
 
 configs=(
-  "export FUSION_COSTS=true"
-  # "export FUSION_COSTS=false"
-  # "export FUSION_COSTS=true ZERO_COSTS=false"
+  "export FUSION_COSTS=true ZERO_COSTS=true"
+  "export FUSION_COSTS=false ZERO_COSTS=true"
+  "export FUSION_COSTS=true ZERO_COSTS=false"
 )
 config_names=(
   "baseline"
-  # "no-fusion"
-  # "no-zero"
+  "no-fusion"
+  "no-zero"
 )
 platforms=("cpu" "gpu")
 models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )

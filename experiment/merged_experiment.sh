@@ -2,11 +2,11 @@
 
 # Define the combinations of environment variables
 configs=(
-  "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
-  "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
-  "export FUSION_COSTS=false"
-  "export FUSION_COSTS=true ZERO_COSTS=false"
-  "export FUSION_COSTS=true ZERO_COSTS=false"
+  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
+  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
+  "export FUSION_COSTS=false ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
+  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
+  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
 )
 config_names=(
   "enzyme_ablation"
