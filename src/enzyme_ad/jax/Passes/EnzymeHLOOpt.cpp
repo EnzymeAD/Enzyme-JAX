@@ -3779,6 +3779,9 @@ struct BroadcastIotaSimplify
         const auto start = (*curr).getInt();
         const auto diff = (*next).getInt() - (*curr).getInt();
 
+        if (diff == 0)
+          return failure();
+
         while (next != end) {
           auto curr_diff = (*next).getInt() - (*curr).getInt();
           if (curr_diff != diff)
@@ -3794,10 +3797,7 @@ struct BroadcastIotaSimplify
         auto broadcast_dim = 0Z;
         auto result_shape =
             result_type.front().template cast<mlir::ShapedType>().getShape();
-        auto max_dims = result_type.front()
-                            .template cast<mlir::ShapedType>()
-                            .getShape()
-                            .size();
+        auto max_dims = result_shape.size();
 
         for (broadcast_dim = 0Z; broadcast_dim < max_dims; ++broadcast_dim) {
           bool found = false;
