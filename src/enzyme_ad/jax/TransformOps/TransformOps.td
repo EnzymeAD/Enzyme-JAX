@@ -906,7 +906,7 @@ def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
 }
 
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
-  "broadcast_iota_simpify"
+  "broadcast_iota_simplify"
 > {
   let patterns = ["BroadcastIotaSimplify"];
 }
