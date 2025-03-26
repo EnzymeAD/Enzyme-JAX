@@ -3754,6 +3754,58 @@ struct BroadcastInDimSimplify
   }
 };
 
+struct BroadcastIotaSimplify
+    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp broadcast,
+                                PatternRewriter &rewriter) const final {
+    auto ctx = rewriter.getContext();
+    auto operand = broadcast.getOperand();
+    broadcast.getBroadcastDimensions();
+    if (auto constant = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+            operand.getDefiningOp())) {
+      auto shape = constant.getType().getShape();
+      auto elemType = constant.getType().getElementType();
+      auto elems = constant.getValue();
+
+      if (auto int_attr_arr =
+              constant.getValue().tryGetValues<::mlir::IntegerAttr>()) {
+        auto curr = int_attr_arr->begin();
+        auto next = int_attr_arr->begin();
+        auto end = int_attr_arr->end();
+        if (next++ == end)
+          return failure();
+        if (next == end)
+          return failure();
+
+        auto diff = (*next).getInt() - (*curr).getInt();
+
+        while (next != end) {
+          auto curr_diff = (*next).getInt() - (*curr).getInt();
+          if (curr_diff != diff)
+            return failure();
+          ++curr;
+          ++next;
+        }
+        auto loc = broadcast.getLoc();
+        auto iota = rewriter.replaceOpWithNewOp<mlir::stablehlo::IotaOp>(
+            broadcast, broadcast->getResultTypes(), 0);
+        rewriter.setInsertionPointAfter(iota);
+
+        auto attr = mlir::DenseElementsAttr::get(
+            constant.getType().cloneWith(llvm::ArrayRef<int64_t>{}, elemType),
+            rewriter.getIntegerAttr(elemType, diff));
+        rewriter.create<mlir::stablehlo::ConstantOp>(loc, elemType, attr);
+        return success();
+      }
+      return failure();
+    }
+
+    return failure();
+  }
+};
+
 struct DotGeneralSimplify
     : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
@@ -8167,7 +8219,8 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
-        TransposeReduceSimplify
+        TransposeReduceSimplify,
+        BroadcastIotaSimplify
       >(context);
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

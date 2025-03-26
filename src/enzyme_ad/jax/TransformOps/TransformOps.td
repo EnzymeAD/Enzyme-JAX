@@ -905,6 +905,12 @@ def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduceSimplify"];
 }
 
+def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
+  "broadcast_iota_simpify"
+> {
+  let patterns = ["BroadcastIotaSimplify"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
