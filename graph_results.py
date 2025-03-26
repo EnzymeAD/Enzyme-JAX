@@ -642,7 +642,8 @@ def find_all_tau_files(baseline_file, device_type):
     
     # Find all tau files for this model and platform
     tau_pattern = re.compile(f"results_{model}_tau=(\d+)-{platform}_\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}:\d{{2}}:\d{{2}}\.csv")
-    
+
+    tau_files = []
    
     for file in os.listdir(directory):
         tau_match = tau_pattern.match(file)
