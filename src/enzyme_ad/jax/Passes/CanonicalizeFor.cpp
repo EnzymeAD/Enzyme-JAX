@@ -1091,6 +1091,7 @@ bool areValuesConnected(Value startVal, Value endVal,
     return false;
   }
   if (Operation *defOp = endVal.getDefiningOp()) {
+    // if (isa<arith::AddIOp, arith::SubIOp, arith::ShLIOp, arith::
     // Check all operands of defining operation
     for (Value operand : defOp->getOperands()) {
       if (areValuesConnected(startVal, operand, visited)) {
@@ -1175,34 +1176,29 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     Value lowerBound = whileOp.getOperand(IVIndex);
 
     // UpdatedIV index
-    int updatedIVIndex = 0;
-    indexFound = false;
-    for (auto arg : conditionOp.getArgs()) {
-      llvm::SmallPtrSet<Value, 8> visited;
-      if (areValuesConnected(compareValue, arg, visited)) {
-        indexFound = true;
-        break;
-      }
-      updatedIVIndex++;
-    }
-    if (!indexFound)
-      return failure();
-
-    // Extract updated IV and stepSize
-    Value updatedIV = conditionOp.getArgs()[updatedIVIndex];
     Value stepSize;
-    auto addOp = updatedIV.getDefiningOp<arith::AddIOp>();
-    if (addOp) {
-      if (addOp.getLhs() == IV) {
-        stepSize = addOp.getRhs();
-      } else if (addOp.getRhs() == IV) {
-        stepSize = addOp.getLhs();
+    Value updatedIV = nullptr;
+    arith::AddIOp addOp;
+    for (auto arg : conditionOp.getArgs()) {
+      addOp = arg.getDefiningOp<arith::AddIOp>();
+      if (addOp) {
+        if (addOp.getLhs() == IV) {
+          stepSize = addOp.getRhs();
+        } else if (addOp.getRhs() == IV) {
+          stepSize = addOp.getLhs();
+        } else {
+          rewriter.notifyMatchFailure(
+              whileOp, "Expect atleast one of the arg fields to be IV");
+          continue;
+        }
+        updatedIV = arg;
+      } else {
+        rewriter.notifyMatchFailure(whileOp, "Step not add");
+        continue;
       }
-      // Expect atleast one of the updatedIV fields to be IV
-      else
-        return failure();
-    } else
-      return failure();
+    }
+    if (!updatedIV)
+      return rewriter.notifyMatchFailure(whileOp, "updated IV not found");
 
     // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
     APInt lbConstInt, ubConstInt, stepConstInt;
