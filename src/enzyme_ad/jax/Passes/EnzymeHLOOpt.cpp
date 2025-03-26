@@ -3776,6 +3776,7 @@ struct BroadcastIotaSimplify
         if (next == end)
           return failure();
 
+        const auto start = (*curr).getInt();
         const auto diff = (*next).getInt() - (*curr).getInt();
 
         while (next != end) {
@@ -3817,8 +3818,20 @@ struct BroadcastIotaSimplify
         auto broadcast_const =
             rewriter.create<mlir::stablehlo::BroadcastInDimOp>(
                 loc, result_type, stride_const, llvm::ArrayRef<int64_t>{});
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::MulOp>(broadcast, iota,
-                                                            broadcast_const);
+
+        auto startAttr = mlir::DenseElementsAttr::get(
+            constant.getType().cloneWith(llvm::ArrayRef<int64_t>{}, elemType),
+            rewriter.getIntegerAttr(elemType, start));
+        auto start_const = rewriter.create<mlir::stablehlo::ConstantOp>(
+            loc, elemType, startAttr);
+        auto broadcast_start =
+            rewriter.create<mlir::stablehlo::BroadcastInDimOp>(
+                loc, result_type, start_const, llvm::ArrayRef<int64_t>{});
+        auto mul =
+            rewriter.create<mlir::stablehlo::MulOp>(loc, iota, broadcast_const);
+
+        rewriter.replaceOpWithNewOp<mlir::stablehlo::AddOp>(
+            broadcast, broadcast_start, mul);
         return success();
       }
       return failure();
