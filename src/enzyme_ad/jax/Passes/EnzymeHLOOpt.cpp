@@ -3760,26 +3760,23 @@ struct BroadcastIotaSimplify
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp broadcast,
                                 PatternRewriter &rewriter) const final {
-    auto ctx = rewriter.getContext();
     auto operand = broadcast.getOperand();
-    broadcast.getBroadcastDimensions();
+
     if (auto constant = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
             operand.getDefiningOp())) {
-      auto shape = constant.getType().getShape();
       auto elemType = constant.getType().getElementType();
-      auto elems = constant.getValue();
 
       if (auto int_attr_arr =
               constant.getValue().tryGetValues<::mlir::IntegerAttr>()) {
+        const auto end = int_attr_arr->end();
         auto curr = int_attr_arr->begin();
         auto next = int_attr_arr->begin();
-        auto end = int_attr_arr->end();
         if (next++ == end)
           return failure();
         if (next == end)
           return failure();
 
-        auto diff = (*next).getInt() - (*curr).getInt();
+        const auto diff = (*next).getInt() - (*curr).getInt();
 
         while (next != end) {
           auto curr_diff = (*next).getInt() - (*curr).getInt();
@@ -3788,15 +3785,22 @@ struct BroadcastIotaSimplify
           ++curr;
           ++next;
         }
+        auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
-        auto iota = rewriter.replaceOpWithNewOp<mlir::stablehlo::IotaOp>(
-            broadcast, broadcast->getResultTypes(), 0);
-        rewriter.setInsertionPointAfter(iota);
+        rewriter.setInsertionPointAfter(constant);
 
+        auto iota =
+            rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type, 0);
         auto attr = mlir::DenseElementsAttr::get(
             constant.getType().cloneWith(llvm::ArrayRef<int64_t>{}, elemType),
             rewriter.getIntegerAttr(elemType, diff));
-        rewriter.create<mlir::stablehlo::ConstantOp>(loc, elemType, attr);
+        auto stride_const =
+            rewriter.create<mlir::stablehlo::ConstantOp>(loc, elemType, attr);
+        auto broadcast_const =
+            rewriter.create<mlir::stablehlo::BroadcastInDimOp>(
+                loc, result_type, stride_const, llvm::ArrayRef<int64_t>{});
+        rewriter.replaceOpWithNewOp<mlir::stablehlo::MulOp>(broadcast, iota,
+                                                            broadcast_const);
         return success();
       }
       return failure();
