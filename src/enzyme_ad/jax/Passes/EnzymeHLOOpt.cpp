@@ -3793,7 +3793,6 @@ struct BroadcastIotaSimplify
                                  .getShape()
                                  .size() -
                              1;
-        llvm::errs() << broadcast_dim << "\n";
 
         auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
                                                              broadcast_dim);
