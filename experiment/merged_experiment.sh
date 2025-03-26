@@ -2,11 +2,11 @@
 
 # Define the combinations of environment variables
 configs=(
-  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
-  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
-  "export FUSION_COSTS=false ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
-  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
-  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true"
+  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false LIMIT_RULES=true"
+  "export FUSION_COSTS=true ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false LIMIT_RULES=true"
+  "export FUSION_COSTS=false ZERO_COSTS=true ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true LIMIT_RULES=false"
+  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true LIMIT_RULES=false"
+  "export FUSION_COSTS=true ZERO_COSTS=false ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=true LIMIT_RULES=false"
 )
 config_names=(
   "enzyme_ablation"
@@ -38,7 +38,6 @@ for repeat in $(seq 1 $num_repeats); do
             eval "$config"
             export KERAS_BACKEND="jax"
             export EQSAT_PLATFORM=$platform
-            export LIMIT_RULES="true"
             export ILP_TIME_LIMIT=10
             export SATURATION_TIME_LIMIT=10
 
