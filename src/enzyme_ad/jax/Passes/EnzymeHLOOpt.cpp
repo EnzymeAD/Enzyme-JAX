@@ -3788,11 +3788,24 @@ struct BroadcastIotaSimplify
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
         rewriter.setInsertionPointAfter(constant);
-        auto broadcast_dim = result_type.front()
-                                 .template cast<mlir::ShapedType>()
-                                 .getShape()
-                                 .size() -
-                             1;
+        auto broadcast_dim = 0Z;
+        auto max_dims = result_type.front()
+                            .template cast<mlir::ShapedType>()
+                            .getShape()
+                            .size();
+
+        // find the dimension to broadcast in
+        for (broadcast_dim = 0Z; broadcast_dim < max_dims; ++broadcast_dim) {
+          bool found = false;
+          for (auto &elem : broadcast.getBroadcastDimensions()) {
+            if (elem == broadcast_dim) {
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            break;
+        }
 
         auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
                                                              broadcast_dim);
