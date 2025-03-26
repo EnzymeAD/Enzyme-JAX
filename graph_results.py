@@ -22,6 +22,7 @@ def median_confidence_interval(data, confidence):
     data_sorted = sorted(data)
     return (data_sorted[lower_rank], data_sorted[upper_rank])
 
+
 def percentile_confidence_interval(data, confidence):
     lower_percentile = (100 - confidence) / 2
     upper_percentile = 100 - lower_percentile
@@ -533,7 +534,7 @@ def plot_cost_model(plot_groups):
             baseline_bars = ax.bar(x - width, [s*100 for s in baseline_speedups], width, 
                                label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
             no_fusion_bars = ax.bar(x, [s*100 for s in no_fusion_speedups], width, 
-                                label='Constable w/o fusion costs', color='darkturquoise', edgecolor='black', linewidth=1)
+                                label='Constable w/o fusion costs (GPU only)', color='darkturquoise', edgecolor='black', linewidth=1)
             no_zero_bars = ax.bar(x + width, [s*100 for s in no_zero_speedups], width, 
                               label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
         else:
@@ -835,7 +836,7 @@ def plot_segmentation(plot_groups):
     # Apply initial layout to get proper axes positioning
     plt.tight_layout()
     # Adjust spacing for our needs - increased hspace to 1.2 for more vertical spacing between rows
-    plt.subplots_adjust(left=0.04, right=0.96, wspace=0.7, hspace=1.2, bottom=0.25, top=0.92)
+    plt.subplots_adjust(left=0.04, right=0.96, wspace=0.3, hspace=1.2, bottom=0.25, top=0.92)
     
     # For each device row
     for device_idx, device in enumerate(device_names):
