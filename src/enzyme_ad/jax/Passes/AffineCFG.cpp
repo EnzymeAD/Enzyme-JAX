@@ -3063,6 +3063,7 @@ struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
         continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
                                                   op.getRhs());
+      return success();
     }
     return failure();
   }
