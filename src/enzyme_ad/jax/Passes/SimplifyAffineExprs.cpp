@@ -1,6 +1,7 @@
 
 #include "AffineUtils.h"
 #include "Passes.h"
+#include "mlir/Analysis/Presburger/PresburgerRelation.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -82,6 +83,83 @@ isl_mat *createConstraintRows(isl_ctx *ctx,
   return mat;
 }
 
+static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
+                                         FlatAffineValueConstraints *domain) {
+  IntegerSet set = ifOp.getIntegerSet();
+  // Canonicalize set and operands to ensure unique values for
+  // FlatAffineValueConstraints below and for early simplification.
+  SmallVector<Value> operands(ifOp.getOperands());
+  canonicalizeSetAndOperands(&set, &operands);
+
+  // Create the base constraints from the integer set attached to ifOp.
+  FlatAffineValueConstraints cst(set, operands);
+
+  if (!isElse) {
+    domain->mergeAndAlignVarsWithOther(0, &cst);
+    domain->append(cst);
+    return success();
+  }
+
+  presburger::PresburgerRelation pr(cst);
+  pr = pr.complement();
+  if (pr.getNumDisjuncts() > 1) {
+    // TODO: we can turn the domain into a PresburgerSet that supports
+    // disjunctions, and update the ISL lowering to handle that correctly.
+    LLVM_DEBUG(llvm::dbgs()
+               << "disjunctive conditions in 'else' not yet supported\n");
+    return failure();
+  }
+
+  FlatLinearValueConstraints flvc(
+      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst.getMaybeValues());
+
+  domain->mergeAndAlignVarsWithOther(0, &flvc);
+  domain->append(flvc);
+  return success();
+}
+
+static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
+                                   ArrayRef<bool> isElse,
+                                   FlatAffineValueConstraints *domain) {
+  assert(ops.size() == isElse.size() &&
+         "expected co-indexed ops and isElse arrays");
+  SmallVector<Value> indices;
+  SmallVector<Operation *> loopOps;
+  size_t numDims = 0;
+  for (Operation *op : ops) {
+    if (!isa<AffineForOp, AffineIfOp, AffineParallelOp>(op)) {
+      LLVM_DEBUG(llvm::dbgs() << "getIndexSet only handles affine.for/if/"
+                                 "parallel ops");
+      return failure();
+    }
+    if (AffineForOp forOp = dyn_cast<AffineForOp>(op)) {
+      loopOps.push_back(forOp);
+      // An AffineForOp retains only 1 induction variable.
+      numDims += 1;
+    } else if (AffineParallelOp parallelOp = dyn_cast<AffineParallelOp>(op)) {
+      loopOps.push_back(parallelOp);
+      numDims += parallelOp.getNumDims();
+    }
+  }
+  extractInductionVars(loopOps, indices);
+  // Reset while associating Values in 'indices' to the domain.
+  *domain = FlatAffineValueConstraints(numDims, /*numSymbols=*/0,
+                                       /*numLocals=*/0, indices);
+  for (auto &&[op, complement] : llvm::zip(ops, isElse)) {
+    // Add constraints from forOp's bounds.
+    if (AffineForOp forOp = dyn_cast<AffineForOp>(op)) {
+      if (failed(domain->addAffineForOpDomain(forOp)))
+        return failure();
+    } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
+      if (failed(addAffineIfOpDomain(ifOp, complement, domain)))
+        return failure();
+    } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op))
+      if (failed(domain->addAffineParallelOpDomain(parallelOp)))
+        return failure();
+  }
+  return success();
+}
+
 std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
                                                             Operation *op) {
   // Extract the affine for/if ops enclosing the caller and insert them into the
@@ -89,20 +167,21 @@ std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
   using EnclosingOpList = llvm::SmallVector<mlir::Operation *, 8>;
   EnclosingOpList enclosingOps;
   affine::getEnclosingAffineOps(*op, &enclosingOps);
-  for (auto op : enclosingOps) {
-    if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
-      if (ifOp.getElseRegion().isAncestor(op->getParentRegion()))
-        // the getIndexSet func does not handle if else regions correctly (it
-        // always assumes we are in the `then` of an if.
-        return {nullptr, {}};
+  SmallVector<bool> isElse;
+  for (auto enclosing : enclosingOps) {
+    if (auto ifOp = dyn_cast<AffineIfOp>(enclosing)) {
+      if (ifOp.getElseRegion().isAncestor(op->getParentRegion())) {
+        isElse.push_back(true);
+        continue;
+      }
     }
+    isElse.push_back(false);
   }
-
   // The domain constraints can then be collected from the enclosing ops.
   mlir::affine::FlatAffineValueConstraints cst;
-  auto res = succeeded(getIndexSet(enclosingOps, &cst));
-  (void)res;
-  assert(res);
+  auto res = succeeded(getIndexSetEx(enclosingOps, isElse, &cst));
+  if (!res)
+    return {nullptr, FlatAffineValueConstraints()};
 
   // Symbol values, which could be a BlockArgument, or the result of DimOp or
   // IndexCastOp, or even an affine.apply. Here we limit the cases to be either
