@@ -149,11 +149,11 @@ def compute_relative_speedup_runs(run_files):
     if len(enzyme_speedups) == 0 or len(constable_speedups) == 0:
         return None, None, None, None
     # Compute mean and standard error
-    enzyme_mean = np.mean(enzyme_speedups)
+    enzyme_mean = np.median(enzyme_speedups)
     enzyme_std = np.std(enzyme_speedups)
     enzyme_sem = enzyme_std / np.sqrt(len(enzyme_speedups))
     
-    constable_mean = np.mean(constable_speedups)
+    constable_mean = np.median(constable_speedups)
     constable_std = np.std(constable_speedups)
     constable_sem = constable_std / np.sqrt(len(constable_speedups))
     
@@ -311,45 +311,31 @@ def plot_comparison(plot_groups):
 
 
 def find_related_cost_model_files(baseline_csv):
-    """Find no-fusion and no-zero files related to the baseline csv file"""
-    directory = os.path.dirname(baseline_csv)
-    if directory == '':
-        directory = '.'
-    
+    directory = os.path.dirname(baseline_csv) or '.'
     basename = os.path.basename(baseline_csv)
     
-    # Extract model name and platform from the baseline filename
-    # Assuming format: results_MODEL_cost-model_baseline-PLATFORM_DATE.csv
-    pattern = r'results_(.+)_cost-model_baseline-(.+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}:\d{2}\.csv'
+    # Expected format:
+    # results_MODEL_cost-model_baseline-PLATFORM_TIMESTAMP_run<number>.csv
+    # where TIMESTAMP is in the form YYYY-MM-DD_HH:MM:SS
+    pattern = r"results_(.+)_cost-model_baseline-(.+)_(\d{4}-\d{2}-\d{2}_\d{2}:\d{2}:\d{2})_run(\d+)\.csv"
     match = re.match(pattern, basename)
-    
     if not match:
         print(f"Error: Cannot parse baseline filename pattern: {basename}")
         return None, None, None
-    
+
     model = match.group(1)
     platform = match.group(2)
-    
-    # Extract timestamp from filename to find matching files
-    timestamp_pattern = r'(\d{4}-\d{2}-\d{2}_\d{2}:\d{2}):\d{2}'
-    timestamp_match = re.search(timestamp_pattern, basename)
-    if not timestamp_match:
-        print(f"Error: Cannot extract timestamp from filename: {basename}")
-        return None, None, None
-    
-    timestamp_prefix = timestamp_match.group(1)
-    
-    # Find corresponding no-fusion and no-zero files
-    no_fusion_pattern = f"results_{model}_cost-model_no-fusion-{platform}_{timestamp_prefix}"
-    no_zero_pattern = f"results_{model}_cost-model_no-zero-{platform}_{timestamp_prefix}"
+    timestamp = match.group(3)
+    run_num = match.group(4)
+    expected_no_fusion = f"results_{model}_cost-model_no-fusion-{platform}_{timestamp}_run{run_num}.csv"
+    expected_no_zero   = f"results_{model}_cost-model_no-zero-{platform}_{timestamp}_run{run_num}.csv"
     
     no_fusion_file = None
     no_zero_file = None
-    
     for file in os.listdir(directory):
-        if file.startswith(no_fusion_pattern):
+        if file == expected_no_fusion:
             no_fusion_file = os.path.join(directory, file)
-        elif file.startswith(no_zero_pattern):
+        elif file == expected_no_zero:
             no_zero_file = os.path.join(directory, file)
     
     return no_fusion_file, no_zero_file
@@ -422,72 +408,115 @@ def compute_cost_model_speedups(baseline_file, no_fusion_file, no_zero_file):
     
     return baseline_speedup, no_fusion_speedup, no_zero_speedup
 
-def process_cost_model_data(model_file_pairs):
-    """Process data for cost model plot"""
-    models = []
+
+def compute_cost_model_speedups_runs(baseline_file):
+    """
+    For a given baseline file (e.g. with _run1.csv), find all run files,
+    compute the cost model speedups for each run, and then aggregate the results
+    (mean and SEM) for baseline, no-fusion, and no-zero configurations.
+    """
+    directory = os.path.dirname(baseline_file) or '.'
+    basename = os.path.basename(baseline_file)
+    
+    # Expecting a filename like: results_MODEL_cost-model_baseline-PLATFORM_DATE_run1.csv
+    m = re.match(r"(.+)_run\d+\.csv", basename)
+    if not m:
+        print(f"Error: File {baseline_file} does not match expected run pattern.")
+        return None, None, None
+    base_prefix = m.group(1)
+    
+    # Locate all run files sharing the same prefix.
+    run_files = []
+    for f in os.listdir(directory):
+        if re.match(re.escape(base_prefix) + r"_run\d+\.csv", f):
+            run_files.append(os.path.join(directory, f))
+    if not run_files:
+        print(f"Warning: No run files found for {baseline_file}")
+        return None, None, None
+    
     baseline_speedups = []
     no_fusion_speedups = []
     no_zero_speedups = []
+    
+    for run_file in run_files:
+        no_fusion_file, no_zero_file = find_related_cost_model_files(run_file)
+        print(no_zero_file, no_fusion_file)
+        try:
+            bs, nfs, nzs = compute_cost_model_speedups(run_file, no_fusion_file, no_zero_file)
+            if bs is not None:
+                baseline_speedups.append(bs)
+            if nfs is not None:
+                no_fusion_speedups.append(nfs)
+            if nzs is not None:
+                no_zero_speedups.append(nzs)
+        except Exception as e:
+            print(f"Error processing run file {run_file}: {e}")
+    
+    if len(baseline_speedups) == 0:
+        return None, None, None
+    
+    # Aggregate: compute mean and standard error (SEM) for each configuration.
+    bs_mean = np.median(baseline_speedups)
+    bs_sem = np.std(baseline_speedups) / np.sqrt(len(baseline_speedups))
+    
+    if len(no_fusion_speedups) > 0:
+        nfs_mean = np.median(no_fusion_speedups)
+        nfs_sem = np.std(no_fusion_speedups) / np.sqrt(len(no_fusion_speedups))
+    else:
+        nfs_mean, nfs_sem = 0, 0
+        
+    if len(no_zero_speedups) > 0:
+        nzs_mean = np.median(no_zero_speedups)
+        nzs_sem = np.std(no_zero_speedups) / np.sqrt(len(no_zero_speedups))
+    else:
+        nzs_mean, nzs_sem = 0, 0
+        
+    return (bs_mean, bs_sem), (nfs_mean, nfs_sem), (nzs_mean, nzs_sem)
+
+
+def process_cost_model_data(model_file_pairs):
+    """Process cost model data for multiple runs per model."""
+    models = []
+    baseline_speedups = []   # Each element: (mean, sem)
+    no_fusion_speedups = []  # Each element: (mean, sem)
+    no_zero_speedups = []    # Each element: (mean, sem)
     
     for i in range(0, len(model_file_pairs), 2):
         model_name = model_file_pairs[i]
         baseline_csv = model_file_pairs[i+1]
         
         try:
-            # Find related files
-            no_fusion_file, no_zero_file = find_related_cost_model_files(baseline_csv)
-            
-            if no_fusion_file is None or no_zero_file is None:
-                print(f"Warning: Could not find matching no-fusion or no-zero files for {baseline_csv}")
-                continue
-                
-            print(f"Processing {model_name}:")
-            print(f"  Baseline: {baseline_csv}")
-            print(f"  No fusion: {no_fusion_file}")
-            print(f"  No zero: {no_zero_file}")
-            
-            # Compute speedups relative to JAX
-            baseline_speedup, no_fusion_speedup, no_zero_speedup = compute_cost_model_speedups(
-                baseline_csv, no_fusion_file, no_zero_file
-            )
-            
-            if baseline_speedup is None:
+            bs, nfs, nzs = compute_cost_model_speedups_runs(baseline_csv)
+            if bs is None:
                 continue
                 
             models.append(model_name)
-            baseline_speedups.append(baseline_speedup)
+            baseline_speedups.append(bs)
+            no_fusion_speedups.append(nfs)
+            no_zero_speedups.append(nzs)
             
-            if no_fusion_speedup is not None:
-                no_fusion_speedups.append(no_fusion_speedup)
-                print(f"  No fusion speedup: {no_fusion_speedup*100:.2f}%")
-            else:
-                no_fusion_speedups.append(0)
-                
-            if no_zero_speedup is not None:
-                no_zero_speedups.append(no_zero_speedup)
-                print(f"  No zero speedup: {no_zero_speedup*100:.2f}%")
-            else:
-                no_zero_speedups.append(0)
-            
-            print(f"  Base cost model speedup: {baseline_speedup*100:.2f}%")    
+            print(f"Processing {model_name}:")
+            print(f"  Baseline speedup: {bs[0]*100:.2f}% ± {bs[1]*100:.2f}%")
+            if nfs is not None:
+                print(f"  No fusion speedup: {nfs[0]*100:.2f}% ± {nfs[1]*100:.2f}%")
+            if nzs is not None:
+                print(f"  No zero speedup: {nzs[0]*100:.2f}% ± {nzs[1]*100:.2f}%")
             print()
-            
         except FileNotFoundError as e:
             print(f"Error: {e}")
             continue
             
     return models, baseline_speedups, no_fusion_speedups, no_zero_speedups
 
+
 def plot_cost_model(plot_groups):
-    """Plot bar charts comparing different cost model configurations"""
-    # Determine the number of plots
+    """Plot bar charts comparing different cost model configurations with error bars."""
     num_plots = len(plot_groups)
     
     if num_plots == 0:
         print("Error: No valid plot data provided")
         return
     
-    # Process all data first and store results for plotting
     all_plot_data = []
     all_speedups = []
     
@@ -495,181 +524,99 @@ def plot_cost_model(plot_groups):
         models, baseline_speedups, no_fusion_speedups, no_zero_speedups = process_cost_model_data(file_model_pairs)
         if models:
             all_plot_data.append((title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups, show_no_fusion))
-            # Only include speedups for bars we'll actually show
-            all_speedups.extend(baseline_speedups)
+            all_speedups.extend([bs[0] for bs in baseline_speedups])
             if show_no_fusion:
-                all_speedups.extend(no_fusion_speedups)
-            all_speedups.extend(no_zero_speedups)
+                all_speedups.extend([nfs[0] for nfs in no_fusion_speedups])
+            all_speedups.extend([nzs[0] for nzs in no_zero_speedups])
     
     if not all_plot_data:
         print("Error: No valid data to plot")
         return
     
-    # Calculate min/max for y-axis scaling across all plots
-    min_val = min(min(all_speedups) * 100 if all_speedups else -15, -15)
-    max_val = max(max(all_speedups) * 100 if all_speedups else 45, 45)
+    all_speedups_pct = [v*100 for v in all_speedups]
+    min_val = np.floor(min(all_speedups_pct) / 5) * 5 - 5
+    max_val = np.ceil(max(all_speedups_pct) / 5) * 5 + 5
     
-    # Round to nearest 5%
-    min_val = np.floor(min_val / 5) * 5 - 5
-    max_val = np.ceil(max_val / 5) * 5 + 5
-    
-    # Create a figure with multiple subplots side by side - wider but not too tall
     fig, axes = plt.subplots(1, num_plots, figsize=(10 * num_plots, 5), sharey=True)
-    
-    # Handle the case of a single plot
     if num_plots == 1:
         axes = [axes]
     
-    # Plot each dataset using the pre-processed data
     for idx, (title, models, baseline_speedups, no_fusion_speedups, no_zero_speedups, show_no_fusion) in enumerate(all_plot_data):
         ax = axes[idx]
+        if not models:
+            ax.text(0.5, 0.5, f"No data for {title}", 
+                    horizontalalignment='center', verticalalignment='center')
+            continue
         
-        # Adjust bar widths and positions based on how many bars we'll display
+        x = np.arange(len(models))
         if show_no_fusion:
-            # Three bars: Baseline, No Fusion, No Zero
-            width = 0.25  # Bar width
-            x = np.arange(len(models))
+            width = 0.25
+            baseline_vals = [bs[0]*100 for bs in baseline_speedups]
+            baseline_err  = [bs[1]*100 for bs in baseline_speedups]
+            no_fusion_vals = [nfs[0]*100 for nfs in no_fusion_speedups]
+            no_fusion_err  = [nfs[1]*100 for nfs in no_fusion_speedups]
+            no_zero_vals = [nzs[0]*100 for nzs in no_zero_speedups]
+            no_zero_err  = [nzs[1]*100 for nzs in no_zero_speedups]
             
-            # Plot bars for all three cost model configurations
-            baseline_bars = ax.bar(x - width, [s*100 for s in baseline_speedups], width, 
-                               label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
-            no_fusion_bars = ax.bar(x, [s*100 for s in no_fusion_speedups], width, 
-                                label='Constable w/o fusion costs (GPU only)', color='darkturquoise', edgecolor='black', linewidth=1)
-            no_zero_bars = ax.bar(x + width, [s*100 for s in no_zero_speedups], width, 
-                              label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
+            ax.bar(x - width, baseline_vals, width, yerr=baseline_err, capsize=5,
+                   label='Constable w/ default cost model', color='green', edgecolor='black', linewidth=1)
+            ax.bar(x, no_fusion_vals, width, yerr=no_fusion_err, capsize=5,
+                   label='Constable w/o fusion costs (GPU only)', color='darkturquoise', edgecolor='black', linewidth=1)
+            ax.bar(x + width, no_zero_vals, width, yerr=no_zero_err, capsize=5,
+                   label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
         else:
-            # Just two bars: Baseline and No Zero
-            width = 0.33  # Slightly wider bars when only showing 2
-            x = np.arange(len(models))
+            width = 0.33
+            baseline_vals = [bs[0]*100 for bs in baseline_speedups]
+            baseline_err  = [bs[1]*100 for bs in baseline_speedups]
+            no_zero_vals = [nzs[0]*100 for nzs in no_zero_speedups]
+            no_zero_err  = [nzs[1]*100 for nzs in no_zero_speedups]
             
-            # Plot only baseline and no-zero configurations
-            baseline_bars = ax.bar(x - width/2, [s*100 for s in baseline_speedups], width, 
-                               label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
-            no_zero_bars = ax.bar(x + width/2, [s*100 for s in no_zero_speedups], width, 
-                              label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
-            no_fusion_bars = []  # Empty list since we're not plotting these
+            ax.bar(x - width/2, baseline_vals, width, yerr=baseline_err, capsize=5,
+                   label='Constable w/ base cost model', color='green', edgecolor='black', linewidth=1)
+            ax.bar(x + width/2, no_zero_vals, width, yerr=no_zero_err, capsize=5,
+                   label='Constable w/o zero costs', color='orange', edgecolor='black', linewidth=1)
         
-        # Add grey grid lines
         ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.7)
-        
-        # Add JAX baseline reference line at 0%
-        jax_line = ax.axhline(y=0, color='purple', linestyle='--', linewidth=2, 
-                              label='JAX' if idx == 0 else "_nolegend_")
-        jax_line.set_zorder(5)
-        
-        # Bring the bars to the front to cover grid lines
-        all_bars = baseline_bars + no_zero_bars
-        if show_no_fusion:
-            all_bars += no_fusion_bars
-            
-        for bar in all_bars:
-            bar.set_zorder(10)
-        
-        # Set x-axis labels
+        ax.axhline(y=0, color='purple', linestyle='--', linewidth=2, label='JAX' if idx == 0 else "_nolegend_")
         ax.set_xticks(x)
         ax.set_xticklabels(models, rotation=45, ha='right', rotation_mode='anchor')
-        
-        # Set plot title
         ax.set_title(title)
-        
-        # Only set y-label on the leftmost plot
         if idx == 0:
             ax.set_ylabel('Relative speedup, %')
     
-    # Set common y-axis limits and ticks
-    y_ticks = np.arange(np.ceil(min_val / 20) * 20, np.floor(max_val / 20) * 20 + 1, 20)
-    plt.setp(axes, ylim=(min_val, max_val), yticks=y_ticks)
-    
-    # Adjust layout
+    plt.setp(axes, ylim=(min_val, max_val))
     plt.tight_layout()
-    
-    # Add more space at the bottom for x-labels and legend
     plt.subplots_adjust(bottom=0.25, wspace=0.3)
     
-    # Add a single legend at the bottom of the figure - all labels in one row (horizontally)
-    # We need to collect all unique handles/labels from all plots
+    # Build a single legend for the figure.
     all_handles = []
     all_labels = []
-    
-    # Check if any plots show no_fusion bars
-    any_show_no_fusion = any(data[5] for data in all_plot_data)
-    
-    # Get handles from first plot
     handles, labels = axes[0].get_legend_handles_labels()
-    
-    # Find JAX handle (always included)
-    jax_handle = None
-    jax_label = None
-    baseline_handle = None
-    baseline_label = None
-    no_zero_handle = None
-    no_zero_label = None
-    
     for h, l in zip(handles, labels):
-        if l == 'JAX':
-            jax_handle = h
-            jax_label = l
-        elif l == 'Constable w/ base cost model':
-            baseline_handle = h
-            baseline_label = l
-        elif l == 'Constable w/o zero costs':
-            no_zero_handle = h
-            no_zero_label = l
+        if l in ['JAX', 'Constable w/ base cost model', 'Constable w/o zero costs', 'Constable w/ default cost model', 'Constable w/o fusion costs (GPU only)']:
+            all_handles.append(h)
+            all_labels.append(l)
     
-    # Add handles in specific order
-    if jax_handle:
-        all_handles.append(jax_handle)
-        all_labels.append(jax_label)
-    if baseline_handle:
-        all_handles.append(baseline_handle)
-        all_labels.append(baseline_label)
-    
-    # Only add no_fusion to legend if any plot shows it
-    if any_show_no_fusion:
-        # Find no_fusion handle from a plot that has it
-        for idx, data in enumerate(all_plot_data):
-            if data[5]:  # This plot shows no_fusion
-                h, l = axes[idx].get_legend_handles_labels()
-                for handle, label in zip(h, l):
-                    if label == 'Constable w/o fusion costs':
-                        all_handles.append(handle)
-                        all_labels.append(label)
-                        break
-                break
-    
-    if no_zero_handle:
-        all_handles.append(no_zero_handle)
-        all_labels.append(no_zero_label)
-    
-    # Create the legend with all needed handles
     fig.legend(all_handles, all_labels, loc='lower center', bbox_to_anchor=(0.5, 0.05),
                ncol=len(all_handles), frameon=False, handletextpad=1.0, columnspacing=2.0)
     
-    # Add a button to save the figure as PDF
     save_ax = plt.axes([0.45, 0.005, 0.1, 0.04])
     save_button = plt.Button(save_ax, 'Save PDF', color='lightgoldenrodyellow', hovercolor='0.975')
     
     def save_to_pdf(event):
-        # Generate filename based on current date/time
         from datetime import datetime
-        
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"cost_model_comparison_{timestamp}.pdf"
-        
-        # Temporarily hide the save button for the PDF export
         save_button.ax.set_visible(False)
-        
-        # Save figure to current directory
         fig.savefig(filename, format='pdf', bbox_inches='tight')
         abs_path = os.path.abspath(filename)
         print(f"Saved figure as {abs_path}")
-        
-        # Make the button visible again for continued interaction
         save_button.ax.set_visible(True)
         fig.canvas.draw_idle()
     
     save_button.on_clicked(save_to_pdf)
     plt.show()
+
 
 def find_all_tau_files(baseline_file, device_type):
     """Find all tau files for a given model and device type"""
@@ -696,7 +643,7 @@ def find_all_tau_files(baseline_file, device_type):
     # Find all tau files for this model and platform
     tau_pattern = re.compile(f"results_{model}_tau=(\d+)-{platform}_\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}:\d{{2}}:\d{{2}}\.csv")
     
-    tau_files = []
+   
     for file in os.listdir(directory):
         tau_match = tau_pattern.match(file)
         if tau_match:
