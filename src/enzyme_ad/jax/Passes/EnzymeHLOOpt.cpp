@@ -3788,9 +3788,15 @@ struct BroadcastIotaSimplify
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
         rewriter.setInsertionPointAfter(constant);
+        auto broadcast_dim = result_type.front()
+                                 .template cast<mlir::ShapedType>()
+                                 .getShape()
+                                 .size() -
+                             1;
+        llvm::errs() << broadcast_dim << "\n";
 
-        auto iota =
-            rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type, 0);
+        auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
+                                                             broadcast_dim);
         auto attr = mlir::DenseElementsAttr::get(
             constant.getType().cloneWith(llvm::ArrayRef<int64_t>{}, elemType),
             rewriter.getIntegerAttr(elemType, diff));
