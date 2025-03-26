@@ -1,7 +1,7 @@
 #!/bin/bash
 
-thresholds=(5 10 25 100 500 1000 5000)
-platforms=("cpu" "gpu")
+thresholds=(10 25 100 500 1000 5000)
+platforms=("gpu" "cpu")
 models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=segmentation_$datetime.txt
@@ -30,14 +30,18 @@ run_experiment() {
     echo "--------------------------------" >> $filename
 }
 
-for model in "${models[@]}"; do
-    for platform in "${platforms[@]}"; do
+for platform in "${platforms[@]}"; do
+    for model in "${models[@]}"; do
         for threshold in "${thresholds[@]}"; do
             export EXPERIMENT_NAME="${model}_tau=${threshold}-${platform}_${datetime}"
             export SEGMENTATION_THRESHOLD=$threshold
             read ILP_LIMIT SAT_LIMIT <<< $(python compute_time_limits.py --csv "$segmentation_size_csv" --model "$model" --tau "$threshold")
             export EQSAT_PLATFORM=$platform
-            export EQSAT_ONLY=true
+            if [[ $threshold -eq 10 ]]; then
+                export EQSAT_ONLY=false
+            else
+                export EQSAT_ONLY=true
+            fi
 
             if [ "$platform" == "gpu" ]; then
                 COMMAND="ILP_TIME_LIMIT=${ILP_LIMIT} SATURATION_TIME_LIMIT=${SAT_LIMIT} python test/${model}.py"
