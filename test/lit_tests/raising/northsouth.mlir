@@ -1,3 +1,5 @@
+// RUN: enzymexlamlir-opt --affine-cfg --split-input-file --allow-unregistered-dialect %s | FileCheck %s
+
 #set = affine_set<(d0) : (-d0 + 89 >= 0)>
 #set1 = affine_set<(d0) : (d0 - 1 >= 0)>
 #map2 = affine_map<(d0, d1) -> (-d0 - d1 * 194 + 18435)>
