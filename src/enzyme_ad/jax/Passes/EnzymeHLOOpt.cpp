@@ -6389,7 +6389,6 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
       slices.push_back(rewriter.create<stablehlo::SliceOp>(
           selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
       break;
-      assert(false && "not implemented");
     }
 
     assert(slices.size() >= 2);
