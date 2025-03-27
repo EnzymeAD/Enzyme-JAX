@@ -197,6 +197,7 @@ scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
+select_comp_iota_const_simplify;
 select_op_used_within_if<1>;
 replace_neg_add_with_subtract<16>;
 
