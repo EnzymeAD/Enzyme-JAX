@@ -4602,13 +4602,13 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
   }
 };
 
-
 struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
   using OpRewritePattern<arith::CmpIOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(arith::CmpIOp cmpOp,
                                 PatternRewriter &rewriter) const override {
-    if (!matchPattern(cmpOp.getRhs(), m_One())) return failure();
+    if (!matchPattern(cmpOp.getRhs(), m_One()))
+      return failure();
     auto lhs = cmpOp.getLhs();
     if (auto cast = lhs.getDefiningOp<IndexCastOp>())
       lhs = cast.getOperand();
@@ -4616,7 +4616,8 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
       lhs = cast.getOperand();
 
     auto barg = dyn_cast<BlockArgument>(lhs);
-    if (!barg) return failure();
+    if (!barg)
+      return failure();
 
     auto oldpredicate = cmpOp.getPredicate();
     auto predicate = oldpredicate;
@@ -4633,11 +4634,14 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
       return failure();
     }
 
-    auto par = dyn_cast<affine::AffineParallelOp>(barg.getOwner()->getParentOp());
-    if (!par) return failure();
+    auto par =
+        dyn_cast<affine::AffineParallelOp>(barg.getOwner()->getParentOp());
+    if (!par)
+      return failure();
 
     for (auto iv : par.getIVs()) {
-      if (iv != barg) continue;
+      if (iv != barg)
+        continue;
 
       bool legal = true;
 
@@ -4651,7 +4655,9 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
         }
       }
 
-      rewriter.replaceOpWithNewOp<arith::CmpIOp>(cmpOp, predicate, lhs, rewriter.create<arith::ConstantIndexOp>(cmpOp.getLoc(), 0));
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+          cmpOp, predicate, lhs,
+          rewriter.create<arith::ConstantIndexOp>(cmpOp.getLoc(), 0));
       return success();
     }
 
