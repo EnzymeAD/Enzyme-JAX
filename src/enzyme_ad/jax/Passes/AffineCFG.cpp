@@ -4358,6 +4358,13 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+bool definedOutside(Value v, Operation *op) {
+  auto vop = v.getDefiningOp();
+  if (!vop)
+    return true;
+  return !op->isAncestor(vop);
+}
+
 /// Lift memref read depending on an scf.if into the body of that scf.if. This
 /// proceeds by moving the operations in the backward slide of a `load` that
 /// are dominated by the `if` into both the "then" and the "else" branch, as
@@ -4385,15 +4392,90 @@ public:
     auto toLift = llvm::filter_to_vector(backwardSlice, [&](Operation *op) {
       return dominance.properlyDominates(conditional, op);
     });
-    if (llvm::any_of(toLift, [](Operation *op) { return !isPure(op); }))
-      return rewriter.notifyMatchFailure(loadOp,
-                                         "non-pure operation on the path");
+
+    SetVector<int> resultsNeeded;
+    Operation *original_conditional = conditional;
+    if (!llvm::all_of(toLift, isPure)) {
+      auto trueYld = conditional->getRegion(0).front().getTerminator();
+      auto falseYld = conditional->getRegion(1).front().getTerminator();
+      Operation *postOp = nullptr;
+      for (auto op : toLift) {
+        if (op == conditional)
+          continue;
+        for (auto operand : op->getOperands()) {
+          if (auto ores = dyn_cast<OpResult>(operand)) {
+            if (ores.getOwner() == conditional) {
+              if (postOp == nullptr)
+                postOp = op;
+              else if (dominance.dominates(op, postOp))
+                postOp = op;
+              auto rnum = ores.getResultNumber();
+              resultsNeeded.insert(rnum);
+              if (!definedOutside(trueYld->getOperand(rnum), conditional) ||
+                  !definedOutside(falseYld->getOperand(rnum), conditional)) {
+                return rewriter.notifyMatchFailure(
+                    loadOp, "non-pure operation on the path");
+              }
+            }
+          }
+        }
+      }
+      assert(postOp);
+      toLift = llvm::filter_to_vector(backwardSlice, [&](Operation *op) {
+        return dominance.dominates(postOp, op);
+      });
+      if (!llvm::all_of(toLift, isPure)) {
+        return rewriter.notifyMatchFailure(
+            loadOp, "non-pure operation on the path (V2)");
+      }
+
+      SmallVector<std::unique_ptr<Region>> regions;
+      regions.emplace_back(new Region);
+      regions.emplace_back(new Region);
+      auto tBlk = new Block();
+      SmallVector<Value> trueResults;
+      SmallVector<Type> types;
+      for (auto idx : resultsNeeded) {
+        trueResults.push_back(trueYld->getOperand(idx));
+        types.push_back(trueYld->getOperand(idx).getType());
+      }
+
+      auto fBlk = new Block();
+      SmallVector<Value> falseResults;
+      for (auto idx : resultsNeeded)
+        falseResults.push_back(falseYld->getOperand(idx));
+      if (isa<scf::IfOp>(conditional)) {
+        rewriter.setInsertionPointToEnd(tBlk);
+        rewriter.create<scf::YieldOp>(conditional->getLoc(), trueResults);
+        rewriter.setInsertionPointToEnd(fBlk);
+        rewriter.create<scf::YieldOp>(conditional->getLoc(), falseResults);
+      } else {
+        rewriter.setInsertionPointToEnd(tBlk);
+        rewriter.create<affine::AffineYieldOp>(conditional->getLoc(),
+                                               trueResults);
+        rewriter.setInsertionPointToEnd(fBlk);
+        rewriter.create<affine::AffineYieldOp>(conditional->getLoc(),
+                                               falseResults);
+      }
+      regions[0]->push_back(tBlk);
+      regions[1]->push_back(fBlk);
+      rewriter.setInsertionPoint(postOp);
+      auto conditional2 = rewriter.create(
+          conditional->getLoc(), conditional->getName().getIdentifier(),
+          conditional->getOperands(), types, conditional->getAttrs(),
+          BlockRange(), regions);
+      conditional = conditional2;
+    } else {
+      for (auto i = 0; i < conditional->getNumResults(); i++)
+        resultsNeeded.insert(i);
+    }
 
     auto cloneIntoBlock = [&](unsigned blockNum) {
       IRMapping mapping;
       Block &targetBlock = conditional->getRegion(blockNum).front();
-      mapping.map(conditional->getResults(),
-                  targetBlock.getTerminator()->getOperands());
+      for (auto iv : llvm::enumerate(resultsNeeded))
+        mapping.map(original_conditional->getResults()[iv.value()],
+                    targetBlock.getTerminator()->getOperands()[iv.index()]);
       rewriter.setInsertionPoint(targetBlock.getTerminator());
       for (Operation *op : toLift) {
         rewriter.clone(*op, mapping);
