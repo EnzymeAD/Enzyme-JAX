@@ -4602,6 +4602,69 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
   }
 };
 
+struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
+  using OpRewritePattern<arith::CmpIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::CmpIOp cmpOp,
+                                PatternRewriter &rewriter) const override {
+    if (!matchPattern(cmpOp.getRhs(), m_One()))
+      return failure();
+    auto lhs = cmpOp.getLhs();
+    if (auto cast = lhs.getDefiningOp<IndexCastOp>())
+      lhs = cast.getOperand();
+    if (auto cast = lhs.getDefiningOp<IndexCastUIOp>())
+      lhs = cast.getOperand();
+
+    auto barg = dyn_cast<BlockArgument>(lhs);
+    if (!barg)
+      return failure();
+
+    auto oldpredicate = cmpOp.getPredicate();
+    auto predicate = oldpredicate;
+    switch (oldpredicate) {
+    case arith::CmpIPredicate::ult:
+    case arith::CmpIPredicate::slt:
+      predicate = arith::CmpIPredicate::eq;
+      break;
+    case arith::CmpIPredicate::uge:
+    case arith::CmpIPredicate::sge:
+      predicate = arith::CmpIPredicate::ne;
+      break;
+    default:
+      return failure();
+    }
+
+    auto par =
+        dyn_cast<affine::AffineParallelOp>(barg.getOwner()->getParentOp());
+    if (!par)
+      return failure();
+
+    for (auto iv : par.getIVs()) {
+      if (iv != barg)
+        continue;
+
+      bool legal = true;
+
+      for (auto lb : par.getLowerBoundMap(iv.getArgNumber()).getResults()) {
+        if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
+          if (cst.getValue() != 0) {
+            return failure();
+          }
+        } else {
+          return failure();
+        }
+      }
+
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+          cmpOp, predicate, lhs,
+          rewriter.create<arith::ConstantIndexOp>(cmpOp.getLoc(), 0));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4615,7 +4678,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, AddAddCstEnd, LiftMemrefRead>(context, 2);
+          SinkStoreInIf, AddAddCstEnd, LiftMemrefRead, CompareVs1>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
