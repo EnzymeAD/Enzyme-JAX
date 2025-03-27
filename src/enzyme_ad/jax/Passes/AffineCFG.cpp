@@ -3860,7 +3860,10 @@ struct MergeParallelInductions
           bool onlyUsedInAdd = addIndices[i] != nullptr;
           if (onlyUsedInAdd)
             for (auto ilOp : illegal) {
-              if (!ilOp || !isa<MulIOp, ShLIOp>(ilOp)) {
+              if (!ilOp)
+                continue;
+
+              if (!isa<MulIOp, ShLIOp>(ilOp)) {
                 onlyUsedInAdd = false;
                 break;
               }
