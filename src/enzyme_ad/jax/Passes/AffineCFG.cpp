@@ -4601,6 +4601,8 @@ void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
   populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
+  IslAnalysis islAnalysis;
+  populateAffineExprSimplificationPatterns(islAnalysis, rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }

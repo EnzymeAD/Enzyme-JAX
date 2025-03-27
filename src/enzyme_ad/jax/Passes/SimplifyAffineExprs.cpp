@@ -836,15 +836,17 @@ IslAnalysis::IslAnalysis() { ctx = isl_ctx_alloc(); }
 
 IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
-template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
+template <typename T>
+LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
+  isl_ctx *ctx = islAnalysis.getCtx();
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
-  auto [domain, cst] = getDomain(ctx, load);
+  auto [domain, cst] = ::getDomain(ctx, access);
   if (!domain)
-    return;
+    return failure();
   LLVM_DEBUG(isl_set_dump(domain));
   LLVM_DEBUG(cst.dump());
-  AffineMap map = load.getMap();
-  AffineValueMap avm(map, load.getMapOperands(), {});
+  AffineMap map = access.getMap();
+  AffineValueMap avm(map, access.getMapOperands(), {});
 
   LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
   PosMapTy dimPosMap;
@@ -869,8 +871,10 @@ template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
     // this is not the case for symbols. We do not handle that case correctly
     // currently, thus we abort early.
     domain = isl_set_free(domain);
-    return;
+    return failure();
   }
+
+  bool changed = false;
 
   LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
   PosMapTy symPosMap;
@@ -904,8 +908,8 @@ template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
   isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
   space = isl_space_free(space);
   AffineExprToIslAffConverter m2i{dimPosMap, symPosMap, ls, ctx};
-  IslToAffineExprConverter i2m{load->getContext(), symOffset, dimPosMapReverse,
-                               symPosMapReverse};
+  IslToAffineExprConverter i2m{access->getContext(), symOffset,
+                               dimPosMapReverse, symPosMapReverse};
   SmallVector<AffineExpr> newExprs;
   for (unsigned i = 0; i < map.getNumResults(); i++) {
     AffineExpr mlirExpr = map.getResult(i);
@@ -923,14 +927,20 @@ template <typename T> void handleAffineOp(isl_ctx *ctx, T load) {
     AffineExpr newMlirExpr = i2m.create(expr);
     LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
     newExprs.push_back(newMlirExpr);
+    if (mlirExpr != newMlirExpr)
+      changed = true;
   }
   ls = isl_local_space_free(ls);
   domain = isl_set_free(domain);
   build = isl_ast_build_free(build);
 
+  if (!changed)
+    return failure();
+
   AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
-                                    newExprs, load->getContext());
-  load.setMap(newMap);
+                                    newExprs, access->getContext());
+  access.setMap(newMap);
+  return success();
 }
 
 struct SimplifyAffineExprsPass
@@ -938,26 +948,25 @@ struct SimplifyAffineExprsPass
           SimplifyAffineExprsPass> {
   using SimplifyAffineExprsPassBase::SimplifyAffineExprsPassBase;
   void runOnOperation() override {
-    isl_ctx *ctx = isl_ctx_alloc();
-    auto r = isl_options_set_ast_build_exploit_nested_bounds(ctx, 1);
+    IslAnalysis ia;
+    isl_ctx *ctx = ia.getCtx();
+    isl_stat r = isl_options_set_ast_build_exploit_nested_bounds(ctx, 1);
     if (r != isl_stat_ok) {
       signalPassFailure();
-      isl_ctx_free(ctx);
       return;
     }
 
     Operation *op = getOperation();
     op->walk([&](Operation *op) {
       if (auto cop = dyn_cast<AffineLoadOp>(op))
-        handleAffineOp(ctx, cop);
+        (void)handleAffineOp(ia, cop);
       else if (auto cop = dyn_cast<AffineStoreOp>(op))
-        handleAffineOp(ctx, cop);
+        (void)handleAffineOp(ia, cop);
       else if (auto cop = dyn_cast<AffineVectorLoadOp>(op))
-        handleAffineOp(ctx, cop);
+        (void)handleAffineOp(ia, cop);
       else if (auto cop = dyn_cast<AffineVectorStoreOp>(op))
-        handleAffineOp(ctx, cop);
+        (void)handleAffineOp(ia, cop);
     });
-    isl_ctx_free(ctx);
 
     op->walk([=](AffineIfOp affineOp) {
       auto map = affineOp.getIntegerSet();
@@ -967,3 +976,27 @@ struct SimplifyAffineExprsPass
     });
   }
 };
+
+template <class T>
+struct SimplifyAccessAffineExprs : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+  IslAnalysis &islAnalysis;
+  SimplifyAccessAffineExprs(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<T>(&context), islAnalysis(islAnalysis) {}
+  LogicalResult matchAndRewrite(T access,
+                                PatternRewriter &rewriter) const override {
+    return handleAffineOp(islAnalysis, access);
+  }
+};
+
+void mlir::populateAffineExprSimplificationPatterns(
+    IslAnalysis &islAnalysis, RewritePatternSet &patterns) {
+  // clang-format off
+  patterns.insert<
+    SimplifyAccessAffineExprs<affine::AffineLoadOp>,
+    SimplifyAccessAffineExprs<affine::AffineStoreOp>,
+    SimplifyAccessAffineExprs<affine::AffineVectorLoadOp>,
+    SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>
+  >(*patterns.getContext(), islAnalysis);
+  // clang-format on
+}
