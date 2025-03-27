@@ -6279,7 +6279,8 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
-struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
+struct SelectCompIotaConstSimplify final
+    : OpRewritePattern<mlir::stablehlo::SelectOp> {
   struct slice_data {
     Value tensor;
     int64_t count;
@@ -8387,7 +8388,7 @@ struct EnzymeHLOOptPass
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
-        SelectCompIotaConst,
+        SelectCompIotaConstSimplify,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,

@@ -770,9 +770,9 @@ def WhileSimplify : EnzymeHLOPatternOp<
   let patterns = ["WhileSimplify"];
 }
 
-def SelectCompIotaConst : EnzymeHLOPatternOp<
-    "select_comp_iota_const"> {
-  let patterns = ["SelectCompIotaConst"];
+def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
+    "select_comp_iota_const_simplify"> {
+  let patterns = ["SelectCompIotaConstSimplify"];
 }
 
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
