@@ -74,7 +74,10 @@ static llvm::raw_ostream &printPartialLocation(llvm::raw_ostream &os,
     if (fused.getLocations().size() > 1)
       os << ">";
     os << " (";
-    printMetadata(os, fused.getMetadata());
+    if (auto md = fused.getMetadata())
+      printMetadata(os, md);
+    else
+      os << "<null metadata>";
     os << ")";
   } else {
     loc.print(os);
