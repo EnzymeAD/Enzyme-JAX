@@ -1,3 +1,4 @@
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
@@ -4325,6 +4326,51 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+template <typename LoadT>
+struct SelectAddressToIf : public OpRewritePattern<LoadT> {
+  using OpRewritePattern<LoadT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LoadT load,
+                                PatternRewriter &rewriter) const override {
+    SetVector<Operation *> backwardSlice;
+    DominanceInfo dominance;
+    BackwardSliceOptions options;
+    // Stop after a select.
+    options.filter = [&](Operation *filt) {
+      for (Value result : filt->getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (!isa<arith::SelectOp>(user))
+            continue;
+          if (backwardSlice.contains(user))
+            return false;
+        }
+      }
+      return true;
+    };
+    getBackwardSlice(load.getOperation(), &backwardSlice, options);
+
+    arith::SelectOp select;
+    for (Operation *op : backwardSlice)
+      if (auto s = dyn_cast<arith::SelectOp>(op)) {
+        select = s;
+        break;
+      }
+    if (!select)
+      return failure();
+
+    rewriter.setInsertionPoint(select);
+    auto conditional = rewriter.create<scf::IfOp>(
+        select->getLoc(), select->getResultTypes(), select.getCondition(),
+        /*withElseRegion=*/true);
+    rewriter.setInsertionPointToStart(&conditional.getThenRegion().front());
+    rewriter.create<scf::YieldOp>(select->getLoc(), select.getTrueValue());
+    rewriter.setInsertionPointToStart(&conditional.getElseRegion().front());
+    rewriter.create<scf::YieldOp>(select->getLoc(), select.getFalseValue());
+    rewriter.replaceOp(select, conditional);
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4338,7 +4384,8 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, AddAddCstEnd>(context, 2);
+          SinkStoreInIf, AddAddCstEnd, SelectAddressToIf<memref::LoadOp>,
+          SelectAddressToIf<affine::AffineLoadOp>>(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
