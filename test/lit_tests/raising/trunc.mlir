@@ -18,3 +18,18 @@ module {
      return %trunc : f32
    }
 }
+
+// CHECK-LABEL:   func.func @tr(
+// CHECK-SAME:                  %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: f64) -> f32 {
+// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]] : f64 to f32
+// CHECK:           return %[[VAL_1]] : f32
+
+// CHECK-LABEL:   func.func @ctr(
+// CHECK-SAME:                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: f64) -> f32 {
+// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]] {fpExceptionBehavior = 0 : i64} : f64 to f32
+// CHECK:           return %[[VAL_1]] : f32
+
+// CHECK-LABEL:   func.func private @trmem_raised(
+// CHECK-SAME:                                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<1xf64>,
+// CHECK-SAME:                                    %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<1xf32>) -> (tensor<1xf64>, tensor<1xf32>) {
+// CHECK:           stablehlo.convert %{{.*}} : (tensor<f64>) -> tensor<f32>
