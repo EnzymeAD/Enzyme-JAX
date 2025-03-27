@@ -1361,9 +1361,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-          arith::ExtUIOp, arith::SIToFPOp, arith::FPToSIOp, math::SqrtOp,
-          math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp,
-          math::AbsIOp, math::IsNaNOp, math::AtanOp>(op)) {
+          arith::ExtUIOp, arith::SIToFPOp, arith::FPToSIOp, arith::TruncFOp,
+          math::SqrtOp, math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp,
+          math::AbsFOp, math::AbsIOp, math::IsNaNOp, math::AtanOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
