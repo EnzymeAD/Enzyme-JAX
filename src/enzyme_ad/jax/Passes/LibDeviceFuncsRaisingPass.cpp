@@ -12,6 +12,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 
@@ -632,6 +633,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            // TruncFOpLowering,
            // ConstrainedTruncFOpLowering,
            TruncIOpLowering, UIToFPOpLowering, XOrIOpLowering>(converter);
+  populateSelectExtractPatterns(patterns);
 }
 
 namespace {

@@ -10,7 +10,7 @@ func.func @select_extract_scalar(%cond: i1, %a: vector<4xf32>, %b: vector<4xf32>
 // CHECK: [[B_EXTRACT:%[a-zA-Z0-9]+]] = llvm.extractelement %{{.*}}[%{{.*}}] : vector<4xf32>
 // CHECK: arith.select %{{.*}}, [[A_EXTRACT]], [[B_EXTRACT]] : f32
 
-// ----
+// -----
 
 func.func @select_extract_multiple_indices(
   %cond: i1, %a: vector<8xi64>, %b: vector<8xi64>, %idx1: i32, %idx2: i32) -> (i64, i64) {
@@ -28,7 +28,7 @@ func.func @select_extract_multiple_indices(
 // CHECK: llvm.extractelement %{{.*}}[%{{.*}}] : vector<8xi64>
 // CHECK: arith.select %{{.*}}, {{.*}} : i64
 
-// ----
+// -----
 
 func.func @negative_test(%a: vector<2xf32>, %idx: i32) -> f32 {
   %result = llvm.extractelement %a[%idx : i32] : vector<2xf32>
