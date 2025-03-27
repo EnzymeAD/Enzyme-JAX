@@ -978,6 +978,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         });
 
     if (emitAsGather) {
+      llvm::errs() << "emitting as gather: " << *op << " dyn: " << dynIndices << " strides: ";
+      for (auto i : strides) llvm::errs() << "i=" <<i << "\n";
       SmallVector<Value> lIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
         auto [idx, idxMap] = expandAffineExpr(
@@ -1264,6 +1266,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto idx : loadOp.getIndices())
       lIndices.push_back(mapping.lookup(idx));
 
+    llvm::errs() << " func: " << *loadOp->getParentOfType<FunctionOpInterface>() << "\n";
+    llvm::errs() << "memref load: " << loadOp << "\n";
     Value res = emitLoadAsGather(op->getLoc(), mapping.lookup(memref), lIndices,
                                  builder, maps);
     if (!res) {
