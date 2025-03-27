@@ -6279,6 +6279,93 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
+struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
+                                PatternRewriter &rewriter) const override {
+    DenseIntElementsAttr inp;
+    Value compare = selectOp.getPred();
+    Value lhs = selectOp.getOnTrue();
+    Value rhs = selectOp.getOnFalse();
+
+    stablehlo::ComparisonDirectionAttr direction;
+
+    // only support 1d tensors
+    if (selectOp.getType().getShape().size() != 1)
+      return failure();
+
+    bool flip = false;
+    if (!matchPattern(
+            compare, m_Op<stablehlo::CompareOp>(m_Op<mlir::stablehlo::IotaOp>(),
+                                                m_Constant(&inp)))) {
+
+      // if (matchPattern(compare, m_Op<stablehlo::CompareOp>(
+      //                               m_Constant(&inp),
+      //                               m_Op<mlir::stablehlo::IotaOp>()))) {
+      //   // flip
+      //   flip = true;
+      // } else
+      return failure();
+    }
+
+    auto compareOp = cast<stablehlo::CompareOp>(compare.getDefiningOp());
+    auto flag = compareOp.getComparisonDirection();
+
+    if (!inp.isSplat())
+      return failure();
+
+    auto constValue = inp.getSplatValue<IntegerAttr>().getInt();
+    auto endValue = selectOp.getType().getShape().front();
+    rewriter.setInsertionPointAfterValue(compare);
+
+    SmallVector<stablehlo::SliceOp, 3> slices;
+
+    switch (flag) {
+    case stablehlo::ComparisonDirection::LT:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), lhs, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), rhs, constValue, endValue, 1));
+      break;
+    case stablehlo::ComparisonDirection::EQ:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), rhs, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), lhs, constValue, constValue + 1, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), rhs, constValue + 1, endValue, 1));
+      break;
+    case stablehlo::ComparisonDirection::LE:
+    case stablehlo::ComparisonDirection::GT:
+    case stablehlo::ComparisonDirection::GE:
+    case stablehlo::ComparisonDirection::NE:
+      assert(false && "not implemented");
+    }
+
+    // dump
+    for (auto &slice : slices)
+      llvm::errs() << slice << "\n";
+
+    assert(slices.size() >= 2);
+
+    // concatenate all slices
+    auto curr = slices.begin();
+    auto next = slices.begin();
+    next++;
+
+    auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+        selectOp.getLoc(), ValueRange{*curr++, *next++}, 0);
+
+    while (next != slices.end()) {
+      concat = rewriter.create<stablehlo::ConcatenateOp>(
+          selectOp.getLoc(), ValueRange{concat, *next++}, 0);
+    }
+
+    rewriter.replaceAllUsesWith(selectOp, concat);
+    return success();
+  }
+};
+
 struct SelectOpUsedWithinIf final
     : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -8240,6 +8327,7 @@ struct EnzymeHLOOptPass
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
+        SelectCompIotaConst,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,
