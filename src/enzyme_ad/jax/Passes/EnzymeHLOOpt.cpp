@@ -6285,83 +6285,119 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
                                 PatternRewriter &rewriter) const override {
     DenseIntElementsAttr inp;
     Value compare = selectOp.getPred();
-    Value lhs = selectOp.getOnTrue();
-    Value rhs = selectOp.getOnFalse();
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
 
     stablehlo::ComparisonDirectionAttr direction;
 
     // only support 1d tensors
-    if (selectOp.getType().getShape().size() != 1)
+    if (auto type = selectOp.getType())
+      if (type.getShape().size() != 1)
+        return failure();
+
+    auto compareOp = cast<stablehlo::CompareOp>(compare.getDefiningOp());
+    if (!compareOp)
       return failure();
 
-    bool flip = false;
+    auto flag = compareOp.getComparisonDirection();
+
     if (!matchPattern(
             compare, m_Op<stablehlo::CompareOp>(m_Op<mlir::stablehlo::IotaOp>(),
                                                 m_Constant(&inp)))) {
 
-      // if (matchPattern(compare, m_Op<stablehlo::CompareOp>(
-      //                               m_Constant(&inp),
-      //                               m_Op<mlir::stablehlo::IotaOp>()))) {
-      //   // flip
-      //   flip = true;
-      // } else
-      return failure();
+      if (matchPattern(compare, m_Op<stablehlo::CompareOp>(
+                                    m_Constant(&inp),
+                                    m_Op<mlir::stablehlo::IotaOp>()))) {
+        // incoming: const `op` iota
+        // treat the match as iota `op` const
+        switch (flag) {
+        case stablehlo::ComparisonDirection::LT:
+          flag = stablehlo::ComparisonDirection::GT;
+          break;
+        case stablehlo::ComparisonDirection::LE:
+          flag = stablehlo::ComparisonDirection::GE;
+          break;
+        case stablehlo::ComparisonDirection::GT:
+          flag = stablehlo::ComparisonDirection::LT;
+          break;
+        case stablehlo::ComparisonDirection::GE:
+          flag = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          break;
+        }
+      } else
+        return failure();
     }
-
-    auto compareOp = cast<stablehlo::CompareOp>(compare.getDefiningOp());
-    auto flag = compareOp.getComparisonDirection();
 
     if (!inp.isSplat())
       return failure();
 
     auto constValue = inp.getSplatValue<IntegerAttr>().getInt();
     auto endValue = selectOp.getType().getShape().front();
+    if (constValue <= 0) {
+      rewriter.replaceAllUsesWith(selectOp, falseTensor);
+      return success();
+    }
+    if (constValue >= endValue) {
+      rewriter.replaceAllUsesWith(selectOp, trueTensor);
+    }
+
     rewriter.setInsertionPointAfterValue(compare);
 
-    SmallVector<stablehlo::SliceOp, 3> slices;
+    SmallVector<mlir::Value, 3> slices;
 
     switch (flag) {
     case stablehlo::ComparisonDirection::LT:
       slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), lhs, 0, constValue, 1));
+          selectOp.getLoc(), trueTensor, 0, constValue, 1));
       slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), rhs, constValue, endValue, 1));
-      break;
-    case stablehlo::ComparisonDirection::EQ:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), rhs, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), lhs, constValue, constValue + 1, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), rhs, constValue + 1, endValue, 1));
+          selectOp.getLoc(), falseTensor, constValue, endValue, 1));
       break;
     case stablehlo::ComparisonDirection::LE:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, 0, constValue + 1, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, constValue + 1, endValue, 1));
+      break;
+
     case stablehlo::ComparisonDirection::GT:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, constValue, endValue, 1));
+      break;
     case stablehlo::ComparisonDirection::GE:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, 0, constValue + 1, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
+      break;
+
+    case stablehlo::ComparisonDirection::EQ:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, constValue, constValue + 1, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, constValue + 1, endValue, 1));
+      break;
     case stablehlo::ComparisonDirection::NE:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, constValue, constValue + 1, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
+      break;
       assert(false && "not implemented");
     }
 
-    // dump
-    for (auto &slice : slices)
-      llvm::errs() << slice << "\n";
-
     assert(slices.size() >= 2);
 
-    // concatenate all slices
-    auto curr = slices.begin();
-    auto next = slices.begin();
-    next++;
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        selectOp, ValueRange{slices}, 0);
 
-    auto concat = rewriter.create<stablehlo::ConcatenateOp>(
-        selectOp.getLoc(), ValueRange{*curr++, *next++}, 0);
-
-    while (next != slices.end()) {
-      concat = rewriter.create<stablehlo::ConcatenateOp>(
-          selectOp.getLoc(), ValueRange{concat, *next++}, 0);
-    }
-
-    rewriter.replaceAllUsesWith(selectOp, concat);
     return success();
   }
 };
