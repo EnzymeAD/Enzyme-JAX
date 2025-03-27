@@ -413,12 +413,15 @@ using SubFOpLowering =
 using SubIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::SubIOp, LLVM::SubOp,
                                     AttrConvertOverflowFromLLVM>;
-// using TruncFOpLowering =
-//    ConstrainedVectorConvertFromLLVMPattern<arith::TruncFOp, LLVM::FPTruncOp,
-//                                          false>;
-// using ConstrainedTruncFOpLowering = ConstrainedVectorConvertFromLLVMPattern<
-//    arith::TruncFOp, LLVM::ConstrainedFPTruncIntr, true,
-//    arith::AttrConverterConstrainedFPFromLLVM>;
+// TODO the LLVM -> Arith conversion does
+// arith::TruncFOp {rounding_mode=constrained} -> LLVM::ConstrainedFPTruncIntr
+// arith::TruncFOp {} -> LLVM::FPTruncIntr
+// for now we map both to plain truncfop
+using TruncFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::TruncFOp, LLVM::FPTruncOp>;
+using ConstrainedTruncFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::TruncFOp,
+                                    LLVM::ConstrainedFPTruncIntr>;
 using TruncIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
@@ -630,9 +633,8 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,
            RemUIOpLowering, SelectOpLowering, ShLIOpLowering, ShRSIOpLowering,
            ShRUIOpLowering, SIToFPOpLowering, SubFOpLowering, SubIOpLowering,
-           // TruncFOpLowering,
-           // ConstrainedTruncFOpLowering,
-           TruncIOpLowering, UIToFPOpLowering, XOrIOpLowering>(converter);
+           TruncFOpLowering, ConstrainedTruncFOpLowering, TruncIOpLowering,
+           UIToFPOpLowering, XOrIOpLowering>(converter);
   populateSelectExtractPatterns(patterns);
 }
 
