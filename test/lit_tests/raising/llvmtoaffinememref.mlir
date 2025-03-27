@@ -94,8 +94,7 @@ module {
   }
 }
 
-// CHECK: #map = affine_map<(d0, d1, d2) -> (d0 * -194 + d1 * 19206 + d2 * 307296 + 151908)>
-// CHECK-NEXT: #map1 = affine_map<(d0, d1)[s0] -> (-d0 + s0 - 1 - d1 * 16)>
+// CHECK: #map = affine_map<(d0, d1, d2, d3, d4)[s0] -> (d0 * -194 + s0 + 151907 + d1 * 19206 + d2 * 307296 - d3 - d4 * 16)>
 // CHECK-NEXT: #set = affine_set<(d0, d1, d2, d3) : (-d0 - d1 * 16 + 19 >= 0, d3 + d2 * 16 >= 0, d2 * -16 - d3 + 179 >= 0)>
 // CHECK-NEXT: #set1 = affine_set<(d0, d1) : (d1 + d0 * 16 - 1 >= 0)>
 // CHECK-NEXT: #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
@@ -122,12 +121,10 @@ module {
 // CHECK-NEXT:         %5 = arith.sitofp %4 : i64 to f64
 // CHECK-NEXT:         affine.for %arg10 = 0 to 6 {
 // CHECK-NEXT:           %6 = "enzymexla.pointer2memref"(%2) : (!llvm.ptr<1>) -> memref<?xf64, 1 : index>
-// CHECK-NEXT:           %7 = affine.apply #map(%arg10, %arg7, %arg6)
-// CHECK-NEXT:           %8 = affine.apply #map1(%arg9, %arg8)[%1]
-// CHECK-NEXT:           %9 = arith.addi %8, %7 : index
-// CHECK-NEXT:           %10 = memref.load %6[%9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
-// CHECK-NEXT:           %11 = arith.mulf %5, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:           affine.store %11, %arg0[%arg6 * 16 + %arg7 + 7, %arg10 + 92, %arg9 + %arg8 * 16 + 7] : memref<34x99x194xf64, 1>
+// CHECK-NEXT:           %7 = affine.apply #map(%arg10, %arg7, %arg6, %arg9, %arg8)[%1]
+// CHECK-NEXT:           %8 = memref.load %6[%7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
+// CHECK-NEXT:           %9 = arith.mulf %5, %8 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:           affine.store %9, %arg0[%arg6 * 16 + %arg7 + 7, %arg10 + 92, %arg9 + %arg8 * 16 + 7] : memref<34x99x194xf64, 1>
 // CHECK-NEXT:         }
 // CHECK-NEXT:       }
 // CHECK-NEXT:     }

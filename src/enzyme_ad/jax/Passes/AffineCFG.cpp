@@ -1063,6 +1063,9 @@ mapOperands); return success();
 */
 
 bool isValidIndex(Value val) {
+  if (val.getDefiningOp<affine::AffineApplyOp>())
+    return true;
+
   if (isValidSymbolInt(val))
     return true;
 
@@ -1396,8 +1399,11 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
   LogicalResult matchAndRewrite(memref::LoadOp load,
                                 PatternRewriter &rewriter) const override {
-    if (!llvm::all_of(load.getIndices(), isValidIndex))
-      return failure();
+    for (auto idx : load.getIndices()) {
+      if (!isValidIndex(idx)) {
+        return failure();
+      }
+    }
 
     auto memrefType = load.getMemRef().getType().cast<MemRefType>();
     int64_t rank = memrefType.getRank();

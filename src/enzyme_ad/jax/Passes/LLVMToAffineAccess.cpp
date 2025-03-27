@@ -410,6 +410,7 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);
+    map = mlir::enzyme::recreateExpr(map);
 
     if (preoperands.size() == 1) {
       Attribute attr;
@@ -417,9 +418,12 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
         return failure();
       if (preoperands == operands)
         return failure();
+      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
+        if (app.getAffineMap() == map && app.getMapOperands() == operands)
+          return failure();
+      }
     }
 
-    map = mlir::enzyme::recreateExpr(map);
     Value app;
     if (auto cst = dyn_cast<AffineConstantExpr>(map.getResult(0)))
       app =
