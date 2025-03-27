@@ -6413,7 +6413,9 @@ struct SelectCompIotaConstSimplify final
           startIndices[iotaDim] = start;
           limitIndices[iotaDim] = start + elem.count;
           auto slice = rewriter.create<stablehlo::SliceOp>(
-              loc, elem.tensor, startIndices, limitIndices, strides);
+              loc, elem.tensor, llvm::ArrayRef<int64_t>(startIndices),
+              llvm::ArrayRef<int64_t>(limitIndices),
+              llvm::ArrayRef<int64_t>(strides));
           sliceValues.push_back(slice);
           start += elem.count;
         }
