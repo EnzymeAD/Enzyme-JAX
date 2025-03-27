@@ -6280,33 +6280,33 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
 };
 
 struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
+  struct slice_data {
+    Value tensor;
+    int64_t count;
+  };
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
                                 PatternRewriter &rewriter) const override {
     DenseIntElementsAttr inp;
+
     Value compare = selectOp.getPred();
     Value trueTensor = selectOp.getOnTrue();
     Value falseTensor = selectOp.getOnFalse();
-
-    stablehlo::ComparisonDirectionAttr direction;
-
-    // only support 1d tensors
-    if (auto type = selectOp.getType())
-      if (type.getShape().size() != 1)
-        return failure();
-
-    if (!compare)
-      return failure();
-    auto compOp = compare.getDefiningOp();
-    if (!compOp)
+    if (!matchPattern(selectOp.getOperation(),
+                      m_Op<stablehlo::SelectOp>(m_Op<stablehlo::CompareOp>(),
+                                                matchers::m_Any(&trueTensor),
+                                                matchers::m_Any(&falseTensor))))
       return failure();
 
-    auto compareOp = dyn_cast<stablehlo::CompareOp>(compOp);
-    if (!compareOp)
+    auto tensorType = selectOp.getType();
+    if (!tensorType)
       return failure();
 
+    auto shapeLimit = tensorType.getShape();
+    auto compareOp = dyn_cast<stablehlo::CompareOp>(compare.getDefiningOp());
     auto flag = compareOp.getComparisonDirection();
 
+    stablehlo::IotaOp iota;
     if (!matchPattern(
             compare, m_Op<stablehlo::CompareOp>(m_Op<mlir::stablehlo::IotaOp>(),
                                                 m_Constant(&inp)))) {
@@ -6332,69 +6332,95 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
         default:
           break;
         }
+        iota = cast<stablehlo::IotaOp>(compareOp.getRhs().getDefiningOp());
       } else
         return failure();
-    }
+    } else
+      iota = cast<stablehlo::IotaOp>(compareOp.getLhs().getDefiningOp());
+
+    assert(iota);
+
+    const auto iotaDim = iota.getIotaDimension();
 
     if (!inp.isSplat())
       return failure();
 
     auto constValue = inp.getSplatValue<IntegerAttr>().getInt();
-    auto endValue = selectOp.getType().getShape().front();
+    auto endValue = shapeLimit[iotaDim];
 
     rewriter.setInsertionPointAfterValue(compare);
 
-    SmallVector<mlir::Value, 3> slices;
+    SmallVector<slice_data, 3> slices;
 
     switch (flag) {
     case stablehlo::ComparisonDirection::LT:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, constValue, endValue, 1));
+      slices.push_back(slice_data{trueTensor, constValue});
+      slices.push_back(slice_data{falseTensor, endValue - constValue});
       break;
     case stablehlo::ComparisonDirection::LE:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, 0, constValue + 1, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, constValue + 1, endValue, 1));
+      slices.push_back(slice_data{trueTensor, constValue + 1});
+      slices.push_back(slice_data{falseTensor, endValue - (constValue + 1)});
       break;
 
     case stablehlo::ComparisonDirection::GT:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, 0, constValue + 1, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
+      slices.push_back(slice_data{falseTensor, constValue + 1});
+      slices.push_back(slice_data{trueTensor, endValue - (constValue + 1)});
       break;
     case stablehlo::ComparisonDirection::GE:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, constValue, endValue, 1));
+      slices.push_back(slice_data{falseTensor, constValue});
+      slices.push_back(slice_data{trueTensor, endValue - constValue});
       break;
 
     case stablehlo::ComparisonDirection::EQ:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, constValue, constValue + 1, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, constValue + 1, endValue, 1));
+      slices.push_back(slice_data{falseTensor, constValue});
+      slices.push_back(slice_data{trueTensor, 1});
+      slices.push_back(slice_data{falseTensor, endValue - constValue - 1});
       break;
     case stablehlo::ComparisonDirection::NE:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, constValue, constValue + 1, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
+      slices.push_back(slice_data{trueTensor, constValue});
+      slices.push_back(slice_data{falseTensor, 1});
+      slices.push_back(slice_data{trueTensor, endValue - constValue - 1});
       break;
     }
 
     assert(slices.size() >= 2);
 
+    auto valid_slices =
+        std::count_if(slices.begin(), slices.end(),
+                      [](slice_data data) { return data.count > 0; });
+    if (valid_slices == 1) {
+      for (auto &elem : slices) {
+        if (elem.count > 0) {
+          // if we are the only usable slice, replace the result
+          rewriter.replaceAllOpUsesWith(selectOp, elem.tensor);
+          return success();
+        }
+      }
+    }
+
+    SmallVector<Value, 3> sliceValues;
+    {
+      long start = 0;
+      const auto elemType = tensorType.getElementType();
+      const auto loc = selectOp.getLoc();
+      SmallVector<long> startIndices(shapeLimit.size(), 0);
+      SmallVector<long> limitIndices{shapeLimit};
+      SmallVector<long> strides(shapeLimit.size(), 1);
+
+      for (const auto &elem : slices) {
+        if (elem.count > 0) {
+          startIndices[iotaDim] = start;
+          limitIndices[iotaDim] = start + elem.count;
+          auto slice = rewriter.create<stablehlo::SliceOp>(
+              loc, elem.tensor, startIndices, limitIndices, strides);
+          sliceValues.push_back(slice);
+          start += elem.count;
+        }
+      }
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        selectOp, ValueRange{slices}, 0);
+        selectOp, ValueRange{sliceValues}, iotaDim);
 
     return success();
   }
