@@ -6295,7 +6295,13 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
       if (type.getShape().size() != 1)
         return failure();
 
-    auto compareOp = cast<stablehlo::CompareOp>(compare.getDefiningOp());
+    if (!compare)
+      return failure();
+    auto compOp = compare.getDefiningOp();
+    if (!compOp)
+      return failure();
+
+    auto compareOp = dyn_cast<stablehlo::CompareOp>(compOp);
     if (!compareOp)
       return failure();
 
@@ -6335,13 +6341,6 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
 
     auto constValue = inp.getSplatValue<IntegerAttr>().getInt();
     auto endValue = selectOp.getType().getShape().front();
-    if (constValue <= 0) {
-      rewriter.replaceAllUsesWith(selectOp, falseTensor);
-      return success();
-    }
-    if (constValue >= endValue) {
-      rewriter.replaceAllUsesWith(selectOp, trueTensor);
-    }
 
     rewriter.setInsertionPointAfterValue(compare);
 
@@ -6363,15 +6362,15 @@ struct SelectCompIotaConst final : OpRewritePattern<mlir::stablehlo::SelectOp> {
 
     case stablehlo::ComparisonDirection::GT:
       slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), falseTensor, 0, constValue, 1));
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
-          selectOp.getLoc(), trueTensor, constValue, endValue, 1));
-      break;
-    case stablehlo::ComparisonDirection::GE:
-      slices.push_back(rewriter.create<stablehlo::SliceOp>(
           selectOp.getLoc(), falseTensor, 0, constValue + 1, 1));
       slices.push_back(rewriter.create<stablehlo::SliceOp>(
           selectOp.getLoc(), trueTensor, constValue + 1, endValue, 1));
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), falseTensor, 0, constValue, 1));
+      slices.push_back(rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, constValue, endValue, 1));
       break;
 
     case stablehlo::ComparisonDirection::EQ:
