@@ -4405,7 +4405,10 @@ public:
         for (auto operand : op->getOperands()) {
           if (auto ores = dyn_cast<OpResult>(operand)) {
             if (ores.getOwner() == conditional) {
-              postOp = op;
+              if (postOp == nullptr)
+                postOp = op;
+              else if (dominance.dominates(op, postOp))
+                postOp = op;
               auto rnum = ores.getResultNumber();
               resultsNeeded.insert(rnum);
               if (!definedOutside(trueYld->getOperand(rnum), conditional) ||
