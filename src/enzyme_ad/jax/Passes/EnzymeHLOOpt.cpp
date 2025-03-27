@@ -6401,12 +6401,12 @@ struct SelectCompIotaConstSimplify final
 
     SmallVector<Value, 3> sliceValues;
     {
-      long start = 0;
+      int64_t start = 0;
       const auto elemType = tensorType.getElementType();
       const auto loc = selectOp.getLoc();
-      SmallVector<long> startIndices(shapeLimit.size(), 0);
-      SmallVector<long> limitIndices{shapeLimit};
-      SmallVector<long> strides(shapeLimit.size(), 1);
+      SmallVector<int64_t> startIndices(shapeLimit.size(), 0);
+      SmallVector<int64_t> limitIndices{shapeLimit};
+      SmallVector<int64_t> strides(shapeLimit.size(), 1);
 
       for (const auto &elem : slices) {
         if (elem.count > 0) {
