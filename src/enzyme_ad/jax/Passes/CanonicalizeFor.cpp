@@ -21,6 +21,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
 #include "llvm/ADT/MapVector.h"
 
@@ -2529,70 +2530,6 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
   }
 };
 
-struct SelectExtractElementToExtractElementSelect
-    : public OpRewritePattern<LLVM::ExtractElementOp> {
-  using OpRewritePattern<LLVM::ExtractElementOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::ExtractElementOp op,
-                                PatternRewriter &rewriter) const override {
-    auto selectOp = op.getVector().getDefiningOp<SelectOp>();
-    if (!selectOp)
-      return failure();
-
-    // Get select operands and extract position
-    auto cond = selectOp.getCondition();
-    auto a = selectOp.getTrueValue();
-    auto b = selectOp.getFalseValue();
-    auto idx = op.getPosition();
-
-    // Create new extract operations
-    auto aExtract =
-        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), a, idx);
-    auto bExtract =
-        rewriter.create<LLVM::ExtractElementOp>(op.getLoc(), b, idx);
-
-    // Create new select with same condition and operands
-    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
-                                               cond, aExtract, bExtract);
-
-    // Replace old extract with new select
-    rewriter.replaceOp(op, newSelect);
-
-    return success();
-  }
-};
-
-struct SelectExtractValueToExtractValueSelect
-    : public OpRewritePattern<LLVM::ExtractValueOp> {
-  using OpRewritePattern<LLVM::ExtractValueOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::ExtractValueOp op,
-                                PatternRewriter &rewriter) const override {
-    auto selectOp = op.getContainer().getDefiningOp<SelectOp>();
-    if (!selectOp)
-      return failure();
-
-    // Get select operands and extract position
-    auto cond = selectOp.getCondition();
-    auto a = selectOp.getTrueValue();
-    auto b = selectOp.getFalseValue();
-    auto idx = op.getPosition();
-
-    // Create new extract operations
-    auto aExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), a, idx);
-    auto bExtract = rewriter.create<LLVM::ExtractValueOp>(op.getLoc(), b, idx);
-
-    // Create new select with same condition and operands
-    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
-                                               cond, aExtract, bExtract);
-
-    // Replace old extract with new select
-    rewriter.replaceOp(op, newSelect);
-
-    return success();
-  }
-};
-
 struct SelectTruncToTruncSelect : public OpRewritePattern<TruncIOp> {
   using OpRewritePattern<TruncIOp>::OpRewritePattern;
 
@@ -3038,11 +2975,10 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
+  populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
-          MoveWhileToFor, RemoveWhileSelect,
-          SelectExtractElementToExtractElementSelect,
-          SelectExtractValueToExtractValueSelect, SelectTruncToTruncSelect,
+          MoveWhileToFor, RemoveWhileSelect, SelectTruncToTruncSelect,
           SelectI1Simplify,
 
           MoveWhileDown, MoveWhileDown2,
