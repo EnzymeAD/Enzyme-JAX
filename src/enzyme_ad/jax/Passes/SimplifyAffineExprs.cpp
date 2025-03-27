@@ -832,7 +832,12 @@ std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {
   return getAffExprs(op, getAVM(op));
 }
 
-IslAnalysis::IslAnalysis() { ctx = isl_ctx_alloc(); }
+IslAnalysis::IslAnalysis() {
+  ctx = isl_ctx_alloc();
+  [[maybe_unused]] isl_stat r =
+      isl_options_set_ast_build_exploit_nested_bounds(ctx, 1);
+  assert(r == isl_stat_ok);
+}
 
 IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
@@ -949,12 +954,6 @@ struct SimplifyAffineExprsPass
   using SimplifyAffineExprsPassBase::SimplifyAffineExprsPassBase;
   void runOnOperation() override {
     IslAnalysis ia;
-    isl_ctx *ctx = ia.getCtx();
-    isl_stat r = isl_options_set_ast_build_exploit_nested_bounds(ctx, 1);
-    if (r != isl_stat_ok) {
-      signalPassFailure();
-      return;
-    }
 
     Operation *op = getOperation();
     op->walk([&](Operation *op) {
