@@ -17,7 +17,7 @@ module {
 // CHECK-NEXT:    affine.parallel (%arg1, %arg2) = (0, 0) to (2, 5) {
 // CHECK-NEXT:      %0 = affine.apply affine_map<(d0, d1) -> (d0 + d1)>(%arg1, %arg2)
 // CHECK-NEXT:      %1 = arith.index_cast %0 : index to i64
-// CHECK-NEXT:      affine.store %1, %arg0[%arg2 + %arg1 * 5] : memref<10xi64>
+// CHECK-NEXT:      affine.store %1, %arg0[%arg1 * 5 + %arg2] : memref<10xi64>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }

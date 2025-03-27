@@ -2598,6 +2598,26 @@ struct PrepMergeNestedAffineParallelLoops
   }
 };
 
+/// Canonicalize the bounds of the given loop.
+static LogicalResult canonicalizeLoopBounds(AffineParallelOp op) {
+  AffineValueMap lb = op.getLowerBoundsValueMap();
+  bool lbCanonicalized = succeeded(lb.canonicalize());
+
+  AffineValueMap ub = op.getUpperBoundsValueMap();
+  bool ubCanonicalized = succeeded(ub.canonicalize());
+
+  // Any canonicalization change always leads to updated map(s).
+  if (!lbCanonicalized && !ubCanonicalized)
+    return failure();
+
+  if (lbCanonicalized)
+    op.setLowerBounds(lb.getOperands(), lb.getAffineMap());
+  if (ubCanonicalized)
+    op.setUpperBounds(ub.getOperands(), ub.getAffineMap());
+
+  return success();
+}
+
 struct MergeNestedAffineParallelIf
     : public OpRewritePattern<affine::AffineParallelOp> {
   using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
@@ -2869,7 +2889,6 @@ struct MergeNestedAffineParallelIf
                                ubounds, op.getContext())),
             rewriter.getI32TensorAttr(uboundGroup), op.getStepsAttr(),
             operands);
-
     rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                 affineLoop.getRegion().begin());
 
@@ -2903,6 +2922,12 @@ struct MergeNestedAffineParallelIf
       rewriter.replaceOp(innerOp, newIf->getResults());
       rewriter.replaceOp(op, affineLoop->getResults());
     }
+
+    // We include the dims of the affine.if expressios (which include the IVs of
+    // the parallel loop) in the new parallel which results in invalid IR. This
+    // canonicalizes these dims away.
+    canonicalizeLoopBounds(affineLoop);
+
     return success();
   }
 };
@@ -4601,6 +4626,8 @@ void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
   populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
+  IslAnalysis islAnalysis;
+  populateAffineExprSimplificationPatterns(islAnalysis, rpl);
   GreedyRewriteConfig config;
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }

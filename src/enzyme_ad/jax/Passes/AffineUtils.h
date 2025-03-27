@@ -41,6 +41,9 @@ public:
   ~IslScopeFree() { isl_set_free(obj); }
 };
 
+void populateAffineExprSimplificationPatterns(IslAnalysis &islAnalysis,
+                                              RewritePatternSet &patterns);
+
 } // namespace mlir
 
 #endif // ENZYME_JAX_PASSES_AFFINEUTILS_H_
