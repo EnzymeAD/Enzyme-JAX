@@ -8158,7 +8158,12 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 ///////////////  End Imported from stablehlo
 
 // clang-format off
+namespace mlir {
+namespace enzyme {
 #include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
+}; // namespace enzyme
+}; // namespace mlir
+
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 // clang-format on
 
@@ -8215,7 +8220,8 @@ struct EnzymeHLOOptPass
     auto context = getOperation()->getContext();
 
     RewritePatternSet patterns(context);
-    populateWithGenerated(patterns);
+    mlir::enzyme::populateWithGenerated(patterns);
+
     patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
                  MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
                  DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
