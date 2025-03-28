@@ -566,7 +566,7 @@ struct ParallelContext {
   struct Options {
     bool enableLockstepFor = true;
     bool preferWhileRaising = true;
-  } &options;
+  } & options;
 
   ParallelContext(Options &options) : options(options) {}
 
