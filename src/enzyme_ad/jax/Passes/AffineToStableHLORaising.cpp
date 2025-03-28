@@ -560,9 +560,20 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   return inBounds;
 }
 
+// The name is parallel context but a more accurate description would be
+// LockStepContext
 struct ParallelContext {
+  struct Options {
+    bool enableLockstepFor = true;
+    bool preferForToWhile = true;
+  } &options;
+
+  ParallelContext(Options &options) : options(options) {}
+
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
+
+  bool isParallelIV(Value iv) { return llvm::find(ivs, iv) != ivs.end(); }
 
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
@@ -627,10 +638,14 @@ struct ParallelContext {
     return newPc;
   }
 
-  static std::optional<ParallelContext>
-  get(affine::AffineParallelOp parallelOp) {
-    ParallelContext pc;
+  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
+                                            Options &options) {
+    ParallelContext pc(options);
     return pc.add(parallelOp);
+  }
+  static ParallelContext getEmpty(Options &options) {
+    ParallelContext pc(options);
+    return pc;
   }
 };
 
@@ -1126,14 +1141,23 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   return success();
 }
 
-static bool isLockStepExecutable(affine::AffineForOp forOp) { return false; }
+bool isLoopLockStepExecutable(
+    affine::AffineForOp forOp,
+    SmallVectorImpl<affine::LoopReduction> *parallelReductions);
+static bool isLockStepExecutable(affine::AffineForOp forOp) {
+  return isLoopLockStepExecutable(forOp, /* reductions not allowed */ nullptr);
+}
 
 static LogicalResult tryRaisingLockStepForOpToStableHLO(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  LLVM_DEBUG(llvm::dbgs() << "Trying to lock step execute for " << *forOp
+                          << "\n");
   if (isLockStepExecutable(forOp)) {
+    LLVM_DEBUG(llvm::dbgs() << "Legal\n");
     return tryRaisingParallelOpToStableHLO(forOp, mapping, builder, maps, pc);
   }
+  LLVM_DEBUG(llvm::dbgs() << "Illegal\n");
   return failure();
 }
 
@@ -1206,7 +1230,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         AffineExpr exprToEmit = E;
         if (!E.isSymbolicOrConstant()) {
           auto iv = getIVForExpr(accessValueMap, E);
-          if (affine::isAffineParallelInductionVar(iv)) {
+          if (pc.isParallelIV(iv)) {
             auto r = computeExprRange(accessValueMap, E);
             auto lb = r->step < 0 ? r->ub - r->step : r->lb;
             exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
@@ -1252,8 +1276,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     AffineMap affineMap = accessValueMap.getAffineMap();
     for (auto [S, E] : llvm::zip_equal(outputShape, affineMap.getResults())) {
-      if (!E.isSymbolicOrConstant() && affine::isAffineParallelInductionVar(
-                                           getIVForExpr(accessValueMap, E))) {
+      if (!E.isSymbolicOrConstant() &&
+          pc.isParallelIV(getIVForExpr(accessValueMap, E))) {
         dynExprs.push_back(E);
         dynShape.push_back(S);
       }
@@ -1376,7 +1400,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto iv = accessValueMap.getOperands()[dim];
 
         AffineExpr exprToEmit = E;
-        if (affine::isAffineParallelInductionVar(iv)) {
+        if (pc.isParallelIV(iv)) {
           auto r = computeExprRange(accessValueMap, E);
           auto lb = r->step < 0 ? r->ub - r->step : r->lb;
           exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
@@ -1732,10 +1756,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Inner for op
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-    if (tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
+    if (pc.options.enableLockstepFor &&
+        tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded())
       return success();
-    if (tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
+    if (pc.options.preferForToWhile &&
+        tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded())
       return success();
     if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
@@ -1785,7 +1811,8 @@ replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
 }
 
 static bool tryRaisingToStableHLO(func::FuncOp func,
-                                  ArrayRef<Operation *> users) {
+                                  ArrayRef<Operation *> users,
+                                  ParallelContext::Options &options) {
   Block *body = &func->getRegion(0).front();
   Block *newBlock = new Block();
 
@@ -1819,7 +1846,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
-  ParallelContext emptyPc;
+  ParallelContext emptyPc = ParallelContext::getEmpty(options);
   for (auto &it : body->without_terminator()) {
     Operation *bodyOp = &it;
     if (auto loopRoot = dyn_cast<affine::AffineParallelOp>(bodyOp)) {
@@ -1845,7 +1872,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
         emitIVToStableHLO(builder, iv, *range, mapping, maps);
       }
 
-      auto pc = ParallelContext::get(loopRoot);
+      auto pc = ParallelContext::get(loopRoot, options);
       if (!pc) {
         anyFailed = true;
         break;
@@ -1902,6 +1929,7 @@ struct AffineToStableHLORaisingPass
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
   void runOnOperation() override {
+    ParallelContext::Options options{enable_lockstep_for, true};
     std::vector<func::FuncOp> funcs;
 
     auto op = getOperation();
@@ -1925,7 +1953,7 @@ struct AffineToStableHLORaisingPass
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
       ArrayRef<Operation *> users = userMap.getUsers(kernelFunc);
-      bool raised = tryRaisingToStableHLO(kernelFunc, users);
+      bool raised = tryRaisingToStableHLO(kernelFunc, users, options);
       anyRaised |= raised;
       if (!raised && err_if_not_fully_raised) {
         llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
