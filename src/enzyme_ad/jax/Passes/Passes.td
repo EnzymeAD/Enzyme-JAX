@@ -535,6 +535,13 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*type=*/"bool",
            /*default=*/"true",
            /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"prefer_while_raising",
+           /*CLI argument=*/"prefer_while_raising",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Whether to prefer raising to while instead of unrolling">,
   ];
 }
 

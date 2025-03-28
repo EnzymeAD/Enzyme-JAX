@@ -565,7 +565,7 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
 struct ParallelContext {
   struct Options {
     bool enableLockstepFor = true;
-    bool preferForToWhile = true;
+    bool preferWhileRaising = true;
   } &options;
 
   ParallelContext(Options &options) : options(options) {}
@@ -981,7 +981,35 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 static LogicalResult tryRaisingForOpToStableHLOUnroll(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  return failure();
+  auto tmpBlock = new Block();
+  OpBuilder oldFuncBuilder(builder.getContext());
+  oldFuncBuilder.setInsertionPointToStart(tmpBlock);
+  auto clonedFor = cast<affine::AffineForOp>(oldFuncBuilder.clone(*forOp));
+  auto yield = oldFuncBuilder.create<affine::AffineYieldOp>(
+      clonedFor.getLoc(), clonedFor.getResults());
+  if (failed(affine::loopUnrollFull(clonedFor))) {
+    delete tmpBlock;
+    return failure();
+  }
+  for (auto &innerOp : tmpBlock->without_terminator()) {
+
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
+      return failure();
+  }
+  for (auto [yielded, res] :
+       llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
+    auto mapped = mapping.lookupOrNull(yielded);
+    assert(mapped);
+    mapping.map(res, mapped);
+
+    auto found = maps.find(yielded);
+    if (found != maps.end()) {
+      affine::AffineValueMap avm = found->second;
+      maps[res] = avm;
+    }
+  }
+  delete tmpBlock;
+  return success();
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
@@ -1172,6 +1200,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    accessValueMap.composeSimplifyAndCanonicalize();
 
     auto inputTen = mapping.lookup(access.memref);
 
@@ -1311,6 +1340,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    accessValueMap.composeSimplifyAndCanonicalize();
 
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
@@ -1568,9 +1598,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    auto avm = apply.getAffineValueMap();
+    avm.composeSimplifyAndCanonicalize();
     auto [expanded, expandedMap] = expandAffineExpr(
-        builder, apply.getLoc(), apply.getAffineMap().getResult(0),
-        apply.getOperands(), mapping, apply.getAffineMap().getNumDims());
+        builder, apply.getLoc(), avm.getAffineMap().getResult(0),
+        avm.getOperands(), mapping, avm.getAffineMap().getNumDims());
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
     return success();
@@ -1758,15 +1790,21 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
     if (pc.options.enableLockstepFor &&
         tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
-            .succeeded())
+            .succeeded()) {
+      llvm::errs() << "LOCKSTEP\n";
       return success();
-    if (pc.options.preferForToWhile &&
+    }
+    if (pc.options.preferWhileRaising &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
-            .succeeded())
+            .succeeded()) {
+      llvm::errs() << "WHILE\n";
       return success();
+    }
     if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
-            .succeeded())
+            .succeeded()) {
+      llvm::errs() << "UNROLLED\n";
       return success();
+    }
   }
 
   if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
@@ -1929,7 +1967,7 @@ struct AffineToStableHLORaisingPass
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
   void runOnOperation() override {
-    ParallelContext::Options options{enable_lockstep_for, true};
+    ParallelContext::Options options{enable_lockstep_for, prefer_while_raising};
     std::vector<func::FuncOp> funcs;
 
     auto op = getOperation();

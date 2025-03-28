@@ -5645,6 +5645,14 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
         return false;
       }
 
+      // I haven't thought through the logic in this case, conservatively fail
+      // for now.
+      bool eitherNestedInNestedFor =
+          dstOp->getParentOfType<affine::AffineForOp>() != forOp ||
+          srcOp->getParentOfType<affine::AffineForOp>() != forOp;
+      if (eitherNestedInNestedFor)
+        return false;
+
       if (srcOp == dstOp) {
         // Since we will be executing different iterations of the same
         // instruction at the same time in lock step fashion, any dependence
@@ -5701,12 +5709,12 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
                                 PatternRewriter &rewriter) const override {
     SmallVector<LoopReduction> reductions;
     if (!::isLoopParallel(forOp, parallelReductions ? &reductions : nullptr))
-      return failure();
+      return rewriter.notifyMatchFailure(forOp, "!isLoopParallel");
 
     // Fail early if there are iter arguments that are not reductions.
     unsigned numReductions = reductions.size();
     if (numReductions != forOp.getNumIterOperands())
-      return failure();
+      return rewriter.notifyMatchFailure(forOp, "reduction num mismatch");
 
     Location loc = forOp.getLoc();
     rewriter.setInsertionPoint(forOp);
