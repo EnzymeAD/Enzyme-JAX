@@ -88,26 +88,34 @@ static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
   return map.getOperand(pos);
 }
 
+static std::optional<int64_t> getConstant(AffineMap map) {
+  if (map.isSingleConstant())
+    return map.getSingleConstantResult();
+  return std::nullopt;
+}
+
 static std::optional<InductionVariableRange> getIVRange(Value iv) {
   assert(affine::isAffineInductionVar(iv));
 
-  auto owner = affine::getAffineParallelInductionVarOwner(iv);
+  if (auto owner = affine::getAffineParallelInductionVarOwner(iv)) {
 
-  if (owner.hasMinMaxBounds()) // Non-constant ranges.
-    return std::nullopt;
-
-  auto ivPos = cast<BlockArgument>(iv).getArgNumber();
-  auto lb = owner.getLowerBoundMap(ivPos)
-                .getResult(0)
-                .cast<AffineConstantExpr>()
-                .getValue();
-  auto ub = owner.getUpperBoundMap(ivPos)
-                .getResult(0)
-                .cast<AffineConstantExpr>()
-                .getValue();
-  auto step = owner.getSteps()[ivPos];
-
-  return InductionVariableRange{lb, ub, step};
+    auto ivPos = cast<BlockArgument>(iv).getArgNumber();
+    auto lb = getConstant(owner.getLowerBoundMap(ivPos));
+    auto ub = getConstant(owner.getUpperBoundMap(ivPos));
+    auto step = owner.getSteps()[ivPos];
+    if (!lb || !ub)
+      return std::nullopt;
+    return InductionVariableRange{*lb, *ub, step};
+  }
+  if (auto owner = affine::getForInductionVarOwner(iv)) {
+    auto lb = getConstant(owner.getLowerBoundMap());
+    auto ub = getConstant(owner.getUpperBoundMap());
+    auto step = owner.getStep();
+    if (!lb || !ub)
+      return std::nullopt;
+    return InductionVariableRange{*lb, *ub, step.getSExtValue()};
+  }
+  llvm_unreachable("Not affine iv");
 }
 
 static std::optional<InductionVariableRange>
@@ -596,6 +604,17 @@ struct ParallelContext {
     return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
   }
 
+  std::optional<ParallelContext> add(affine::AffineForOp forOp) {
+    ParallelContext newPc = *this;
+    auto iv = forOp.getInductionVar();
+    auto ivr = getIVRange(iv);
+    if (!ivr)
+      return std::nullopt;
+    newPc.ranges.push_back(*ivr);
+    newPc.ivs.push_back(iv);
+    return newPc;
+  }
+
   std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
     ParallelContext newPc = *this;
     for (auto iv : parallelOp.getIVs()) {
@@ -944,13 +963,13 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   return res;
 }
 
-static LogicalResult tryRaisingLockStepForOpToStableHLO(
+static LogicalResult tryRaisingForOpToStableHLOUnroll(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   return failure();
 }
 
-static LogicalResult tryRaisingForOpToStableHLO(
+static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   if (!forOp.hasConstantBounds())
@@ -977,7 +996,7 @@ static LogicalResult tryRaisingForOpToStableHLO(
       SplatElementsAttr::get(
           TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
 
-  Block *entryBlock = &op->getParentOfType<func::FuncOp>().getBody().front();
+  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
 
   Block *cond = new Block(), *body = new Block();
   Value ivInCond = cond->addArgument(TT, iv.getLoc());
@@ -1029,7 +1048,7 @@ static LogicalResult tryRaisingForOpToStableHLO(
 
     mapping.map(iv, ivInBody);
     maps[ivInBody] =
-        affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+        affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
 
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
@@ -1072,14 +1091,23 @@ static LogicalResult tryRaisingForOpToStableHLO(
   return success();
 }
 
+template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
+template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineParallelOp op) {
+  return {op.getIVs().begin(), op.getIVs().end()};
+}
+template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineForOp op) {
+  return {op.getInductionVar()};
+}
+
 template <class T>
 static LogicalResult tryRaisingParallelOpToStableHLO(
     T parallelOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  if (parallelOp.hasMinMaxBounds() || !parallelOp.getReductions().empty())
+  // No reductions for now
+  if (!parallelOp.getResults().empty())
     return failure();
 
-  for (auto iv : parallelOp.getIVs()) {
+  for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
     if (!range.has_value())
       return failure();
@@ -1096,6 +1124,17 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   }
 
   return success();
+}
+
+static bool isLockStepExecutable(affine::AffineForOp forOp) { return false; }
+
+static LogicalResult tryRaisingLockStepForOpToStableHLO(
+    affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  if (isLockStepExecutable(forOp)) {
+    return tryRaisingParallelOpToStableHLO(forOp, mapping, builder, maps, pc);
+  }
+  return failure();
 }
 
 static LogicalResult
@@ -1691,18 +1730,21 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                            pc);
   }
 
-  if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
-    return success();
-  }
-
   // Inner for op
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
     if (tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded())
       return success();
-    if (tryRaisingForOpToStableHLO(forOp, mapping, builder, maps, pc)
+    if (tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded())
       return success();
+    if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
+  }
+
+  if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
+    return success();
   }
 
   LLVM_DEBUG(llvm::dbgs() << "cannot raise op to stablehlo: " << *op << "\n";);
