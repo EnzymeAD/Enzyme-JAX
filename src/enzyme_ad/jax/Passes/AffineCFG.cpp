@@ -5213,7 +5213,8 @@ static bool isLoopParallel(AffineForOp forOp,
 
 /// Moves index_cast operations inside affine.if regions when they are
 /// applied to the if operation's results.
-struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::AffineIfOp> {
+struct AffineIfIndexCastOptimizer
+    : public OpRewritePattern<mlir::affine::AffineIfOp> {
   using OpRewritePattern<mlir::affine::AffineIfOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::affine::AffineIfOp ifOp,
@@ -5228,7 +5229,7 @@ struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::Affine
     for (auto result : llvm::enumerate(ifOp.getResults())) {
       int resultIdx = result.index();
       Value value = result.value();
-      
+
       // Skip if the result is not an integer type that can be index-cast
       if (!value.getType().isIntOrIndex()) {
         newResultTypes[resultIdx] = value.getType();
@@ -5244,7 +5245,7 @@ struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::Affine
       // Check if this result is only used by a single index_cast operation
       arith::IndexCastOp indexCastUser = nullptr;
       bool singleUser = true;
-      
+
       for (Operation *user : value.getUsers()) {
         if (auto indexCast = dyn_cast<arith::IndexCastOp>(user)) {
           if (!indexCastUser) {
@@ -5283,19 +5284,21 @@ struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::Affine
         /* withElseRegion */ true);
 
     // Update the then region
-    rewriter.inlineRegionBefore(ifOp.getThenRegion(), newIfOp.getThenRegion(), 
-                               newIfOp.getThenRegion().begin());
-    
+    rewriter.inlineRegionBefore(ifOp.getThenRegion(), newIfOp.getThenRegion(),
+                                newIfOp.getThenRegion().begin());
+
     // Update the else region
-    rewriter.inlineRegionBefore(ifOp.getElseRegion(), newIfOp.getElseRegion(), 
-                               newIfOp.getElseRegion().begin());
+    rewriter.inlineRegionBefore(ifOp.getElseRegion(), newIfOp.getElseRegion(),
+                                newIfOp.getElseRegion().begin());
 
     // Get the yield ops in both regions
     auto &thenBlock = newIfOp.getThenRegion().front();
-    auto thenYield = cast<mlir::affine::AffineYieldOp>(thenBlock.getTerminator());
-    
+    auto thenYield =
+        cast<mlir::affine::AffineYieldOp>(thenBlock.getTerminator());
+
     auto &elseBlock = newIfOp.getElseRegion().front();
-    auto elseYield = cast<mlir::affine::AffineYieldOp>(elseBlock.getTerminator());
+    auto elseYield =
+        cast<mlir::affine::AffineYieldOp>(elseBlock.getTerminator());
 
     // Transform the yield operations to apply index_cast where needed
     SmallVector<Value> thenYieldOperands;
@@ -5325,12 +5328,15 @@ struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::Affine
 
     // Replace the original yield operations with new ones
     rewriter.setInsertionPoint(thenYield);
-    rewriter.replaceOpWithNewOp<mlir::affine::AffineYieldOp>(thenYield, thenYieldOperands);
+    rewriter.replaceOpWithNewOp<mlir::affine::AffineYieldOp>(thenYield,
+                                                             thenYieldOperands);
 
     rewriter.setInsertionPoint(elseYield);
-    rewriter.replaceOpWithNewOp<mlir::affine::AffineYieldOp>(elseYield, elseYieldOperands);
+    rewriter.replaceOpWithNewOp<mlir::affine::AffineYieldOp>(elseYield,
+                                                             elseYieldOperands);
 
-    // Replace uses of the old index_cast ops with the corresponding results from the new if
+    // Replace uses of the old index_cast ops with the corresponding results
+    // from the new if
     for (auto it : llvm::enumerate(resultsToOptimize)) {
       size_t idx = it.index();
       bool shouldOptimize = it.value();
@@ -5350,10 +5356,10 @@ struct AffineIfIndexCastOptimizer : public OpRewritePattern<mlir::affine::Affine
 
     // Erase the old if op
     rewriter.eraseOp(ifOp);
-    
+
     return success();
   }
-}; 
+};
 
 struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
 
