@@ -7,12 +7,13 @@ func.func @test_affine_if_index_cast(%arg0: index) -> index {
   %c1_i64 = arith.constant 1 : i64
   %c2_i64 = arith.constant 2 : i64
   
-  // CHECK: %[[RESULT:.*]] = affine.if
-  // CHECK:   %[[CAST1:.*]] = arith.index_cast %c1_i64 : i64 to index
-  // CHECK:   affine.yield %[[CAST1]]
-  // CHECK: else
-  // CHECK:   %[[CAST2:.*]] = arith.index_cast %c2_i64 : i64 to index
-  // CHECK:   affine.yield %[[CAST2]]
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1 = arith.constant 1 : index
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> index {
+  // CHECK-NEXT: affine.yield %c1 : index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2 : index
+  // CHECK-NEXT: }
   // CHECK-NOT: arith.index_cast
   
   %0 = affine.if #set0(%arg0) -> (i64) {
@@ -35,12 +36,16 @@ func.func @test_multi_result_single_cast(%arg0: index) -> (i64, index) {
   %c3_i64 = arith.constant 3 : i64
   %c4_i64 = arith.constant 4 : i64
   
-  // CHECK: %[[RESULT:.*]]:2 = affine.if
-  // CHECK:   affine.yield %c1_i64, %{{.*}}
-  // CHECK: else
-  // CHECK:   %[[CAST:.*]] = arith.index_cast %c4_i64 : i64 to index
-  // CHECK:   affine.yield %c3_i64, %[[CAST]]
-  // CHECK-NOT: arith.index_cast %{{.*}}#1
+  // CHECK: %c4 = arith.constant 4 : index
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1_i64 = arith.constant 1 : i64
+  // CHECK: %c3_i64 = arith.constant 3 : i64
+  // CHECK: %[[RESULT:.*]]:2 = affine.if #set{{.*}}()[%arg0] -> (i64, index) {
+  // CHECK-NEXT: affine.yield %c1_i64, %c2 : i64, index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c3_i64, %c4 : i64, index
+  // CHECK-NEXT: }
+  // CHECK-NOT: arith.index_cast
   
   %0:2 = affine.if #set0(%arg0) -> (i64, i64) {
     affine.yield %c1_i64, %c2_i64 : i64, i64
@@ -62,14 +67,16 @@ func.func @test_multi_result_all_cast(%arg0: index) -> (index, index) {
   %c3_i64 = arith.constant 3 : i64
   %c4_i64 = arith.constant 4 : i64
   
-  // CHECK: %[[RESULT:.*]]:2 = affine.if
-  // CHECK:   %[[CAST1:.*]] = arith.index_cast %c1_i64 : i64 to index
-  // CHECK:   %[[CAST2:.*]] = arith.index_cast %c2_i64 : i64 to index
-  // CHECK:   affine.yield %[[CAST1]], %[[CAST2]]
-  // CHECK: else
-  // CHECK:   %[[CAST3:.*]] = arith.index_cast %c3_i64 : i64 to index
-  // CHECK:   %[[CAST4:.*]] = arith.index_cast %c4_i64 : i64 to index
-  // CHECK:   affine.yield %[[CAST3]], %[[CAST4]]
+  // CHECK: %c4 = arith.constant 4 : index
+  // CHECK: %c3 = arith.constant 3 : index
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1 = arith.constant 1 : index
+  // CHECK: %[[RESULT:.*]]:2 = affine.if #set{{.*}}()[%arg0] -> (index, index) {
+  // CHECK-NEXT: affine.yield %c1, %c2 : index, index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c3, %c4 : index, index
+  // CHECK-NEXT: }
+  // CHECK-NOT: arith.index_cast
   
   %0:2 = affine.if #set0(%arg0) -> (i64, i64) {
     affine.yield %c1_i64, %c2_i64 : i64, i64
@@ -90,13 +97,12 @@ func.func @test_multiple_uses(%arg0: index) -> (index, i64) {
   %c1_i64 = arith.constant 1 : i64
   %c2_i64 = arith.constant 2 : i64
   
-  // CHECK: %[[RESULT:.*]] = affine.if
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c1_i64
-  // CHECK: else
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c2_i64
-  // CHECK: arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c1_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2_i64 : i64
+  // CHECK-NEXT: }
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
   
   %0 = affine.if #set0(%arg0) -> (i64) {
     affine.yield %c1_i64 : i64
@@ -116,14 +122,13 @@ func.func @test_multiple_casts(%arg0: index) -> (index, index) {
   %c1_i64 = arith.constant 1 : i64
   %c2_i64 = arith.constant 2 : i64
   
-  // CHECK: %[[RESULT:.*]] = affine.if
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c1_i64
-  // CHECK: else
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c2_i64
-  // CHECK: %[[CAST1:.*]] = arith.index_cast %[[RESULT]] : i64 to index
-  // CHECK: %[[CAST2:.*]] = arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c1_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2_i64 : i64
+  // CHECK-NEXT: }
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
   
   %0 = affine.if #set0(%arg0) -> (i64) {
     affine.yield %c1_i64 : i64
@@ -144,12 +149,11 @@ func.func @test_already_index(%arg0: index) -> index {
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   
-  // CHECK: %[[RESULT:.*]] = affine.if
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c1
-  // CHECK: else
-  // CHECK-NOT: arith.index_cast
-  // CHECK:   affine.yield %c2
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> index {
+  // CHECK-NEXT: affine.yield %c1 : index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2 : index
+  // CHECK-NEXT: }
   
   %0 = affine.if #set0(%arg0) -> (index) {
     affine.yield %c1 : index
