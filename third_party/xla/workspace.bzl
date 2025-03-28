@@ -4,7 +4,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # load("@jax//third_party/xla:workspace.bzl", "XLA_COMMIT", "XLA_SHA256")
 load("//:workspace.bzl", "XLA_PATCHES")
 
-XLA_COMMIT = "53079112658aa1247cd1e12cb9435c9dc2fe480f"
+XLA_COMMIT = "46c1f0b78985ac535980c08bb0d5e53b935d7d01"
 XLA_SHA256 = ""
 
 def repo():
