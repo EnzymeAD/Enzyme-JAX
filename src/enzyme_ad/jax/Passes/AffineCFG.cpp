@@ -4359,10 +4359,7 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
 };
 
 bool definedOutside(Value v, Operation *op) {
-  auto vop = v.getDefiningOp();
-  if (!vop)
-    return true;
-  return !op->isAncestor(vop);
+  return !op->isAncestor(v.getParentBlock()->getParentOp());
 }
 
 /// Lift memref read depending on an scf.if into the body of that scf.if. This
@@ -4432,18 +4429,16 @@ public:
       SmallVector<std::unique_ptr<Region>> regions;
       regions.emplace_back(new Region);
       regions.emplace_back(new Region);
-      auto tBlk = new Block();
-      SmallVector<Value> trueResults;
+      Block *tBlk = rewriter.createBlock(regions[0].get(), regions[0]->begin());
+      Block *fBlk = rewriter.createBlock(regions[1].get(), regions[1]->begin());
+      SmallVector<Value> trueResults, falseResults;
       SmallVector<Type> types;
       for (auto idx : resultsNeeded) {
         trueResults.push_back(trueYld->getOperand(idx));
+        falseResults.push_back(falseYld->getOperand(idx));
         types.push_back(trueYld->getOperand(idx).getType());
       }
 
-      auto fBlk = new Block();
-      SmallVector<Value> falseResults;
-      for (auto idx : resultsNeeded)
-        falseResults.push_back(falseYld->getOperand(idx));
       if (isa<scf::IfOp>(conditional)) {
         rewriter.setInsertionPointToEnd(tBlk);
         rewriter.create<scf::YieldOp>(conditional->getLoc(), trueResults);
@@ -4457,8 +4452,6 @@ public:
         rewriter.create<affine::AffineYieldOp>(conditional->getLoc(),
                                                falseResults);
       }
-      regions[0]->push_back(tBlk);
-      regions[1]->push_back(fBlk);
       rewriter.setInsertionPoint(postOp);
       auto conditional2 = rewriter.create(
           conditional->getLoc(), conditional->getName().getIdentifier(),
