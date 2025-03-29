@@ -7026,7 +7026,13 @@ bool isGatherPeriodic(const std::vector<int> &data,
     }
   }
   for (int k = 0; k < vec_length; k++) {
-    sliceEnd[k] = prev[k] + 1;
+    if(sliceStride[k] >= 0) {
+      sliceEnd[k] = prev[k] + 1;
+    }
+    else if (sliceStride[k] < 0) {
+      sliceEnd[k] = prev[k];
+      sliceStart[k] = sliceStart[k] + 1;
+    }
   }
   return true;
 }
@@ -7118,10 +7124,23 @@ struct GatherToSliceOp final : OpRewritePattern<mlir::stablehlo::GatherOp> {
                                            sliceStride.end());
 
     // Create the slice type
-    SmallVector<int64_t> sliceShape(sliceStrideI64.size());
-    SmallVector<int64_t> collapsedShape;
+    SmallVector<int64_t, 4> sliceShape(sliceStrideI64.size());
+    SmallVector<int64_t, 4> collapsedShape;
+    SmallVector<int64_t, 4> reverseDims;
+    bool reverse = false;
     for (int i = 0; i < sliceStrideI64.size(); i++) {
       sliceShape[i] = sliceEndI64[i] - sliceStartI64[i];
+      //Reverse the slice if it's negative
+      if(sliceShape[i] < 0) {
+        sliceShape[i] = -sliceShape[i];
+        sliceStrideI64[i] = -sliceStrideI64[i];
+        auto temp = sliceStartI64[i]; 
+        sliceStartI64[i] = sliceEndI64[i];
+        sliceEndI64[i] = temp;
+        reverseDims.push_back(i);
+        reverse = true;
+      }
+
       if (sliceShape[i] != 1)
         collapsedShape.push_back(sliceShape[i]);
     }
@@ -7140,6 +7159,10 @@ struct GatherToSliceOp final : OpRewritePattern<mlir::stablehlo::GatherOp> {
         rewriter.getDenseI64ArrayAttr(sliceStartI64),
         rewriter.getDenseI64ArrayAttr(sliceEndI64),
         rewriter.getDenseI64ArrayAttr(sliceStrideI64));
+
+    if(reverse) {
+      sliceOp = rewriter.create<mlir::stablehlo::ReverseOp>(gather.getLoc(), sliceOp, reverseDims);
+    }
 
     // Create result type and reshape operation
     auto collapsedType = RankedTensorType::get(collapsedShape, elementType);
