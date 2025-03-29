@@ -566,7 +566,7 @@ struct ParallelContext {
   struct Options {
     bool enableLockstepFor = true;
     bool preferWhileRaising = true;
-  } & options;
+  } options;
 
   explicit ParallelContext(Options &options) : options(options) {}
 
@@ -981,34 +981,40 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 static LogicalResult tryRaisingForOpToStableHLOUnroll(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  auto tmpBlock = new Block();
+  // Materialize an unrolled version of the loop in a temporary block and
+  // generate the raised version of that. The unrolled version will be deleted
+  // afterwards and the results of the original for loop will be mapped to it.
+
+  // There arises a problem with the affine maps contained in the for loop which
+  // until now correctly identified the loop iv as an affine dim, but will now
+  // take constants as inputs. We need to canonicalize those maps before raising
+  // the operations because we assume dim inputs to be loop ivs. This is the
+  // reason we need to canonicalize all affine maps before we raise them in the
+  // other parts of the code.
+  auto tmpBlock = std::make_unique<Block>();
   OpBuilder oldFuncBuilder(builder.getContext());
-  oldFuncBuilder.setInsertionPointToStart(tmpBlock);
+  oldFuncBuilder.setInsertionPointToStart(tmpBlock.get());
   auto clonedFor = cast<affine::AffineForOp>(oldFuncBuilder.clone(*forOp));
   auto yield = oldFuncBuilder.create<affine::AffineYieldOp>(
       clonedFor.getLoc(), clonedFor.getResults());
-  if (failed(affine::loopUnrollFull(clonedFor))) {
-    delete tmpBlock;
+  if (failed(affine::loopUnrollFull(clonedFor)))
     return failure();
-  }
+  // Make a temporary new mapping because we will map values from the temporary
+  // block which we will delete later.
+  IRMapping forMapping = mapping;
   for (auto &innerOp : tmpBlock->without_terminator()) {
-
-    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
+    if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
+            .failed())
       return failure();
   }
+  // Remap the results of the loop in the main mapping which will be needed for
+  // raising subsequent ops.
   for (auto [yielded, res] :
        llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
-    auto mapped = mapping.lookupOrNull(yielded);
+    auto mapped = forMapping.lookupOrNull(yielded);
     assert(mapped);
     mapping.map(res, mapped);
-
-    auto found = maps.find(yielded);
-    if (found != maps.end()) {
-      affine::AffineValueMap avm = found->second;
-      maps[res] = avm;
-    }
   }
-  delete tmpBlock;
   return success();
 }
 
@@ -1200,6 +1206,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    // See tryRaisingForOpToStableHLOUnroll
     accessValueMap.composeSimplifyAndCanonicalize();
 
     auto inputTen = mapping.lookup(access.memref);
@@ -1340,6 +1347,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    // See tryRaisingForOpToStableHLOUnroll
     accessValueMap.composeSimplifyAndCanonicalize();
 
     SmallVector<int64_t> strides;
@@ -1599,6 +1607,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
     auto avm = apply.getAffineValueMap();
+    // See tryRaisingForOpToStableHLOUnroll
     avm.composeSimplifyAndCanonicalize();
     auto [expanded, expandedMap] = expandAffineExpr(
         builder, apply.getLoc(), avm.getAffineMap().getResult(0),
@@ -1727,7 +1736,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  // Affine if (only pure ops with yield is currently supported)
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
     if (!ifOp.hasElse() || ifOp->getNumResults() == 0 ||
         llvm::any_of(*ifOp.getThenBlock(),
@@ -1791,18 +1799,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (pc.options.enableLockstepFor &&
         tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded()) {
-      llvm::errs() << "LOCKSTEP\n";
       return success();
     }
     if (pc.options.preferWhileRaising &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
-      llvm::errs() << "WHILE\n";
       return success();
     }
     if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
             .succeeded()) {
-      llvm::errs() << "UNROLLED\n";
       return success();
     }
   }

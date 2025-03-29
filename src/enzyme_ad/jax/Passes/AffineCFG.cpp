@@ -5600,7 +5600,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
     return false;
 
   // Collect all load and store ops in loop nest rooted at 'forOp'.
-  SmallVector<Operation *, 8> loadAndStoreOps;
+  SmallVector<Operation *> loadAndStoreOps;
   auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
     if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
       // Memrefs that are allocated inside `forOp` need not be considered.
@@ -5611,10 +5611,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
     } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
-               !hasSingleEffect<MemoryEffects::Allocate>(op) &&
                !isMemoryEffectFree(op)) {
-      // Alloc-like ops inside `forOp` are fine (they don't impact parallelism)
-      // as long as they don't escape the loop (which has been checked above).
       return WalkResult::interrupt();
     }
 
