@@ -2726,7 +2726,6 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
   if (thenOperand.getType() != elseOperand.getType())
     return false;
 
-
   for (auto operand : {thenOperand, elseOperand}) {
     auto defop = operand.getDefiningOp();
     if (!defop)
@@ -2762,7 +2761,7 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
     if (thenOp->getOperand(i).getType() != elseOp->getOperand(i).getType())
       return false;
   }
-  
+
   return true;
 }
 

@@ -4041,7 +4041,7 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
     if (thenOp->getOperand(i).getType() != elseOp->getOperand(i).getType())
       return false;
   }
-  
+
   return true;
 }
 
