@@ -6935,97 +6935,101 @@ struct NoopReverse final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
   }
 };
 
-bool check_periodicity(std::vector<int> &sliceStart, std::vector<int> &sliceStride, std::vector<int> &prev, int dim, int k) {
-    if(sliceStart[k] == -1) {
-      sliceStart[k] = dim;
-      prev[k] = dim;
-      return true;
-    }
-    if(dim - prev[k] == sliceStride[k]){
-      prev[k] = dim;
-      return true;
-    }
-    else
-     return false;
-} 
-
-int get_index(const std::vector<int>& strides, const std::vector<int>& dims, int rank_lower, int rank_upper, int iter) {
-    int index = 0;
-    for(int i = rank_lower; i >= rank_upper; i--) {
-        int mod = iter % dims[i];
-        iter = iter / dims[i];
-        index += mod*strides[i];
-    }
-    return index;
-}
-
-//Rank 0 to n-1, where 0 is the slowest moving dimension (outermost)
-bool isGatherPeriodic(const std::vector<int>& data, const std::vector<int>& dims, int rank, int x_dim, std::vector<int> &sliceStart, std::vector<int> &sliceEnd, std::vector<int> &sliceStride) {
-    // Calculate total elements and strides
-    int total_size = 1;
-    std::vector<int> strides(rank);
-    for (int i = 0; i < rank; i++) total_size *= dims[i];
-    
-    strides[rank-1] = 1;
-    for (int i = rank-2; i >= 0; i--) 
-        strides[i] = strides[i+1] * dims[i+1];
-
-    int outer_batch_size = 1;
-    for(int i = 0; i <= x_dim; i++) {
-        outer_batch_size *= dims[i];
-    }
-    int inner_batch_size = 1;
-    for(int i = x_dim+1; i < rank; i++) {
-        inner_batch_size *= dims[i];
-    }
-
-    int vec_length = dims[x_dim];
-
-    //Run 2 iterations of each rank to get the stride on each rank
-    bool strideFound = false;
-    for(int i = 0; i < outer_batch_size/vec_length; i++) {
-        int index_outer = get_index(strides, dims, x_dim-1, 0, i);
-        for(int j = 0; j < inner_batch_size; j++) {
-            int index_inner = get_index(strides, dims, rank-1, x_dim+1, j);
-            for(int k = 0; k < vec_length; k++) {
-                int index = index_outer + k*inner_batch_size + index_inner;
-                int value = data[index];
-                if(sliceStride[k] == -1) {
-                  sliceStride[k] = value;
-                }
-                else {
-                  sliceStride[k] = value - sliceStride[k];
-                  strideFound = true;
-                }
-            }
-            if(strideFound)
-              break;
-        }
-        if(strideFound)
-          break;
-    }
-
-    //Run all the iterations to check if the strides match
-    std::vector<int> prev(vec_length, -1);
-    for(int i = 0; i < outer_batch_size/vec_length; i++) {
-        int index_outer = get_index(strides, dims, x_dim-1, 0, i);
-        for(int j = 0; j < inner_batch_size; j++) {
-            int index_inner = get_index(strides, dims, rank-1, x_dim+1, j);
-            for(int k = 0; k < vec_length; k++) {
-                int index = index_outer + k*inner_batch_size + index_inner;
-                int value = data[index];
-                auto res = check_periodicity(sliceStart, sliceStride, prev, value, k);
-                if(!res)
-                  return false;
-            }
-        }
-    }
-    for(int k = 0; k < vec_length; k++) {
-        sliceEnd[k] = prev[k];
-    }
+bool check_periodicity(std::vector<int> &sliceStart,
+                       std::vector<int> &sliceStride, std::vector<int> &prev,
+                       int dim, int k) {
+  if (sliceStart[k] == -1) {
+    sliceStart[k] = dim;
+    prev[k] = dim;
     return true;
+  }
+  if (dim - prev[k] == sliceStride[k]) {
+    prev[k] = dim;
+    return true;
+  } else
+    return false;
 }
 
+int get_index(const std::vector<int> &strides, const std::vector<int> &dims,
+              int rank_lower, int rank_upper, int iter) {
+  int index = 0;
+  for (int i = rank_lower; i >= rank_upper; i--) {
+    int mod = iter % dims[i];
+    iter = iter / dims[i];
+    index += mod * strides[i];
+  }
+  return index;
+}
+
+// Rank 0 to n-1, where 0 is the slowest moving dimension (outermost)
+bool isGatherPeriodic(const std::vector<int> &data,
+                      const std::vector<int> &dims, int rank, int x_dim,
+                      std::vector<int> &sliceStart, std::vector<int> &sliceEnd,
+                      std::vector<int> &sliceStride) {
+  // Calculate total elements and strides
+  int total_size = 1;
+  std::vector<int> strides(rank);
+  for (int i = 0; i < rank; i++)
+    total_size *= dims[i];
+
+  strides[rank - 1] = 1;
+  for (int i = rank - 2; i >= 0; i--)
+    strides[i] = strides[i + 1] * dims[i + 1];
+
+  int outer_batch_size = 1;
+  for (int i = 0; i <= x_dim; i++) {
+    outer_batch_size *= dims[i];
+  }
+  int inner_batch_size = 1;
+  for (int i = x_dim + 1; i < rank; i++) {
+    inner_batch_size *= dims[i];
+  }
+
+  int vec_length = dims[x_dim];
+
+  // Run 2 iterations of each rank to get the stride on each rank
+  bool strideFound = false;
+  for (int i = 0; i < outer_batch_size / vec_length; i++) {
+    int index_outer = get_index(strides, dims, x_dim - 1, 0, i);
+    for (int j = 0; j < inner_batch_size; j++) {
+      int index_inner = get_index(strides, dims, rank - 1, x_dim + 1, j);
+      for (int k = 0; k < vec_length; k++) {
+        int index = index_outer + k * inner_batch_size + index_inner;
+        int value = data[index];
+        if (sliceStride[k] == -1) {
+          sliceStride[k] = value;
+        } else {
+          sliceStride[k] = value - sliceStride[k];
+          strideFound = true;
+        }
+      }
+      if (strideFound)
+        break;
+    }
+    if (strideFound)
+      break;
+  }
+
+  // Run all the iterations to check if the strides match
+  std::vector<int> prev(vec_length, -1);
+  for (int i = 0; i < outer_batch_size / vec_length; i++) {
+    int index_outer = get_index(strides, dims, x_dim - 1, 0, i);
+    for (int j = 0; j < inner_batch_size; j++) {
+      int index_inner = get_index(strides, dims, rank - 1, x_dim + 1, j);
+      for (int k = 0; k < vec_length; k++) {
+        int index = index_outer + k * inner_batch_size + index_inner;
+        int value = data[index];
+        auto res = check_periodicity(sliceStart, sliceStride, prev, value, k);
+        if (!res)
+          return false;
+      }
+    }
+  }
+  for (int k = 0; k < vec_length; k++) {
+    sliceEnd[k] = prev[k] + 1;
+  }
+  return true;
+}
 
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
@@ -7035,17 +7039,19 @@ struct GatherToSliceOp final : OpRewritePattern<mlir::stablehlo::GatherOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp gather,
                                 PatternRewriter &rewriter) const override {
     DenseIntElementsAttr index;
- //1. Check following preconditions for converting gather to slice op
-    // Preconditions:
-    // i. Check if all dims are collapsed?
-    // ii. Check if sliceSizes are 1 in each dim (else more complicated and there could be a subset that 
-    //    could still be transformed to slice op if there is no overlap)
-    // iii. Based on indexVector dim, check if correspoding values in each dim are either constant or strided
-    //2. If so, convert the gather to a slice op
-    //3. If not, return failure
-    //4. To convert to slice operation, 
-    
-    //Get all the other properties of the gather operation
+    // 1. Check following preconditions for converting gather to slice op
+    //  Preconditions:
+    //  i. Check if all dims are collapsed?
+    //  ii. Check if sliceSizes are 1 in each dim (else more complicated and
+    //  there could be a subset that
+    //     could still be transformed to slice op if there is no overlap)
+    //  iii. Based on indexVector dim, check if correspoding values in each dim
+    //  are either constant or strided
+    // 2. If so, convert the gather to a slice op
+    // 3. If not, return failure
+    // 4. To convert to slice operation,
+
+    // Get all the other properties of the gather operation
     auto startIndices = gather.getStartIndices();
     auto gatherOperands = gather.getOperands();
     auto gatherDimensionNumbers = gather.getDimensionNumbers();
@@ -7053,37 +7059,33 @@ struct GatherToSliceOp final : OpRewritePattern<mlir::stablehlo::GatherOp> {
     auto gatherIndexVectorDim = gatherDimensionNumbers.getIndexVectorDim();
     auto gatherStartIndexMap = gatherDimensionNumbers.getStartIndexMap();
     auto collapsedSliceDims = gatherDimensionNumbers.getCollapsedSliceDims();
-    auto offsetDims = gatherDimensionNumbers.getOffsetDims(); //Non collapsed dimensions
+    auto offsetDims =
+        gatherDimensionNumbers.getOffsetDims(); // Non collapsed dimensions
 
     ////Check rank of gather operands
-    //auto gatherOperandsRank = gatherOperands.getType().getRank();
+    // auto gatherOperandsRank = gatherOperands.getType().getRank();
 
     //// TODO: Currently only handling simplified case
     //// Check collapseSlicedims size equals gatherOperandsRank
-    //if(collapsedSliceDims.size() != gatherOperandsRank)
-    //  return failure();
+    // if(collapsedSliceDims.size() != gatherOperandsRank)
+    //   return failure();
 
-    //Check if sliceSizes are 1 in each dim
-    if(llvm::any_of(gatherSliceSizes, [](int64_t size) { return size != 1; }))
+    // Check if sliceSizes are 1 in each dim
+    if (llvm::any_of(gatherSliceSizes, [](int64_t size) { return size != 1; }))
       return failure();
 
     // From start indices check if it's constant, else return failure
-    if(!matchPattern(startIndices, m_Constant(&index)))
+    if (!matchPattern(startIndices, m_Constant(&index)))
       return failure();
 
     // Currently only handling constant index case with dense elements
-    //3 formats:
-    //1. Hex format
-    //2. Scalar broadcast
-    //3. Explicit array
     std::vector<int> indices;
     if (auto denseAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(index)) {
       for (auto value : denseAttr.getValues<APInt>()) {
         int64_t intValue = value.getSExtValue();
         indices.push_back(intValue);
       }
-    }
-    else {
+    } else {
       return failure();
     }
 
@@ -7091,39 +7093,61 @@ struct GatherToSliceOp final : OpRewritePattern<mlir::stablehlo::GatherOp> {
     auto tensorType = index.getType().cast<mlir::RankedTensorType>();
     auto rank = tensorType.getRank();
     auto shape = tensorType.getShape();
-    
+
     // dims : gatherIndexVectorDim, innermostDim .... outermostDim
     int indexVectorSize = shape[gatherIndexVectorDim];
-    
+
     std::vector<int> dims(shape.size());
-    for(int i = 0; i < shape.size(); i++) {
+    for (int i = 0; i < shape.size(); i++) {
       dims[i] = shape[i];
     }
 
     std::vector<int> sliceStart(indexVectorSize, -1);
     std::vector<int> sliceEnd(indexVectorSize, -1);
     std::vector<int> sliceStride(indexVectorSize, -1);
-    
-    auto isPeriodic = isGatherPeriodic(indices, dims, rank, gatherIndexVectorDim, sliceStart, sliceEnd, sliceStride);
-    if(!isPeriodic)
+
+    auto isPeriodic =
+        isGatherPeriodic(indices, dims, rank, gatherIndexVectorDim, sliceStart,
+                         sliceEnd, sliceStride);
+    if (!isPeriodic)
       return failure();
 
-    SmallVector<int64_t, 4> sliceStartI64(sliceStart.begin(), sliceStart.end()); 
-    SmallVector<int64_t, 4> sliceEndI64(sliceEnd.begin(), sliceEnd.end()); 
-    SmallVector<int64_t, 4> sliceStrideI64(sliceStride.begin(), sliceStride.end()); 
-    
-    for(int i = 0; i < sliceStride.size(); i++) {
-      if
+    SmallVector<int64_t, 4> sliceStartI64(sliceStart.begin(), sliceStart.end());
+    SmallVector<int64_t, 4> sliceEndI64(sliceEnd.begin(), sliceEnd.end());
+    SmallVector<int64_t, 4> sliceStrideI64(sliceStride.begin(),
+                                           sliceStride.end());
+
+    // Create the slice type
+    SmallVector<int64_t> sliceShape(sliceStrideI64.size());
+    SmallVector<int64_t> collapsedShape;
+    for (int i = 0; i < sliceStrideI64.size(); i++) {
+      sliceShape[i] = sliceEndI64[i] - sliceStartI64[i];
+      if (sliceShape[i] != 1)
+        collapsedShape.push_back(sliceShape[i]);
     }
-    //Creating the slice op
-    Value result = rewriter.create<mlir::stablehlo::SliceOp>(
-        gather.getLoc(), gather.getType(), gather.getOperand(),
+    Type elementType = gather.getType().getElementType();
+    auto sliceType = RankedTensorType::get(sliceShape, elementType);
+
+    // Fix the constant dims
+    for (int i = 0; i < sliceStrideI64.size(); i++) {
+      if (sliceStrideI64[i] == 0)
+        sliceStrideI64[i] = 1;
+    }
+
+    // Creating the slice op
+    Value sliceOp = rewriter.create<mlir::stablehlo::SliceOp>(
+        gather.getLoc(), sliceType, gather.getOperand(),
         rewriter.getDenseI64ArrayAttr(sliceStartI64),
         rewriter.getDenseI64ArrayAttr(sliceEndI64),
         rewriter.getDenseI64ArrayAttr(sliceStrideI64));
 
-    rewriter.replaceOp(gather, result);
-    
+    // Create result type and reshape operation
+    auto collapsedType = RankedTensorType::get(collapsedShape, elementType);
+    Value sliceReshaped = rewriter.create<mlir::stablehlo::ReshapeOp>(
+        gather.getLoc(), collapsedType, sliceOp);
+
+    rewriter.replaceOp(gather, sliceReshaped);
+
     return success();
   }
 };
