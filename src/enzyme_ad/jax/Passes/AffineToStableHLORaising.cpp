@@ -573,7 +573,7 @@ struct ParallelContext {
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
 
-  bool isParallelIV(Value iv) { return llvm::find(ivs, iv) != ivs.end(); }
+  bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
 
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
