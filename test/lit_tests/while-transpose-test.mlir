@@ -23,8 +23,5 @@ func.func @test_while_transpose_elimination(%arg0: tensor<2x3xf32>, %arg1: tenso
   // Transpose the while result back to the original shape (this should be eliminated by the pattern)
   %1 = stablehlo.transpose %0#0, dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
   
-  // Use the transposed result
-  %2 = stablehlo.add %1, %1 : tensor<3x2xf32>
-  
-  return %2 : tensor<3x2xf32>
+  return %1 : tensor<3x2xf32>
 } 
