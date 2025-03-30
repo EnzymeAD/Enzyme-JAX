@@ -246,8 +246,97 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
   return success();
 }
 
+// The name is parallel context but a more accurate description would be
+// LockStepContext
+struct ParallelContext {
+  struct Options {
+    bool enableLockstepFor = true;
+    bool preferWhileRaising = true;
+  } options;
+
+  explicit ParallelContext(Options &options) : options(options) {}
+
+  SmallVector<InductionVariableRange, 8> ranges;
+  SmallVector<Value, 8> ivs;
+
+  bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
+
+  RankedTensorType getTensorType(Type elTy) {
+    SmallVector<int64_t> shape = llvm::map_to_vector(
+        ranges, [&](auto range) { return range.getNumIters(); });
+    return RankedTensorType::get(shape, elTy);
+  }
+
+  struct Broadcast {
+    Value v;
+    affine::AffineValueMap avm;
+  };
+
+  std::optional<Broadcast> getBroadcast(OpBuilder &b,
+                                        affine::AffineValueMap avm, Value v) {
+    auto CTT = dyn_cast<RankedTensorType>(v.getType());
+    if (!CTT)
+      return std::nullopt;
+    auto TT = getTensorType(CTT.getElementType());
+    assert(CTT.getElementType() == TT.getElementType());
+    if (CTT.getShape() == TT.getShape())
+      return Broadcast{v, avm};
+    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
+                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
+      return std::nullopt;
+    if (CTT.getRank() > TT.getRank())
+      return std::nullopt;
+
+    // TODO I haven't thought through how to broadcast non-scalars to the
+    // shape we need.
+    if (CTT.getRank() != 0)
+      return std::nullopt;
+    SmallVector<int64_t> dimsToBroadcast;
+    auto bc = b.create<stablehlo::BroadcastInDimOp>(v.getLoc(), TT, v,
+                                                    dimsToBroadcast);
+
+    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
+        TT.getRank() - CTT.getRank(), b.getContext());
+
+    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+  }
+
+  std::optional<ParallelContext> add(affine::AffineForOp forOp) {
+    ParallelContext newPc = *this;
+    auto iv = forOp.getInductionVar();
+    auto ivr = getIVRange(iv);
+    if (!ivr)
+      return std::nullopt;
+    newPc.ranges.push_back(*ivr);
+    newPc.ivs.push_back(iv);
+    return newPc;
+  }
+
+  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
+    ParallelContext newPc = *this;
+    for (auto iv : parallelOp.getIVs()) {
+      auto ivr = getIVRange(iv);
+      if (!ivr)
+        return std::nullopt;
+      newPc.ranges.push_back(*ivr);
+      newPc.ivs.push_back(iv);
+    }
+    return newPc;
+  }
+
+  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
+                                            Options &options) {
+    ParallelContext pc(options);
+    return pc.add(parallelOp);
+  }
+  static ParallelContext getEmpty(Options &options) {
+    ParallelContext pc(options);
+    return pc;
+  }
+};
+
 static SmallVector<int64_t>
-affineMapShape(affine::AffineValueMap accessValueMap) {
+affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
   AffineMap map = accessValueMap.getAffineMap();
 
   SmallVector<int64_t> shape;
@@ -260,7 +349,7 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
     }
 
     Value iv = getIVForExpr(accessValueMap, E);
-    if (affine::isAffineForInductionVar(iv)) {
+    if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
       shape.push_back(1);
       continue;
     }
@@ -277,16 +366,16 @@ affineMapShape(affine::AffineValueMap accessValueMap) {
 
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
-                  ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder) {
+                  ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder, ParallelContext pc) {
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
-  SmallVector<int64_t> shapeA = affineMapShape(src);
+  SmallVector<int64_t> shapeA = affineMapShape(src, pc);
   assert(shapeA.size() ==
          cast<RankedTensorType>(a.getType()).getShape().size());
   SmallVector<SmallVector<int64_t>> shapeBs;
   for (int i = 0; i < dsts.size(); i++) {
-    shapeBs.push_back(affineMapShape(dsts[i]));
+    shapeBs.push_back(affineMapShape(dsts[i], pc));
     assert(shapeBs[i].size() ==
            cast<RankedTensorType>(bs[i].getType()).getShape().size());
   }
@@ -380,10 +469,10 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
-                  affine::AffineValueMap dst, OpBuilder &builder) {
+                  affine::AffineValueMap dst, OpBuilder &builder, ParallelContext pc) {
   Value bs[] = {b};
   affine::AffineValueMap dsts[] = {dst};
-  auto res = alignMemoryAccess(a, src, bs, dsts, builder);
+  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc);
   b = bs[0];
   return res;
 }
@@ -392,7 +481,7 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
 // the corresponding AffineValueMap for the produced value.
 static std::tuple<Value, affine::AffineValueMap>
 expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
-                 ValueRange operands, IRMapping &mapping, unsigned numDims) {
+                 ValueRange operands, IRMapping &mapping, unsigned numDims, ParallelContext pc) {
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     auto ET = builder.getI64Type();
     auto TT = RankedTensorType::get({}, ET);
@@ -406,12 +495,12 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
   if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
     AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
     auto [lhs, lhsMap] =
-        expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims);
+        expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims, pc);
     auto [rhs, rhsMap] =
-        expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims);
+        expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims, pc);
 
     affine::AffineValueMap outputMap =
-        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder);
+        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
 
     auto makeI64Constant = [loc, &builder](ShapedType ty,
                                            int64_t cst) -> Value {
@@ -562,95 +651,6 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   return inBounds;
 }
 
-// The name is parallel context but a more accurate description would be
-// LockStepContext
-struct ParallelContext {
-  struct Options {
-    bool enableLockstepFor = true;
-    bool preferWhileRaising = true;
-  } options;
-
-  explicit ParallelContext(Options &options) : options(options) {}
-
-  SmallVector<InductionVariableRange, 8> ranges;
-  SmallVector<Value, 8> ivs;
-
-  bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
-
-  RankedTensorType getTensorType(Type elTy) {
-    SmallVector<int64_t> shape = llvm::map_to_vector(
-        ranges, [&](auto range) { return range.getNumIters(); });
-    return RankedTensorType::get(shape, elTy);
-  }
-
-  struct Broadcast {
-    Value v;
-    affine::AffineValueMap avm;
-  };
-
-  std::optional<Broadcast> getBroadcast(OpBuilder &b,
-                                        affine::AffineValueMap avm, Value v) {
-    auto CTT = dyn_cast<RankedTensorType>(v.getType());
-    if (!CTT)
-      return std::nullopt;
-    auto TT = getTensorType(CTT.getElementType());
-    assert(CTT.getElementType() == TT.getElementType());
-    if (CTT.getShape() == TT.getShape())
-      return Broadcast{v, avm};
-    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
-                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
-      return std::nullopt;
-    if (CTT.getRank() > TT.getRank())
-      return std::nullopt;
-
-    // TODO I haven't thought through how to broadcast non-scalars to the
-    // shape we need.
-    if (CTT.getRank() != 0)
-      return std::nullopt;
-    SmallVector<int64_t> dimsToBroadcast;
-    auto bc = b.create<stablehlo::BroadcastInDimOp>(v.getLoc(), TT, v,
-                                                    dimsToBroadcast);
-
-    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
-        TT.getRank() - CTT.getRank(), b.getContext());
-
-    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
-  }
-
-  std::optional<ParallelContext> add(affine::AffineForOp forOp) {
-    ParallelContext newPc = *this;
-    auto iv = forOp.getInductionVar();
-    auto ivr = getIVRange(iv);
-    if (!ivr)
-      return std::nullopt;
-    newPc.ranges.push_back(*ivr);
-    newPc.ivs.push_back(iv);
-    return newPc;
-  }
-
-  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
-    ParallelContext newPc = *this;
-    for (auto iv : parallelOp.getIVs()) {
-      auto ivr = getIVRange(iv);
-      if (!ivr)
-        return std::nullopt;
-      newPc.ranges.push_back(*ivr);
-      newPc.ivs.push_back(iv);
-    }
-    return newPc;
-  }
-
-  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
-                                            Options &options) {
-    ParallelContext pc(options);
-    return pc.add(parallelOp);
-  }
-  static ParallelContext getEmpty(Options &options) {
-    ParallelContext pc(options);
-    return pc;
-  }
-};
-
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -689,7 +689,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
@@ -1207,7 +1207,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value dsts[] = {idx_broadcasted, mapping.lookup(init_val)};
       affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
 
-      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts, submaps, builder);
+      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts, submaps, builder, *newPc);
 
       ssize_t idx_to_reduce = -1;
       for (auto &&[i, expr] : llvm::enumerate(outputMap.getAffineMap().getResults())) {
@@ -1263,7 +1263,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       if (isa<arith::AddIOp, arith::AddFOp>(&innerOp)) {
         result = builder.create<stablehlo::AddOp>(innerOp.getLoc(), result, dsts[1]);
       } else if (isa<arith::SubIOp, arith::SubFOp>(&innerOp)) {
-        result = builder.create<stablehlo::AddOp>(innerOp.getLoc(), dsts[1], result);
+        result = builder.create<stablehlo::SubOp>(innerOp.getLoc(), dsts[1], result);
       } else {
 	llvm_unreachable("unhandled reduction");
       }
@@ -1365,7 +1365,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto inputTen = mapping.lookup(access.memref);
 
     auto rank = access.getRank();
-    SmallVector<int64_t> outputShape = affineMapShape(accessValueMap);
+    SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
 
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
@@ -1388,7 +1388,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto E : accessValueMap.getAffineMap().getResults()) {
         auto [idx, idxMap] = expandAffineExpr(
             builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
-            accessValueMap.getAffineMap().getNumDims());
+            accessValueMap.getAffineMap().getNumDims(), pc);
         maps[idx] = idxMap;
         lIndices.push_back(idx);
       }
@@ -1428,7 +1428,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
         auto [startIndex, _] = expandAffineExpr(
             builder, op->getLoc(), exprToEmit, accessValueMap.getOperands(),
-            mapping, accessValueMap.getAffineMap().getNumDims());
+            mapping, accessValueMap.getAffineMap().getNumDims(), pc);
 
         startIndices.push_back(startIndex);
       }
@@ -1522,7 +1522,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto E : accessValueMap.getAffineMap().getResults()) {
         auto [expandedIndex, indexMap] = expandAffineExpr(
             builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
-            accessValueMap.getAffineMap().getNumDims());
+            accessValueMap.getAffineMap().getNumDims(), pc);
         maps[expandedIndex] = indexMap;
         sIndices.push_back(expandedIndex);
       }
@@ -1603,7 +1603,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
         auto [startIndex_, _] = expandAffineExpr(
             builder, iv.getLoc(), exprToEmit, accessValueMap.getOperands(),
-            mapping, accessValueMap.getAffineMap().getNumDims());
+            mapping, accessValueMap.getAffineMap().getNumDims(), pc);
         startIndex = startIndex_;
       }
 
@@ -1765,7 +1765,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     avm.composeSimplifyAndCanonicalize();
     auto [expanded, expandedMap] = expandAffineExpr(
         builder, apply.getLoc(), avm.getAffineMap().getResult(0),
-        avm.getOperands(), mapping, avm.getAffineMap().getNumDims());
+        avm.getOperands(), mapping, avm.getAffineMap().getNumDims(), pc);
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
     return success();
@@ -1810,7 +1810,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           b = mapping.lookup(op->getOperand(1));
 
     auto mapA = maps.lookup(a), mapB = maps.lookup(b);
-    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder);
+    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc);
     assert(a.getType() == b.getType());
 
     auto IT = a.getType().cast<RankedTensorType>();
@@ -1844,7 +1844,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder);
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
@@ -1921,7 +1921,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
          llvm::zip_equal(constraintMap.getAffineMap().getResults(), is.getEqFlags())) {
       auto [expandedExpr, outputMap] =
           expandAffineExpr(builder, ifOp.getLoc(), constraint,
-                           constraintMap.getOperands(), mapping, constraintMap.getNumDims());
+                           constraintMap.getOperands(), mapping, constraintMap.getNumDims(), pc);
       Value zero = builder.create<stablehlo::ConstantOp>(
           ifOp.getLoc(), expandedExpr.getType().cast<ShapedType>(),
           SplatElementsAttr::get(
@@ -1932,7 +1932,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           eq ? stablehlo::ComparisonDirection::EQ
              : stablehlo::ComparisonDirection::GE);
       if (cond) {
-        map = alignMemoryAccess(cond, map, newCond, outputMap, builder);
+        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
         cond = builder.create<stablehlo::AndOp>(ifOp.getLoc(), cond, newCond);
       } else {
         cond = newCond;
