@@ -365,6 +365,9 @@ struct DUSDUSConcat final
       return failure();
     }
 
+    if (tys[0].getShape()[diffidx] != tys[1].getShape()[diffidx])
+        return failure();
+
     int64_t idxs[2];
 
     for (auto en : llvm::enumerate(duses)) {
