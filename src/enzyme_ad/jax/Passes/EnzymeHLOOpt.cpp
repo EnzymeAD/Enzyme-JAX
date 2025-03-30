@@ -365,8 +365,12 @@ struct DUSDUSConcat final
       return failure();
     }
 
-    if (tys[0].getShape()[diffidx] != tys[1].getShape()[diffidx])
+    // Sizes must be the same except for the differing index
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (i == diffidx) continue;
+      if (tys[0].getShape()[i] != tys[1].getShape()[i])
         return failure();
+    }
 
     int64_t idxs[2];
 
