@@ -367,7 +367,8 @@ struct DUSDUSConcat final
 
     // Sizes must be the same except for the differing index
     for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
-      if (i == diffidx) continue;
+      if (i == diffidx)
+        continue;
       if (tys[0].getShape()[i] != tys[1].getShape()[i])
         return failure();
     }
@@ -398,25 +399,33 @@ struct DUSDUSConcat final
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
           dus, dus2.getOperand(), concat, dus2.getStartIndices());
       return success();
-    } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <= idxs[0] + tys[0].getShape()[diffidx]) {
-      // the previous update (in dus1) was completely overwritten [e.g. dus0 starts before and end later]
+    } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <=
+                                         idxs[0] + tys[0].getShape()[diffidx]) {
+      // the previous update (in dus1) was completely overwritten [e.g. dus0
+      // starts before and end later]
       rewriter.modifyOpInPlace(
           dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
       return success();
-    } else if (idxs[0] >= idxs[1] && idxs[0] + tys[0].getShape()[diffidx] <= idxs[1] + tys[1].getShape()[diffidx]) {
+    } else if (idxs[0] >= idxs[1] && idxs[0] + tys[0].getShape()[diffidx] <=
+                                         idxs[1] + tys[1].getShape()[diffidx]) {
       // the new update is entirely within the space of the old update
 
       auto itype = dus.getStartIndices()[diffidx].getType();
-      auto c0 = rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
-      auto cidx = rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), itype, makeAttr(itype, idxs[0] - idxs[1]).cast<ElementsAttr>());
+      auto c0 = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
+      auto cidx = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), itype,
+          makeAttr(itype, idxs[0] - idxs[1]).cast<ElementsAttr>());
 
       SmallVector<Value> idxs(dus.getStartIndices().size());
-      for (size_t i=0; i<dus.getStartIndices().size(); i++)
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++)
         idxs[i] = c0;
       idxs[diffidx] = cidx;
 
-      auto within_dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(dus2.getLoc(), dus2.getUpdate(), dus.getUpdate(), idxs);
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(dus, dus2.getOperand(), within_dus, dus2.getStartIndices());
+      auto within_dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          dus2.getLoc(), dus2.getUpdate(), dus.getUpdate(), idxs);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), within_dus, dus2.getStartIndices());
       return success();
     }
     return failure();
