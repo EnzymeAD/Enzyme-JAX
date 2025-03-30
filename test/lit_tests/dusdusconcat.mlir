@@ -46,6 +46,20 @@ module {
 
       func.return %op3 : tensor<24x34x59xf64>
   }
+
+  func.func @fuse4(%51: tensor<1x34x59xf64>, %243: tensor<1x20x45xf64>, %282: tensor<1x22x45xf64>) -> tensor<1x34x59xf64> {  
+    %c_221 = stablehlo.constant dense<0> : tensor<i64>
+    %c_211 = stablehlo.constant dense<7> : tensor<i64>
+    %c_214 = stablehlo.constant dense<6> : tensor<i64>
+
+
+        %244 = stablehlo.dynamic_update_slice %51, %243, %c_221, %c_211, %c_211 : (tensor<1x34x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x34x59xf64>
+
+      %283 = stablehlo.dynamic_update_slice %244, %282, %c_221, %c_214, %c_211 : (tensor<1x34x59xf64>, tensor<1x22x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x34x59xf64>
+
+      func.return %283 : tensor<1x34x59xf64>
+  }
+
 }
 
 
@@ -70,4 +84,12 @@ module {
 // CHECK-NEXT:    %1 = stablehlo.dynamic_update_slice %arg0, %0, %c_0, %arg4, %arg5 : (tensor<24x34x59xf64>, tensor<2x22x47xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<24x34x59xf64>
 // CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %1, %arg3, %c, %arg4, %arg5 : (tensor<24x34x59xf64>, tensor<1x22x47xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<24x34x59xf64>
 // CHECK-NEXT:    return %2 : tensor<24x34x59xf64>
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @fuse4(%arg0: tensor<1x34x59xf64>, %arg1: tensor<1x20x45xf64>, %arg2: tensor<1x22x45xf64>) -> tensor<1x34x59xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<7> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<6> : tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.dynamic_update_slice %arg0, %arg2, %c, %c_1, %c_0 : (tensor<1x34x59xf64>, tensor<1x22x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x34x59xf64>
+// CHECK-NEXT:    return %0 : tensor<1x34x59xf64>
 // CHECK-NEXT:  }

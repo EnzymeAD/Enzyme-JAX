@@ -379,6 +379,11 @@ struct DUSDUSConcat final
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
           dus, dus2.getOperand(), concat, dus2.getStartIndices());
       return success();
+    } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <= idxs[0] + tys[0].getShape()[diffidx]) {
+      // the previous update (in dus1) was completely overwritten [e.g. dus0 starts before and end later]
+      rewriter.modifyOpInPlace(
+          dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
+      return success();
     }
     return failure();
   }
