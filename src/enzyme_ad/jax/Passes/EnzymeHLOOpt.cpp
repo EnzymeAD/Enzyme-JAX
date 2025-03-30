@@ -3902,7 +3902,7 @@ struct BroadcastIotaSimplify
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp broadcast,
                                 PatternRewriter &rewriter) const final {
     auto operand = broadcast.getOperand();
-    DenseElementsAttr input;
+    DenseIntElementsAttr input;
     matchPattern(operand, m_Constant(&input));
 
     if (input) {
