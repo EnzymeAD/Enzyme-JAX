@@ -95,12 +95,12 @@ module {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [8:28, 3:12] : (tensor<28x12xf64>) -> tensor<20x9xf64>
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<20x9xf64>
-// CHECK-NEXT:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
+// CHECK-NEXT{LITERAL}:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
 // CHECK-NEXT:      %6 = stablehlo.add %arg3, %arg4 : tensor<f64>
 // CHECK-NEXT:      stablehlo.return %6 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<20x9xf64>, tensor<f64>) -> tensor<20x9xf64>
-// CHECK-NEXT:    %3 = stablehlo.sub %1, %2 : tensor<20x9xf64>
+// CHECK-NEXT:    %3 = stablehlo.subtract %1, %2 : tensor<20x9xf64>
 // CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %3, dims = [1, 0] : (tensor<20x9xf64>) -> tensor<9x20x45xf64>
 // CHECK-NEXT:    %5 = stablehlo.dynamic_update_slice %arg2, %4, %c_0, %c, %c : (tensor<9x27x59xf64>, tensor<9x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<9x27x59xf64>
 // CHECK-NEXT:    return %arg0, %arg1, %5 : tensor<f64>, tensor<28x12xf64>, tensor<9x27x59xf64>
@@ -112,7 +112,7 @@ module {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [8:28, 3:12] : (tensor<28x12xf64>) -> tensor<20x9xf64>
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<20x9xf64>
-// CHECK-NEXT:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
+// CHECK-NEXT{LITERAL}:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
 // CHECK-NEXT:      %6 = stablehlo.add %arg3, %arg4 : tensor<f64>
 // CHECK-NEXT:      stablehlo.return %6 : tensor<f64>
@@ -129,7 +129,7 @@ module {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [8:28, 3:12] : (tensor<28x12xf64>) -> tensor<20x9xf64>
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<20x9xf64>
-// CHECK-NEXT:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
+// CHECK-NEXT{LITERAL}:    %2 = "stablehlo.reduce_window"(%0, %cst) <{base_dilations = array<i64: 1, 1>, padding = dense<[[0, 0], [8, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 1, 9>, window_strides = array<i64: 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
 // CHECK-NEXT:      %6 = stablehlo.add %arg3, %arg4 : tensor<f64>
 // CHECK-NEXT:      stablehlo.return %6 : tensor<f64>
