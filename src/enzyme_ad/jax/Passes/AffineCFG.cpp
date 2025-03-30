@@ -5228,17 +5228,22 @@ struct AffineIfIndexCastOptimizer
     // Check each result to see if it's used in a single index_cast operation
     for (auto result : llvm::enumerate(ifOp.getResults())) {
       int resultIdx = result.index();
-      Value value = result.value();
+      Value ifResult = result.value();
 
-      // Skip if the result is not an integer type that can be index-cast
-      if (!value.getType().isIntOrIndex()) {
-        newResultTypes[resultIdx] = value.getType();
+      // Skip if the result is not an integer type and constant that can be index-cast
+      Value thenResult = ifOp.getThenRegion().front().getTerminator()->getOperand(resultIdx);
+      Value elseResult = ifOp.getElseRegion().front().getTerminator()->getOperand(resultIdx);
+      if (!(ifResult.getType().isIntOrIndex() && 
+        mlir::matchPattern(thenResult, mlir::m_Constant()) && 
+        mlir::matchPattern(elseResult, mlir::m_Constant()))) {
+        newResultTypes[resultIdx] = ifResult.getType();
         continue;
       }
+      //Check else result at same index to see if it is also a constant
 
       // Skip dead results
-      if (value.use_empty()) {
-        newResultTypes[resultIdx] = value.getType();
+      if (ifResult.use_empty()) {
+        newResultTypes[resultIdx] = ifResult.getType();
         continue;
       }
 
@@ -5246,7 +5251,7 @@ struct AffineIfIndexCastOptimizer
       arith::IndexCastOp indexCastUser = nullptr;
       bool singleUser = true;
 
-      for (Operation *user : value.getUsers()) {
+      for (Operation *user : ifResult.getUsers()) {
         if (auto indexCast = dyn_cast<arith::IndexCastOp>(user)) {
           if (!indexCastUser) {
             indexCastUser = indexCast;
@@ -5269,7 +5274,7 @@ struct AffineIfIndexCastOptimizer
         indexCastOps[resultIdx] = indexCastUser;
         hasOptimizableResult = true;
       } else {
-        newResultTypes[resultIdx] = value.getType();
+        newResultTypes[resultIdx] = ifResult.getType();
       }
     }
 

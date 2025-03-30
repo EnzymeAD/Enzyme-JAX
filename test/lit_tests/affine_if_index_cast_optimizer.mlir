@@ -162,4 +162,36 @@ func.func @test_already_index(%arg0: index) -> index {
   }
   
   return %0 : index
-} 
+}
+
+// -----
+
+// Case with mixed constant/non-constant operands - should not optimize
+// CHECK-LABEL: func @test_mixed_constant_yield
+func.func @test_mixed_constant_yield(%arg0: index, %arg1: i64) -> index {
+  %c42_i64 = arith.constant 42 : i64
+  
+  // CHECK: %c42_i64 = arith.constant 42 : i64
+  // CHECK: %[[COMPUTED:.*]] = arith.addi %{{.*}}, %{{.*}} : i64
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c42_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %[[COMPUTED]] : i64
+  // CHECK-NEXT: }
+  // CHECK: %[[CAST:.*]] = arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: return %[[CAST]] : index
+  
+  // Create a non-constant value for the else branch
+  %computed = arith.addi %arg1, %arg1 : i64
+  
+  %0 = affine.if #set0(%arg0) -> (i64) {
+    // Then branch - constant
+    affine.yield %c42_i64 : i64
+  } else {
+    // Else branch - non-constant
+    affine.yield %computed : i64
+  }
+  
+  %1 = arith.index_cast %0 : i64 to index
+  return %1 : index
+}
