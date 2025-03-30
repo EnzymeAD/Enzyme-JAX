@@ -7590,6 +7590,146 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
+bool verifyInversePermutations(stablehlo::TransposeOp innerTrans, 
+                              stablehlo::TransposeOp outerTrans) {
+  auto innerPerm = innerTrans.getPermutation();
+  auto outerPerm = outerTrans.getPermutation();
+  
+  if (innerPerm.size() != outerPerm.size())
+    return false;
+    
+  SmallVector<int64_t> composition(innerPerm.size());
+  for (size_t i = 0; i < innerPerm.size(); ++i) {
+    composition[i] = outerPerm[innerPerm[i]];
+  }
+  
+  // Check if the composition is the identity permutation
+  for (size_t i = 0; i < composition.size(); ++i) {
+    if (composition[i] != static_cast<int64_t>(i))
+      return false;
+  }
+  
+  return true;
+}
+
+struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
+                               PatternRewriter &rewriter) const override {
+    // Find yield op in the body
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    
+    // Track which results need to be transformed
+    struct TransposeCandidate {
+      unsigned idx;
+      stablehlo::TransposeOp innerTranspose;
+      stablehlo::TransposeOp outerTranspose;
+    };
+    
+    llvm::SmallVector<TransposeCandidate, 4> candidatesForTransform;
+    
+    // For each yielded value, check if it comes from a transpose
+    for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
+      Value yieldOperand = yieldOp.getOperand(idx);
+      auto innerTransposeOp = yieldOperand.getDefiningOp<stablehlo::TransposeOp>();
+      if (!innerTransposeOp)
+        continue;
+        
+      // Check if the corresponding while result is used by a transpose
+      Value whileResult = whileOp.getResult(idx);
+      
+      // Check that the while result has exactly one use
+      if (!whileResult.hasOneUse())
+        continue;
+        
+      // Get the single user and verify it's a transpose
+      Operation *singleUser = *whileResult.getUsers().begin();
+      auto outerTransposeOp = dyn_cast<stablehlo::TransposeOp>(singleUser);
+      if (!outerTransposeOp)
+        continue;
+          
+      // Check that the permutation dimensions match (one undoes the other)
+      // The permutation of the outer transpose should be the inverse of the inner transpose
+      if (!verifyInversePermutations(innerTransposeOp, outerTransposeOp))
+        continue;
+
+      candidatesForTransform.push_back({idx, innerTransposeOp, outerTransposeOp});
+    }
+    
+    // If no candidates found, no rewrite needed
+    if (candidatesForTransform.empty())
+      return failure();
+
+    // Get the operands of the while op to use later
+    auto whileOperands = llvm::to_vector(whileOp.getOperands());
+
+    // Create input transposes for each candidate
+    for (auto &candidate : candidatesForTransform) {
+      unsigned idx = candidate.idx;
+      stablehlo::TransposeOp innerTranspose = candidate.innerTranspose;
+      stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
+      
+      // Create a new transpose before the while loop
+      auto inputTranspose = rewriter.create<stablehlo::TransposeOp>(
+          whileOp.getLoc(),
+          outerTranspose.getType(),  // The type after transposition
+          whileOperands[idx],         // Original input to while
+          outerTranspose.getPermutation());
+          
+      // Update the while operand to use the new transposed value
+      whileOp.setOperand(idx, inputTranspose);
+      
+      // Get the block argument at the specified index
+      BlockArgument blockArg = bodyBlock.getArgument(idx);
+      
+      // Create a transpose at the beginning of the body
+      auto bodyTranspose = rewriter.create<stablehlo::TransposeOp>(
+          whileOp.getLoc(),
+          innerTranspose.getOperand().getType(), // Original type before transposition
+          blockArg,
+          innerTranspose.getPermutation()); // Use inverse permutation
+
+
+      //Replace the users of blockArg with the bodyTranspose
+      rewriter.replaceAllUsesWith(blockArg, bodyTranspose);
+    }
+
+    // Rewrite the pattern
+    for (auto &candidate : candidatesForTransform) {
+      unsigned idx = candidate.idx;
+      stablehlo::TransposeOp innerTranspose = candidate.innerTranspose;
+      
+      Value innerTransposeInput = innerTranspose.getOperand();
+      Value whileResult = whileOp.getResult(idx);
+      
+      // Find all outer transpose users
+      SmallVector<stablehlo::TransposeOp> outerTransposes;
+      for (Operation *user : whileResult.getUsers()) {
+        if (auto outerTranspose = dyn_cast<stablehlo::TransposeOp>(user)) {
+          if (verifyInversePermutations(innerTranspose, outerTranspose)) {
+            outerTransposes.push_back(outerTranspose);
+          }
+        }
+      }
+      
+      // Update yield op to use the input of the inner transpose
+      rewriter.setInsertionPoint(yieldOp);
+      auto newYieldOperands = llvm::to_vector(yieldOp.getOperands());
+      newYieldOperands[idx] = innerTransposeInput;
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp, newYieldOperands);
+      
+      // Replace uses of the outer transposes with the while result
+      for (auto outerTranspose : outerTransposes) {
+        rewriter.replaceOp(outerTranspose, whileResult);
+      }
+    }
+    
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
@@ -8544,6 +8684,7 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         WhileDeadResults,
         WhileSimplify,
+        WhileTransposePattern,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
