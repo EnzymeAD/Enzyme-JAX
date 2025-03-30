@@ -24,4 +24,18 @@ func.func @test_while_transpose_elimination(%arg0: tensor<2x3xf32>, %arg1: tenso
   %1 = stablehlo.transpose %0#0, dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
   
   return %1 : tensor<3x2xf32>
-} 
+}
+
+// CHECK-LABEL: func.func @test_while_transpose_elimination
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<2x3xf32>, %[[ARG1:.*]]: tensor<i64>) -> tensor<3x2xf32>
+// CHECK-NEXT: %[[COND:.*]] = stablehlo.constant dense<true> : tensor<i1>
+// CHECK-NEXT: %[[TRANSPOSE_BEFORE:.*]] = stablehlo.transpose %[[ARG0]], dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT: %[[WHILE_RESULT:.*]] = stablehlo.while(%[[ITER_ARG:.*]] = %[[TRANSPOSE_BEFORE]]) : tensor<3x2xf32>
+// CHECK-NEXT:   cond {
+// CHECK-NEXT:     stablehlo.return %[[COND]] : tensor<i1>
+// CHECK-NEXT:   } do {
+// CHECK-NEXT:     %[[BODY_TRANS:.*]] = stablehlo.transpose %[[ITER_ARG]], dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:     %[[CUSTOM:.*]] = "unregistered.custom_transform"(%[[BODY_TRANS]]) : (tensor<2x3xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT:     stablehlo.return %[[CUSTOM]] : tensor<3x2xf32>
+// CHECK:        }
+// CHECK-NEXT: return %[[WHILE_RESULT]] : tensor<3x2xf32>

@@ -7626,8 +7626,7 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
                                yieldOp.getOperands().end());
 
     
-    // Step 1
-    // Track which results need to be transformed
+    // Step 1: Track which results need to be transformed
     struct TransposeCandidate {
       unsigned idx;
       stablehlo::TransposeOp innerTranspose;
@@ -7699,6 +7698,8 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(yieldOp);
         rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp, newReturnValues);
+        //Update the yieldOp
+        yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
     }
 
     // Step 3 : Create a new while op with the new operands and move the body of original whileOp
@@ -7804,9 +7805,12 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
                 newRetVal = oldRetVal;
             newCondValues.push_back(newRetVal);
         }
-        
-        rewriter.setInsertionPointToEnd(&newCondBlock);
-        rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(), newCondValues);
+        {
+          // Save the current insertion point
+          mlir::OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToEnd(&newCondBlock);
+          rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(), newCondValues);
+        }
     }
 
     // Step 4 : Insert the transpose op at the beginning of the body of new WhileOp
@@ -7825,7 +7829,7 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
         // Create a transpose at the beginning of the body
         auto bodyTranspose = rewriter.create<stablehlo::TransposeOp>(
             newWhileOp.getLoc(),
-            innerTranspose.getOperand().getType(), // Original type before transposition
+            innerTranspose.getType(), // Original type before transposition
             blockArg,
             innerTranspose.getPermutation()); // Use inverse permutation
 
@@ -7837,7 +7841,15 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Finally, replace all uses of the old while op with the new one
     rewriter.replaceOp(whileOp, newWhileOp.getResults());
-
+    
+    //Step 5. Replace outerTranspose with the newWhileOp results
+    for (auto &candidate : candidatesForTransform) {
+      unsigned idx = candidate.idx;
+      stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
+      
+      // Update the while operand to use the new transposed value
+      rewriter.replaceAllUsesExcept(outerTranspose, newWhileOp.getResult(idx), outerTranspose);
+    }
     return success();
   }
 };
