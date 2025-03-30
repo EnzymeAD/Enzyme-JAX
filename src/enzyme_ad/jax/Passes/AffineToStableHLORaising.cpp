@@ -1275,8 +1275,8 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         result =
             builder.create<stablehlo::AddOp>(innerOp.getLoc(), result, dsts[1]);
       } else if (isa<arith::SubIOp, arith::SubFOp>(&innerOp)) {
-        result =
-            builder.create<stablehlo::SubtractOp>(innerOp.getLoc(), dsts[1], result);
+        result = builder.create<stablehlo::SubtractOp>(innerOp.getLoc(),
+                                                       dsts[1], result);
       } else {
         llvm_unreachable("unhandled reduction");
       }
