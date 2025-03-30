@@ -198,7 +198,8 @@ reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
 select_comp_iota_const_simplify;
-dus_to_concat;;
+dus_to_concat;
+remove_duplicated_dus;
 select_op_used_within_if<1>;
 replace_neg_add_with_subtract<16>;
 

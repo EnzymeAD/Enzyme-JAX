@@ -810,6 +810,11 @@ def DUSToConcat : EnzymeHLOPatternOp<
   let patterns = ["DUSToConcat"];
 }
 
+def RemoveDuplicatedDUS : EnzymeHLOPatternOp<
+    "remove_duplicated_dus"> {
+  let patterns = ["RemoveDuplicatedDUS "];
+}
+
 def ConcatPadPatterns : EnzymeHLOPatternOp<
     "concat_pad"> {
   let patterns = ["ConcatPad"];

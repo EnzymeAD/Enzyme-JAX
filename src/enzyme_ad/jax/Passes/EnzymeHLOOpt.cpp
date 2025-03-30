@@ -6114,6 +6114,89 @@ static bool isConcatenable(stablehlo::DynamicUpdateSliceOp op1,
   return getConcatenateDimIfConcatenable(op1, op2) != -1;
 }
 
+struct RemoveDuplicatedDUS final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto definingDUS =
+        op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!definingDUS)
+      return failure();
+
+    if (!op.getOperand().hasOneUse())
+      return failure();
+
+    auto getShape = [](Value value) -> SmallVector<int64_t> {
+      if (auto shapedType = value.getType().dyn_cast<ShapedType>()) {
+        return llvm::to_vector(shapedType.getShape());
+      }
+      return {};
+    };
+
+    SmallVector<int64_t> shape1 = getShape(op.getUpdate());
+    SmallVector<int64_t> shape2 = getShape(definingDUS.getUpdate());
+
+    // Check if ranks match
+    if (shape1.size() != shape2.size())
+      return failure();
+
+    if (shape1.empty())
+      return failure();
+
+    for (const auto &[i, dims] : llvm::enumerate(llvm::zip(shape1, shape2))) {
+      auto [dim1, dim2] = dims;
+      if (dim1 != dim2) {
+        return failure();
+      }
+    }
+
+    auto startIndices1 = op.getStartIndices();
+    auto startIndices2 = definingDUS.getStartIndices();
+
+    int mismatchedIndices = 0;
+    for (const auto &[i, startIndices] :
+         llvm::enumerate(llvm::zip(startIndices1, startIndices2))) {
+      auto [idx1, idx2] = startIndices;
+      auto const1 = idx1.getDefiningOp<stablehlo::ConstantOp>();
+      auto const2 = idx2.getDefiningOp<stablehlo::ConstantOp>();
+
+      // For constants, compare actual values
+      // If one is constant and other isn't, they don't match
+      // Otherwise compare SSA values directly
+      auto getConstantInt = [](Value val) -> std::optional<int64_t> {
+        if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+          if (auto intAttr =
+                  constOp.getValue().dyn_cast<DenseIntElementsAttr>()) {
+            APInt apIntValue = intAttr.getValues<APInt>()[0];
+            return apIntValue.getSExtValue();
+          }
+        }
+        return std::nullopt;
+      };
+
+      auto val1 = getConstantInt(idx1);
+      auto val2 = getConstantInt(idx2);
+
+      if (!val1 && !val2)
+        if (startIndices1 != startIndices2)
+          return failure();
+
+      if (!val1 || !val2)
+        return failure();
+
+      if (*val1 != *val2)
+        return failure();
+    }
+    // 6. Replace all uses and clean up
+    rewriter.replaceOp(definingDUS, definingDUS.getOperand());
+    return success();
+  }
+};
+
 struct DUSToConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -8557,7 +8640,8 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         TransposeReduceSimplify,
-        DUSToConcat,
+      //DUSToConcat,
+        RemoveDuplicatedDUS,
         BroadcastIotaSimplify
       >(context);
     // clang-format on
