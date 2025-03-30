@@ -4816,10 +4816,13 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     return res;
   }
 
-  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar, Operation* op) const {
+  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar,
+                         Operation *op) const {
     for (auto index : indices) {
-      if (index == indVar) continue;
-      if (definedOutside(index, op)) continue;
+      if (index == indVar)
+        continue;
+      if (definedOutside(index, op))
+        continue;
       return false;
     }
     return true;
@@ -4844,50 +4847,64 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
       bool legal = store->getParentOp() == forOp;
       Value memref = store.getMemRef();
       for (auto *user : memref.getUsers()) {
-        if (user == store) continue;
+        if (user == store)
+          continue;
         legal &= isReadOnly(user);
       }
       if (legal)
-      stores.push_back(store);
+        stores.push_back(store);
     });
-    SmallVector<std::pair<AffineStoreOp, SmallVector<std::pair<AffineLoadOp, AffineMap>>>> todo;
+    SmallVector<std::pair<AffineStoreOp,
+                          SmallVector<std::pair<AffineLoadOp, AffineMap>>>>
+        todo;
     for (auto store : stores) {
-       Value memref = store.getMemRef();
-       SmallVector<std::pair<AffineLoadOp, AffineMap>> replacedLoads;
-       for (auto *user : memref.getUsers()) {
-          if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
-             if (load.getMapOperands() != store.getMapOperands()) continue;
-	     AffineMap loadMap = load.getAffineMap();
-	     bool legal = true;
-	     SmallVector<AffineExpr> dimReps;
-	     SmallVector<AffineExpr> dimReps2;
-	     SmallVector<AffineExpr> symReps;
-	     for (int i=0; i<loadMap.getNumDims(); i++) {
-		     dimReps.push_back(rewriter.getAffineDimExpr(i));
-		     dimReps2.push_back(rewriter.getAffineDimExpr(i));
-	     }
-	     for (int i=0; i<loadMap.getNumSymbols(); i++)
-		     symReps.push_back(rewriter.getAffineSymbolExpr(i));
-	     for (auto &&[i, val] : llvm::enumerate(load.getMapOperands())) {
-		  if (val == forOp.getInductionVar()) {
-		    if (i >= loadMap.getNumDims()) { legal = false; break; }
-		    dimReps[i] = dimReps[i]+rewriter.getAffineConstantExpr(1);
-		    dimReps2[i] = rewriter.getAffineConstantExpr(0);
-		  }
-	     }
-	     if (!legal) continue;
-	     auto loadMap2 = loadMap.replaceDimsAndSymbols(dimReps, symReps, loadMap.getNumDims(), loadMap.getNumSymbols());
-	     loadMap2 = simplifyAffineMap(loadMap2);
-	     if (store.getAffineMap() != loadMap2) continue;
-	     Operation* loadParen = load;
-	     while (loadParen->getParentOp() != forOp) loadParen = loadParen->getParentOp();
-	     if (!loadParen->isBeforeInBlock(store)) continue;
-	     replacedLoads.emplace_back(load, loadMap.replaceDimsAndSymbols(dimReps2, symReps, loadMap.getNumDims(), loadMap.getNumSymbols()));
-	   }
-
-
+      Value memref = store.getMemRef();
+      SmallVector<std::pair<AffineLoadOp, AffineMap>> replacedLoads;
+      for (auto *user : memref.getUsers()) {
+        if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
+          if (load.getMapOperands() != store.getMapOperands())
+            continue;
+          AffineMap loadMap = load.getAffineMap();
+          bool legal = true;
+          SmallVector<AffineExpr> dimReps;
+          SmallVector<AffineExpr> dimReps2;
+          SmallVector<AffineExpr> symReps;
+          for (int i = 0; i < loadMap.getNumDims(); i++) {
+            dimReps.push_back(rewriter.getAffineDimExpr(i));
+            dimReps2.push_back(rewriter.getAffineDimExpr(i));
           }
-       if (replacedLoads.size() != 0) todo.emplace_back(store, replacedLoads);
+          for (int i = 0; i < loadMap.getNumSymbols(); i++)
+            symReps.push_back(rewriter.getAffineSymbolExpr(i));
+          for (auto &&[i, val] : llvm::enumerate(load.getMapOperands())) {
+            if (val == forOp.getInductionVar()) {
+              if (i >= loadMap.getNumDims()) {
+                legal = false;
+                break;
+              }
+              dimReps[i] = dimReps[i] + rewriter.getAffineConstantExpr(1);
+              dimReps2[i] = rewriter.getAffineConstantExpr(0);
+            }
+          }
+          if (!legal)
+            continue;
+          auto loadMap2 = loadMap.replaceDimsAndSymbols(
+              dimReps, symReps, loadMap.getNumDims(), loadMap.getNumSymbols());
+          loadMap2 = simplifyAffineMap(loadMap2);
+          if (store.getAffineMap() != loadMap2)
+            continue;
+          Operation *loadParen = load;
+          while (loadParen->getParentOp() != forOp)
+            loadParen = loadParen->getParentOp();
+          if (!loadParen->isBeforeInBlock(store))
+            continue;
+          replacedLoads.emplace_back(
+              load, loadMap.replaceDimsAndSymbols(dimReps2, symReps,
+                                                  loadMap.getNumDims(),
+                                                  loadMap.getNumSymbols()));
+        }
+      }
+      if (replacedLoads.size() != 0)
+        todo.emplace_back(store, replacedLoads);
     }
 
     if (!todo.size())
@@ -4897,7 +4914,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     llvm::append_range(newIterArgs, forOp.getRegionIterArgs());
     rewriter.setInsertionPoint(forOp);
     for (auto &&[store, loads] : todo) {
-      auto movedLoad = cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first));
+      auto movedLoad =
+          cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first));
       movedLoad.setMap(loads[0].second);
       newIterArgs.push_back(movedLoad);
     }
@@ -4941,7 +4959,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     auto mergedYieldOp = cast<affine::AffineYieldOp>(newBlock->getTerminator());
     cloneFilteredTerminator(mergedYieldOp);
 
-    rewriter.replaceOp(forOp, newForOp.getResults().slice(0, forOp.getNumResults()));
+    rewriter.replaceOp(forOp,
+                       newForOp.getResults().slice(0, forOp.getNumResults()));
     return success();
   }
 };
