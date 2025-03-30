@@ -4849,6 +4849,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
       for (auto *user : memref.getUsers()) {
         if (user == store)
           continue;
+	if (!forOp->isAncestor(user)) continue;
         legal &= isReadOnly(user);
       }
       if (legal)
@@ -4861,6 +4862,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
       Value memref = store.getMemRef();
       SmallVector<std::pair<AffineLoadOp, AffineMap>> replacedLoads;
       for (auto *user : memref.getUsers()) {
+	if (!forOp->isAncestor(user)) continue;
         if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
           if (load.getMapOperands() != store.getMapOperands())
             continue;
@@ -4911,11 +4913,13 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
       return failure();
 
     SmallVector<Value, 4> newIterArgs;
-    llvm::append_range(newIterArgs, forOp.getRegionIterArgs());
+    llvm::append_range(newIterArgs, forOp.getInits());
     rewriter.setInsertionPoint(forOp);
+    IRMapping map;
+    map.map(forOp.getInductionVar(), rewriter.create<arith::ConstantIndexOp>(forOp.getLoc(), 0));
     for (auto &&[store, loads] : todo) {
       auto movedLoad =
-          cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first));
+          cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first, map));
       movedLoad.setMap(loads[0].second);
       newIterArgs.push_back(movedLoad);
     }
