@@ -316,7 +316,8 @@ struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
-struct DUSDUSConcat final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+struct DUSDUSConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
@@ -331,7 +332,8 @@ struct DUSDUSConcat final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSlice
     stablehlo::DynamicUpdateSliceOp duses[2] = {dus, dus2};
     for (auto en : llvm::enumerate(duses)) {
       auto ty = dyn_cast<RankedTensorType>(en.value().getUpdate().getType());
-      if (!ty) return failure();
+      if (!ty)
+        return failure();
       tys[en.index()] = ty;
     }
 
@@ -339,7 +341,7 @@ struct DUSDUSConcat final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSlice
       return failure();
 
     ssize_t diffidx = -1;
-    for (size_t i=0; i<dus.getStartIndices().size(); i++) {
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
       if (dus.getStartIndices()[i] == dus2.getStartIndices()[i])
         continue;
       if (diffidx != -1) {
@@ -348,7 +350,8 @@ struct DUSDUSConcat final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSlice
       diffidx = i;
     }
 
-    if (diffidx == -1) return failure();
+    if (diffidx == -1)
+      return failure();
 
     int64_t idxs[2];
 
@@ -364,19 +367,22 @@ struct DUSDUSConcat final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSlice
 
     if (idxs[1] == idxs[0] + tys[0].getShape()[diffidx]) {
       Value operands[2] = {dus.getUpdate(), dus2.getUpdate()};
-      auto concat = rewriter.create<stablehlo::ConcatenateOp>(dus.getLoc(), operands, diffidx);
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(dus, dus2.getOperand(), concat, dus.getStartIndices());
+      auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+          dus.getLoc(), operands, diffidx);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus.getStartIndices());
       return success();
     } else if (idxs[0] == idxs[1] + tys[1].getShape()[diffidx]) {
       Value operands[2] = {dus2.getUpdate(), dus.getUpdate()};
-      auto concat = rewriter.create<stablehlo::ConcatenateOp>(dus.getLoc(), operands, diffidx);
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(dus, dus2.getOperand(), concat, dus2.getStartIndices());
+      auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+          dus.getLoc(), operands, diffidx);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus2.getStartIndices());
       return success();
     }
     return failure();
   }
 };
-
 
 struct DynamicUpdateToConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
