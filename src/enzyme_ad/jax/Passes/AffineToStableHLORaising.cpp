@@ -29,6 +29,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include <isl/ctx.h>
@@ -38,6 +39,7 @@
 #include <isl/space.h>
 #include <isl/val.h>
 #include <optional>
+#include <cassert>
 
 namespace mlir {
 namespace enzyme {
@@ -999,6 +1001,7 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
       clonedFor.getLoc(), clonedFor.getResults());
   if (failed(affine::loopUnrollFull(clonedFor)))
     return failure();
+
   // Make a temporary new mapping because we will map values from the temporary
   // block which we will delete later.
   IRMapping forMapping = mapping;
@@ -1101,8 +1104,9 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
-              .failed())
+              .failed()) {
         return failure();
+      }
     }
 
     Value newIvInBody =
@@ -1117,6 +1121,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
         LLVM_DEBUG(llvm::dbgs() << "invalid init for iterArg: ";
                    iterArg.printAsOperand(llvm::dbgs(), OpPrintingFlags());
                    llvm::dbgs() << "\n");
+	whileOp->erase();
         return failure();
       }
       loopCarried.push_back(mapping.lookup(yieldedIterArgs));
@@ -1152,9 +1157,6 @@ template <class T>
 static LogicalResult tryRaisingParallelOpToStableHLO(
     T parallelOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  // No reductions for now
-  if (!parallelOp.getResults().empty())
-    return failure();
 
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
@@ -1166,10 +1168,122 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   auto newPc = pc.add(parallelOp);
   if (!newPc)
     return failure();
+  
+  SmallVector<Value> iter_inputs;
+  SmallVector<BlockArgument> iters;
+  if (auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation())) {
+    for (auto &&[inp, arg] : llvm::zip_equal(forOp.getInits(), forOp.getRegionIterArgs())) {
+      iters.push_back(arg);
+      iter_inputs.push_back(inp);
+    }
+  }
+
   for (auto &innerOp : parallelOp.getBody()->without_terminator()) {
+	  ssize_t reduced_idx = -1;
+	  ssize_t op_idx = -1;
+    for (auto &&[j, operand] : llvm::enumerate(innerOp.getOperands())) {
+      for (auto &&[i, iter] : llvm::enumerate(iters)) {
+	 if (iter == operand) {
+		 reduced_idx = i;
+		 op_idx = j;
+		 break;
+	 }
+      }
+    }
+
+    if (reduced_idx != -1) {
+      Value reduced_val = innerOp.getOperand(1-op_idx);
+      Value init_val = iter_inputs[reduced_idx];
+
+      Value reduce_broadcasted = mapping.lookup(reduced_val);
+      auto reduce_map = maps.lookup(reduce_broadcasted);
+
+      auto forOp = cast<affine::AffineForOp>(iters[reduced_idx].getOwner()->getParentOp());
+
+      Value idx_broadcasted = mapping.lookup(forOp.getInductionVar());
+      auto idx_map = maps.lookup(idx_broadcasted);
+
+
+      Value dsts[] = {idx_broadcasted, mapping.lookup(init_val)};
+      affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
+
+      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts, submaps, builder);
+
+      ssize_t idx_to_reduce = -1;
+      for (auto &&[i, expr] : llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+	if (outputMap.getOperands()[dim.getPosition()] == forOp.getInductionVar()) {
+	   assert(idx_to_reduce == -1);
+	   idx_to_reduce = i;
+	}
+      }
+      assert(idx_to_reduce != -1);
+
+      auto unrankedTensorType = RankedTensorType::get({}, cast<RankedTensorType>(reduce_broadcasted.getType()).getElementType() );
+      Value init_values[1] = { builder.create<stablehlo::ConstantOp>(innerOp.getLoc(), builder.getZeroAttr(unrankedTensorType)) };
+     
+      auto shape = cast<RankedTensorType>(reduce_broadcasted.getType()).getShape();
+      SmallVector<int64_t> win_dim(shape.size(), 1);
+      win_dim[idx_to_reduce] = shape[idx_to_reduce];
+      
+      SmallVector<int64_t> win_strides(shape.size(), 1);
+      SmallVector<int64_t> win_dialations(shape.size(), 1);
+      SmallVector<int64_t> base_dialations(shape.size(), 1);
+      SmallVector<int64_t> padding_dialations(2*shape.size(), 0);
+      padding_dialations[2*idx_to_reduce] = shape[idx_to_reduce-1];
+
+      int64_t padding_shape[2] = {shape.size(), 2};
+
+      Value operands[1] = {reduce_broadcasted};
+      Type restys[1] = {reduce_broadcasted.getType()};
+      auto redwin = builder.create<stablehlo::ReduceWindowOp>(innerOp.getLoc(), restys, operands, init_values,
+		      builder.getDenseI64ArrayAttr(win_dim),
+		      builder.getDenseI64ArrayAttr(win_strides),
+		      builder.getDenseI64ArrayAttr(base_dialations),
+		      builder.getDenseI64ArrayAttr(win_dialations),
+		      DenseIntElementsAttr::get(
+       RankedTensorType::get(padding_shape,
+                             builder.getIntegerType(64)),
+      				padding_dialations)
+		      );
+
+      auto block = new Block();
+      redwin.getBody().push_back(block);
+
+      auto a = block->addArgument(unrankedTensorType, innerOp.getLoc());
+      auto b = block->addArgument(unrankedTensorType, innerOp.getLoc());
+
+      {
+      OpBuilder builder(block, block->end());
+      auto addOp = builder.create<stablehlo::AddOp>(innerOp.getLoc(), a, b);
+      builder.create<stablehlo::ReturnOp>(innerOp.getLoc(), addOp.getResult());
+      }
+
+      Value result = redwin->getResult(0);
+      if (isa<arith::AddIOp, arith::AddFOp>(&innerOp)) {
+        result = builder.create<stablehlo::AddOp>(innerOp.getLoc(), result, dsts[1]);
+      } else if (isa<arith::SubIOp, arith::SubFOp>(&innerOp)) {
+        result = builder.create<stablehlo::AddOp>(innerOp.getLoc(), dsts[1], result);
+      } else {
+	llvm_unreachable("unhandled reduction");
+      }
+
+      mapping.map(innerOp.getResult(0), result);
+      maps[result] = outputMap;
+
+      continue;
+
+    }
+
     if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, *newPc)
             .failed())
       return failure();
+  }
+
+  auto yld = parallelOp.getBody()->getTerminator();
+  for (auto &&[res, yval] : llvm::zip_equal(parallelOp.getResults(), yld->getOperands())) {
+    auto val = mapping.lookup(yval);
+    mapping.map(res, val);
   }
 
   return success();
@@ -1179,7 +1293,46 @@ bool isLoopLockStepExecutable(
     affine::AffineForOp forOp,
     SmallVectorImpl<affine::LoopReduction> *parallelReductions);
 static bool isLockStepExecutable(affine::AffineForOp forOp) {
-  return isLoopLockStepExecutable(forOp, /* reductions not allowed */ nullptr);
+  SmallVector<mlir::affine::LoopReduction> red;
+  if (isLoopLockStepExecutable(forOp, &red)) {
+
+	llvm::SmallSet<Operation*, 1> reductions;
+	for (auto &&[i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+	  if (!arg.hasOneUse()) return false;
+	  Operation* user = nullptr;
+	  for (auto user2 : arg.getUsers()) {
+	    user = user2;
+	    break;
+	  }
+	  assert(user);
+	  if (user->getParentOp() != forOp) return false;
+	  if (isa<arith::AddIOp, arith::AddFOp>(user)) {
+	  } else if (auto sub = dyn_cast<arith::SubIOp>(user)) {
+	    if (sub.getRhs() == arg) return false;
+	  } else if (auto sub = dyn_cast<arith::SubFOp>(user)) {
+	    if (sub.getRhs() == arg) return false;
+	  } else {
+	    return false;
+	  }
+	  if (reductions.contains(user)) return false;
+	  reductions.insert(user);
+
+	  bool hadYield = false;
+	  for (auto &user2 : user->getResult(0).getUses()) {
+	    if (auto yld = dyn_cast<affine::AffineYieldOp>(user2.getOwner())) {
+	      if (user2.getOperandNumber() != i) return false;
+	      hadYield = true;
+	      continue;
+	    }
+	  }
+	  if (!hadYield) return false;
+
+	}
+
+	  return true;
+	 } else {
+		 return false;
+	 }
 }
 
 static LogicalResult tryRaisingLockStepForOpToStableHLO(
@@ -1403,6 +1556,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto Ty = builder.getI64Type();
     auto unrankedTensorType = RankedTensorType::get({}, Ty);
 
+    assert(maps.contains(update));
     affine::AffineValueMap updateValueMap = maps.lookup(update);
 
     // for each dim in update, where it will
@@ -1759,11 +1913,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value cond = nullptr;
     affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
+
+    affine::AffineValueMap constraintMap(AffineMap::get(is.getNumDims(), is.getNumSymbols(), is.getConstraints(), is.getContext()), ifOp.getOperands());
+    constraintMap.composeSimplifyAndCanonicalize();
+
     for (auto [constraint, eq] :
-         llvm::zip_equal(is.getConstraints(), is.getEqFlags())) {
+         llvm::zip_equal(constraintMap.getAffineMap().getResults(), is.getEqFlags())) {
       auto [expandedExpr, outputMap] =
           expandAffineExpr(builder, ifOp.getLoc(), constraint,
-                           ifOp.getOperands(), mapping, is.getNumDims());
+                           constraintMap.getOperands(), mapping, constraintMap.getNumDims());
       Value zero = builder.create<stablehlo::ConstantOp>(
           ifOp.getLoc(), expandedExpr.getType().cast<ShapedType>(),
           SplatElementsAttr::get(

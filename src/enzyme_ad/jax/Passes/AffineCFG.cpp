@@ -5611,7 +5611,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
     } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
-               !isMemoryEffectFree(op)) {
+               !isReadNone(op)) {
       return WalkResult::interrupt();
     }
 
