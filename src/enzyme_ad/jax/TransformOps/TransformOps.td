@@ -916,6 +916,12 @@ def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastIotaSimplify"];
 }
 
+def DUSDUSPatterns : EnzymeHLOPatternOp<
+  "dus_dus"
+> {
+  let patterns = ["DUSDUS"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
