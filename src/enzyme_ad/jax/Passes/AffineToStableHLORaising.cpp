@@ -1243,7 +1243,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       SmallVector<int64_t> padding_dialations(2 * shape.size(), 0);
       padding_dialations[2 * idx_to_reduce] = shape[idx_to_reduce - 1];
 
-      int64_t padding_shape[2] = {shape.size(), 2};
+      int64_t padding_shape[2] = {(int64_t)shape.size(), 2};
 
       Value operands[1] = {reduce_broadcasted};
       Type restys[1] = {reduce_broadcasted.getType()};
