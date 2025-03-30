@@ -7590,25 +7590,25 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
-bool verifyInversePermutations(stablehlo::TransposeOp innerTrans, 
-                              stablehlo::TransposeOp outerTrans) {
+bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
+                               stablehlo::TransposeOp outerTrans) {
   auto innerPerm = innerTrans.getPermutation();
   auto outerPerm = outerTrans.getPermutation();
-  
+
   if (innerPerm.size() != outerPerm.size())
     return false;
-    
+
   SmallVector<int64_t> composition(innerPerm.size());
   for (size_t i = 0; i < innerPerm.size(); ++i) {
     composition[i] = outerPerm[innerPerm[i]];
   }
-  
+
   // Check if the composition is the identity permutation
   for (size_t i = 0; i < composition.size(); ++i) {
     if (composition[i] != static_cast<int64_t>(i))
       return false;
   }
-  
+
   return true;
 }
 
@@ -7616,54 +7616,56 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                               PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
-    
-    // New return values
-    SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(), 
-                               yieldOp.getOperands().end());
 
-    
+    // New return values
+    SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(),
+                                       yieldOp.getOperands().end());
+
     // Step 1: Track which results need to be transformed
     struct TransposeCandidate {
       unsigned idx;
       stablehlo::TransposeOp innerTranspose;
       stablehlo::TransposeOp outerTranspose;
     };
-    
+
     llvm::SmallVector<TransposeCandidate, 4> candidatesForTransform;
-    
+
     // For each yielded value, check if it comes from a transpose
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
       Value yieldOperand = yieldOp.getOperand(idx);
-      auto innerTransposeOp = yieldOperand.getDefiningOp<stablehlo::TransposeOp>();
+      auto innerTransposeOp =
+          yieldOperand.getDefiningOp<stablehlo::TransposeOp>();
       if (!innerTransposeOp)
         continue;
-        
+
       // Check if the corresponding while result is used by a transpose
       Value whileResult = whileOp.getResult(idx);
-      
+
       // Check that the while result has exactly one use
       if (!whileResult.hasOneUse())
         continue;
-        
+
       // Get the single user and verify it's a transpose
       Operation *singleUser = *whileResult.getUsers().begin();
       auto outerTransposeOp = dyn_cast<stablehlo::TransposeOp>(singleUser);
       if (!outerTransposeOp)
         continue;
-          
+
       // Check that the permutation dimensions match (one undoes the other)
-      // The permutation of the outer transpose should be the inverse of the inner transpose
+      // The permutation of the outer transpose should be the inverse of the
+      // inner transpose
       if (!verifyInversePermutations(innerTransposeOp, outerTransposeOp))
         continue;
 
-      candidatesForTransform.push_back({idx, innerTransposeOp, outerTransposeOp});
+      candidatesForTransform.push_back(
+          {idx, innerTransposeOp, outerTransposeOp});
       newReturnValues[idx] = innerTransposeOp.getOperand();
     }
-    
+
     // If no candidates found, no rewrite needed
     if (candidatesForTransform.empty())
       return failure();
@@ -7673,63 +7675,64 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
     auto whileOperands = llvm::to_vector(whileOp.getOperands());
 
     // New operands
-    SmallVector<Value> newOperands(whileOp.getOperands().begin(), whileOp.getOperands().end());
+    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                   whileOp.getOperands().end());
 
     // Create input transposes for each candidate
     for (auto &candidate : candidatesForTransform) {
       unsigned idx = candidate.idx;
       stablehlo::TransposeOp innerTranspose = candidate.innerTranspose;
       stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
-      
+
       // Create a new transpose before the while loop
       auto inputTranspose = rewriter.create<stablehlo::TransposeOp>(
           whileOp.getLoc(),
-          outerTranspose.getType(),  // The type after transposition
-          whileOperands[idx],         // Original input to while
+          outerTranspose.getType(), // The type after transposition
+          whileOperands[idx],       // Original input to while
           outerTranspose.getPermutation());
-          
+
       // Update the while operand to use the new transposed value
       newOperands[idx] = inputTranspose;
     }
-    
+
     // Update yield op to use the input of the inner transpose
     {
-        // Save the current insertion point
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(yieldOp);
-        rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp, newReturnValues);
-        //Update the yieldOp
-        yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+      // Save the current insertion point
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(yieldOp);
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
+                                                       newReturnValues);
+      // Update the yieldOp
+      yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
     }
 
-    // Step 3 : Create a new while op with the new operands and move the body of original whileOp
+    // Step 3 : Create a new while op with the new operands and move the body of
+    // original whileOp
     SmallVector<Type> newResultTypes;
     newResultTypes.reserve(newOperands.size());
 
     for (auto operand : newOperands) {
-        newResultTypes.push_back(operand.getType());
+      newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-    whileOp.getLoc(),
-    newResultTypes,
-    newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands);
 
     // Create blocks in both regions first
     {
       // Create a block in the condition region
       Block *condBlock = rewriter.createBlock(&newWhileOp.getCond());
-      
+
       // Add arguments to the condition block matching operand types
       for (auto type : newResultTypes) {
-          condBlock->addArgument(type, whileOp.getLoc());
+        condBlock->addArgument(type, whileOp.getLoc());
       }
-      
+
       // Create a block in the body region
       Block *bodyBlock = rewriter.createBlock(&newWhileOp.getBody());
-      
+
       // Add arguments to the body block matching operand types
       for (auto type : newResultTypes) {
-          bodyBlock->addArgument(type, whileOp.getLoc());
+        bodyBlock->addArgument(type, whileOp.getLoc());
       }
     }
 
@@ -7738,94 +7741,99 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Set up operand mapping for the body region
     for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getBody().getArgument(i);
-        auto newArg = newWhileOp.getBody().getArgument(i);
-        mapper.map(oldArg, newArg);
+      auto oldArg = whileOp.getBody().getArgument(i);
+      auto newArg = newWhileOp.getBody().getArgument(i);
+      mapper.map(oldArg, newArg);
     }
 
     // Clear the new body block but keep its arguments
     Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock.clear(); // This clears operations but preserves block arguments
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
 
     // Clone operations from old body to new body
     Block &oldBodyBlock = whileOp.getBody().front();
     for (auto &op : oldBodyBlock.getOperations()) {
-        // Skip the terminator - we'll add it after all other operations
-        if (isa<stablehlo::ReturnOp>(op))
-            continue;
-          
-        // Clone the operation with the value mapping
-        rewriter.clone(op, mapper);
+      // Skip the terminator - we'll add it after all other operations
+      if (isa<stablehlo::ReturnOp>(op))
+        continue;
+
+      // Clone the operation with the value mapping
+      rewriter.clone(op, mapper);
     }
 
     // Create a new terminator for the body region using new values
     {
-        SmallVector<Value> newReturnValues;
+      SmallVector<Value> newReturnValues;
 
-        // Map old return values to new values using the mapper
-        for (auto oldRetVal : yieldOp.getOperands()) {
-            Value newRetVal = mapper.lookupOrNull(oldRetVal);
-            // If the value isn't in the mapper, maybe it was a block argument or constant
-            if (!newRetVal)
-                newRetVal = oldRetVal; // Consider more robust handling if needed
-            newReturnValues.push_back(newRetVal);
-        }
+      // Map old return values to new values using the mapper
+      for (auto oldRetVal : yieldOp.getOperands()) {
+        Value newRetVal = mapper.lookupOrNull(oldRetVal);
+        // If the value isn't in the mapper, maybe it was a block argument or
+        // constant
+        if (!newRetVal)
+          newRetVal = oldRetVal; // Consider more robust handling if needed
+        newReturnValues.push_back(newRetVal);
+      }
 
-        // Create the return op at the end of the body
-        rewriter.setInsertionPointToEnd(&newBodyBlock);
-        rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
+      // Create the return op at the end of the body
+      rewriter.setInsertionPointToEnd(&newBodyBlock);
+      rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
     }
     // Create condition region mapper
     mlir::IRMapping condMapper;
     for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getCond().getArgument(i);
-        auto newArg = newWhileOp.getCond().getArgument(i);
-        condMapper.map(oldArg, newArg);
+      auto oldArg = whileOp.getCond().getArgument(i);
+      auto newArg = newWhileOp.getCond().getArgument(i);
+      condMapper.map(oldArg, newArg);
     }
-    
+
     // Clear and clone condition region
     Block &newCondBlock = newWhileOp.getCond().front();
     newCondBlock.clear();
     Block &oldCondBlock = whileOp.getCond().front();
-    
+
     for (auto &op : oldCondBlock.getOperations()) {
-        if (isa<stablehlo::ReturnOp>(op))
-            continue;
-        rewriter.clone(op, condMapper);
-    }
-    
-    // Create condition terminator
-    {
-        auto oldCondReturn = cast<stablehlo::ReturnOp>(oldCondBlock.getTerminator());
-        SmallVector<Value> newCondValues;
-        
-        for (auto oldRetVal : oldCondReturn.getOperands()) {
-            Value newRetVal = condMapper.lookupOrNull(oldRetVal);
-            if (!newRetVal)
-                newRetVal = oldRetVal;
-            newCondValues.push_back(newRetVal);
-        }
-        {
-          // Save the current insertion point
-          mlir::OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPointToEnd(&newCondBlock);
-          rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(), newCondValues);
-        }
+      if (isa<stablehlo::ReturnOp>(op))
+        continue;
+      rewriter.clone(op, condMapper);
     }
 
-    // Step 4 : Insert the transpose op at the beginning of the body of new WhileOp
+    // Create condition terminator
+    {
+      auto oldCondReturn =
+          cast<stablehlo::ReturnOp>(oldCondBlock.getTerminator());
+      SmallVector<Value> newCondValues;
+
+      for (auto oldRetVal : oldCondReturn.getOperands()) {
+        Value newRetVal = condMapper.lookupOrNull(oldRetVal);
+        if (!newRetVal)
+          newRetVal = oldRetVal;
+        newCondValues.push_back(newRetVal);
+      }
+      {
+        // Save the current insertion point
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToEnd(&newCondBlock);
+        rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(),
+                                             newCondValues);
+      }
+    }
+
+    // Step 4 : Insert the transpose op at the beginning of the body of new
+    // WhileOp
     for (auto &candidate : candidatesForTransform) {
       unsigned idx = candidate.idx;
       stablehlo::TransposeOp innerTranspose = candidate.innerTranspose;
-      
+
       // Get the block argument at the specified index
       BlockArgument blockArg = newBodyBlock.getArgument(idx);
-      
+
       {
         // Save the current insertion point
         mlir::OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(&newBodyBlock);
-        
+
         // Create a transpose at the beginning of the body
         auto bodyTranspose = rewriter.create<stablehlo::TransposeOp>(
             newWhileOp.getLoc(),
@@ -7833,22 +7841,22 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
             blockArg,
             innerTranspose.getPermutation()); // Use inverse permutation
 
-
-        //Replace the users of blockArg with the bodyTranspose
+        // Replace the users of blockArg with the bodyTranspose
         rewriter.replaceAllUsesExcept(blockArg, bodyTranspose, bodyTranspose);
       }
     }
 
     // Finally, replace all uses of the old while op with the new one
     rewriter.replaceOp(whileOp, newWhileOp.getResults());
-    
-    //Step 5. Replace outerTranspose with the newWhileOp results
+
+    // Step 5. Replace outerTranspose with the newWhileOp results
     for (auto &candidate : candidatesForTransform) {
       unsigned idx = candidate.idx;
       stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
-      
+
       // Update the while operand to use the new transposed value
-      rewriter.replaceAllUsesExcept(outerTranspose, newWhileOp.getResult(idx), outerTranspose);
+      rewriter.replaceAllUsesExcept(outerTranspose, newWhileOp.getResult(idx),
+                                    outerTranspose);
     }
     return success();
   }
