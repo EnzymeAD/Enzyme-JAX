@@ -4035,6 +4035,19 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
       elseOperand.getDefiningOp()->getAttrDictionary())
     return false;
 
+  // Get defining operations
+  auto thenOp = thenOperand.getDefiningOp();
+  auto elseOp = elseOperand.getDefiningOp();
+
+  // Check operand types match
+  if (thenOp->getNumOperands() != elseOp->getNumOperands())
+    return false;
+
+  for (unsigned i = 0; i < thenOp->getNumOperands(); ++i) {
+    if (thenOp->getOperand(i).getType() != elseOp->getOperand(i).getType())
+      return false;
+  }
+
   return true;
 }
 
