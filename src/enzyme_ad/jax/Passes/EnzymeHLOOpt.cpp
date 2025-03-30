@@ -6023,6 +6023,153 @@ struct ConstPropThroughBarrier final
   }
 };
 
+static int
+getConcatenateDimIfConcatenable(stablehlo::DynamicUpdateSliceOp op1,
+                                stablehlo::DynamicUpdateSliceOp op2) {
+  auto getShape = [](Value value) -> SmallVector<int64_t> {
+    if (auto shapedType = value.getType().dyn_cast<ShapedType>()) {
+      return llvm::to_vector(shapedType.getShape());
+    }
+    return {};
+  };
+
+  SmallVector<int64_t> shape1 = getShape(op1.getUpdate());
+  SmallVector<int64_t> shape2 = getShape(op2.getUpdate());
+
+  // Check if ranks match
+  if (shape1.size() != shape2.size())
+    return -1;
+
+  if (shape1.empty())
+    return -1;
+
+  int mismatchedDims = 0;
+  int concatenateDim = -1;
+  for (const auto &[i, dims] : llvm::enumerate(llvm::zip(shape1, shape2))) {
+    auto [dim1, dim2] = dims;
+    if (dim1 != dim2) {
+      mismatchedDims++;
+      concatenateDim = i;
+      if (mismatchedDims > 1)
+        return -1;
+    }
+  }
+
+  auto startIndices1 = op1.getStartIndices();
+  auto startIndices2 = op2.getStartIndices();
+
+  int mismatchedIndices = 0;
+  for (const auto &[i, startIndices] :
+       llvm::enumerate(llvm::zip(startIndices1, startIndices2))) {
+    auto [idx1, idx2] = startIndices;
+    auto const1 = idx1.getDefiningOp<stablehlo::ConstantOp>();
+    auto const2 = idx2.getDefiningOp<stablehlo::ConstantOp>();
+
+    // For constants, compare actual values
+    // If one is constant and other isn't, they don't match
+    // Otherwise compare SSA values directly
+    auto getConstantInt = [](Value val) -> std::optional<int64_t> {
+      if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+        //      constOp->dump();
+        //      constOp.getValue().dump();
+        if (auto intAttr =
+                constOp.getValue().dyn_cast<DenseIntElementsAttr>()) {
+          APInt apIntValue = intAttr.getValues<APInt>()[0];
+          return apIntValue.getSExtValue();
+        }
+      }
+      return std::nullopt;
+    };
+
+    auto val1 = getConstantInt(idx1);
+    auto val2 = getConstantInt(idx2);
+
+    if (!val1 && !val2)
+      if (startIndices1 != startIndices2)
+        return -1;
+
+    if (!val1 || !val2)
+      return -1;
+
+    if (*val1 != *val2) {
+      mismatchedIndices++;
+      if (concatenateDim != -1 && concatenateDim != i)
+        return -1;
+      if (mismatchedIndices > 1)
+        return -1;
+      if (shape1[i] + *val1 != *val2) // && shape2[i] + *val2 != *val1)
+        return -1;
+      // op1->dump();
+      // op2->dump();
+      // llvm::errs() << shape1[i] << ' ' << *val1 << ' ' << shape2[i] << ' '
+      //              << *val2 << '\n';
+      concatenateDim = i;
+    }
+  }
+  return concatenateDim;
+}
+
+static bool isConcatenable(stablehlo::DynamicUpdateSliceOp op1,
+                           stablehlo::DynamicUpdateSliceOp op2) {
+  return getConcatenateDimIfConcatenable(op1, op2) != -1;
+}
+
+struct DUSToConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto definingDUS =
+        op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!definingDUS)
+      return failure();
+
+    if (!op.getOperand().hasOneUse())
+      return failure();
+
+    if (!isConcatenable(definingDUS, op))
+      return failure();
+
+    int concatenateDim = getConcatenateDimIfConcatenable(definingDUS, op);
+
+    if (concatenateDim == -1)
+      return failure();
+
+    auto getConstantInt = [](Value val) -> int64_t {
+      auto constOp = val.getDefiningOp<stablehlo::ConstantOp>();
+      auto intAttr = constOp.getValue().cast<DenseIntElementsAttr>();
+      APInt apIntValue = intAttr.getValues<APInt>()[0];
+      return apIntValue.getSExtValue();
+    };
+
+    auto val1 = getConstantInt(definingDUS.getStartIndices()[concatenateDim]);
+    auto val2 = getConstantInt(op.getStartIndices()[concatenateDim]);
+
+    // auto dus1 = (val1 < val2) ? definingDUS : op;
+    // auto dus2 = (val1 < val2) ? op : definingDUS;
+    auto dus1 = definingDUS;
+    auto dus2 = op;
+    Value update1 = dus1.getUpdate();
+    Value update2 = dus2.getUpdate();
+    rewriter.setInsertionPoint(op);
+    auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), mlir::ValueRange{update1, update2},
+        rewriter.getI64IntegerAttr(concatenateDim));
+
+    SmallVector<Value> newIndices(dus1.getStartIndices());
+    auto newUpdate = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        op.getLoc(), dus1.getOperand(), concat.getResult(), newIndices);
+
+    // 6. Replace all uses and clean up
+    rewriter.replaceOp(dus2, newUpdate.getResult());
+    rewriter.eraseOp(dus1);
+    return success();
+  }
+};
+
 //////////////// Imported from stablehlo
 static bool isIotaRange(ArrayRef<int64_t> dims) {
   return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
@@ -8410,6 +8557,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         TransposeReduceSimplify,
+        DUSToConcat,
         BroadcastIotaSimplify
       >(context);
     // clang-format on

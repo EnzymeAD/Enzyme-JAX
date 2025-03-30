@@ -805,6 +805,11 @@ def BroadcastReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastReshape"];
 }
 
+def DUSToConcat : EnzymeHLOPatternOp<
+    "dus_to_concat"> {
+  let patterns = ["DUSToConcat"];
+}
+
 def ConcatPadPatterns : EnzymeHLOPatternOp<
     "concat_pad"> {
   let patterns = ["ConcatPad"];
