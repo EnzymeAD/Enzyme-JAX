@@ -532,5 +532,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def StableHLODUSToConcat : Pass<"stablehlo-dus-to-concat"> {
+  let summary = "Fuse dus(dus) to dus(concat) if possible";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "func::FuncDialect",
+  ];
+}
 
 #endif
