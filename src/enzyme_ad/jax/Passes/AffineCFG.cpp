@@ -4759,6 +4759,219 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
   }
 };
 
+struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  bool isInCurrentAffineFor(Operation *op, affine::AffineForOp forOp) const {
+    auto *parentOp = op->getParentOp();
+    auto maybeParentFor = dyn_cast_or_null<affine::AffineForOp>(parentOp);
+    if (maybeParentFor && maybeParentFor == forOp)
+      return true;
+    return false;
+  }
+
+  bool areInSameAffineFor(affine::AffineLoadOp load,
+                          affine::AffineStoreOp store,
+                          affine::AffineForOp forOp) const {
+    return isInCurrentAffineFor(load.getOperation(), forOp) &&
+           isInCurrentAffineFor(store.getOperation(), forOp);
+  }
+
+  template <typename T>
+  bool haveSameIndices(affine::AffineLoadOp load, T storeOrLoad) const {
+    static_assert(
+        llvm::is_one_of<T, affine::AffineLoadOp, affine::AffineStoreOp>::value,
+        "applies to only affine::AffineLoadOp or affine::AffineStoreOp");
+    SmallVector<Value, 4> loadIndices(load.getIndices());
+    SmallVector<Value, 4> storeOrLoadIndices = storeOrLoad.getIndices();
+    if (loadIndices.size() != storeOrLoadIndices.size())
+      return false;
+    return std::equal(loadIndices.begin(), loadIndices.end(),
+                      storeOrLoadIndices.begin());
+  }
+
+  template <typename T>
+  bool areCompatible(affine::AffineLoadOp load, T store) const {
+    static_assert(
+        llvm::is_one_of<T, affine::AffineLoadOp, affine::AffineStoreOp>::value,
+        "applies to only affine::AffineLoadOp or affine::AffineStoreOp");
+    if (load.getMemRef() != store.getMemRef()) {
+      return false;
+    }
+    return haveSameIndices<T>(load, store);
+  }
+
+  bool checkDominance(Operation *a, Operation *b) const {
+    DominanceInfo dom(a);
+    return dom.properlyDominates(a, b);
+  }
+
+  bool checkDominance(Operation *a, ArrayRef<Operation *> bs) const {
+    bool res = true;
+    for (auto *b : bs)
+      if (!checkDominance(b, a)) {
+        res = false;
+        break;
+      }
+    return res;
+  }
+
+  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar,
+                         Operation *op) const {
+    for (auto index : indices) {
+      if (index == indVar)
+        continue;
+      if (definedOutside(index, op))
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  bool hasParentOp(Operation *a, Operation *b) const {
+    Operation *currOp = a;
+    while (Operation *parentOp = currOp->getParentOp()) {
+      if (isa<mlir::affine::AffineForOp>(parentOp) && parentOp == b)
+        return true;
+      currOp = parentOp;
+    }
+    return false;
+  }
+
+  LogicalResult matchAndRewrite(affine::AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+
+    Block *block = forOp.getBody();
+    SmallVector<affine::AffineStoreOp> stores;
+    block->walk([&](affine::AffineStoreOp store) {
+      bool legal = store->getParentOp() == forOp;
+      Value memref = store.getMemRef();
+      for (auto *user : memref.getUsers()) {
+        if (user == store)
+          continue;
+        if (!forOp->isAncestor(user))
+          continue;
+        legal &= isReadOnly(user);
+      }
+      if (legal)
+        stores.push_back(store);
+    });
+    SmallVector<std::pair<AffineStoreOp,
+                          SmallVector<std::pair<AffineLoadOp, AffineMap>>>>
+        todo;
+    for (auto store : stores) {
+      Value memref = store.getMemRef();
+      SmallVector<std::pair<AffineLoadOp, AffineMap>> replacedLoads;
+      for (auto *user : memref.getUsers()) {
+        if (!forOp->isAncestor(user))
+          continue;
+        if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
+          if (load.getMapOperands() != store.getMapOperands())
+            continue;
+          AffineMap loadMap = load.getAffineMap();
+          bool legal = true;
+          SmallVector<AffineExpr> dimReps;
+          SmallVector<AffineExpr> dimReps2;
+          SmallVector<AffineExpr> symReps;
+          for (int i = 0; i < loadMap.getNumDims(); i++) {
+            dimReps.push_back(rewriter.getAffineDimExpr(i));
+            dimReps2.push_back(rewriter.getAffineDimExpr(i));
+          }
+          for (int i = 0; i < loadMap.getNumSymbols(); i++)
+            symReps.push_back(rewriter.getAffineSymbolExpr(i));
+          for (auto &&[i, val] : llvm::enumerate(load.getMapOperands())) {
+            if (val == forOp.getInductionVar()) {
+              if (i >= loadMap.getNumDims()) {
+                legal = false;
+                break;
+              }
+              dimReps[i] = dimReps[i] + rewriter.getAffineConstantExpr(1);
+              dimReps2[i] = rewriter.getAffineConstantExpr(0);
+            }
+          }
+          if (!legal)
+            continue;
+          auto loadMap2 = loadMap.replaceDimsAndSymbols(
+              dimReps, symReps, loadMap.getNumDims(), loadMap.getNumSymbols());
+          loadMap2 = simplifyAffineMap(loadMap2);
+          if (store.getAffineMap() != loadMap2)
+            continue;
+          Operation *loadParen = load;
+          while (loadParen->getParentOp() != forOp)
+            loadParen = loadParen->getParentOp();
+          if (!loadParen->isBeforeInBlock(store))
+            continue;
+          replacedLoads.emplace_back(
+              load, loadMap.replaceDimsAndSymbols(dimReps2, symReps,
+                                                  loadMap.getNumDims(),
+                                                  loadMap.getNumSymbols()));
+        }
+      }
+      if (replacedLoads.size() != 0)
+        todo.emplace_back(store, replacedLoads);
+    }
+
+    if (!todo.size())
+      return failure();
+
+    SmallVector<Value, 4> newIterArgs;
+    llvm::append_range(newIterArgs, forOp.getInits());
+    rewriter.setInsertionPoint(forOp);
+    IRMapping map;
+    map.map(forOp.getInductionVar(),
+            rewriter.create<arith::ConstantIndexOp>(forOp.getLoc(), 0));
+    for (auto &&[store, loads] : todo) {
+      auto movedLoad =
+          cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first, map));
+      movedLoad.setMap(loads[0].second);
+      newIterArgs.push_back(movedLoad);
+    }
+
+    // create the for.
+    affine::AffineForOp newForOp = rewriter.create<affine::AffineForOp>(
+        forOp.getLoc(), forOp.getLowerBoundOperands(), forOp.getLowerBoundMap(),
+        forOp.getUpperBoundOperands(), forOp.getUpperBoundMap(),
+        forOp.getStep().getSExtValue(), newIterArgs);
+
+    // remove load operation inside the for.
+    size_t i = 0;
+    size_t origNumRegionArgs = forOp.getNumRegionIterArgs();
+    for (auto &&[store, loads] : todo) {
+      auto arg = newForOp.getBody()->getArguments()[i + origNumRegionArgs + 1];
+      for (auto &&[load, _] : loads) {
+        rewriter.replaceOp(load, arg);
+      }
+      i++;
+    }
+
+    Block *newBlock = newForOp.getBody();
+    Block *oldBlock = forOp.getBody();
+    SmallVector<Value, 4> newBlockTransferArgs;
+    newBlockTransferArgs.push_back(newForOp.getInductionVar());
+    for (size_t i = 0; i < origNumRegionArgs; i++)
+      newBlockTransferArgs.push_back(newForOp.getRegionIterArgs()[i]);
+    assert(oldBlock->getNumArguments() == newBlockTransferArgs.size() &&
+           "unexpected argument size mismatch");
+    rewriter.mergeBlocks(oldBlock, newBlock, newBlockTransferArgs);
+
+    auto cloneFilteredTerminator = [&](affine::AffineYieldOp mergedTerminator) {
+      SmallVector<Value, 4> newOperands;
+      llvm::append_range(newOperands, mergedTerminator.getOperands());
+      for (auto &&[store, _] : todo) {
+        newOperands.push_back(store.getValue());
+      }
+      mergedTerminator.getOperandsMutable().assign(newOperands);
+    };
+
+    auto mergedYieldOp = cast<affine::AffineYieldOp>(newBlock->getTerminator());
+    cloneFilteredTerminator(mergedYieldOp);
+
+    rewriter.replaceOp(forOp,
+                       newForOp.getResults().slice(0, forOp.getNumResults()));
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4772,7 +4985,8 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, AddAddCstEnd, LiftMemrefRead, CompareVs1>(context, 2);
+          SinkStoreInIf, AddAddCstEnd, LiftMemrefRead, CompareVs1,
+          AffineForReductionIter>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
