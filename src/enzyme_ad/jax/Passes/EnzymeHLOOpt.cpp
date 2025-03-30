@@ -291,6 +291,31 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!dus2)
+      return failure();
+
+    if (dus.getUpdate().getType() != dus2.getUpdate().getType())
+      return failure();
+
+    for (auto &&[start1, start2] :
+         llvm::zip_equal(dus.getStartIndices(), dus2.getStartIndices())) {
+      if (start1 != start2)
+        return failure();
+    }
+    rewriter.modifyOpInPlace(
+        dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
+    return success();
+  }
+};
+
 struct DynamicUpdateToConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -8291,7 +8316,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota>(context);
+                   ReshapeIota, DUSDUS>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
