@@ -2723,6 +2723,9 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
 // and are yielded instead
 bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
                                scf::IfOp ifOp) {
+  if (thenOperand.getType() != elseOperand.getType())
+    return false;
+
   for (auto operand : {thenOperand, elseOperand}) {
     auto defop = operand.getDefiningOp();
     if (!defop)
@@ -2745,6 +2748,19 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
   if (thenOperand.getDefiningOp()->getAttrDictionary() !=
       elseOperand.getDefiningOp()->getAttrDictionary())
     return false;
+
+  // Get defining operations
+  auto thenOp = thenOperand.getDefiningOp();
+  auto elseOp = elseOperand.getDefiningOp();
+
+  // Check operand types match
+  if (thenOp->getNumOperands() != elseOp->getNumOperands())
+    return false;
+
+  for (unsigned i = 0; i < thenOp->getNumOperands(); ++i) {
+    if (thenOp->getOperand(i).getType() != elseOp->getOperand(i).getType())
+      return false;
+  }
 
   return true;
 }
