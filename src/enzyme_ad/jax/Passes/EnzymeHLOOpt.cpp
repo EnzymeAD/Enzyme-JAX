@@ -291,6 +291,42 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Transpose is a DynamicUpdateSlice
+    auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus)
+      return failure();
+
+    SmallVector<int64_t> permutation;
+    for (auto perm : op.getPermutation()) {
+      permutation.push_back(perm);
+    }
+
+    auto loc = op.getLoc();
+    auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
+        loc, dus.getOperand(), op.getPermutation());
+    auto transposedUpdate = rewriter.create<stablehlo::TransposeOp>(
+        loc, dus.getUpdate(), op.getPermutation());
+
+    SmallVector<Value> permutedStartIndices;
+    permutedStartIndices.resize(dus.getStartIndices().size());
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      permutedStartIndices[permutation[i]] = dus.getStartIndices()[i];
+    }
+
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc, op.getType(), transposedOperand, transposedUpdate,
+        permutedStartIndices);
+
+    rewriter.replaceOp(op, newDus);
+    return success();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -8473,7 +8509,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, TransposeDUS>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
