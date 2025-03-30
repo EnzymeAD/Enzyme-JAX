@@ -202,6 +202,7 @@ select_op_used_within_if<1>;
 dus_dus<1>;
 dus_dus_concat<1>;
 replace_neg_add_with_subtract<16>;
+sign_abs_simplify<1>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;

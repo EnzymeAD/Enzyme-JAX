@@ -177,6 +177,10 @@ def ApplyGammaConstProp : EnzymeHLOPatternOp<
     "gamma_const_prop">{
   let patterns = ["GammaConstProp"];
 }
+def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
+    "sign_abs_simplify"> {
+  let patterns = ["SignAbsSimplify"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<

@@ -8296,6 +8296,46 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+// (mul (sign x) (abs x)) -> x
+// (mul (abs x) (sign x)) -> x
+struct SignAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    auto lhsSignOp = lhs.getDefiningOp<stablehlo::SignOp>();
+    if (lhsSignOp) {
+      auto rhsAbsOp = rhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!rhsAbsOp)
+        return failure();
+
+      if (lhsSignOp.getOperand() != rhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, lhsSignOp.getOperand());
+      return success();
+    }
+
+    auto rhsSignOp = rhs.getDefiningOp<stablehlo::SignOp>();
+    if (rhsSignOp) {
+      auto lhsAbsOp = lhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!lhsAbsOp)
+        return failure();
+
+      if (rhsSignOp.getOperand() != lhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, rhsSignOp.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -8363,17 +8403,18 @@ struct EnzymeHLOOptPass
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
 
-    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
-                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
-                 CosSimplify, SinSimplify, NoopSlice, NoopReverse, SliceSlice,
-                 PadSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-                 TanhSimplify, ExpSimplify, SliceSimplify, ConvertSimplify,
-                 TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,
-                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
-                 GatherSimplify, ReshapeEmptyBroadcast, BroadcastReshape,
-                 ConstPropThroughBarrier, ReplaceNegAddWithSubtract>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
+             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
+             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
+             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
+             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
+             BroadcastReshape, ConstPropThroughBarrier,
+             ReplaceNegAddWithSubtract, SignAbsSimplify>(context,
+                                                         PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
