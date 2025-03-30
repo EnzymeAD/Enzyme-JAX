@@ -204,6 +204,7 @@ dus_dus_concat<1>;
 transpose_dus<1>;
 replace_neg_add_with_subtract<16>;
 sign_abs_simplify<1>;
+abs_positive_simplify<1>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;
