@@ -316,6 +316,122 @@ struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
+struct DUSDUSConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!dus2)
+      return failure();
+
+    RankedTensorType tys[2];
+    stablehlo::DynamicUpdateSliceOp duses[2] = {dus, dus2};
+    for (auto en : llvm::enumerate(duses)) {
+      auto ty = dyn_cast<RankedTensorType>(en.value().getUpdate().getType());
+      if (!ty)
+        return failure();
+      tys[en.index()] = ty;
+    }
+
+    if (dus.getOperand().getType() != dus2.getOperand().getType())
+      return failure();
+
+    ssize_t diffidx = -1;
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (dus.getStartIndices()[i] == dus2.getStartIndices()[i])
+        continue;
+      if (diffidx != -1) {
+        return failure();
+      }
+      diffidx = i;
+    }
+
+    if (diffidx == -1) {
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+        if (tys[0].getShape()[i] == tys[1].getShape()[i])
+          continue;
+        if (diffidx != -1) {
+          return failure();
+        }
+        diffidx = i;
+      }
+    }
+
+    if (diffidx == -1) {
+      return failure();
+    }
+
+    // Sizes must be the same except for the differing index
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (i == diffidx)
+        continue;
+      if (tys[0].getShape()[i] != tys[1].getShape()[i])
+        return failure();
+    }
+
+    int64_t idxs[2];
+
+    for (auto en : llvm::enumerate(duses)) {
+      auto val = en.value().getStartIndices()[diffidx];
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(val, m_Constant(&startattr))) {
+        return failure();
+      }
+      int64_t ival = (*startattr.begin()).getSExtValue();
+      idxs[en.index()] = ival;
+    }
+
+    if (idxs[1] == idxs[0] + tys[0].getShape()[diffidx]) {
+      Value operands[2] = {dus.getUpdate(), dus2.getUpdate()};
+      auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+          dus.getLoc(), operands, diffidx);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus.getStartIndices());
+      return success();
+    } else if (idxs[0] == idxs[1] + tys[1].getShape()[diffidx]) {
+      Value operands[2] = {dus2.getUpdate(), dus.getUpdate()};
+      auto concat = rewriter.create<stablehlo::ConcatenateOp>(
+          dus.getLoc(), operands, diffidx);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus2.getStartIndices());
+      return success();
+    } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <=
+                                         idxs[0] + tys[0].getShape()[diffidx]) {
+      // the previous update (in dus1) was completely overwritten [e.g. dus0
+      // starts before and end later]
+      rewriter.modifyOpInPlace(
+          dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
+      return success();
+    } else if (idxs[0] >= idxs[1] && idxs[0] + tys[0].getShape()[diffidx] <=
+                                         idxs[1] + tys[1].getShape()[diffidx]) {
+      // the new update is entirely within the space of the old update
+
+      auto itype = dus.getStartIndices()[diffidx].getType();
+      auto c0 = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
+      auto cidx = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), itype,
+          makeAttr(itype, idxs[0] - idxs[1]).cast<ElementsAttr>());
+
+      SmallVector<Value> idxs(dus.getStartIndices().size());
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++)
+        idxs[i] = c0;
+      idxs[diffidx] = cidx;
+
+      auto within_dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          dus2.getLoc(), dus2.getUpdate(), dus.getUpdate(), idxs);
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), within_dus, dus2.getStartIndices());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct DynamicUpdateToConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -8316,7 +8432,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
