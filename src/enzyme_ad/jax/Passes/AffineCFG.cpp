@@ -4816,11 +4816,13 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     return res;
   }
 
-  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar) const {
-    if (llvm::all_of(indices,
-                     [indVar](Value index) { return index != indVar; }))
-      return true;
-    return false;
+  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar, Operation* op) const {
+    for (auto index : indices) {
+      if (index == indVar) continue;
+      if (definedOutside(index, op)) continue;
+      return false;
+    }
+    return true;
   }
 
   bool hasParentOp(Operation *a, Operation *b) const {
@@ -4837,81 +4839,67 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
                                 PatternRewriter &rewriter) const override {
 
     Block *block = forOp.getBody();
-    SmallVector<std::pair<Operation *, Operation *>, 0> candidateOpsInFor;
-    SmallVector<SmallVector<Operation *>> loadsInFor;
-    block->walk([&](Operation *operation) {
-      if (auto load = dyn_cast<affine::AffineLoadOp>(operation)) {
-        SmallVector<Value, 4> indices(load.getIndices());
-        // skip load if all dimensions are not reduced.
-        if (!hasAllDimsReduced(indices, forOp.getInductionVar()))
-          return WalkResult::advance();
-        // locate possible compatible stores.
-        Value memref = load.getMemRef();
-        SmallVector<affine::AffineStoreOp> candidateStores;
-        SmallVector<Operation *> otherStores;
-        SmallVector<Operation *> otherLoads;
-        for (auto *user : memref.getUsers()) {
-          if (auto store = dyn_cast<affine::AffineStoreOp>(user)) {
-            if (areInSameAffineFor(load, store, forOp) &&
-                areCompatible<affine::AffineStoreOp>(load, store)) {
-              candidateStores.push_back(store);
-            } else if (areCompatible<affine::AffineStoreOp>(load, store) &&
-                       hasParentOp(store.getOperation(), forOp.getOperation()))
-              otherStores.push_back(store);
-            continue;
-          }
-          if (auto otherLoad = dyn_cast<affine::AffineLoadOp>(user)) {
-            if (areCompatible<affine::AffineLoadOp>(load, otherLoad) &&
-                load != otherLoad &&
-                hasParentOp(otherLoad.getOperation(), forOp.getOperation()))
-              otherLoads.push_back(otherLoad);
-            continue;
-          }
-          // unknown other user of memref
-          return WalkResult::advance();
-        }
-        // require a single store within the current for. The load must dominate
-        // the single store. There must be no other stores in the current for.
-        if ((candidateStores.size() == 1) &&
-            checkDominance(load.getOperation(), candidateStores[0].getOperation()) &&
-            otherStores.size() == 0 /*
-            checkDominance(candidateStores[0].getOperation(), otherStores)*/) {
-          candidateOpsInFor.push_back(std::make_pair(
-              load.getOperation(), candidateStores[0].getOperation()));
-          loadsInFor.push_back(otherLoads);
-        }
+    SmallVector<affine::AffineStoreOp> stores;
+    block->walk([&](affine::AffineStoreOp store) {
+      bool legal = store->getParentOp() == forOp;
+      Value memref = store.getMemRef();
+      for (auto *user : memref.getUsers()) {
+        if (user == store) continue;
+        legal &= isReadOnly(user);
       }
-      return WalkResult::advance();
+      if (legal)
+      stores.push_back(store);
     });
+    SmallVector<std::pair<AffineStoreOp, SmallVector<std::pair<AffineLoadOp, AffineMap>>>> todo;
+    for (auto store : stores) {
+       Value memref = store.getMemRef();
+       SmallVector<std::pair<AffineLoadOp, AffineMap>> replacedLoads;
+       for (auto *user : memref.getUsers()) {
+          if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
+             if (load.getMapOperands() != store.getMapOperands()) continue;
+	     AffineMap loadMap = load.getAffineMap();
+	     bool legal = true;
+	     SmallVector<AffineExpr> dimReps;
+	     SmallVector<AffineExpr> dimReps2;
+	     SmallVector<AffineExpr> symReps;
+	     for (int i=0; i<loadMap.getNumDims(); i++) {
+		     dimReps.push_back(rewriter.getAffineDimExpr(i));
+		     dimReps2.push_back(rewriter.getAffineDimExpr(i));
+	     }
+	     for (int i=0; i<loadMap.getNumSymbols(); i++)
+		     symReps.push_back(rewriter.getAffineSymbolExpr(i));
+	     for (auto &&[i, val] : llvm::enumerate(load.getMapOperands())) {
+		  if (val == forOp.getInductionVar()) {
+		    if (i >= loadMap.getNumDims()) { legal = false; break; }
+		    dimReps[i] = dimReps[i]+rewriter.getAffineConstantExpr(1);
+		    dimReps2[i] = rewriter.getAffineConstantExpr(0);
+		  }
+	     }
+	     if (!legal) continue;
+	     auto loadMap2 = loadMap.replaceDimsAndSymbols(dimReps, symReps, loadMap.getNumDims(), loadMap.getNumSymbols());
+	     loadMap2 = simplifyAffineMap(loadMap2);
+	     if (store.getAffineMap() != loadMap2) continue;
+	     Operation* loadParen = load;
+	     while (loadParen->getParentOp() != forOp) loadParen = loadParen->getParentOp();
+	     if (!loadParen->isBeforeInBlock(store)) continue;
+	     replacedLoads.emplace_back(load, loadMap.replaceDimsAndSymbols(dimReps2, symReps, loadMap.getNumDims(), loadMap.getNumSymbols()));
+	   }
 
-    // no work to do.
-    if (!candidateOpsInFor.size())
+
+          }
+       if (replacedLoads.size() != 0) todo.emplace_back(store, replacedLoads);
+    }
+
+    if (!todo.size())
       return failure();
 
-    // llvm::errs() << "------------\n";
-    // llvm::errs() << "#candidateOpsInFor: " << candidateOpsInFor.size() <<
-    // "\n";
-
-    /*
-     llvm::errs() << "candidateOpsInFor\n";
-     for (auto pair : candidateOpsInFor) {
-       std::get<0>(pair)->dump();
-       std::get<1>(pair)->dump();
-     }
-     llvm::errs() << "-for-\n";
-     */
-    // forOp.dump();
-    // llvm::errs() << "------------\n";
-
-    // move the load outside the loop. All the load indexes are
-    // not used in the current for (see hasAllDimReduced).
-    // The load result are passed to the new forOp as iter args.
     SmallVector<Value, 4> newIterArgs;
     llvm::append_range(newIterArgs, forOp.getRegionIterArgs());
     rewriter.setInsertionPoint(forOp);
-    for (auto pair : candidateOpsInFor) {
-      auto *movedLoad = rewriter.clone(*std::get<0>(pair));
-      newIterArgs.push_back(movedLoad->getResult(0));
+    for (auto &&[store, loads] : todo) {
+      auto movedLoad = cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first));
+      movedLoad.setMap(loads[0].second);
+      newIterArgs.push_back(movedLoad);
     }
 
     // create the for.
@@ -4923,11 +4911,12 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     // remove load operation inside the for.
     size_t i = 0;
     size_t origNumRegionArgs = forOp.getNumRegionIterArgs();
-    for (auto pair : candidateOpsInFor) {
-      std::get<0>(pair)->getResult(0).replaceAllUsesWith(
-          newForOp.getBody()->getArguments()[i + origNumRegionArgs + 1]);
-      rewriter.eraseOp(std::get<0>(pair));
-      ++i;
+    for (auto &&[store, loads] : todo) {
+      auto arg = newForOp.getBody()->getArguments()[i + origNumRegionArgs + 1];
+      for (auto &&[load, _] : loads) {
+        rewriter.replaceOp(load, arg);
+      }
+      i++;
     }
 
     Block *newBlock = newForOp.getBody();
@@ -4943,10 +4932,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     auto cloneFilteredTerminator = [&](affine::AffineYieldOp mergedTerminator) {
       SmallVector<Value, 4> newOperands;
       llvm::append_range(newOperands, mergedTerminator.getOperands());
-      // store operands are now returned.
-      for (auto pair : candidateOpsInFor) {
-        newOperands.push_back(std::get<1>(pair)->getOperand(0));
-        // rewriter.eraseOp(std::get<1>(pair));
+      for (auto &&[store, _] : todo) {
+        newOperands.push_back(store.getValue());
       }
       mergedTerminator.getOperandsMutable().assign(newOperands);
     };
@@ -4954,48 +4941,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     auto mergedYieldOp = cast<affine::AffineYieldOp>(newBlock->getTerminator());
     cloneFilteredTerminator(mergedYieldOp);
 
-    // prepare for new yielded value for 'replaceOp'.
-    SmallVector<Value, 4> newYieldedRes;
-    SmallVector<Value, 4> newRes(newForOp.getResults());
-    int additionalRes =
-        newForOp.getResults().size() - forOp.getResults().size();
-    assert(additionalRes >= 0 && "must be >= 0");
-    newRes.insert(newRes.end(), newRes.begin(), newRes.end() - additionalRes);
-
-    // propagate results new forOp to downstream loads if any,
-    // otherwise insert a store right after the for. The stored
-    // element is the result of the for.
-    assert(candidateOpsInFor.size() == loadsInFor.size());
-    i = 0;
-
-    DominanceInfo DT;
-    PostDominanceInfo PDT;
-    for (auto pair : candidateOpsInFor) {
-      auto store = cast<affine::AffineStoreOp>(std::get<1>(pair));
-
-      auto loads = loadsInFor[i];
-      for (auto *load : loads) {
-        if (PDT.postDominates(store, load)) {
-          load->getResult(0).replaceAllUsesWith(
-              newForOp.getBody()->getArguments()[i + origNumRegionArgs + 1]);
-        } else if (DT.dominates(store, load)) {
-          load->getResult(0).replaceAllUsesWith(store.getOperand(0));
-        } else {
-
-          llvm_unreachable("illegal behavior");
-        }
-      }
-
-      rewriter.setInsertionPointAfter(newForOp);
-      rewriter.create<affine::AffineStoreOp>(
-          newForOp.getLoc(),
-          newForOp.getResults()[forOp.getResults().size() + i],
-          store.getMemRef(), store.getAffineMap(), store.getIndices());
-      rewriter.eraseOp(std::get<1>(pair));
-      ++i;
-    }
-
-    rewriter.replaceOp(forOp, newYieldedRes);
+    rewriter.replaceOp(forOp, newForOp.getResults().slice(0, forOp.getNumResults()));
     return success();
   }
 };

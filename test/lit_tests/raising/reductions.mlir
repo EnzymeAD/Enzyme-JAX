@@ -17,3 +17,15 @@ module {
     return
   }
 }
+
+// CHECK:    affine.parallel (%arg4, %arg5) = (0, 0) to (20, 45) {
+// CHECK-NEXT:      %0 = affine.load %arg0[16, %arg4 + 7, %arg5 + 7] : memref<24x34x59xf64, 1>
+// CHECK-NEXT:      %1 = affine.for %arg6 = 0 to 9 iter_args(%arg7 = %0) -> (f64) {
+// CHECK-NEXT:        %2 = affine.load %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x34x59xf64, 1>
+// CHECK-NEXT:        %3 = affine.load %arg1[-%arg6 + 9, %arg4, %arg5] : memref<10x20x45xf64, 1>
+// CHECK-NEXT:        %4 = arith.mulf %3, %arg7 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %5 = arith.subf %2, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        affine.store %5, %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x34x59xf64, 1>
+// CHECK-NEXT:        affine.yield %5 : f64
+// CHECK-NEXT:      }
+// CHECK-NEXT:    }
