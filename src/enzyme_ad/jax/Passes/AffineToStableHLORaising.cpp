@@ -1378,51 +1378,78 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 bool isLoopLockStepExecutable(
     affine::AffineForOp forOp,
     SmallVectorImpl<affine::LoopReduction> *parallelReductions);
-static bool isLockStepExecutable(affine::AffineForOp forOp) {
+static bool isLockStepExecutable(affine::AffineForOp forOp,
+                                 ParallelContext &pc) {
   SmallVector<mlir::affine::LoopReduction> red;
   if (isLoopLockStepExecutable(forOp, &red)) {
 
     llvm::SmallSet<Operation *, 1> reductions;
     for (auto &&[i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
-      if (!arg.hasOneUse())
+      if (!arg.hasOneUse()) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "multiple use iter arg: " << arg << "\n";
         return false;
+      }
       Operation *user = nullptr;
       for (auto user2 : arg.getUsers()) {
         user = user2;
         break;
       }
       assert(user);
-      if (user->getParentOp() != forOp)
-        return false;
-      if (isa<arith::AddIOp, arith::AddFOp>(user)) {
-      } else if (auto sub = dyn_cast<arith::SubIOp>(user)) {
-        if (sub.getRhs() == arg)
-          return false;
-      } else if (auto sub = dyn_cast<arith::SubFOp>(user)) {
-        if (sub.getRhs() == arg)
-          return false;
-      } else {
+      if (user->getParentOp() != forOp) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "user not directly in for: " << *user << "\n";
         return false;
       }
-      if (reductions.contains(user))
+      if (isa<arith::AddIOp, arith::AddFOp>(user)) {
+      } else if (auto sub = dyn_cast<arith::SubIOp>(user)) {
+        if (sub.getRhs() == arg) {
+          if (pc.options.dump_failed_lockstep)
+            llvm::errs() << "wrong side sub: " << *user << "\n";
+          return false;
+        }
+      } else if (auto sub = dyn_cast<arith::SubFOp>(user)) {
+        if (sub.getRhs() == arg) {
+          if (pc.options.dump_failed_lockstep)
+            llvm::errs() << "wrong side sub: " << *user << "\n";
+          return false;
+        }
+      } else {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "unknown reduction user: " << *user << "\n";
         return false;
+      }
+      if (reductions.contains(user)) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "multi reduction user: " << *user << "\n";
+        return false;
+      }
       reductions.insert(user);
 
       bool hadYield = false;
       for (auto &user2 : user->getResult(0).getUses()) {
         if (auto yld = dyn_cast<affine::AffineYieldOp>(user2.getOwner())) {
-          if (user2.getOperandNumber() != i)
+          if (user2.getOperandNumber() != i) {
+            if (pc.options.dump_failed_lockstep)
+              llvm::errs() << "non linked yield: " << *yld << "\n";
             return false;
+          }
           hadYield = true;
           continue;
         }
       }
-      if (!hadYield)
+      if (!hadYield) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "no yield user: " << *user << "\n";
         return false;
+      }
     }
 
     return true;
   } else {
+    if (pc.options.dump_failed_lockstep) {
+      llvm::errs() << "inner failed lockstep executable\n";
+    }
     return false;
   }
 }
