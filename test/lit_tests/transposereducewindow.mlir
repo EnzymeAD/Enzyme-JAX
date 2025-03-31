@@ -14,7 +14,7 @@ module {
 
 // CHECK:  func.func @main(%arg0: tensor<20x9xf64>, %arg1: tensor<f64>) -> tensor<9x20xf64> {
 // CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<20x9xf64>) -> tensor<9x20xf64>
-// CHECK-NEXT{sLITERAL}:    %1 = "stablehlo.reduce_window"(%0, %arg1) <{base_dilations = array<i64: 1, 1>, padding = dense<[[8, 0], [0, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 9, 1>, window_strides = array<i64: 1, 1>}> ({
+// CHECK-NEXT{LITERAL}:    %1 = "stablehlo.reduce_window"(%0, %arg1) <{base_dilations = array<i64: 1, 1>, padding = dense<[[8, 0], [0, 0]]> : tensor<2x2xi64>, window_dilations = array<i64: 1, 1>, window_dimensions = array<i64: 9, 1>, window_strides = array<i64: 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f64>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<f64>
