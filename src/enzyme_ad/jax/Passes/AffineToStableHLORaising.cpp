@@ -1296,7 +1296,72 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   for (auto &&[res, yval] :
        llvm::zip_equal(parallelOp.getResults(), yld->getOperands())) {
     auto val = mapping.lookup(yval);
-    mapping.map(res, val);
+    auto outputMap = maps[val];
+  
+    auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation());
+      
+    ssize_t idx_to_reduce = -1;
+      for (auto &&[i, expr] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+        if (outputMap.getOperands()[dim.getPosition()] ==
+            forOp.getInductionVar()) {
+          assert(idx_to_reduce == -1);
+          idx_to_reduce = i;
+        }
+      }
+   
+    if (idx_to_reduce == -1) { 
+      mapping.map(res, val);
+    } else {
+      
+      SmallVector<int64_t> startIndices;
+      SmallVector<int64_t> limitIndices;
+      SmallVector<int64_t> strides;
+
+      SmallVector<AffineExpr> exprs;
+      for (auto &&[i, expr0] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+	auto expr = expr0;
+        if (i == idx_to_reduce) {
+          auto range = computeExprRange(outputMap, expr);
+	  expr = builder.getAffineConstantExpr(range->ub-1);
+	} else {
+	exprs.push_back(expr);
+	}
+	strides.push_back(1);
+        if (auto constOp = dyn_cast<AffineConstantExpr>(expr)) {
+          startIndices.push_back(constOp.getValue());
+          limitIndices.push_back(constOp.getValue() + 1);
+          continue;
+        }
+        auto range = computeExprRange(outputMap, expr);
+	startIndices.push_back(range->step < 0 ? range->ub - range->step
+                                               : range->lb);
+        limitIndices.push_back(range->step < 0 ? range->lb - range->step
+                                               : range->ub);
+      }
+      SmallVector<Value> vals;
+      for (auto v : outputMap.getOperands()) {
+        if (v == forOp.getInductionVar()) {
+	  v = builder.create<arith::ConstantIndexOp>(res.getLoc(), 0); 
+	}
+	vals.push_back(v);
+      }
+
+      auto newVal = builder.create<stablehlo::SliceOp>(
+          res.getLoc(), val, startIndices, limitIndices, strides);
+
+      SmallVector<int64_t> newShape;
+      for (auto &&[i, sz] : llvm::enumerate(newVal.getType().getShape())) {
+        if (i != idx_to_reduce) {
+	  newShape.push_back(sz);
+	}
+      }
+      auto newVal2 = builder.create<stablehlo::ReshapeOp>(res.getLoc(), RankedTensorType::get(newShape, newVal.getType().getElementType()), newVal);
+      mapping.map(res, newVal2);
+      maps[newVal2] = affine::AffineValueMap(AffineMap::get(outputMap.getAffineMap().getNumDims(), outputMap.getAffineMap().getNumSymbols(), exprs, res.getContext()), vals);
+    }
   }
 
   return success();
