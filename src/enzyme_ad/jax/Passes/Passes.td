@@ -522,13 +522,32 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
     "stablehlo::StablehloDialect",
     "func::FuncDialect",
   ];
-  let options = [
-    Option<
-        /*C++ variable name=*/"err_if_not_fully_raised",
-        /*CLI argument=*/"err_if_not_fully_raised",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"Whether to throw a pass error if not fully raised">
+  let options =
+      [Option<
+           /*C++ variable name=*/"err_if_not_fully_raised",
+           /*CLI argument=*/"err_if_not_fully_raised",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+           /*C++ variable name=*/"enable_lockstep_for",
+           /*CLI argument=*/"enable_lockstep_for",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"dump_failed_lockstep",
+           /*CLI argument=*/"dump_failed_lockstep",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"prefer_while_raising",
+           /*CLI argument=*/"prefer_while_raising",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Whether to prefer raising to while instead of unrolling">,
   ];
 }
 

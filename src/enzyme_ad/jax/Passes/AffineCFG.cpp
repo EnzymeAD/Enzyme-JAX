@@ -5414,7 +5414,7 @@ bool isReadNone(Operation *op) {
   return false;
 }
 
-// Vendored
+// ------------------------- Vendored -------------------------
 
 /// Returns true if `v` is allocated locally to `enclosingOp` -- i.e., it is
 /// allocated by an operation nested within `enclosingOp`.
@@ -5519,6 +5519,184 @@ static bool isLoopParallel(AffineForOp forOp,
   return ::isLoopMemoryParallel(forOp);
 }
 
+/// Returns the closest surrounding block common to `opA` and `opB`. `opA` and
+/// `opB` should be in the same affine scope. Returns nullptr if such a block
+/// does not exist (when the two ops are in different blocks of an op starting
+/// an `AffineScope`).
+static Block *getCommonBlockInAffineScope(Operation *opA, Operation *opB) {
+  // Get the chain of ancestor blocks for the given `MemRefAccess` instance. The
+  // chain extends up to and includnig an op that starts an affine scope.
+  auto getChainOfAncestorBlocks =
+      [&](Operation *op, SmallVectorImpl<Block *> &ancestorBlocks) {
+        Block *currBlock = op->getBlock();
+        // Loop terminates when the currBlock is nullptr or its parent operation
+        // holds an affine scope.
+        while (currBlock &&
+               !currBlock->getParentOp()->hasTrait<OpTrait::AffineScope>()) {
+          ancestorBlocks.push_back(currBlock);
+          currBlock = currBlock->getParentOp()->getBlock();
+        }
+        assert(currBlock &&
+               "parent op starting an affine scope is always expected");
+        ancestorBlocks.push_back(currBlock);
+      };
+
+  // Find the closest common block.
+  SmallVector<Block *, 4> srcAncestorBlocks, dstAncestorBlocks;
+  getChainOfAncestorBlocks(opA, srcAncestorBlocks);
+  getChainOfAncestorBlocks(opB, dstAncestorBlocks);
+
+  Block *commonBlock = nullptr;
+  for (int i = srcAncestorBlocks.size() - 1, j = dstAncestorBlocks.size() - 1;
+       i >= 0 && j >= 0 && srcAncestorBlocks[i] == dstAncestorBlocks[j];
+       i--, j--)
+    commonBlock = srcAncestorBlocks[i];
+
+  return commonBlock;
+}
+
+/// Returns true if the ancestor operation of 'srcAccess' appears before the
+/// ancestor operation of 'dstAccess' in their common ancestral block. The
+/// operations for `srcAccess` and `dstAccess` are expected to be in the same
+/// affine scope and have a common surrounding block within it.
+static bool srcAppearsBeforeDstInAncestralBlock(const MemRefAccess &srcAccess,
+                                                const MemRefAccess &dstAccess) {
+  // Get Block common to 'srcAccess.opInst' and 'dstAccess.opInst'.
+  Block *commonBlock =
+      getCommonBlockInAffineScope(srcAccess.opInst, dstAccess.opInst);
+  assert(commonBlock &&
+         "ops expected to have a common surrounding block in affine scope");
+
+  // Check the dominance relationship between the respective ancestors of the
+  // src and dst in the Block of the innermost among the common loops.
+  Operation *srcOp = commonBlock->findAncestorOpInBlock(*srcAccess.opInst);
+  assert(srcOp && "src access op must lie in common block");
+  Operation *dstOp = commonBlock->findAncestorOpInBlock(*dstAccess.opInst);
+  assert(dstOp && "dest access op must lie in common block");
+
+  // Determine whether dstOp comes after srcOp.
+  return srcOp->isBeforeInBlock(dstOp);
+}
+
+// ------------------------- Vendored end -------------------------
+
+enum class DepType { RAW, WAR, RAR, WAW };
+
+static DepType getDepType(MemRefAccess src, MemRefAccess dst) {
+  bool srcW = isa<AffineWriteOpInterface>(src.opInst);
+  bool dstW = isa<AffineWriteOpInterface>(dst.opInst);
+  if (srcW && dstW)
+    return DepType::WAW;
+  if (srcW && !dstW)
+    return DepType::RAW;
+  if (!srcW && dstW)
+    return DepType::WAR;
+  return DepType::RAR;
+}
+
+static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
+  // Any memref-typed iteration arguments are treated as serializing.
+  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
+    return false;
+
+  // Collect all load and store ops in loop nest rooted at 'forOp'.
+  SmallVector<Operation *> loadAndStoreOps;
+  auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
+    if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
+      // Memrefs that are allocated inside `forOp` need not be considered.
+      if (!isLocallyDefined(readOp.getMemRef(), forOp))
+        loadAndStoreOps.push_back(op);
+    } else if (auto writeOp = dyn_cast<AffineWriteOpInterface>(op)) {
+      // Filter out stores the same way as above.
+      if (!isLocallyDefined(writeOp.getMemRef(), forOp))
+        loadAndStoreOps.push_back(op);
+    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
+               !isReadNone(op)) {
+      return WalkResult::interrupt();
+    }
+
+    return WalkResult::advance();
+  });
+
+  // Stop early if the loop has unknown ops with side effects.
+  if (walkResult.wasInterrupted())
+    return false;
+
+  // Dep check depth would be number of enclosing loops + 1.
+  unsigned depth = ::getNestingDepth(forOp) + 1;
+
+  // Check dependences between all pairs of ops in 'loadAndStoreOps'.
+  for (auto *srcOp : loadAndStoreOps) {
+    MemRefAccess srcAccess(srcOp);
+    for (auto *dstOp : loadAndStoreOps) {
+      LLVM_DEBUG(llvm::dbgs() << "Checking dep\n"
+                              << "src: " << *srcOp << "\n"
+                              << "dst: " << *dstOp << "\n");
+      MemRefAccess dstAccess(dstOp);
+      SmallVector<DependenceComponent, 2> dcs;
+      DependenceResult result = checkMemrefAccessDependence(
+          srcAccess, dstAccess, depth, nullptr, &dcs);
+
+      if (result.value == DependenceResult::Failure) {
+        LLVM_DEBUG(llvm::dbgs() << "Failed\n");
+        return false;
+      }
+
+      // I haven't thought through the logic in this case, conservatively fail
+      // for now.
+      bool eitherNestedInNestedFor =
+          dstOp->getParentOfType<affine::AffineForOp>() != forOp ||
+          srcOp->getParentOfType<affine::AffineForOp>() != forOp;
+      if (eitherNestedInNestedFor)
+        return false;
+
+      if (srcOp == dstOp) {
+        // Since we will be executing different iterations of the same
+        // instruction at the same time in lock step fashion, any dependence
+        // here is illegal.
+        if (result.value == DependenceResult::HasDependence) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Would break dependence on same instruction\n");
+          return false;
+        }
+      }
+
+      // We will execute dst -> src in lock step
+      if (!srcAppearsBeforeDstInAncestralBlock(srcAccess, dstAccess)) {
+        // If there is any dependence src -> dst it means we will break it under
+        // lock step execution.
+        if (result.value == DependenceResult::HasDependence) {
+          auto ty = getDepType(srcAccess, dstAccess);
+          // Breaking a WAR dependency is fine because our lock step reads will
+          // result in the correct value being read.
+          if (ty == DepType::WAR) {
+            LLVM_DEBUG(llvm::dbgs() << "WAR allowed\n");
+          } else if (ty == DepType::RAR) {
+            LLVM_DEBUG(llvm::dbgs() << "RAR allowed\n");
+          } else if (ty == DepType::WAW) {
+            LLVM_DEBUG(llvm::dbgs() << "WAW not allowed\n");
+            return false;
+          } else if (ty == DepType::RAW) {
+            LLVM_DEBUG(llvm::dbgs() << "RAW not allowed\n");
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
+bool isLoopLockStepExecutable(
+    AffineForOp forOp, SmallVectorImpl<LoopReduction> *parallelReductions) {
+  unsigned numIterArgs = forOp.getNumIterOperands();
+
+  if (numIterArgs > 0 && !parallelReductions)
+    return false;
+
+  return ::isLoopMemoryLockStepExecutable(forOp);
+}
+
 struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
 
   AffineParallelizePattern(bool parallelReductions, MLIRContext *context)
@@ -5528,12 +5706,12 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
                                 PatternRewriter &rewriter) const override {
     SmallVector<LoopReduction> reductions;
     if (!::isLoopParallel(forOp, parallelReductions ? &reductions : nullptr))
-      return failure();
+      return rewriter.notifyMatchFailure(forOp, "!isLoopParallel");
 
     // Fail early if there are iter arguments that are not reductions.
     unsigned numReductions = reductions.size();
     if (numReductions != forOp.getNumIterOperands())
-      return failure();
+      return rewriter.notifyMatchFailure(forOp, "reduction num mismatch");
 
     Location loc = forOp.getLoc();
     rewriter.setInsertionPoint(forOp);
