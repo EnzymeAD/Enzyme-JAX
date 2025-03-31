@@ -1014,6 +1014,12 @@ def ReshapeSlicePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeSlice"];
 }
 
+def ReshapeOfConcatPatterns : EnzymeHLOPatternOp<
+  "reshape_concat"
+> {
+  let patterns = ["ReshapeOfConcatToConcatOfReshape"];
+}
+
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
