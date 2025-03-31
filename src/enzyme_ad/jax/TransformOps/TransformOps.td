@@ -1007,6 +1007,11 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeDUS"];
 }
 
+def ApplyReshapeSlicePatterns : EnzymeHLOPatternOp<
+    "reshape_dus"> {
+  let patterns = ["ReshapeSlice"];
+}
+
 def ReshapeElementwisePatterns : EnzymeHLOPatternOp<
   "reshape_elementwise"
 > {

@@ -292,6 +292,96 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+// Given a reshape fromType to toType, remove the eliminated indices from start, and fill any new dimensions with toFill.
+// Check that any removed indices have value checkRemoved, if set
+template<typename T>
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T> start, llvm::function<T()> toFillFn, T* checkRemoved = nullptr) {
+    auto fromShape = fromType.getShape();
+    auto toShape = resultTy.getShape();
+
+    assert(start.size() == fromShape.size());
+
+    int i = 0, j = 0;
+    int startidx = 0;
+    std::optional<T> toFillVal;
+    while (i < fromShape.size() && j < toShape.size()) {
+      if (fromShape[i] == resultShape[j]) {
+        // Leave everything as is and carry on
+        i++;
+        j++;
+        startidx++;
+        continue;
+      }
+
+      if (fromShape[i] == 1) {
+        if (checkRemoved) {
+          if (start[startidx] != *checkRemoved) {
+            return false;
+          }
+        }
+        start.erase(start.begin() + startidx);
+        i++;
+        continue;
+      }
+
+      if (toShape[j] == 1) {
+        T toFill = toFillVal ? *toFillVal : toFillFn();
+        if (!toFillVal) {
+          toFillVal = toFill;
+        }
+        start.insert(start.begin() + startidx, toFill);
+        startidx++;
+        j++;
+        continue;
+      }
+      return false;
+    }
+
+    while (i < fromShape.size()) {
+      if (fromShape[i] == 1) {
+        if (checkRemoved) {
+          if (start[startidx] != *checkRemoved) {
+            return false;
+          }
+        }
+        start.erase(start.begin() + startidx);
+        i++;
+        continue;
+      }
+      return false;
+    }
+
+    while (j < fromShape.size()) {
+      if (toShape[j] == 1) {
+        T toFill = toFillVal ? *toFillVal : toFillFn();
+        if (!toFillVal) {
+          toFillVal = toFill;
+        }
+        start.insert(start.begin() + startidx, toFill);
+        startidx++;
+        j++;
+        continue;
+      }
+    }
+    assert(start.size() == toShape.size());
+    return true;
+}
+
+template<typename T>
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T> start, T toFill, T* checkRemoved = nullptr) {
+    return transformReshapeSlice(fromType, toType, start, [=](){ return toFill; }, checkRemoved);
+}
+
+template<typename T>
+bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T> start, T toFill, T* checkRemoved = nullptr) {
+  return transformReshapeSlice(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
+}
+
+template<typename T>
+bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T> start, llvm::function<T()> toFill, T* checkRemoved = nullptr) {
+  return transformReshapeSlice(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
+}
+
 struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -300,6 +390,9 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     // Check if the input to Reshape is a DynamicUpdateSlice
     auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
     if (!dus)
+      return failure();
+
+    if (!llvm::hasSingleElement(dus->getUsers()))
       return failure();
 
     // %0 = dynamic_update_slice %arg0, %update
@@ -311,101 +404,112 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     // %update_resahepd = reshape %update
     // dynamic_update_slice %arg0_reshaped, %update_reshaped
 
-    auto operand = op.getOperand();
-    auto result = op.getResult();
-    auto operandTy = operand.getType();
-    auto resultTy = result.getType();
-
-    auto operandShape = operandTy.getShape();
-    auto resultShape = resultTy.getShape();
-
-    SmallVector<int64_t> onesInserted, onesRemoved;
-
-    int i = 0, j = 0;
-    while (i < operandShape.size() && j < resultShape.size()) {
-      if (operandShape[i] == resultShape[j]) {
-        i++;
-        j++;
-        continue;
-      }
-
-      if (operandShape[i] == 1) {
-        onesRemoved.push_back(i);
-        i++;
-        continue;
-      }
-
-      if (resultShape[j] == 1) {
-        onesInserted.push_back(j);
-        j++;
-        continue;
-      }
-
-      return failure();
-    }
-
-    auto applyShape = [&](Value val) -> RankedTensorType {
-      auto Ty = val.getType().cast<RankedTensorType>();
-      auto shape = Ty.getShape();
-      SmallVector<int64_t> outShape;
-      int in = 0, removed = 0, inserted = 0;
-      while (outShape.size() != resultShape.size()) {
-        if (removed < onesRemoved.size() && onesRemoved[removed] == in) {
-          in++;
-          removed++;
-          continue;
-        }
-
-        if (inserted < onesInserted.size() &&
-            onesInserted[inserted] == outShape.size()) {
-          outShape.push_back(1);
-          inserted++;
-          continue;
-        }
-
-        outShape.push_back(shape[in]);
-        in++;
-      }
-      return Ty.clone(outShape);
-    };
-
-    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), applyShape(dus.getOperand()), dus.getOperand());
-    auto newUpdate = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), applyShape(dus.getUpdate()), dus.getUpdate());
-
-    auto startIndices = dus.getStartIndices();
-
+    SmallVector<Value> startIndices(dus.getStartIndices().begin(), dus.getStartIndices().end());
     auto itype = startIndices.size() > 0
                      ? startIndices[0].getType().cast<RankedTensorType>()
                      : RankedTensorType::get({}, rewriter.getI64Type());
-    auto c0 = rewriter.create<stablehlo::ConstantOp>(
-        dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
 
-    SmallVector<Value> newStartIndices;
+    if (!transformReshapeSlice(op, startIndices, /*toFill*/[&rewriter]() -> mlir::Value {
+      return rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
+    }))
+      return failure();
 
-    int in = 0, removed = 0, inserted = 0;
-    while (newStartIndices.size() != resultShape.size()) {
-      if (removed < onesRemoved.size() && onesRemoved[removed] == in) {
-        in++;
-        removed++;
-        continue;
-      }
 
-      if (inserted < onesInserted.size() &&
-          onesInserted[inserted] == newStartIndices.size()) {
-        newStartIndices.push_back(c0);
-        inserted++;
-        continue;
-      }
+    SmallVector<int64_t> updateShape(dus.getUpdate().getType().getShape().begin(), dus.getUpdate().getType().getShape().end());
 
-      newStartIndices.push_back(startIndices[in]);
-      in++;
-    }
+    int64_t one = 1;
+    if (!transformReshapeSlice(op, updateShape, /*toFill*/1, /*checkRemoved*/&one))
+      return failure();
 
-    auto newDus = rewriter.create<mlir::stablehlo::DynamicUpdateSliceOp>(
-        op.getLoc(), newOperand, newUpdate, newStartIndices);
-    rewriter.replaceOp(op, newDus);
+    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), op.getType(), dus.getOperand());
+
+
+    auto newUpdate = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), RankedTensorType::get(updateShape, dus.getUpdate().getType().getElementType()), dus.getUpdate());
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::DynamicUpdateSliceOp>(
+        op, newOperand, newUpdate, startIndices);
+
+    return success();
+  }
+};
+
+struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a DynamicUpdateSlice
+    auto slice = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!slice)
+      return failure();
+
+    if (!llvm::hasSingleElement(slice->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> startIndices(slice.getStartIndices().begin(), slice.getStartIndices().end());
+
+    int64_t zero = 0;
+    int64_t one = 1;
+    if (!transformReshapeSlice(op, startIndices, /*toFill*/0, /*checkRemoved*/&zero))
+      return failure();
+
+    SmallVector<int64_t> limitIndices(slice.getLimitIndices().begin(), slice.getLimitIndices().end());
+
+    if (!transformReshapeSlice(op, limitIndices, /*toFill*/1, /*checkRemoved*/&one))
+      return failure();
+
+    SmallVector<int64_t> stepIndices(slice.getStep().begin(), slice.getStep());
+
+    if (!transformReshapeSlice(op, stepIndices, /*toFill*/1, /*checkRemoved*/&one))
+      return failure();
+
+    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), op.getType(), slice.getOperand());
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::DynamicSliceOp>(
+        op, newOperand, newUpdate, startIndices);
+
+    return success();
+  }
+};
+
+struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a DynamicUpdateSlice
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (!llvm::hasSingleElement(pad->getUsers()))
+      return failure();
+
+    SmallVector<int64_t> interior(pad.getInteriorPadding().begin(), pad.getInteriorPadding().end());
+
+    int64_t zero = 0;
+    if (!transformReshapeSlice(op, interior, /*toFill*/0, /*checkRemoved*/&zero))
+      return failure();
+
+    SmallVector<int64_t> low(pad.getEdgePaddingLow().begin(), pad.getEdgePaddingLow().end());
+
+    if (!transformReshapeSlice(op, low, /*toFill*/0, /*checkRemoved*/&zero))
+      return failure();
+
+    SmallVector<int64_t> high(pad.getEdgePaddingHigh().begin(), pad.getEdgePaddingHigh().end());
+
+    if (!transformReshapeSlice(op, high, /*toFill*/0, /*checkRemoved*/&zero))
+      return failure();
+
+    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), op.getType(), slice.getOperand());
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::PadOp>(
+        op, newOperand, pad.getPaddingValue(), low, high, interiors);
 
     return success();
   }
@@ -419,6 +523,9 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // Check if the input to Transpose is a DynamicUpdateSlice
     auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
     if (!dus)
+      return failure();
+
+    if (!llvm::hasSingleElement(dus->getUsers()))
       return failure();
 
     SmallVector<int64_t> permutation;
@@ -893,7 +1000,7 @@ struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
     if (!reduceWindow)
       return failure();
 
-    if (!reduceWindow->hasOneUse())
+    if (!llvm::hasSingleElement(reduceWindow->getUsers()))
       return failure();
 
     // Check window parameters indicate full reduction along one dimension
@@ -2342,22 +2449,6 @@ LogicalResult reshapePadHelper(stablehlo::ReshapeOp op,
       op, inner, pad.getPaddingValue(), lows, highs, interiors);
   return success();
 }
-struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
-    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
-    if (!pad)
-      return failure();
-    if (!llvm::hasSingleElement(pad->getUsers()))
-      return failure();
-
-    if (!reshapePadHelper(op, rewriter).succeeded())
-      return failure();
-    return success();
-  }
-};
 
 struct DotReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3456,7 +3547,7 @@ struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
     if (!negateOp)
       return failure();
 
-    if (!negateOp->hasOneUse())
+    if (!llvm::hasSingleElement(negateOp->getUsers()))
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getLhs(),
@@ -9679,9 +9770,6 @@ struct EnzymeHLOOptPass
     if (passses & 64)
       patterns.add<TransposePad>(context);
 
-    if (passses & 128)
-      patterns.add<ReshapePad>(context);
-
     if (cse) {
       patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
                    CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
@@ -9724,7 +9812,7 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
       patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
-                   ReshapeDUS>(context);
+                   ReshapeDUS, ReshapeSlice, ReshapePad>(context);
     }
 
     if (all_finite)
