@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=65536})"| FileCheck %s
 
 func.func @main(%arg0: tensor<4x3xf64>) -> tensor<4x1xf64> {
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
