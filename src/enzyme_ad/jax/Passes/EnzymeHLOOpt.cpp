@@ -6092,7 +6092,8 @@ struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
-struct TransposeReduceWindow final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+struct TransposeReduceWindow final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
@@ -6109,14 +6110,19 @@ struct TransposeReduceWindow final : OpRewritePattern<mlir::stablehlo::Transpose
 
     Type restys[] = {op.getType()};
 
-    Value operands[] = { rewriter.create<stablehlo::TransposeOp>(op.getLoc(), reduce.getOperands()[0], op.getPermutation())};
+    Value operands[] = {rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), reduce.getOperands()[0], op.getPermutation())};
 
     int64_t padding_shape[2] = {(int64_t)op.getType().getShape().size(), 2};
 
-    SmallVector<int64_t> win_dim(reduce.getWindowDimensions().begin(), reduce.getWindowDimensions().end());
-    SmallVector<int64_t> win_strides(reduce.getWindowStrides()->begin(), reduce.getWindowStrides()->end());
-    SmallVector<int64_t> base_dialations(reduce.getBaseDilations()->begin(), reduce.getBaseDilations()->end());
-    SmallVector<int64_t> win_dialations(reduce.getWindowDilations()->begin(), reduce.getWindowDilations()->end());
+    SmallVector<int64_t> win_dim(reduce.getWindowDimensions().begin(),
+                                 reduce.getWindowDimensions().end());
+    SmallVector<int64_t> win_strides(reduce.getWindowStrides()->begin(),
+                                     reduce.getWindowStrides()->end());
+    SmallVector<int64_t> base_dialations(reduce.getBaseDilations()->begin(),
+                                         reduce.getBaseDilations()->end());
+    SmallVector<int64_t> win_dialations(reduce.getWindowDilations()->begin(),
+                                        reduce.getWindowDilations()->end());
     SmallVector<int64_t> padding_dialations(2 * padding_shape[0]);
 
     auto perm = op.getPermutation();
@@ -6125,8 +6131,10 @@ struct TransposeReduceWindow final : OpRewritePattern<mlir::stablehlo::Transpose
       win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
       base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
       win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
-      padding_dialations[2 * perm[i]] = (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
-      padding_dialations[2 * perm[i] + 1] = (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+      padding_dialations[2 * perm[i]] =
+          (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
+      padding_dialations[2 * perm[i] + 1] =
+          (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
     }
 
     auto red2 = rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
@@ -9298,7 +9306,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeIota, TransposeReduceWindow>(context);
+                   TransposeConcat, TransposeDUS, TransposeIota,
+                   TransposeReduceWindow>(context);
     }
 
     if (all_finite)
