@@ -6017,6 +6017,62 @@ struct SliceReshapeElementwise final
   }
 };
 
+struct TransposeElementwise final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto elem = op.getOperand().getDefiningOp();
+    if (!elem)
+      return failure();
+
+    if (!llvm::hasSingleElement(elem->getUsers()))
+      return failure();
+
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : elem->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(op.getLoc(), v, op.getPermutation()));
+    }
+    auto newOp = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+        TypeRange(ops[0].getType()),
+        elem->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+
+struct TransposeConcat final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    if (!llvm::hasSingleElement(concat->getUsers()))
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : concat->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(op.getLoc(), v, op.getPermutation()));
+    }
+
+    auto dim = concat.getDimension();
+    auto dim2 = getInversePermutation(op.getPermutation())[dim];
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op,
+        ops, dim2);
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
     : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -7715,7 +7771,7 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
   return true;
 }
 
-struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
+struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
@@ -9055,7 +9111,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat, TransposeDUS>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
@@ -9128,7 +9184,8 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeSlice>(context);
+      patterns.add<
+        TransposeWhile, TransposeSlice, TransposeElementwise, TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast>(context);
     }
 
     if (all_finite)
@@ -9172,7 +9229,6 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         WhileDeadResults,
         WhileSimplify,
-        WhileTransposePattern,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
