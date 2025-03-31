@@ -239,7 +239,7 @@ common_compare_expression_rewrite;
 not_select_simplify;
 scatter_update_computation_const_prop;
 scatter_indices_are_unique;
-transpose_reduce_simplify;
+reduce_transpose_simplify;
 
 transpose_unary_transpose_abs<1>;
 transpose_unary_transpose_neg<1>;

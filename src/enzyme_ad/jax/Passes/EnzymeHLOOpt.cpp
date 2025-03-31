@@ -9132,7 +9132,7 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
   }
 };
 
-struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
+struct ReduceTransposeSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   using OpRewritePattern<stablehlo::ReduceOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ReduceOp op,
@@ -9775,7 +9775,7 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
-        TransposeReduceSimplify,
+        ReduceTransposeSimplify,
         BroadcastIotaSimplify
       >(context);
     // clang-format on
