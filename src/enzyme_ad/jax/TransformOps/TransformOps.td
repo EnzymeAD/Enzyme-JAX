@@ -913,9 +913,9 @@ def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterIndicesAreUnique"];
 }
 
-def ApplyTransposeReduceSimplifyPatterns : EnzymeHLOPatternOp<
-    "transpose_reduce_simplify"> {
-  let patterns = ["TransposeReduceSimplify"];
+def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
+    "reduce_transpose_simplify"> {
+  let patterns = ["ReduceTransposeSimplify"];
 }
 
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
