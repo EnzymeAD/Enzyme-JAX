@@ -6092,6 +6092,67 @@ struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+struct TransposeReduceWindow final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reduce = op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!reduce)
+      return failure();
+
+    if (reduce->getNumResults() != 1)
+      return failure();
+
+    if (!llvm::hasSingleElement(reduce->getResult(0).getUsers()))
+      return failure();
+
+    Type restys[] = {op.getType()};
+
+    Value operands[] = {rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), reduce.getOperands()[0], op.getPermutation())};
+
+    int64_t padding_shape[2] = {(int64_t)op.getType().getShape().size(), 2};
+
+    SmallVector<int64_t> win_dim(reduce.getWindowDimensions().begin(),
+                                 reduce.getWindowDimensions().end());
+    SmallVector<int64_t> win_strides(reduce.getWindowStrides()->begin(),
+                                     reduce.getWindowStrides()->end());
+    SmallVector<int64_t> base_dialations(reduce.getBaseDilations()->begin(),
+                                         reduce.getBaseDilations()->end());
+    SmallVector<int64_t> win_dialations(reduce.getWindowDilations()->begin(),
+                                        reduce.getWindowDilations()->end());
+    SmallVector<int64_t> padding_dialations(2 * padding_shape[0]);
+
+    auto perm = op.getPermutation();
+    for (int64_t i = 0; i < perm.size(); ++i) {
+      win_dim[perm[i]] = reduce.getWindowDimensions()[i];
+      win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
+      base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
+      win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
+      padding_dialations[2 * perm[i]] =
+          (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
+      padding_dialations[2 * perm[i] + 1] =
+          (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+    }
+
+    auto red2 = rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+        op, restys, operands, reduce.getInitValues(),
+        rewriter.getDenseI64ArrayAttr(win_dim),
+        rewriter.getDenseI64ArrayAttr(win_strides),
+        rewriter.getDenseI64ArrayAttr(base_dialations),
+        rewriter.getDenseI64ArrayAttr(win_dialations),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get(padding_shape, rewriter.getIntegerType(64)),
+            padding_dialations));
+
+    red2.getBody().takeBody(reduce.getBody());
+    rewriter.eraseOp(reduce);
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
     : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -9245,7 +9306,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeIota>(context);
+                   TransposeConcat, TransposeDUS, TransposeIota,
+                   TransposeReduceWindow>(context);
     }
 
     if (all_finite)

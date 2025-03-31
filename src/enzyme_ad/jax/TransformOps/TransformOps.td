@@ -978,6 +978,12 @@ def TransposeIotaPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeIota"];
 }
 
+def TransposeReduceWindowPatterns : EnzymeHLOPatternOp<
+  "transpose_reduce_window"
+> {
+  let patterns = ["TransposeReduceWindow"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
