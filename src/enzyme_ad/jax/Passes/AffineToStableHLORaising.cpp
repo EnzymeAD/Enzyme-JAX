@@ -2228,7 +2228,8 @@ struct AffineToStableHLORaisingPass
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
   void runOnOperation() override {
-    ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep, prefer_while_raising};
+    ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
+                                     prefer_while_raising};
     std::vector<func::FuncOp> funcs;
 
     auto op = getOperation();
