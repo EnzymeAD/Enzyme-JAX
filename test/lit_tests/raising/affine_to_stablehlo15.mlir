@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --canonicalize --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
+// RUN: enzymexlamlir-opt %s '--pass-pipeline=builtin.module(raise-affine-to-stablehlo{enable_lockstep_for=false},canonicalize,enzyme-hlo-opt{max_constant_expansion=0})' | FileCheck %s
 
 module {
   func.func @main(%arg0: memref<4x10xf32>, %arg1: memref<16x10xf32>) {
