@@ -2318,59 +2318,10 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   ParallelContext emptyPc = ParallelContext::getEmpty(options);
   for (auto &it : body->without_terminator()) {
-    Operation *bodyOp = &it;
-    if (auto loopRoot = dyn_cast<affine::AffineParallelOp>(bodyOp)) {
-      // TODO: support multiple nested loops
-
-      // TODO: support multiple dimensions
-      // if (loopRoot.getNumDims() != 1) {
-      //   anyFailed = true;
-      // };
-
-      // TODO: handle reductions
-      if (!loopRoot.getReductions().empty()) {
-        anyFailed = true;
-      }
-
-      for (auto iv : loopRoot.getIVs()) {
-        auto range = getIVRange(iv);
-        if (!range.has_value()) {
-          anyFailed = true;
-          break;
-        }
-
-        emitIVToStableHLO(builder, iv, *range, mapping, maps);
-      }
-
-      auto pc = ParallelContext::get(loopRoot, options);
-      if (!pc) {
-        anyFailed = true;
-        break;
-      }
-
-      if (!anyFailed) {
-        auto loopBody = loopRoot.getBody();
-        for (auto &it : loopBody->without_terminator()) {
-          Operation *op = &it;
-          anyFailed |=
-              tryRaisingOpToStableHLO(op, mapping, builder, maps, *pc).failed();
-
-          if (anyFailed)
-            break;
-        }
-      }
-    } else if (isa<arith::ConstantOp, ub::PoisonOp>(bodyOp)) {
-      anyFailed =
-          tryRaisingOpToStableHLO(bodyOp, mapping, builder, maps, emptyPc)
-              .failed();
-      if (anyFailed)
-        break;
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "cannot raise top level op yet: " << *bodyOp << "\n");
-      anyFailed = true;
+    anyFailed =
+        tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
+    if (anyFailed)
       break;
-    }
   }
 
   if (anyFailed) {
