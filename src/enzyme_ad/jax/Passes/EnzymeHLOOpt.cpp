@@ -8932,7 +8932,8 @@ findReshapeInsertionDims(RankedTensorType inputType,
     if (inputDimIndex < inputType.getRank() &&
         dim == inputType.getShape()[inputDimIndex]) {
       ++inputDimIndex;
-    } else if (dim != inputType.getShape()[inputDimIndex] && dim == 1) {
+    } else if (dim == 1 && (inputDimIndex >= inputType.getShape().size() ||
+                            dim != inputType.getShape()[inputDimIndex])) {
       // Singleton dimension inserted by reshape.
       insertionDims.push_back(i);
     } else {
