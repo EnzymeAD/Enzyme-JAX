@@ -762,6 +762,73 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// transpose(slice x) -> slice(transpose x)
+struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto slice = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
+    if (!slice)
+      return failure();
+
+    // First create transpose of the slice's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), slice.getOperand(), op.getPermutation());
+
+    // We need to compute the result type for the new slice
+    auto resultType = op.getType();
+
+    // Extract the original permutation, start indices, limit indices, and
+    // strides
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // Get the original indices
+    SmallVector<int64_t> startIndices;
+    SmallVector<int64_t> limitIndices;
+    SmallVector<int64_t> strides;
+
+    // Convert DenseI64ArrayAttr to SmallVector<int64_t>
+    for (auto [start, stop, stride] :
+         llvm::zip(slice.getStartIndices(), slice.getLimitIndices(),
+                   slice.getStrides())) {
+      startIndices.push_back(start);
+      limitIndices.push_back(stop);
+      strides.push_back(stride);
+    }
+
+    // Permute the indices
+    SmallVector<int64_t> permutedStartIndices(permutation.size());
+    SmallVector<int64_t> permutedLimitIndices(permutation.size());
+    SmallVector<int64_t> permutedStrides(permutation.size());
+
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      size_t permIndex = permutation[i];
+      permutedStartIndices[i] = startIndices[permIndex];
+      permutedLimitIndices[i] = limitIndices[permIndex];
+      permutedStrides[i] = strides[permIndex];
+    }
+
+    // Create the new slice operation with permuted indices
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), resultType, newTranspose,
+        rewriter.getDenseI64ArrayAttr(permutedStartIndices),
+        rewriter.getDenseI64ArrayAttr(permutedLimitIndices),
+        rewriter.getDenseI64ArrayAttr(permutedStrides));
+
+    rewriter.replaceOp(op, newSlice);
+    return success();
+  }
+};
+
 struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -5950,6 +6017,81 @@ struct SliceReshapeElementwise final
   }
 };
 
+struct TransposeElementwise final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto elem = op.getOperand().getDefiningOp();
+    if (!elem)
+      return failure();
+
+    if (!llvm::hasSingleElement(elem->getUsers()))
+      return failure();
+
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : elem->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), v, op.getPermutation()));
+    }
+    auto newOp = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+        TypeRange(ops[0].getType()), elem->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+
+struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    if (!llvm::hasSingleElement(concat->getUsers()))
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : concat->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), v, op.getPermutation()));
+    }
+
+    auto dim = concat.getDimension();
+    auto dim2 = getInversePermutation(op.getPermutation())[dim];
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, ops, dim2);
+    return success();
+  }
+};
+
+struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    if (!llvm::hasSingleElement(iota->getUsers()))
+      return failure();
+
+    auto dim = iota.getIotaDimension();
+    auto dim2 = getInversePermutation(op.getPermutation())[dim];
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), dim2);
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
     : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -7648,7 +7790,7 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
   return true;
 }
 
-struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
+struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
@@ -8779,6 +8921,119 @@ struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
   }
 };
 
+static SmallVector<int64_t>
+findReshapeInsertionDims(RankedTensorType inputType,
+                         RankedTensorType outputType) {
+  SmallVector<int64_t> insertionDims;
+  size_t inputDimIndex = 0;
+
+  for (size_t i = 0; i < outputType.getRank(); ++i) {
+    auto dim = outputType.getShape()[i];
+    if (inputDimIndex < inputType.getRank() &&
+        dim == inputType.getShape()[inputDimIndex]) {
+      ++inputDimIndex;
+    } else if (dim == 1 && (inputDimIndex >= inputType.getShape().size() ||
+                            dim != inputType.getShape()[inputDimIndex])) {
+      // Singleton dimension inserted by reshape.
+      insertionDims.push_back(i);
+    } else {
+      // Reshape modifies existing dimensions, which we don't handle here.
+      return {};
+    }
+  }
+
+  return insertionDims;
+}
+
+struct TransposeReshapeToBroadcast final
+    : OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    RankedTensorType reshapeOpInputType = reshapeOp.getOperand().getType();
+    RankedTensorType reshapeOpOutputType = reshapeOp.getResult().getType();
+
+    SmallVector<int64_t> insertionDims =
+        findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
+
+    if (insertionDims.size() != 1) // TODO: support more than one insertion dim
+      return failure();
+
+    int64_t insertionDim = insertionDims[0];
+
+    auto permutation = op.getPermutation();
+    if (permutation.size() != reshapeOpOutputType.getRank())
+      return failure();
+
+    SmallVector<int64_t> broadcastDimensions;
+    for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
+      int64_t findIdx = i;
+      if (i >= insertionDim)
+        ++findIdx;
+
+      auto it = llvm::find(permutation, findIdx);
+      if (it == permutation.end()) {
+        return failure(); // The index was not found in the permutation
+      }
+      int64_t outputIdx = std::distance(permutation.begin(), it);
+      broadcastDimensions.push_back(outputIdx);
+    }
+
+    // Create a single broadcast_in_dim operation to replace the reshape +
+    // transpose sequence.
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getResult().getType(), reshapeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(broadcastDimensions));
+
+    return success();
+  }
+};
+
+struct BroadcastInDimIsReshape final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.getOperand();
+    auto outputType = op.getType();
+    auto inputType = input.getType();
+    auto broadcastDims = op.getBroadcastDimensions();
+
+    SmallVector<int64_t> nonSingletonDims;
+
+    for (size_t i = 0; i < broadcastDims.size(); ++i) {
+      int64_t dimIdx = broadcastDims[i];
+      if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
+        nonSingletonDims.push_back(dimIdx);
+      }
+    }
+
+    for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
+      if (nonSingletonDims[i - 1] > nonSingletonDims[i])
+        return failure();
+    }
+
+    for (size_t i = 0; i < outputType.getRank(); ++i) {
+      int64_t dimIdx = outputType.getDimSize(i);
+      if (dimIdx == 1)
+        continue;
+      auto it = llvm::find(broadcastDims, dimIdx);
+      if (it == broadcastDims.end()) {
+        return failure();
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outputType, input);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -8789,7 +9044,7 @@ namespace enzyme {
 }; // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
-// clang-format on
+   // clang-format on
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
@@ -8856,8 +9111,8 @@ struct EnzymeHLOOptPass
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify>(
-            context, PatternBenefit(65000));
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
+             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -8916,7 +9171,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat, TransposeDUS>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
@@ -8924,6 +9179,7 @@ struct EnzymeHLOOptPass
     if (passses & 1)
       patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
           context);
+
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
@@ -8987,6 +9243,11 @@ struct EnzymeHLOOptPass
       patterns.add<DotReshapePad>(context);
     }
 
+    if (passses & (2048 * 32)) {
+      patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
+                   TransposeConcat, TransposeDUS, TransposeIota>(context);
+    }
+
     if (all_finite)
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite) {
@@ -9026,9 +9287,9 @@ struct EnzymeHLOOptPass
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,
         TransposeIsReshape,
+        BroadcastInDimIsReshape,
         WhileDeadResults,
         WhileSimplify,
-        WhileTransposePattern,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
