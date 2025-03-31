@@ -1,5 +1,6 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -16,7 +17,6 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 
 #include "llvm/ADT/MapVector.h"
 
@@ -4766,8 +4766,10 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
     auto limit = affine::getConstantTripCount(forOp);
-    if (!limit) return failure();
-    if ((*limit) == 0) return failure();
+    if (!limit)
+      return failure();
+    if ((*limit) == 0)
+      return failure();
     Block *block = forOp.getBody();
     SmallVector<affine::AffineStoreOp> stores;
     block->walk([&](affine::AffineStoreOp store) {
@@ -4905,13 +4907,18 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
     auto limit = affine::getConstantTripCount(forOp);
-    if (!limit) return failure();
-    if ((*limit) == 0) return failure();
-    if (forOp.getStep() != 1) return failure();
+    if (!limit)
+      return failure();
+    if ((*limit) == 0)
+      return failure();
+    if (forOp.getStep() != 1)
+      return failure();
     auto ubMap = forOp.getUpperBoundMap();
-    if (ubMap.getNumResults() != 1) return failure();
+    if (ubMap.getNumResults() != 1)
+      return failure();
     auto ubExpr = dyn_cast<AffineConstantExpr>(ubMap.getResult(0));
-    if (!ubExpr) return failure();
+    if (!ubExpr)
+      return failure();
     auto ub = ubExpr.getValue();
 
     Block *block = forOp.getBody();
@@ -4939,7 +4946,8 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       size_t yldIdx = 0;
       for (auto &u : val.getUses()) {
         auto yldu = llvm::dyn_cast<AffineYieldOp>(u.getOwner());
-        if (!yldu) continue;
+        if (!yldu)
+          continue;
         if (yld) {
           legal = false;
           break;
@@ -4947,11 +4955,14 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         yld = yldu;
         yldIdx = u.getOperandNumber();
       }
-      if (!yld) legal = false;
-      if (!legal) continue;
+      if (!yld)
+        legal = false;
+      if (!legal)
+        continue;
 
       auto inp = forOp.getInits()[yldIdx].getDefiningOp<affine::AffineLoadOp>();
-      if (!inp) continue;
+      if (!inp)
+        continue;
 
       SmallVector<AffineExpr> dimReps;
       SmallVector<AffineExpr> dimReps2;
@@ -4991,7 +5002,8 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
 
         for (auto &&[i, val] : llvm::enumerate(store.getIndices())) {
           if (val == forOp.getInductionVar()) {
-            store.getIndicesMutable()[i].assign(rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0));
+            store.getIndicesMutable()[i].assign(
+                rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0));
           }
         }
 
