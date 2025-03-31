@@ -984,6 +984,12 @@ def TransposeReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduceWindow"];
 }
 
+def TransposeReducePatterns : EnzymeHLOPatternOp<
+  "transpose_reduce"
+> {
+  let patterns = ["TransposeReduce"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

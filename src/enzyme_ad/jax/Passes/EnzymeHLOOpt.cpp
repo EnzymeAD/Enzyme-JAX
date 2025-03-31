@@ -33,6 +33,7 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <iterator>
 
 namespace mlir {
 namespace enzyme {
@@ -4605,8 +4606,68 @@ struct TransposeDotReorder
   }
 };
 
-struct TransposeConvolution
+struct TransposeReduce
     : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
+                                PatternRewriter &rewriter) const final {
+    auto operand = transpose.getOperand();
+    auto reduce = operand.getDefiningOp<mlir::stablehlo::ReduceOp>();
+    if (!reduce)
+      return failure();
+
+    unsigned resultNum = std::distance(
+        reduce.getResults().begin(), llvm::find(reduce.getResults(), operand));
+
+    auto reduceDims = reduce.getDimensions();
+    auto reduceInput = reduce.getInputs()[resultNum];
+    auto reduceInputType = dyn_cast<RankedTensorType>(reduceInput.getType());
+    if (!reduceInputType)
+      return rewriter.notifyMatchFailure(reduce, "Reduce input not tensor");
+
+    auto transposePermutation = transpose.getPermutation();
+
+    SmallVector<int64_t> newTransposePermutation(transposePermutation);
+
+    for (int64_t reduceDim : reduceDims) {
+      for (auto &transposeDim : newTransposePermutation) {
+        if (reduceDim <= transposeDim)
+          transposeDim++;
+      }
+      newTransposePermutation.insert(
+          std::next(newTransposePermutation.begin(), reduceDim), reduceDim);
+    }
+
+    rewriter.setInsertionPoint(reduce);
+    auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+        transpose.getLoc(), reduceInput, newTransposePermutation);
+
+    SmallVector<Type> newReduceResultTypes(reduce.getResultTypes());
+    newReduceResultTypes[resultNum] = transpose.getResult().getType();
+    SmallVector<Value> newReduceInputs(reduce.getInputs());
+    newReduceInputs[resultNum] = newTransposeOp.getResult();
+
+    auto newReduce = rewriter.create<stablehlo::ReduceOp>(
+        reduce.getLoc(), newReduceResultTypes, newReduceInputs,
+        reduce.getInitValues(), reduceDims);
+    rewriter.inlineRegionBefore(reduce.getRegion(), newReduce.getRegion(),
+                                newReduce.getRegion().begin());
+    for (auto [i, oldRes, newRes] :
+         llvm::enumerate(reduce.getResults(), newReduce.getResults())) {
+      if (i == resultNum)
+        rewriter.replaceAllUsesWith(transpose.getResult(), newRes);
+      else
+        rewriter.replaceAllUsesWith(oldRes, newRes);
+    }
+    rewriter.eraseOp(transpose);
+    rewriter.eraseOp(reduce);
+
+    return success();
+  }
+};
+
+struct TransposeConvolution : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
@@ -9307,7 +9368,7 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
                    TransposeConcat, TransposeDUS, TransposeIota,
-                   TransposeReduceWindow>(context);
+                   TransposeReduceWindow, TransposeReduce>(context);
     }
 
     if (all_finite)
