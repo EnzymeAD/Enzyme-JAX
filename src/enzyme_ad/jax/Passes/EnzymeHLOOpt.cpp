@@ -7753,13 +7753,17 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Clone operations from old body to new body
     Block &oldBodyBlock = whileOp.getBody().front();
-    for (auto &op : oldBodyBlock.getOperations()) {
-      // Skip the terminator - we'll add it after all other operations
-      if (isa<stablehlo::ReturnOp>(op))
-        continue;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newBodyBlock);
+      for (auto &op : oldBodyBlock.getOperations()) {
+        // Skip the terminator - we'll add it after all other operations
+        if (isa<stablehlo::ReturnOp>(op))
+          continue;
 
-      // Clone the operation with the value mapping
-      rewriter.clone(op, mapper);
+        // Clone the operation with the value mapping
+        rewriter.clone(op, mapper);
+      }
     }
 
     // Create a new terminator for the body region using new values
@@ -7793,32 +7797,36 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
     newCondBlock.clear();
     Block &oldCondBlock = whileOp.getCond().front();
 
-    for (auto &op : oldCondBlock.getOperations()) {
-      if (isa<stablehlo::ReturnOp>(op))
-        continue;
-      rewriter.clone(op, condMapper);
-    }
-
-    // Create condition terminator
     {
-      auto oldCondReturn =
-          cast<stablehlo::ReturnOp>(oldCondBlock.getTerminator());
-      SmallVector<Value> newCondValues;
-
-      for (auto oldRetVal : oldCondReturn.getOperands()) {
-        Value newRetVal = condMapper.lookupOrNull(oldRetVal);
-        if (!newRetVal)
-          newRetVal = oldRetVal;
-        newCondValues.push_back(newRetVal);
-      }
-      {
-        // Save the current insertion point
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToEnd(&newCondBlock);
-        rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(),
-                                             newCondValues);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newCondBlock);
+      for (auto &op : oldCondBlock.getOperations()) {
+        //if (isa<stablehlo::ReturnOp>(op))
+        //  continue;
+        rewriter.clone(op, condMapper);
       }
     }
+
+    //// Create condition terminator
+    //{
+    //  auto oldCondReturn =
+    //      cast<stablehlo::ReturnOp>(oldCondBlock.getTerminator());
+    //  SmallVector<Value> newCondValues;
+
+    //  for (auto oldRetVal : oldCondReturn.getOperands()) {
+    //    Value newRetVal = condMapper.lookupOrNull(oldRetVal);
+    //    if (!newRetVal)
+    //      newRetVal = oldRetVal;
+    //    newCondValues.push_back(newRetVal);
+    //  }
+    //  {
+    //    // Save the current insertion point
+    //    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    //    rewriter.setInsertionPointToEnd(&newCondBlock);
+    //    rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(),
+    //                                         newCondValues);
+    //  }
+    //}
 
     // Step 4 : Insert the transpose op at the beginning of the body of new
     // WhileOp
