@@ -6101,7 +6101,7 @@ struct TransposeElementwise final
     }
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(ops[0].getType()), elem->getAttrs(), {}, {});
+        TypeRange(op.getType()), elem->getAttrs(), {}, {});
     rewriter.replaceOp(op, newOp);
     return success();
   }
