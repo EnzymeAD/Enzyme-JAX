@@ -8846,49 +8846,27 @@ struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
   }
 };
 
-bool isReshapeOnlyAddingNewDims(Value input, Value output) {
-  auto inputType = input.getType().dyn_cast<RankedTensorType>();
-  auto outputType = output.getType().dyn_cast<RankedTensorType>();
+static SmallVector<int64_t>
+findReshapeInsertionDims(RankedTensorType inputType,
+                         RankedTensorType outputType) {
+  SmallVector<int64_t> insertionDims;
+  size_t inputDimIndex = 0;
 
-  if (!inputType || !outputType)
-    return false;
-
-  auto inShape = inputType.getShape();
-  auto outShape = outputType.getShape();
-
-  // llvm::errs() << "inShape: " << inShape << "\n";
-  // llvm::errs() << "outShape: " << outShape << "\n";
-
-  int inRank = inShape.size();
-  int outRank = outShape.size();
-
-  if (outRank < inRank)
-    return false; // Reshape cannot remove dims
-
-  int i = 0, j = 0;
-  while (i < inRank && j < outRank) {
-    if (inShape[i] == outShape[j]) {
-      i++; // Matching dim → proceed
-      j++;
-    } else if (outShape[j] == 1) {
-      j++; // Skip newly added 1-sized dims
+  for (size_t i = 0; i < outputType.getRank(); ++i) {
+    auto dim = outputType.getShape()[i];
+    if (inputDimIndex < inputType.getRank() &&
+        dim == inputType.getShape()[inputDimIndex]) {
+      ++inputDimIndex;
+    } else if (dim != inputType.getShape()[inputDimIndex] && dim == 1) {
+      // Singleton dimension inserted by reshape.
+      insertionDims.push_back(i);
     } else {
-      return false; // Shape mismatch → invalid
+      // Reshape modifies existing dimensions, which we don't handle here.
+      return {};
     }
   }
 
-  // Ensure all input dims were matched
-  if (i != inRank)
-    return false;
-
-  // Remaining output dims must be 1 (if any)
-  while (j < outRank) {
-    if (outShape[j] != 1)
-      return false;
-    j++;
-  }
-
-  return true;
+  return insertionDims;
 }
 
 struct TransposeReshapeToBroadcast final
@@ -8901,45 +8879,39 @@ struct TransposeReshapeToBroadcast final
     if (!reshapeOp)
       return failure();
 
-    if (!isReshapeOnlyAddingNewDims(reshapeOp.getOperand(),
-                                    reshapeOp.getResult()))
+    RankedTensorType reshapeOpInputType = reshapeOp.getOperand().getType();
+    RankedTensorType reshapeOpOutputType = reshapeOp.getResult().getType();
+
+    SmallVector<int64_t> insertionDims =
+        findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
+
+    if (insertionDims.size() != 1) // TODO: support more than one insertion dim
       return failure();
 
-    // Get the original input tensor (before reshape).
-    auto originalInput = reshapeOp.getOperand();
-    auto originalType =
-        originalInput.getType().dyn_cast_or_null<RankedTensorType>();
-    if (!originalType)
-      return failure();
+    int64_t insertionDim = insertionDims[0];
 
-    // Get the output type of the transpose operation.
-    auto outputType =
-        op.getResult().getType().dyn_cast_or_null<RankedTensorType>();
-    if (!outputType)
-      return failure();
-
-    // Get the permutation used in the transpose operation.
     auto permutation = op.getPermutation();
-    if (permutation.size() != outputType.getRank())
+    if (permutation.size() != reshapeOpOutputType.getRank())
       return failure();
 
-    // Map the original input dimensions to the output dimensions via reshape
-    // and transpose.
     SmallVector<int64_t> broadcastDimensions;
-    for (size_t i = 0; i < permutation.size(); ++i) {
-      int64_t permutedDim = permutation[i];
-      if (permutedDim >= originalType.getRank()) {
-        // If the permuted dimension corresponds to a new dimension introduced
-        // by reshape, skip it.
-        continue;
+    for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
+      int64_t findIdx = i;
+      if (i >= insertionDim)
+        ++findIdx;
+
+      auto it = llvm::find(permutation, findIdx);
+      if (it == permutation.end()) {
+        return failure(); // The index was not found in the permutation
       }
-      broadcastDimensions.push_back(permutedDim);
+      int64_t outputIdx = std::distance(permutation.begin(), it);
+      broadcastDimensions.push_back(outputIdx);
     }
 
     // Create a single broadcast_in_dim operation to replace the reshape +
     // transpose sequence.
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, outputType, originalInput,
+        op, op.getResult().getType(), reshapeOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(broadcastDimensions));
 
     return success();
