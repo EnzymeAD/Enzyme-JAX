@@ -6214,8 +6214,7 @@ struct TransposeReduceWindow final
   }
 };
 
-struct ReshapeElementwise final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
@@ -6233,7 +6232,11 @@ struct ReshapeElementwise final
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
       ops.push_back(rewriter.create<stablehlo::ReshapeOp>(
-          op.getLoc(), RankedTensorType::get(op.getType().getShape(), cast<RankedTensorType>(v.getType()).getElementType()), v));
+          op.getLoc(),
+          RankedTensorType::get(
+              op.getType().getShape(),
+              cast<RankedTensorType>(v.getType()).getElementType()),
+          v));
     }
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
