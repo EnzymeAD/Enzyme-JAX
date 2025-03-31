@@ -6338,6 +6338,81 @@ struct TransposeReduceWindow final
   }
 };
 
+// reshape(concat(...)) -> concat(reshape(...))
+struct ReshapeOfConcatToConcatOfReshape final
+    : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  int64_t computeNewConcatDim(ArrayRef<int64_t> originalShape,
+                              ArrayRef<int64_t> reshapedShape,
+                              int64_t originalConcatDim) const {
+    int64_t flattenedIndex = 0;
+    int64_t newConcatDim = 0;
+
+    for (int64_t i = 0; i < originalConcatDim; ++i) {
+      flattenedIndex += originalShape[i];
+    }
+
+    int64_t cumulativeSize = 0;
+    for (int64_t i = 0; i < reshapedShape.size(); ++i) {
+      cumulativeSize += reshapedShape[i];
+      if (flattenedIndex < cumulativeSize) {
+        newConcatDim = i;
+        break;
+      }
+    }
+    return newConcatDim;
+  }
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if the operand of the reshape is a concatenate operation
+    auto concatOp =
+        reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::ConcatenateOp>();
+    if (!concatOp)
+      return failure();
+
+    // Create reshaped operands for the concat operation
+    SmallVector<Value> concatOperands;
+    for (auto operand : concatOp.getOperands()) {
+      auto operandType = operand.getType().cast<RankedTensorType>();
+      if (!operandType)
+        return failure();
+
+      SmallVector<int64_t> oldShape(operandType.getShape().begin(),
+                                    operandType.getShape().end());
+      SmallVector<int64_t> newShape;
+      bool foundSingletonDim = false;
+      for (int64_t dim : oldShape) {
+        if (dim == 1) {
+          if (foundSingletonDim)
+            return failure();
+          foundSingletonDim = true;
+          continue;
+        }
+        newShape.push_back(dim);
+      }
+      auto newReshapeType =
+          RankedTensorType::get(newShape, operandType.getElementType());
+      auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
+          reshapeOp.getLoc(), newReshapeType, operand);
+      concatOperands.push_back(newReshapeOp);
+    }
+
+    // Create a new concat operation with the reshaped operands
+    auto origReshapeOperand = reshapeOp.getOperand().getType().getShape();
+    auto origReshapeResult = reshapeOp.getResult().getType().getShape();
+    auto newConcatOp = rewriter.create<mlir::stablehlo::ConcatenateOp>(
+        concatOp.getLoc(), concatOperands,
+        computeNewConcatDim(origReshapeOperand, origReshapeResult,
+                            concatOp.getDimension()));
+
+    // Replace the original reshape operation with the new concat
+    rewriter.replaceOp(reshapeOp, newConcatOp.getResult());
+    return success();
+  }
+};
+
 struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -9529,7 +9604,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise>(context);
+      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape>(
+          context);
     }
 
     if (all_finite)
