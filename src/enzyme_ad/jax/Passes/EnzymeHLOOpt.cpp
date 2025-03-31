@@ -9371,7 +9371,7 @@ struct EnzymeHLOOptPass
                    TransposeReduceWindow, TransposeReduce>(context);
     }
 
-    if (passes & (2048 * 64)) {
+    if (passses & (2048 * 64)) {
       // add reshape push up cases here
     }
 
