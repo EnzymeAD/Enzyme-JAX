@@ -1459,7 +1459,7 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   LLVM_DEBUG(llvm::dbgs() << "Trying to lock step execute for " << *forOp
                           << "\n");
-  if (isLockStepExecutable(forOp)) {
+  if (isLockStepExecutable(forOp, pc)) {
     LLVM_DEBUG(llvm::dbgs() << "Legal\n");
     return tryRaisingParallelOpToStableHLO(forOp, mapping, builder, maps, pc);
   }
