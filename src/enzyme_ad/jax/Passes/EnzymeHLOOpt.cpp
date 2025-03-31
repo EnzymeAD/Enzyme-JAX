@@ -763,6 +763,130 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// slice(reduce_window x, last_idx) -> reduce x
+struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
+  using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const final {
+    auto reduceWindow =
+        op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!reduceWindow)
+      return failure();
+
+    if (!reduceWindow->hasOneUse())
+      return failure();
+
+    // Check window parameters indicate full reduction along one dimension
+    auto windowDims = reduceWindow.getWindowDimensions();
+    auto windowStrides = reduceWindow.getWindowStrides();
+    auto windowDilations = reduceWindow.getWindowDilations();
+    auto baseDilations = reduceWindow.getBaseDilations();
+
+    if (!reduceWindow.getPadding())
+      return failure();
+    auto padding = reduceWindow.getPadding()->getValues<int64_t>();
+
+    // Check if the window strides are all 1 or unspecified
+    if (windowStrides && !llvm::all_of(*windowStrides, [](int64_t stride) {
+          return stride == 1;
+        }))
+      return failure();
+
+    // Check if the window dilations are all 1 or unspecified
+    if (windowDilations &&
+        !llvm::all_of(*windowDilations,
+                      [](int64_t dilation) { return dilation == 1; }))
+      return failure();
+
+    // Check if the base dilations are all 1 or unspecified
+    if (baseDilations && !llvm::all_of(*baseDilations, [](int64_t dilation) {
+          return dilation == 1;
+        }))
+      return failure();
+
+    // Find which dimension has window size > 1 (the reduction dimension)
+    int64_t reductionDim = -1;
+    auto inputType =
+        reduceWindow.getInputs()[0].getType().dyn_cast<ShapedType>();
+    if (!inputType || !inputType.hasStaticShape())
+      return failure();
+    ArrayRef<int64_t> inputShape = inputType.getShape();
+    for (unsigned i = 0; i < windowDims.size(); ++i) {
+      if (windowDims[i] == inputShape[i]) {
+        if (reductionDim != -1)
+          return failure();
+        reductionDim = i;
+      }
+    }
+    if (reductionDim == -1)
+      return failure();
+
+    // Check that padding covers exactly (window_size-1) elements before in
+    // reduction dim
+    // FIXME: do other padding values have to be 0?
+    for (unsigned i = 0; i < windowDims.size(); ++i) {
+      if (i == reductionDim) {
+        if (padding[2 * i] != windowDims[i] - 1)
+          return failure();
+      }
+    }
+
+    // Check this is a slice taking the last element in reduction dim
+    auto sliceStarts = op.getStartIndices();
+    auto sliceLimits = op.getLimitIndices();
+    auto sliceStrides = op.getStrides();
+
+    for (int64_t i = 0; i < sliceStarts.size(); ++i) {
+      if (!sliceStrides.empty() && sliceStrides[i] != 1)
+        return failure();
+
+      if (i == reductionDim) {
+        if (sliceStarts[i] != windowDims[i] - 1 ||
+            sliceLimits[i] != windowDims[i])
+          return failure();
+      } else {
+        if (sliceStarts[i] != 0 || sliceLimits[i] != inputShape[i])
+          return failure();
+      }
+    }
+
+    // Replace with direct reduce
+    auto input = reduceWindow.getInputs()[0];
+    auto initVal = reduceWindow.getInitValues()[0];
+    // Compute the result type for the new ReduceOp by removing the reduction
+    // dimension
+    SmallVector<int64_t> resultShape;
+    for (size_t i = 0; i < inputShape.size(); ++i) {
+      if (static_cast<int64_t>(i) != reductionDim) {
+        resultShape.push_back(inputShape[i]);
+      }
+    }
+    Type resultType =
+        RankedTensorType::get(resultShape, inputType.getElementType());
+
+    rewriter.setInsertionPoint(reduceWindow);
+
+    auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+        reduceWindow.getLoc(), TypeRange(resultType), input, initVal,
+        rewriter.getDenseI64ArrayAttr({reductionDim}));
+
+    // Clone the reduction body
+    rewriter.inlineRegionBefore(reduceWindow.getBody(), reduceOp.getBody(),
+                                reduceOp.getBody().end());
+
+    // Create a reshape to match the slice output shape
+    Value result = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), op.getResult().getType(), reduceOp.getResult(0));
+
+    // Replace the slice with the reduce result
+    rewriter.replaceOp(op, result);
+    rewriter.eraseOp(reduceWindow);
+
+    return success();
+  }
+};
+
 // transpose(slice x) -> slice(transpose x)
 struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -9331,8 +9455,8 @@ struct EnzymeHLOOptPass
       patterns.add<FullReduceReshapeOrTranspose>(context);
 
     if (passses & 1)
-      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
-          context);
+      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast,
+                   SliceReduceWindow>(context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);

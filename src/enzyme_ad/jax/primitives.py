@@ -180,6 +180,7 @@ dynamic_update_to_concat<1>;
 slice_of_dynamic_update<1>;
 slice_elementwise<1>;
 slice_pad<1>;
+slice_reduce_window<1>;
 pad_reduce_window<1>;
 dot_reshape_dot<1>;
 concat_const_prop<1>;

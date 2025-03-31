@@ -984,6 +984,12 @@ def TransposeReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduceWindow"];
 }
 
+def SliceReduceWindowPatterns : EnzymeHLOPatternOp<
+  "slice_reduce_window"
+> {
+  let patterns = ["SliceReduceWindow"];
+}
+
 def TransposeReducePatterns : EnzymeHLOPatternOp<
   "transpose_reduce"
 > {
