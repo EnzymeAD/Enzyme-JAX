@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=transpose_reduce" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
 
 func.func @main(%arg0: tensor<4x3xf64>) -> tensor<4x1xf64> {
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
