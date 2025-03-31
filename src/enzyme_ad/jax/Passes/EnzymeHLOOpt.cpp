@@ -4606,8 +4606,7 @@ struct TransposeDotReorder
   }
 };
 
-struct TransposeReduce
-    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
@@ -4667,7 +4666,8 @@ struct TransposeReduce
   }
 };
 
-struct TransposeConvolution : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
+struct TransposeConvolution
+    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
