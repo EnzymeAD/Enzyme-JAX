@@ -1,0 +1,14 @@
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=65536})" %s | FileCheck %s
+
+module {
+  func.func @main() -> tensor<3x4xf64> {
+    %cst = stablehlo.constant dense<[[0.6496222808917268, 0.096212809753773776, 0.15377221949977682], [0.96568572693987941, 0.023023752185516666, 0.79410616419530333], [0.23747479566982688, 0.094921128460392024, 0.79170861871474563], [0.38420536250190751, 0.13376956140378637, 0.91958862661700169]]> : tensor<4x3xf64>
+    %1910 = stablehlo.transpose %cst, dims = [1, 0] : (tensor<4x3xf64>) -> tensor<3x4xf64>
+    return %1910 : tensor<3x4xf64>
+  }
+}
+
+// CHECK:  func.func @main() -> tensor<3x4xf64> {
+// CHECK-NEXT{LITERAL}:    %cst = stablehlo.constant dense<[[0.6496222808917268, 0.96568572693987941, 0.23747479566982688, 0.38420536250190751], [0.096212809753773776, 0.023023752185516666, 0.094921128460392024, 0.13376956140378637], [0.15377221949977682, 0.79410616419530333, 0.79170861871474563, 0.91958862661700169]]> : tensor<3x4xf64>
+// CHECK-NEXT:    return %cst : tensor<3x4xf64>
+// CHECK-NEXT:  }

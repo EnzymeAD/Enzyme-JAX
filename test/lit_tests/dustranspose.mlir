@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=65536})" %s | FileCheck %s
 
 func.func @test_transpose_of_dynamic_update_slice(%arg0: tensor<4x6xf32>, 
                                                   %arg1: tensor<2x3xf32>, 

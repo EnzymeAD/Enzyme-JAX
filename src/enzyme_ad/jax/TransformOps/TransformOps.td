@@ -942,6 +942,42 @@ def TransposeDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeDUS"];
 }
 
+def TransposeWhilePatterns : EnzymeHLOPatternOp<
+  "transpose_while"
+> {
+  let patterns = ["TransposeWhile"];
+}
+
+def TransposeSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_slice"
+> {
+  let patterns = ["TransposeSlice"];
+}
+
+def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
+  "transpose_reshape_to_broadcast"
+> {
+  let patterns = ["TransposeReshapeToBroadcast"];
+}
+
+def TransposeElementwisePatterns : EnzymeHLOPatternOp<
+  "transpose_elementwise"
+> {
+  let patterns = ["TransposeElementwise"];
+}
+
+def TransposeConcatPatterns : EnzymeHLOPatternOp<
+  "transpose_concat"
+> {
+  let patterns = ["TransposeConcat"];
+}
+
+def TransposeIotaPatterns : EnzymeHLOPatternOp<
+  "transpose_iota"
+> {
+  let patterns = ["TransposeIota"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
