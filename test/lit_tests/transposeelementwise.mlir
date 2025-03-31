@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt . %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=transpose_elementwise" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module {
   func.func @main(%a : tensor<100x200x300xbf16>, %b: tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16> {
