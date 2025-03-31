@@ -1002,6 +1002,11 @@ def BroadcastInDimIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastInDimIsReshape"];
 }
 
+def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
+    "reshape_dus"> {
+  let patterns = ["ReshapeDUS"];
+}
+
 def ReshapeElementwisePatterns : EnzymeHLOPatternOp<
   "reshape_elementwise"
 > {

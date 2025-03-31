@@ -292,6 +292,125 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a DynamicUpdateSlice
+    auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus)
+      return failure();
+
+    // %0 = dynamic_update_slice %arg0, %update
+    // %1 = reshape %0
+    //
+    // ->
+    //
+    // %arg0_reshaped = reshape %arg0
+    // %update_resahepd = reshape %update
+    // dynamic_update_slice %arg0_reshaped, %update_reshaped
+
+    auto operand = op.getOperand();
+    auto result = op.getResult();
+    auto operandTy = operand.getType();
+    auto resultTy = result.getType();
+
+    auto operandShape = operandTy.getShape();
+    auto resultShape = resultTy.getShape();
+
+    SmallVector<int64_t> onesInserted, onesRemoved;
+
+    int i = 0, j = 0;
+    while (i < operandShape.size() && j < resultShape.size()) {
+      if (operandShape[i] == resultShape[j]) {
+        i++;
+        j++;
+        continue;
+      }
+
+      if (operandShape[i] == 1) {
+        onesRemoved.push_back(i);
+        i++;
+        continue;
+      }
+
+      if (resultShape[j] == 1) {
+        onesInserted.push_back(j);
+        j++;
+        continue;
+      }
+
+      return failure();
+    }
+
+    auto applyShape = [&](Value val) -> RankedTensorType {
+      auto Ty = val.getType().cast<RankedTensorType>();
+      auto shape = Ty.getShape();
+      SmallVector<int64_t> outShape;
+      int in = 0, removed = 0, inserted = 0;
+      while (outShape.size() != resultShape.size()) {
+        if (removed < onesRemoved.size() && onesRemoved[removed] == in) {
+          in++;
+          removed++;
+          continue;
+        }
+
+        if (inserted < onesInserted.size() &&
+            onesInserted[inserted] == outShape.size()) {
+          outShape.push_back(1);
+          inserted++;
+          continue;
+        }
+
+        outShape.push_back(shape[in]);
+        in++;
+      }
+      return Ty.clone(outShape);
+    };
+
+    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), applyShape(dus.getOperand()), dus.getOperand());
+    auto newUpdate = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(), applyShape(dus.getUpdate()), dus.getUpdate());
+
+    auto startIndices = dus.getStartIndices();
+
+    auto itype = startIndices.size() > 0
+                     ? startIndices[0].getType().cast<RankedTensorType>()
+                     : RankedTensorType::get({}, rewriter.getI64Type());
+    auto c0 = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
+
+    SmallVector<Value> newStartIndices;
+
+    int in = 0, removed = 0, inserted = 0;
+    while (newStartIndices.size() != resultShape.size()) {
+      if (removed < onesRemoved.size() && onesRemoved[removed] == in) {
+        in++;
+        removed++;
+        continue;
+      }
+
+      if (inserted < onesInserted.size() &&
+          onesInserted[inserted] == newStartIndices.size()) {
+        newStartIndices.push_back(c0);
+        inserted++;
+        continue;
+      }
+
+      newStartIndices.push_back(startIndices[in]);
+      in++;
+    }
+
+    auto newDus = rewriter.create<mlir::stablehlo::DynamicUpdateSliceOp>(
+        op.getLoc(), newOperand, newUpdate, newStartIndices);
+    rewriter.replaceOp(op, newDus);
+
+    return success();
+  }
+};
+
 struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -9604,8 +9723,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape>(
-          context);
+      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
+                   ReshapeDUS>(context);
     }
 
     if (all_finite)
