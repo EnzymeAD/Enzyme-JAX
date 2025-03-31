@@ -762,6 +762,73 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// transpose(slice x) -> slice(transpose x)
+struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto slice = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
+    if (!slice)
+      return failure();
+
+    // First create transpose of the slice's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), slice.getOperand(), op.getPermutation());
+
+    // We need to compute the result type for the new slice
+    auto resultType = op.getType();
+
+    // Extract the original permutation, start indices, limit indices, and
+    // strides
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // Get the original indices
+    SmallVector<int64_t> startIndices;
+    SmallVector<int64_t> limitIndices;
+    SmallVector<int64_t> strides;
+
+    // Convert DenseI64ArrayAttr to SmallVector<int64_t>
+    for (auto [start, stop, stride] :
+         llvm::zip(slice.getStartIndices(), slice.getLimitIndices(),
+                   slice.getStrides())) {
+      startIndices.push_back(start);
+      limitIndices.push_back(stop);
+      strides.push_back(stride);
+    }
+
+    // Permute the indices
+    SmallVector<int64_t> permutedStartIndices(permutation.size());
+    SmallVector<int64_t> permutedLimitIndices(permutation.size());
+    SmallVector<int64_t> permutedStrides(permutation.size());
+
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      size_t permIndex = permutation[i];
+      permutedStartIndices[i] = startIndices[permIndex];
+      permutedLimitIndices[i] = limitIndices[permIndex];
+      permutedStrides[i] = strides[permIndex];
+    }
+
+    // Create the new slice operation with permuted indices
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), resultType, newTranspose,
+        rewriter.getDenseI64ArrayAttr(permutedStartIndices),
+        rewriter.getDenseI64ArrayAttr(permutedLimitIndices),
+        rewriter.getDenseI64ArrayAttr(permutedStrides));
+
+    rewriter.replaceOp(op, newSlice);
+    return success();
+  }
+};
+
 struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -8922,8 +8989,9 @@ struct EnzymeHLOOptPass
       patterns.add<FullReduceReshapeOrTranspose>(context);
 
     if (passses & 1)
-      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
-          context);
+      patterns.add<
+          // SliceTranspose,
+          TransposeSlice, SliceReshapeTranspose, SliceBroadcast>(context);
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
