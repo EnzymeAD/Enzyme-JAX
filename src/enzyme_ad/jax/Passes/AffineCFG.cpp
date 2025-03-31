@@ -1,5 +1,6 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -4762,85 +4763,13 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
 struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
 
-  bool isInCurrentAffineFor(Operation *op, affine::AffineForOp forOp) const {
-    auto *parentOp = op->getParentOp();
-    auto maybeParentFor = dyn_cast_or_null<affine::AffineForOp>(parentOp);
-    if (maybeParentFor && maybeParentFor == forOp)
-      return true;
-    return false;
-  }
-
-  bool areInSameAffineFor(affine::AffineLoadOp load,
-                          affine::AffineStoreOp store,
-                          affine::AffineForOp forOp) const {
-    return isInCurrentAffineFor(load.getOperation(), forOp) &&
-           isInCurrentAffineFor(store.getOperation(), forOp);
-  }
-
-  template <typename T>
-  bool haveSameIndices(affine::AffineLoadOp load, T storeOrLoad) const {
-    static_assert(
-        llvm::is_one_of<T, affine::AffineLoadOp, affine::AffineStoreOp>::value,
-        "applies to only affine::AffineLoadOp or affine::AffineStoreOp");
-    SmallVector<Value, 4> loadIndices(load.getIndices());
-    SmallVector<Value, 4> storeOrLoadIndices = storeOrLoad.getIndices();
-    if (loadIndices.size() != storeOrLoadIndices.size())
-      return false;
-    return std::equal(loadIndices.begin(), loadIndices.end(),
-                      storeOrLoadIndices.begin());
-  }
-
-  template <typename T>
-  bool areCompatible(affine::AffineLoadOp load, T store) const {
-    static_assert(
-        llvm::is_one_of<T, affine::AffineLoadOp, affine::AffineStoreOp>::value,
-        "applies to only affine::AffineLoadOp or affine::AffineStoreOp");
-    if (load.getMemRef() != store.getMemRef()) {
-      return false;
-    }
-    return haveSameIndices<T>(load, store);
-  }
-
-  bool checkDominance(Operation *a, Operation *b) const {
-    DominanceInfo dom(a);
-    return dom.properlyDominates(a, b);
-  }
-
-  bool checkDominance(Operation *a, ArrayRef<Operation *> bs) const {
-    bool res = true;
-    for (auto *b : bs)
-      if (!checkDominance(b, a)) {
-        res = false;
-        break;
-      }
-    return res;
-  }
-
-  bool hasAllDimsReduced(ArrayRef<Value> indices, Value indVar,
-                         Operation *op) const {
-    for (auto index : indices) {
-      if (index == indVar)
-        continue;
-      if (definedOutside(index, op))
-        continue;
-      return false;
-    }
-    return true;
-  }
-
-  bool hasParentOp(Operation *a, Operation *b) const {
-    Operation *currOp = a;
-    while (Operation *parentOp = currOp->getParentOp()) {
-      if (isa<mlir::affine::AffineForOp>(parentOp) && parentOp == b)
-        return true;
-      currOp = parentOp;
-    }
-    return false;
-  }
-
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
-
+    auto limit = affine::getConstantTripCount(forOp);
+    if (!limit)
+      return failure();
+    if ((*limit) == 0)
+      return failure();
     Block *block = forOp.getBody();
     SmallVector<affine::AffineStoreOp> stores;
     block->walk([&](affine::AffineStoreOp store) {
@@ -4972,6 +4901,122 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   }
 };
 
+struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto limit = affine::getConstantTripCount(forOp);
+    if (!limit)
+      return failure();
+    if ((*limit) == 0)
+      return failure();
+    if (forOp.getStep() != 1)
+      return failure();
+    auto ubMap = forOp.getUpperBoundMap();
+    if (ubMap.getNumResults() != 1)
+      return failure();
+    auto ubExpr = dyn_cast<AffineConstantExpr>(ubMap.getResult(0));
+    if (!ubExpr)
+      return failure();
+    auto ub = ubExpr.getValue();
+
+    Block *block = forOp.getBody();
+    SmallVector<affine::AffineStoreOp> stores;
+    block->walk([&](affine::AffineStoreOp store) {
+      bool legal = store->getParentOp() == forOp;
+      Value memref = store.getMemRef();
+      for (auto *user : memref.getUsers()) {
+        if (user == store)
+          continue;
+        if (!forOp->isAncestor(user))
+          continue;
+        legal = false;
+      }
+      if (legal)
+        stores.push_back(store);
+    });
+
+    bool changed = false;
+    for (auto store : stores) {
+      Value memref = store.getMemRef();
+      Value val = store.getValue();
+      affine::AffineYieldOp yld = nullptr;
+      bool legal = true;
+      size_t yldIdx = 0;
+      for (auto &u : val.getUses()) {
+        auto yldu = llvm::dyn_cast<AffineYieldOp>(u.getOwner());
+        if (!yldu)
+          continue;
+        if (yld) {
+          legal = false;
+          break;
+        }
+        yld = yldu;
+        yldIdx = u.getOperandNumber();
+      }
+      if (!yld)
+        legal = false;
+      if (!legal)
+        continue;
+
+      auto inp = forOp.getInits()[yldIdx].getDefiningOp<affine::AffineLoadOp>();
+      if (!inp)
+        continue;
+
+      SmallVector<AffineExpr> dimReps;
+      SmallVector<AffineExpr> dimReps2;
+      SmallVector<AffineExpr> symReps;
+      auto map = store.getAffineMap();
+      for (int i = 0; i < map.getNumDims(); i++) {
+        dimReps.push_back(rewriter.getAffineDimExpr(i));
+        dimReps2.push_back(rewriter.getAffineDimExpr(i));
+      }
+      for (int i = 0; i < map.getNumSymbols(); i++)
+        symReps.push_back(rewriter.getAffineSymbolExpr(i));
+
+      for (auto &&[i, val] : llvm::enumerate(store.getMapOperands())) {
+        if (val == forOp.getInductionVar()) {
+          if (i >= map.getNumDims()) {
+            legal = false;
+            break;
+          }
+          dimReps[i] = rewriter.getAffineConstantExpr(0);
+          dimReps2[i] = rewriter.getAffineConstantExpr(ub - 1);
+        }
+      }
+      if (!legal)
+        continue;
+
+      auto loadMap = map.replaceDimsAndSymbols(
+          dimReps, symReps, map.getNumDims(), map.getNumSymbols());
+      loadMap = simplifyAffineMap(loadMap);
+      if (store.getAffineMap() != loadMap)
+        continue;
+
+      auto storeMap2 = map.replaceDimsAndSymbols(
+          dimReps2, symReps, map.getNumDims(), map.getNumSymbols());
+
+      rewriter.modifyOpInPlace(store, [&]() {
+        store.setMap(storeMap2);
+
+        for (auto &&[i, val] : llvm::enumerate(store.getIndices())) {
+          if (val == forOp.getInductionVar()) {
+            store.getIndicesMutable()[i].assign(
+                rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0));
+          }
+        }
+
+        store->moveAfter(forOp);
+        store.getValueMutable().set(forOp->getResult(yldIdx));
+      });
+      changed = true;
+    }
+
+    return success(changed);
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -4986,7 +5031,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
           SinkStoreInIf, AddAddCstEnd, LiftMemrefRead, CompareVs1,
-          AffineForReductionIter>(context, 2);
+          AffineForReductionIter, AffineForReductionSink>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
