@@ -310,6 +310,8 @@ if_pred_propagation<1>;
 while_simplify<1>;
 while_deadresult<1>;
 
+broadcastindim_is_reshape<1>;
+
 dot_reshape_pad<1>;
 pad_dot_general<1>(1);
             },
