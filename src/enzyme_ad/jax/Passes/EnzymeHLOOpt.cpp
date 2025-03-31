@@ -6376,63 +6376,80 @@ LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
   assert(limits.size() == 0);
   assert(strides.size() == 0);
 
-  auto reshapeOperandType = reshape.getOperand().getType().cast<TensorType>();
-  auto reshapeType = reshape.getType().cast<TensorType>();
-  size_t indim = 0;
-  size_t outdim = 0;
-  while (indim < reshapeOperandType.getShape().size() &&
-         outdim < reshapeType.getShape().size()) {
-    if (reshapeOperandType.getShape()[indim] ==
-        reshapeType.getShape()[outdim]) {
-      starts.push_back(op.getStartIndices()[outdim]);
-      limits.push_back(op.getLimitIndices()[outdim]);
-      strides.push_back(op.getStrides()[outdim]);
-      indim++;
-      outdim++;
-      continue;
-    }
-    if (reshapeOperandType.getShape()[indim] == 1) {
-      starts.push_back(0);
-      limits.push_back(1);
-      strides.push_back(1);
-      indim++;
-      continue;
-    }
-    if (reshapeType.getShape()[outdim] == 1) {
-      if (op.getStartIndices()[outdim] != 0)
-        return failure();
-      if (op.getLimitIndices()[outdim] != 1)
-        return failure();
-      if (op.getStrides()[outdim] != 1)
-        return failure();
-      outdim++;
-      continue;
-    }
+  auto sourceType =
+      reshape.getOperand().getType().dyn_cast<ShapedType>(); // Type of 'x'
+  auto targetType =
+      reshape.getType()
+          .dyn_cast<ShapedType>(); // Type of reshapeOp result (sliceOp input)
+
+  if (!sourceType || !targetType || !sourceType.hasRank() ||
+      !targetType.hasRank()) {
+    return failure(); // Need ranked shaped types
+  }
+  // Require static shapes for now due to reliance on getDimSize and checks
+  if (!sourceType.hasStaticShape() || !targetType.hasStaticShape()) {
     return failure();
   }
-  while (indim < reshapeOperandType.getShape().size()) {
-    if (reshapeOperandType.getShape()[indim] != 1)
-      return failure();
-    // It's a full slice of the original dimension.
-    starts.push_back(0);
-    limits.push_back(1);
-    strides.push_back(1);
-    indim++;
+
+  // 1. Understand the reshape operation's effect (source -> target)
+  std::optional<UnitDimMapping> mappingOpt =
+      computeUnitDimMapping(sourceType, targetType);
+  if (!mappingOpt) {
+    // Reshape wasn't just unit dim changes
+    return failure();
   }
-  while (outdim < reshapeType.getShape().size()) {
-    if (reshapeType.getShape()[outdim] != 1)
-      return failure();
-    if (op.getStartIndices()[outdim] != 0)
-      return failure();
-    if (op.getLimitIndices()[outdim] != 1)
-      return failure();
-    if (op.getStrides()[outdim] != 1)
-      return failure();
-    outdim++;
+  const UnitDimMapping &mapping = *mappingOpt;
+
+  // 2. Calculate slice parameters for the inner operand ('x')
+  for (int64_t sourceDim = 0; sourceDim < sourceType.getRank(); ++sourceDim) {
+    if (mapping.isSourceDimRemoved(sourceDim)) {
+      // This source dimension (unit size) was removed by reshape.
+      // The outer slice `op` didn't see it. The new slice on 'x'
+      // must select this entire dimension.
+      starts.push_back(0);
+      limits.push_back(1); // It must have size 1 if it was removed correctly
+      strides.push_back(1);
+    } else {
+      // This source dimension maps to a target dimension in reshapeOp's result.
+      std::optional<int64_t> targetDimOpt = mapping.getTargetDim(sourceDim);
+      assert(targetDimOpt.has_value() &&
+             "Mapped source dim must have a target dim");
+      int64_t targetDim = *targetDimOpt;
+
+      // Use the slice parameters from the *outer* slice `op` that correspond
+      // to this targetDim.
+      if (targetDim >= op.getStartIndices().size()) {
+        // Index out of bounds, likely inconsistent input
+        return failure();
+      }
+      starts.push_back(op.getStartIndices()[targetDim]);
+      limits.push_back(op.getLimitIndices()[targetDim]);
+      strides.push_back(op.getStrides()[targetDim]);
+    }
   }
+
+  // 3. Consistency Check: Verify outer slice handled inserted dims correctly.
+  // Dimensions inserted by reshapeOp must be sliced fully [0:1:1] by the outer
+  // slice `op`.
+  for (int64_t insertedTargetDim : mapping.insertedTargetDims) {
+    if (insertedTargetDim >= op.getStartIndices().size()) {
+      // Index out of bounds
+      return failure();
+    }
+    if (op.getStartIndices()[insertedTargetDim] != 0 ||
+        op.getLimitIndices()[insertedTargetDim] != 1 ||
+        op.getStrides()[insertedTargetDim] != 1) {
+      return failure("Slice does not cover the entire inserted unit dimension");
+    }
+  }
+
+  // Final check: ensure the number of parameters matches the source rank
+  if (starts.size() != (size_t)sourceType.getRank()) {
+    return failure("Generated slice parameters rank mismatch");
+  }
+
   return success();
 }
-
 struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
