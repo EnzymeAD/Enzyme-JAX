@@ -9244,8 +9244,7 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeIota>(
-          context);
+                   TransposeConcat, TransposeDUS, TransposeIota>(context);
     }
 
     if (all_finite)
