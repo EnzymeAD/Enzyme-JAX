@@ -972,6 +972,12 @@ def TransposeConcatPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeConcat"];
 }
 
+def TransposeIotaPatterns : EnzymeHLOPatternOp<
+  "transpose_iota"
+> {
+  let patterns = ["TransposeIota"];
+}
+
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.

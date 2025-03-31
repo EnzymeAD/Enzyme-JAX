@@ -6072,6 +6072,26 @@ struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    if (!llvm::hasSingleElement(iota->getUsers()))
+      return failure();
+
+    auto dim = iota.getIotaDimension();
+    auto dim2 = getInversePermutation(op.getPermutation())[dim];
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), dim2);
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
     : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -9184,7 +9204,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast>(
+                   TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast,
+                   TransposeIota>(
           context);
     }
 
