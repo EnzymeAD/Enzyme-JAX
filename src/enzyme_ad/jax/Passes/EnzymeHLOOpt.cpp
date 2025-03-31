@@ -6214,6 +6214,38 @@ struct TransposeReduceWindow final
   }
 };
 
+struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto elem = op.getOperand().getDefiningOp();
+    if (!elem)
+      return failure();
+
+    if (!llvm::hasSingleElement(elem->getUsers()))
+      return failure();
+
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+
+    SmallVector<Value> ops;
+    for (auto v : elem->getOperands()) {
+      ops.push_back(rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(),
+          RankedTensorType::get(
+              op.getType().getShape(),
+              cast<RankedTensorType>(v.getType()).getElementType()),
+          v));
+    }
+    auto newOp = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+        TypeRange(op.getType()), elem->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
     : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -9369,6 +9401,11 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
                    TransposeConcat, TransposeDUS, TransposeIota,
                    TransposeReduceWindow, TransposeReduce>(context);
+    }
+
+    if (passses & (2048 * 64)) {
+      // add reshape push up cases here
+      patterns.add<ReshapeElementwise>(context);
     }
 
     if (all_finite)

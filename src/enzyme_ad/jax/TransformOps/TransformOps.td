@@ -996,6 +996,12 @@ def BroadcastInDimIsReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastInDimIsReshape"];
 }
 
+def ReshapeElementwisePatterns : EnzymeHLOPatternOp<
+  "reshape_elementwise"
+> {
+  let patterns = ["ReshapeElementwise"];
+}
+
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
