@@ -6257,6 +6257,28 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     }
     const UnitDimMapping &mapping = *mappingOpt;
 
+    // Check if the reshape removes a unit dimension that was *created* by the
+    // slice.
+    // If so, the transformation is invalid.
+    for (int64_t removedSliceDim : mapping.removedSourceDims) {
+      // removedSliceDim is an index into sliceResultType
+      if (sliceResultType.getDimSize(removedSliceDim) != 1) {
+        // Should not happen if mapping is correct, but double-check
+        return failure();
+      }
+      int64_t originalDim =
+          findOriginalDimForSliceResultDim(sliceOp, removedSliceDim);
+      if (originalDim == -1) {
+        return failure(); // Cannot perform the check
+      }
+      if (originalXType.getDimSize(originalDim) > 1) {
+        // The slice created a unit dimension (from a non-unit original dim)
+        // and the reshape removed it. This case cannot be reordered correctly.
+        return rewriter.notifyMatchFailure(
+            reshapeOp, "Reshape removes slice-created unit dimension");
+      }
+    }
+
     // 2. Calculate the shape of the intermediate tensor (reshaped originalX)
     // Intermediate shape has same rank as final result shape.
     // Sizes come from originalX for mapped dims, are 1 for inserted dims.
