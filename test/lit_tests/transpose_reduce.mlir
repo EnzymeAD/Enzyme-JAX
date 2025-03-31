@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=512})" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=65536})" %s | FileCheck %s
 
 module {
   func.func private @transpose_reduce(%in: tensor<9x20x45xf64>) -> (tensor<45x20xf64>) {
