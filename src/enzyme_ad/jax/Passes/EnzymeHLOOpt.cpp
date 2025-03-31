@@ -6035,19 +6035,18 @@ struct TransposeElementwise final
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
-      ops.push_back(rewriter.create<stablehlo::TransposeOp>(op.getLoc(), v, op.getPermutation()));
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), v, op.getPermutation()));
     }
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(ops[0].getType()),
-        elem->getAttrs(), {}, {});
+        TypeRange(ops[0].getType()), elem->getAttrs(), {}, {});
     rewriter.replaceOp(op, newOp);
     return success();
   }
 };
 
-struct TransposeConcat final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
@@ -6061,14 +6060,14 @@ struct TransposeConcat final
 
     SmallVector<Value> ops;
     for (auto v : concat->getOperands()) {
-      ops.push_back(rewriter.create<stablehlo::TransposeOp>(op.getLoc(), v, op.getPermutation()));
+      ops.push_back(rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), v, op.getPermutation()));
     }
 
     auto dim = concat.getDimension();
     auto dim2 = getInversePermutation(op.getPermutation())[dim];
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op,
-        ops, dim2);
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, ops, dim2);
     return success();
   }
 };
@@ -9051,8 +9050,8 @@ struct EnzymeHLOOptPass
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify>(
+            context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -9184,8 +9183,9 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<
-        TransposeWhile, TransposeSlice, TransposeElementwise, TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast>(context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
+                   TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast>(
+          context);
     }
 
     if (all_finite)
