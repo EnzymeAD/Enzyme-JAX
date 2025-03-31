@@ -4775,6 +4775,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     block->walk([&](affine::AffineStoreOp store) {
       bool legal = store->getParentOp() == forOp;
       Value memref = store.getMemRef();
+      if (!definedOutside(memref, forOp))
+        legal = false;
       for (auto *user : memref.getUsers()) {
         if (user == store)
           continue;
@@ -4926,6 +4928,8 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
     block->walk([&](affine::AffineStoreOp store) {
       bool legal = store->getParentOp() == forOp;
       Value memref = store.getMemRef();
+      if (!definedOutside(memref, forOp))
+        legal = false;
       for (auto *user : memref.getUsers()) {
         if (user == store)
           continue;
