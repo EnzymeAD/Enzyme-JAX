@@ -1299,7 +1299,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
     auto val = mapping.lookup(yval);
     auto outputMap = maps[val];
 
-    auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation());
+    if (auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation())) {
 
     ssize_t idx_to_reduce = -1;
     for (auto &&[i, expr] :
@@ -1369,6 +1369,106 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
                          outputMap.getAffineMap().getNumSymbols(), exprs,
                          res.getContext()),
           vals);
+    }
+    } else if (auto pforOp = dyn_cast<affine::AffineParallelOp>(parallelOp.getOperation())) {
+      
+	SmallVector<int64_t> idxs_to_reduce;
+	    for (auto &&[i, expr] :
+		 llvm::enumerate(outputMap.getAffineMap().getResults())) {
+	      auto dim = cast<AffineDimExpr>(expr);
+	      auto operand = dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
+	      if (!operand) continue;
+	      if (operand.getOwner()->getParentOp() == pforOp)
+		   idxs_to_reduce.push_back(i);
+	    }
+	
+	 SmallVector<Value> dsts;
+	SmallVector<affine::AffineValueMap> submaps;
+	for (auto idx : idxs_to_reduce) {
+	  auto dst = mapping.lookup(pforOp.getIVs()[idx]);
+	  dsts.push_back(dst);
+	  submaps.push_back(maps.lookup(dst));
+	}
+        auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(),
+                                         submaps, builder, *newPc);
+	
+	    idxs_to_reduce.clear();
+	    SmallVector<int64_t> redshape;
+	    SmallVector<AffineExpr> newExprs;
+	    for (auto &&[i, expr] :
+		 llvm::enumerate(outputMap.getAffineMap().getResults())) {
+	      auto dim = cast<AffineDimExpr>(expr);
+	      auto operand = dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
+	      if (!operand) continue;
+	      if (operand.getOwner()->getParentOp() == pforOp)
+		   idxs_to_reduce.push_back(i);
+	      else {
+		   redshape.push_back(cast<RankedTensorType>(val.getType()).getShape()[i]);
+		   newExprs.push_back(expr);
+	      }
+	    }
+	
+       ArrayRef<Attribute> reductions = pforOp.getReductions().getValue();
+    auto intAttr = llvm::dyn_cast<IntegerAttr>(reductions[res.getResultNumber()]);
+    if (!intAttr || !arith::symbolizeAtomicRMWKind(intAttr.getInt())) return failure();
+    auto kind = arith::symbolizeAtomicRMWKind(intAttr.getInt()).value();
+
+	    switch (kind) {
+	  case arith::AtomicRMWKind::addf:
+	  case arith::AtomicRMWKind::addi:
+		  break;
+	  default:
+		  return failure();
+	    }
+
+
+	Value inputs[] = { val };
+	Type types[] = { RankedTensorType::get(redshape, res.getType()) };
+
+      auto unrankedTensorType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(val.getType())
+                  .getElementType());
+      Value inits[1] = {builder.create<stablehlo::ConstantOp>(
+          res.getLoc(), builder.getZeroAttr(unrankedTensorType))};
+
+
+	auto red = builder.create<stablehlo::ReduceOp>(val.getLoc(), types, inputs, inits, 
+          builder.getDenseI64ArrayAttr(idxs_to_reduce)
+	  );
+      
+	auto block = new Block();
+      red.getBody().push_back(block);
+
+      auto a = block->addArgument(unrankedTensorType, res.getLoc());
+      auto b = block->addArgument(unrankedTensorType, res.getLoc());
+
+      {
+        OpBuilder builder(block, block->end());
+        auto addOp = builder.create<stablehlo::AddOp>(res.getLoc(), a, b);
+        builder.create<stablehlo::ReturnOp>(res.getLoc(),
+                                            addOp.getResult());
+	}
+      
+      SmallVector<Value> vals;
+      for (auto v : outputMap.getOperands()) {
+	auto operand = dyn_cast<BlockArgument>(v);
+        if (operand && operand.getOwner()->getParentOp() == pforOp) {
+          v = builder.create<arith::ConstantIndexOp>(res.getLoc(), 0);
+        }
+        vals.push_back(v);
+      }
+      affine::AffineValueMap avm(
+          AffineMap::get(outputMap.getAffineMap().getNumDims(),
+                         outputMap.getAffineMap().getNumSymbols(), newExprs,
+                         res.getContext()),
+          vals);
+
+      avm.composeSimplifyAndCanonicalize();
+      mapping.map(res, red->getResult(0));
+      maps[red->getResult(0)] = avm;
+
+    } else {
+     llvm_unreachable("unknown input operand");
     }
   }
 
