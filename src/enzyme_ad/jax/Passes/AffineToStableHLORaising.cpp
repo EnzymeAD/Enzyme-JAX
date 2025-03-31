@@ -251,6 +251,7 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
 struct ParallelContext {
   struct Options {
     bool enableLockstepFor = true;
+    bool dump_failed_lockstep = false;
     bool preferWhileRaising = true;
   } options;
 
@@ -1436,6 +1437,9 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
     return tryRaisingParallelOpToStableHLO(forOp, mapping, builder, maps, pc);
   }
   LLVM_DEBUG(llvm::dbgs() << "Illegal\n");
+  if (pc.options.dump_failed_lockstep) {
+    llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
+  }
   return failure();
 }
 
@@ -2224,7 +2228,7 @@ struct AffineToStableHLORaisingPass
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
   void runOnOperation() override {
-    ParallelContext::Options options{enable_lockstep_for, prefer_while_raising};
+    ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep, prefer_while_raising};
     std::vector<func::FuncOp> funcs;
 
     auto op = getOperation();
