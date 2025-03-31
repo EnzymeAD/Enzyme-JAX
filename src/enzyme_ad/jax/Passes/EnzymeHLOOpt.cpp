@@ -344,8 +344,6 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
     }
 
-    // <10xf32> -> <1x10xf32> onesInserted = [0], onesRemoved = []
-
     auto applyShape = [&](Value val) -> RankedTensorType {
       auto Ty = val.getType().cast<RankedTensorType>();
       auto shape = Ty.getShape();
