@@ -8993,6 +8993,46 @@ struct TransposeReshapeToBroadcast final
   }
 };
 
+struct BroadcastInDimIsReshape final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.getOperand();
+    auto outputType = op.getType();
+    auto inputType = input.getType();
+    auto broadcastDims = op.getBroadcastDimensions();
+
+    SmallVector<int64_t> nonSingletonDims;
+
+    for (size_t i = 0; i < broadcastDims.size(); ++i) {
+      int64_t dimIdx = broadcastDims[i];
+      if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
+        nonSingletonDims.push_back(dimIdx);
+      }
+    }
+
+    for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
+      if (nonSingletonDims[i - 1] > nonSingletonDims[i])
+        return failure();
+    }
+
+    for (size_t i = 0; i < outputType.getRank(); ++i) {
+      int64_t dimIdx = outputType.getDimSize(i);
+      if (dimIdx == 1)
+        continue;
+      auto it = llvm::find(broadcastDims, dimIdx);
+      if (it == broadcastDims.end()) {
+        return failure();
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outputType, input);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -9003,7 +9043,7 @@ namespace enzyme {
 }; // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
-// clang-format on
+   // clang-format on
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
@@ -9070,8 +9110,8 @@ struct EnzymeHLOOptPass
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify>(
-            context, PatternBenefit(65000));
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
+             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -9204,8 +9244,7 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeReshapeToBroadcast,
-                   TransposeIota>(
+                   TransposeConcat, TransposeDUS, TransposeIota>(
           context);
     }
 
@@ -9248,6 +9287,7 @@ struct EnzymeHLOOptPass
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,
         TransposeIsReshape,
+        BroadcastInDimIsReshape,
         WhileDeadResults,
         WhileSimplify,
         ZeroExtentTensorCanon,
