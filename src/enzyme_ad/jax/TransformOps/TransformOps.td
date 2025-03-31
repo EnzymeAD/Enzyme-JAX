@@ -990,6 +990,13 @@ def TransposeReducePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduce"];
 }
 
+def BroadcastInDimIsReshapePatterns : EnzymeHLOPatternOp<
+  "broadcastindim_is_reshape"
+> {
+  let patterns = ["BroadcastInDimIsReshape"];
+}
+
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
