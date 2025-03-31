@@ -5968,63 +5968,6 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-// Helper function to find the index of the *single* unit dimension added by a
-// reshape. Returns -1 if the reshape doesn't add exactly one unit dimension or
-// modifies other dimensions.
-int64_t findAddedUnitDim(RankedTensorType inputType,
-                         RankedTensorType outputType) {
-  if (!inputType.hasStaticShape() || !outputType.hasStaticShape())
-    return -1;
-  if (outputType.getRank() != inputType.getRank() + 1)
-    return -1;
-
-  int64_t inputDimIndex = 0;
-  int64_t addedUnitDim = -1;
-
-  for (int64_t outputDimIndex = 0; outputDimIndex < outputType.getRank();
-       ++outputDimIndex) {
-    int64_t outputDimSize = outputType.getShape()[outputDimIndex];
-
-    if (inputDimIndex < inputType.getRank() &&
-        outputDimSize == inputType.getShape()[inputDimIndex]) {
-      // This dimension matches an existing dimension from the input.
-      inputDimIndex++;
-    } else if (outputDimSize == 1) {
-      // This is a unit dimension. Is it the *added* one?
-      // We check if the corresponding input dimension (if exists) is *not* 1.
-      // Or if we are already past the end of input dimensions.
-      bool correspondsToNonUnitInput =
-          (inputDimIndex < inputType.getRank() &&
-           inputType.getShape()[inputDimIndex] != 1);
-      bool pastInputEnd = (inputDimIndex >= inputType.getRank());
-
-      if (correspondsToNonUnitInput || pastInputEnd) {
-        if (addedUnitDim != -1) {
-          // Found more than one potential added unit dimension.
-          return -1;
-        }
-        addedUnitDim = outputDimIndex;
-        // Don't increment inputDimIndex here, as this output dim doesn't
-        // consume an input dim.
-      } else {
-        // This unit output dim corresponds to a unit input dim.
-        inputDimIndex++;
-      }
-    } else {
-      // Dimension mismatch, not just adding a unit dim.
-      return -1;
-    }
-  }
-
-  // Ensure we consumed all input dimensions and found exactly one added unit
-  // dim.
-  if (inputDimIndex != inputType.getRank() || addedUnitDim == -1) {
-    return -1;
-  }
-
-  return addedUnitDim;
-}
-
 // Structure to hold the mapping result
 struct UnitDimMapping {
     // target_idx -> source_idx for dimensions that correspond
