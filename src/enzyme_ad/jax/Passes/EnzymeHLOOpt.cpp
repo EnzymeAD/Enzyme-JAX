@@ -7801,32 +7801,11 @@ struct WhileTransposePattern : public OpRewritePattern<stablehlo::WhileOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
       for (auto &op : oldCondBlock.getOperations()) {
-        //if (isa<stablehlo::ReturnOp>(op))
-        //  continue;
+        // if (isa<stablehlo::ReturnOp>(op))
+        //   continue;
         rewriter.clone(op, condMapper);
       }
     }
-
-    //// Create condition terminator
-    //{
-    //  auto oldCondReturn =
-    //      cast<stablehlo::ReturnOp>(oldCondBlock.getTerminator());
-    //  SmallVector<Value> newCondValues;
-
-    //  for (auto oldRetVal : oldCondReturn.getOperands()) {
-    //    Value newRetVal = condMapper.lookupOrNull(oldRetVal);
-    //    if (!newRetVal)
-    //      newRetVal = oldRetVal;
-    //    newCondValues.push_back(newRetVal);
-    //  }
-    //  {
-    //    // Save the current insertion point
-    //    mlir::OpBuilder::InsertionGuard guard(rewriter);
-    //    rewriter.setInsertionPointToEnd(&newCondBlock);
-    //    rewriter.create<stablehlo::ReturnOp>(oldCondReturn.getLoc(),
-    //                                         newCondValues);
-    //  }
-    //}
 
     // Step 4 : Insert the transpose op at the beginning of the body of new
     // WhileOp
