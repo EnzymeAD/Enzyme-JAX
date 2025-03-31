@@ -8846,6 +8846,106 @@ struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
   }
 };
 
+bool isReshapeOnlyAddingNewDims(Value input, Value output) {
+  auto inputType = input.getType().dyn_cast<RankedTensorType>();
+  auto outputType = output.getType().dyn_cast<RankedTensorType>();
+
+  if (!inputType || !outputType)
+    return false;
+
+  auto inShape = inputType.getShape();
+  auto outShape = outputType.getShape();
+
+  // llvm::errs() << "inShape: " << inShape << "\n";
+  // llvm::errs() << "outShape: " << outShape << "\n";
+
+  int inRank = inShape.size();
+  int outRank = outShape.size();
+
+  if (outRank < inRank)
+    return false; // Reshape cannot remove dims
+
+  int i = 0, j = 0;
+  while (i < inRank && j < outRank) {
+    if (inShape[i] == outShape[j]) {
+      i++; // Matching dim → proceed
+      j++;
+    } else if (outShape[j] == 1) {
+      j++; // Skip newly added 1-sized dims
+    } else {
+      return false; // Shape mismatch → invalid
+    }
+  }
+
+  // Ensure all input dims were matched
+  if (i != inRank)
+    return false;
+
+  // Remaining output dims must be 1 (if any)
+  while (j < outRank) {
+    if (outShape[j] != 1)
+      return false;
+    j++;
+  }
+
+  return true;
+}
+
+struct TransposeReshapeToBroadcast final
+    : OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    if (!isReshapeOnlyAddingNewDims(reshapeOp.getOperand(),
+                                    reshapeOp.getResult()))
+      return failure();
+
+    // Get the original input tensor (before reshape).
+    auto originalInput = reshapeOp.getOperand();
+    auto originalType =
+        originalInput.getType().dyn_cast_or_null<RankedTensorType>();
+    if (!originalType)
+      return failure();
+
+    // Get the output type of the transpose operation.
+    auto outputType =
+        op.getResult().getType().dyn_cast_or_null<RankedTensorType>();
+    if (!outputType)
+      return failure();
+
+    // Get the permutation used in the transpose operation.
+    auto permutation = op.getPermutation();
+    if (permutation.size() != outputType.getRank())
+      return failure();
+
+    // Map the original input dimensions to the output dimensions via reshape
+    // and transpose.
+    SmallVector<int64_t> broadcastDimensions;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      int64_t permutedDim = permutation[i];
+      if (permutedDim >= originalType.getRank()) {
+        // If the permuted dimension corresponds to a new dimension introduced
+        // by reshape, skip it.
+        continue;
+      }
+      broadcastDimensions.push_back(permutedDim);
+    }
+
+    // Create a single broadcast_in_dim operation to replace the reshape +
+    // transpose sequence.
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, outputType, originalInput,
+        rewriter.getDenseI64ArrayAttr(broadcastDimensions));
+
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -8923,8 +9023,8 @@ struct EnzymeHLOOptPass
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify>(
-            context, PatternBenefit(65000));
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
+             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -8989,9 +9089,9 @@ struct EnzymeHLOOptPass
       patterns.add<FullReduceReshapeOrTranspose>(context);
 
     if (passses & 1)
-      patterns.add<
-          // SliceTranspose,
-          TransposeSlice, SliceReshapeTranspose, SliceBroadcast>(context);
+      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast>(
+          context);
+
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4)
@@ -9053,6 +9153,10 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 16)) {
       patterns.add<PadDotGeneral>(true, context);
       patterns.add<DotReshapePad>(context);
+    }
+
+    if (passses & (2048 * 32)) {
+      patterns.add<TransposeSlice>(context);
     }
 
     if (all_finite)
