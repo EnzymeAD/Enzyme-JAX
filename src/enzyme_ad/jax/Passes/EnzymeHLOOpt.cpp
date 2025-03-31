@@ -5968,6 +5968,158 @@ struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
+// Helper function to find the index of the *single* unit dimension added by a
+// reshape. Returns -1 if the reshape doesn't add exactly one unit dimension or
+// modifies other dimensions.
+int64_t findAddedUnitDim(RankedTensorType inputType,
+                         RankedTensorType outputType) {
+  if (!inputType.hasStaticShape() || !outputType.hasStaticShape())
+    return -1;
+  if (outputType.getRank() != inputType.getRank() + 1)
+    return -1;
+
+  int64_t inputDimIndex = 0;
+  int64_t addedUnitDim = -1;
+
+  for (int64_t outputDimIndex = 0; outputDimIndex < outputType.getRank();
+       ++outputDimIndex) {
+    int64_t outputDimSize = outputType.getShape()[outputDimIndex];
+
+    if (inputDimIndex < inputType.getRank() &&
+        outputDimSize == inputType.getShape()[inputDimIndex]) {
+      // This dimension matches an existing dimension from the input.
+      inputDimIndex++;
+    } else if (outputDimSize == 1) {
+      // This is a unit dimension. Is it the *added* one?
+      // We check if the corresponding input dimension (if exists) is *not* 1.
+      // Or if we are already past the end of input dimensions.
+      bool correspondsToNonUnitInput =
+          (inputDimIndex < inputType.getRank() &&
+           inputType.getShape()[inputDimIndex] != 1);
+      bool pastInputEnd = (inputDimIndex >= inputType.getRank());
+
+      if (correspondsToNonUnitInput || pastInputEnd) {
+        if (addedUnitDim != -1) {
+          // Found more than one potential added unit dimension.
+          return -1;
+        }
+        addedUnitDim = outputDimIndex;
+        // Don't increment inputDimIndex here, as this output dim doesn't
+        // consume an input dim.
+      } else {
+        // This unit output dim corresponds to a unit input dim.
+        inputDimIndex++;
+      }
+    } else {
+      // Dimension mismatch, not just adding a unit dim.
+      return -1;
+    }
+  }
+
+  // Ensure we consumed all input dimensions and found exactly one added unit
+  // dim.
+  if (inputDimIndex != inputType.getRank() || addedUnitDim == -1) {
+    return -1;
+  }
+
+  return addedUnitDim;
+}
+
+// reshape(slice(x)) -> slice(reshape(x))
+// Only applies if the reshape adds exactly one unit dimension.
+struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    auto sliceOp =
+        reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::SliceOp>();
+    if (!sliceOp)
+      return failure();
+
+    // Apply only if slice has one user for safety.
+    if (!llvm::hasSingleElement(sliceOp->getUsers()))
+      return failure();
+
+    auto sliceType = sliceOp.getType().dyn_cast<RankedTensorType>();
+    auto reshapeType = reshapeOp.getType().dyn_cast<RankedTensorType>();
+
+    if (!sliceType || !reshapeType || !sliceType.hasStaticShape() ||
+        !reshapeType.hasStaticShape()) {
+      return failure();
+    }
+
+    int64_t addedUnitDimIdx = findAddedUnitDim(sliceType, reshapeType);
+    if (addedUnitDimIdx == -1) {
+      return failure(); // Reshape doesn't just add a single unit dimension.
+    }
+
+    // 1. Reshape the original operand 'x' of the slice.
+    Value originalX = sliceOp.getOperand();
+    auto originalXType = originalX.getType().cast<RankedTensorType>();
+    if (!originalXType.hasStaticShape()) {
+        return failure(); // Need static shape for original operand too.
+    }
+    // Calculate the correct intermediate shape by adding the unit dimension
+    // to the *original* operand's shape (`x`'s shape).
+    SmallVector<int64_t> intermediateShape(originalXType.getShape().begin(),
+                                             originalXType.getShape().end());
+    // Ensure index is valid before insertion
+    if (addedUnitDimIdx < 0 || addedUnitDimIdx > intermediateShape.size()) {
+        // This case should ideally be caught by findAddedUnitDim,
+        // but add a check here for robustness.
+        return failure();
+    }
+    intermediateShape.insert(intermediateShape.begin() + addedUnitDimIdx, 1);
+
+    // The intermediate type after reshaping originalX
+    auto intermediateReshapeType = RankedTensorType::get(
+        intermediateShape, // Use the correctly calculated shape
+        originalXType.getElementType());
+
+    auto newReshape = rewriter.create<stablehlo::ReshapeOp>(
+        reshapeOp.getLoc(), intermediateReshapeType, originalX);
+
+    // 2. Calculate the new slice parameters.
+    SmallVector<int64_t> newStarts(reshapeType.getRank());
+    SmallVector<int64_t> newLimits(reshapeType.getRank());
+    SmallVector<int64_t> newStrides(reshapeType.getRank());
+
+    ArrayRef<int64_t> oldStarts = sliceOp.getStartIndices();
+    ArrayRef<int64_t> oldLimits = sliceOp.getLimitIndices();
+    ArrayRef<int64_t> oldStrides = sliceOp.getStrides();
+
+    int64_t oldDimIdx = 0;
+    for (int64_t newDimIdx = 0; newDimIdx < reshapeType.getRank(); ++newDimIdx) {
+      if (newDimIdx == addedUnitDimIdx) {
+        // Slice the entire added unit dimension.
+        newStarts[newDimIdx] = 0;
+        newLimits[newDimIdx] = 1;
+        newStrides[newDimIdx] = 1;
+      } else {
+        // Copy parameters from the corresponding original slice dimension.
+        assert(oldDimIdx < sliceType.getRank() && "Mismatch in dimensions");
+        newStarts[newDimIdx] = oldStarts[oldDimIdx];
+        newLimits[newDimIdx] = oldLimits[oldDimIdx];
+        newStrides[newDimIdx] = oldStrides[oldDimIdx];
+        oldDimIdx++;
+      }
+    }
+    assert(oldDimIdx == sliceType.getRank() && "Dimension mapping error");
+
+
+    // 3. Create the new slice operation.
+    auto newslice = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+        reshapeOp, // Replace the original reshape op
+        reshapeOp.getType(), // The final result type must match
+        newReshape.getResult(), rewriter.getDenseI64ArrayAttr(newStarts),
+        rewriter.getDenseI64ArrayAttr(newLimits),
+        rewriter.getDenseI64ArrayAttr(newStrides));
+
+    return success();
+  }
+};
+
 LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
                                  SmallVectorImpl<int64_t> &starts,
                                  SmallVectorImpl<int64_t> &limits,
@@ -9530,6 +9682,7 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
       patterns.add<ReshapeElementwise>(context);
+      patterns.add<ReshapeSlice>(context);
     }
 
     if (all_finite)

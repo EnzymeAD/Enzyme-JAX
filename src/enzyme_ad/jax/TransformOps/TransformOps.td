@@ -1008,6 +1008,12 @@ def ReshapeElementwisePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeElementwise"];
 }
 
+def ReshapeSlicePatterns : EnzymeHLOPatternOp<
+  "reshape_slice"
+> {
+  let patterns = ["ReshapeSlice"];
+}
+
 
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
