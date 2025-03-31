@@ -1,0 +1,39 @@
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reshape_slice" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+
+module {
+  // Test case where reshape adds a unit dimension at the beginning.
+  // CHECK-LABEL: func.func @reshape_slice_add_unit_dim_front(%arg0: tensor<300x2100xf64>) -> tensor<1x256x2048xf64> {
+  // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<300x2100xf64>) -> tensor<1x300x2100xf64>
+  // CHECK-NEXT:    %1 = stablehlo.slice %0 [0:1, 6:262, 5:2053] : (tensor<1x300x2100xf64>) -> tensor<1x256x2048xf64>
+  // CHECK-NEXT:    return %1 : tensor<1x256x2048xf64>
+  // CHECK-NEXT:  }
+  func.func @reshape_slice_add_unit_dim_front(%arg0: tensor<300x2100xf64>) -> tensor<1x256x2048xf64> {
+    %0 = stablehlo.slice %arg0 [6:262, 5:2053] : (tensor<300x2100xf64>) -> tensor<256x2048xf64>
+    %1 = stablehlo.reshape %0 : (tensor<256x2048xf64>) -> tensor<1x256x2048xf64>
+    return %1 : tensor<1x256x2048xf64>
+  }
+
+  // Test case where reshape adds a unit dimension in the middle.
+  // CHECK-LABEL: func.func @reshape_slice_add_unit_dim_middle(%arg0: tensor<300x2100xf64>) -> tensor<256x1x2048xf64> {
+  // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<300x2100xf64>) -> tensor<300x1x2100xf64>
+  // CHECK-NEXT:    %1 = stablehlo.slice %0 [6:262, 0:1, 5:2053] : (tensor<300x1x2100xf64>) -> tensor<256x1x2048xf64>
+  // CHECK-NEXT:    return %1 : tensor<256x1x2048xf64>
+  // CHECK-NEXT:  }
+  func.func @reshape_slice_add_unit_dim_middle(%arg0: tensor<300x2100xf64>) -> tensor<256x1x2048xf64> {
+    %0 = stablehlo.slice %arg0 [6:262, 5:2053] : (tensor<300x2100xf64>) -> tensor<256x2048xf64>
+    %1 = stablehlo.reshape %0 : (tensor<256x2048xf64>) -> tensor<256x1x2048xf64>
+    return %1 : tensor<256x1x2048xf64>
+  }
+
+  // Test case where reshape adds a unit dimension at the end.
+  // CHECK-LABEL: func.func @reshape_slice_add_unit_dim_end(%arg0: tensor<300x2100xf64>) -> tensor<256x2048x1xf64> {
+  // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<300x2100xf64>) -> tensor<300x2100x1xf64>
+  // CHECK-NEXT:    %1 = stablehlo.slice %0 [6:262, 5:2053, 0:1] : (tensor<300x2100x1xf64>) -> tensor<256x2048x1xf64>
+  // CHECK-NEXT:    return %1 : tensor<256x2048x1xf64>
+  // CHECK-NEXT:  }
+  func.func @reshape_slice_add_unit_dim_end(%arg0: tensor<300x2100xf64>) -> tensor<256x2048x1xf64> {
+    %0 = stablehlo.slice %arg0 [6:262, 5:2053] : (tensor<300x2100xf64>) -> tensor<256x2048xf64>
+    %1 = stablehlo.reshape %0 : (tensor<256x2048xf64>) -> tensor<256x2048x1xf64>
+    return %1 : tensor<256x2048x1xf64>
+  }
+}
