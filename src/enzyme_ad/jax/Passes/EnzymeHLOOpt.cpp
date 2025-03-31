@@ -291,6 +291,42 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Transpose is a DynamicUpdateSlice
+    auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus)
+      return failure();
+
+    SmallVector<int64_t> permutation;
+    for (auto perm : op.getPermutation()) {
+      permutation.push_back(perm);
+    }
+
+    auto loc = op.getLoc();
+    auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
+        loc, dus.getOperand(), op.getPermutation());
+    auto transposedUpdate = rewriter.create<stablehlo::TransposeOp>(
+        loc, dus.getUpdate(), op.getPermutation());
+
+    SmallVector<Value> permutedStartIndices;
+    permutedStartIndices.resize(dus.getStartIndices().size());
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      permutedStartIndices[permutation[i]] = dus.getStartIndices()[i];
+    }
+
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc, op.getType(), transposedOperand, transposedUpdate,
+        permutedStartIndices);
+
+    rewriter.replaceOp(op, newDus);
+    return success();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -8555,6 +8591,194 @@ struct TransposeReduceSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+// (mul (sign x) (abs x)) -> x
+// (mul (abs x) (sign x)) -> x
+struct SignAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getOperand(0);
+    auto rhs = op.getOperand(1);
+
+    auto lhsSignOp = lhs.getDefiningOp<stablehlo::SignOp>();
+    if (lhsSignOp) {
+      auto rhsAbsOp = rhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!rhsAbsOp)
+        return failure();
+
+      if (lhsSignOp.getOperand() != rhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, lhsSignOp.getOperand());
+      return success();
+    }
+
+    auto rhsSignOp = rhs.getDefiningOp<stablehlo::SignOp>();
+    if (rhsSignOp) {
+      auto lhsAbsOp = lhs.getDefiningOp<stablehlo::AbsOp>();
+      if (!lhsAbsOp)
+        return failure();
+
+      if (rhsSignOp.getOperand() != lhsAbsOp.getOperand())
+        return failure();
+
+      rewriter.replaceOp(op, rhsSignOp.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+bool opResultIsAlwaysNonNegative(Operation *op);
+
+template <typename T>
+bool opResultNonNegativeIfAllElementsNonNegative(Operation *op) {
+  if (!op)
+    return false;
+
+  auto specificOp = dyn_cast<T>(op);
+  if (!specificOp)
+    return false;
+
+  auto lhsOp = specificOp.getLhs().getDefiningOp();
+  auto rhsOp = specificOp.getRhs().getDefiningOp();
+
+  if (lhsOp && rhsOp) {
+    bool lhsNonNeg = opResultIsAlwaysNonNegative(lhsOp);
+    bool rhsNonNeg = opResultIsAlwaysNonNegative(rhsOp);
+
+    if (lhsNonNeg && rhsNonNeg)
+      return true;
+  }
+
+  return false;
+}
+
+bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
+  Attribute attr = constOp.getValue();
+
+  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    // For floating point values
+    if (denseAttr.getElementType().isF32() ||
+        denseAttr.getElementType().isF64()) {
+      for (auto element : denseAttr.getValues<APFloat>()) {
+        if (element.isNegative())
+          return false;
+      }
+      return true;
+    }
+
+    // For integer values
+    if (denseAttr.getElementType().isIntOrIndex()) {
+      for (auto element : denseAttr.getValues<APInt>()) {
+        if (element.isNegative())
+          return false;
+      }
+      return true;
+    }
+  }
+
+  // Default: can't guarantee all elements are non-negative
+  return false;
+}
+
+bool opResultIsAlwaysNonNegative(Operation *op) {
+  if (!op)
+    return false;
+
+  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
+          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
+    return true;
+
+  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    // Constant is non-negative if all its elements are non-negative
+    return isConstantNonNegative(constOp);
+  }
+
+  // Any non-negative operation that produces a non-negative result
+  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
+    for (auto operand : maxOp.getOperands()) {
+      if (auto operandOp = operand.getDefiningOp()) {
+        if (opResultIsAlwaysNonNegative(operandOp))
+          return true;
+      }
+    }
+  }
+
+  // All non-negative operations that produce a non-negative result
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
+    if (opResultNonNegativeIfAllElementsNonNegative<stablehlo::MinOp>(op) ||
+        opResultNonNegativeIfAllElementsNonNegative<stablehlo::AddOp>(op) ||
+        opResultNonNegativeIfAllElementsNonNegative<stablehlo::MulOp>(op))
+      return true;
+  }
+
+  // (mul a a) is always non-negative
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsOp = mulOp.getLhs().getDefiningOp();
+    auto rhsOp = mulOp.getRhs().getDefiningOp();
+
+    if (lhsOp == rhsOp)
+      return true;
+  }
+
+  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+    // Clamp is non-negative if the min operand is non-negative
+
+    if (auto minOp = clampOp.getMin().getDefiningOp()) {
+      if (opResultIsAlwaysNonNegative(minOp))
+        return true;
+    }
+  }
+
+  // TODO: For NegOp we need a check for if the operand is guaranteed to be
+  // non-positive
+
+  // TODO: Mul of 2 negative values is non-negative
+
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    // Select produces non-negative results if both branches produce
+    // non-negative results
+    auto trueOp = selectOp.getOnTrue().getDefiningOp();
+    auto falseOp = selectOp.getOnFalse().getDefiningOp();
+
+    if (trueOp && falseOp) {
+      return opResultIsAlwaysNonNegative(trueOp) &&
+             opResultIsAlwaysNonNegative(falseOp);
+    }
+  }
+
+  // These operations preserve values, so result is non-negative if operand is
+  // non-negative
+  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
+    if (auto defOp = op->getOperand(0).getDefiningOp())
+      return opResultIsAlwaysNonNegative(defOp);
+  }
+
+  // Default: can't guarantee non-negative result
+  return false;
+}
+
+struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
+  using OpRewritePattern<stablehlo::AbsOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto operand = op.getOperand();
+    if (isa<ComplexType>(operand.getType().getElementType()))
+      return failure();
+
+    if (opResultIsAlwaysNonNegative(operand.getDefiningOp())) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -8622,17 +8846,18 @@ struct EnzymeHLOOptPass
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
 
-    patterns.add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify,
-                 MinSimplify, OrSimplify, NegateSimplify, MulSimplify,
-                 DivSimplify, RemSimplify, PowSimplify, SqrtSimplify,
-                 CosSimplify, SinSimplify, NoopSlice, NoopReverse, SliceSlice,
-                 PadSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-                 TanhSimplify, ExpSimplify, SliceSimplify, ConvertSimplify,
-                 TransposeSimplify, DotGeneralSimplify, DynamicSliceToStatic,
-                 DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
-                 GatherSimplify, ReshapeEmptyBroadcast, BroadcastReshape,
-                 ConstPropThroughBarrier, ReplaceNegAddWithSubtract>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
+             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
+             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
+             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
+             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
+             BroadcastReshape, ConstPropThroughBarrier,
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify>(
+            context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -8691,7 +8916,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, TransposeDUS>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);

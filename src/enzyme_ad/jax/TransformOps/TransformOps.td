@@ -177,6 +177,14 @@ def ApplyGammaConstProp : EnzymeHLOPatternOp<
     "gamma_const_prop">{
   let patterns = ["GammaConstProp"];
 }
+def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
+    "sign_abs_simplify"> {
+  let patterns = ["SignAbsSimplify"];
+}
+def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "abs_positive_simplify"> {
+  let patterns = ["AbsPositiveSimplify"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
@@ -926,6 +934,12 @@ def DUSDUSConcatPatterns : EnzymeHLOPatternOp<
   "dus_dus_concat"
 > {
   let patterns = ["DUSDUSConcat"];
+}
+
+def TransposeDUSPatterns : EnzymeHLOPatternOp<
+  "transpose_dus"
+> {
+  let patterns = ["TransposeDUS"];
 }
 
 // TODO: better naming for parameters requires a static interface for
