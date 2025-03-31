@@ -6025,100 +6025,367 @@ int64_t findAddedUnitDim(RankedTensorType inputType,
   return addedUnitDim;
 }
 
+// Structure to hold the mapping result
+struct UnitDimMapping {
+    // target_idx -> source_idx for dimensions that correspond
+    SmallVector<std::pair<int64_t, int64_t>> mappedDims;
+    // Indices of unit dimensions present only in the target shape
+    SmallVector<int64_t> insertedTargetDims;
+    // Indices of unit dimensions present only in the source shape
+    SmallVector<int64_t> removedSourceDims;
+    // Original source and target types used for mapping
+    ShapedType sourceType;
+    ShapedType targetType;
+
+
+  // Helper to get the source dimension index corresponding to a target index
+  std::optional<int64_t> getSourceDim(int64_t targetDim) const {
+      for (const auto& pair : mappedDims) {
+          if (pair.first == targetDim) {
+              return pair.second;
+          }
+      }
+      return std::nullopt;
+  }
+
+  // Helper to get the target dimension index corresponding to a source index
+  std::optional<int64_t> getTargetDim(int64_t sourceDim) const {
+      for (const auto& pair : mappedDims) {
+          if (pair.second == sourceDim) {
+              return pair.first;
+          }
+      }
+      return std::nullopt;
+  }
+
+  // Helper to check if a target dimension was inserted
+  bool isTargetDimInserted(int64_t targetDim) const {
+      return llvm::is_contained(insertedTargetDims, targetDim);
+  }
+
+  // Helper to check if a source dimension was removed
+  bool isSourceDimRemoved(int64_t sourceDim) const {
+       return llvm::is_contained(removedSourceDims, sourceDim);
+  }
+
+  // Get the shape of the intermediate type when transforming from source to target
+  // (Source shape with inserted dimensions added)
+  SmallVector<int64_t> getIntermediateShapeToTarget() const {
+      SmallVector<int64_t> shape;
+      int64_t sourceIdx = 0;
+      int64_t targetIdx = 0;
+      while (targetIdx < targetType.getRank()) {
+           if (isTargetDimInserted(targetIdx)) {
+               shape.push_back(1);
+               targetIdx++;
+           } else {
+               // Must correspond to a source dim (either mapped or removed)
+               assert(sourceIdx < sourceType.getRank() && "Source index out of bounds");
+               if (!isSourceDimRemoved(sourceIdx)) {
+                  shape.push_back(sourceType.getDimSize(sourceIdx));
+               }
+               // Always advance sourceIdx if not inserted in target
+               sourceIdx++;
+               targetIdx++; // Mapped dim, advance target as well
+           }
+      }
+       // Append any remaining removed source dims (these won't appear in target)
+       // This shape represents sourceType + insertedTargetDims conceptually
+       assert(sourceIdx == sourceType.getRank() && "Did not consume all source dims");
+      return shape;
+  }
+
+   // Get the shape of the intermediate type when transforming from target to source
+   // (Target shape with removed dimensions added back - conceptually)
+   // This is equivalent to the source type's shape.
+   SmallVector<int64_t> getIntermediateShapeToSource() const {
+       return SmallVector<int64_t>(sourceType.getShape().begin(), sourceType.getShape().end());
+       // Implementation detail: Since we are going *from* target *to* source,
+       // the intermediate shape we need to slice *is* the source shape.
+   }
+
+    // Helper to get the shape corresponding to the source shape
+    // with the target's inserted unit dimensions added conceptually.
+    // Example: source=TxU, target=TxVx1 -> result=TxUx1
+    // Example: source=Tx1xU, target=TxV -> result=Tx1xU (no insertions)
+    SmallVector<int64_t> getConceptualSourceShapeWithInsertions() const {
+      SmallVector<int64_t> shape;
+      int64_t sourceIdx = 0;
+      int64_t targetIdx = 0;
+      while (sourceIdx < sourceType.getRank() || targetIdx < targetType.getRank()) {
+           if (targetIdx < targetType.getRank() && isTargetDimInserted(targetIdx)) {
+               shape.push_back(1);
+               targetIdx++;
+           } else if (sourceIdx < sourceType.getRank()) {
+               // If target dim wasn't inserted, source dim must exist
+               // (unless it was removed and target loop finished).
+                if (!isSourceDimRemoved(sourceIdx)) {
+                     shape.push_back(sourceType.getDimSize(sourceIdx));
+                     // Only advance target if it wasn't inserted
+                     // and source wasn't removed.
+                     if (targetIdx < targetType.getRank()) targetIdx++;
+                }
+                // Always advance source index if we process it.
+               sourceIdx++;
+           } else {
+               // Should not happen if mapping is consistent
+               assert(false && "Inconsistent mapping state");
+               break;
+           }
+      }
+      return shape;
+  }
+};
+
+// Computes the mapping between source and target shapes based on unit dimensions.
+// Returns std::nullopt if the reshape is not solely adding/removing unit dims.
+std::optional<UnitDimMapping>
+computeUnitDimMapping(ShapedType sourceType, ShapedType targetType) {
+    if (!sourceType.hasRank() || !targetType.hasRank()) {
+        return std::nullopt; // Require ranked tensors
+    }
+
+    UnitDimMapping mapping;
+    mapping.sourceType = sourceType;
+    mapping.targetType = targetType;
+    int64_t sourceIdx = 0;
+    int64_t targetIdx = 0;
+    int64_t sourceRank = sourceType.getRank();
+    int64_t targetRank = targetType.getRank();
+
+    while (sourceIdx < sourceRank || targetIdx < targetRank) {
+        bool sourceInBounds = sourceIdx < sourceRank;
+        bool targetInBounds = targetIdx < targetRank;
+
+        int64_t sourceDimSize = sourceInBounds ? sourceType.getDimSize(sourceIdx) : -1;
+        int64_t targetDimSize = targetInBounds ? targetType.getDimSize(targetIdx) : -1;
+
+        // Case 1 & 2: Direct Match (Non-unit or Unit)
+        if (sourceInBounds && targetInBounds && sourceDimSize == targetDimSize) {
+             // Ensure dynamic dimensions also match conceptually if present
+             if (ShapedType::isDynamic(sourceDimSize) != ShapedType::isDynamic(targetDimSize)) {
+                 return std::nullopt; // Cannot map static to dynamic or vice-versa here
+             }
+            mapping.mappedDims.push_back({targetIdx, sourceIdx});
+            sourceIdx++;
+            targetIdx++;
+        }
+        // Case 3: Target Unit Dimension (Insertion)
+        else if (targetInBounds && targetDimSize == 1 &&
+                 (!sourceInBounds || sourceDimSize != 1)) {
+            mapping.insertedTargetDims.push_back(targetIdx);
+            targetIdx++;
+        }
+        // Case 4: Source Unit Dimension (Removal)
+        else if (sourceInBounds && sourceDimSize == 1 &&
+                 (!targetInBounds || targetDimSize != 1)) {
+            mapping.removedSourceDims.push_back(sourceIdx);
+            sourceIdx++;
+        }
+        // Case 5: Mismatch
+        else {
+            // Allow mapping dynamic to dynamic if ranks allow, but fail otherwise
+             if (!(sourceInBounds && targetInBounds &&
+                   ShapedType::isDynamic(sourceDimSize) && ShapedType::isDynamic(targetDimSize))) {
+                return std::nullopt; // Shapes differ in non-unit dimensions
+             }
+             // If both are dynamic, assume they map if ranks permit
+            mapping.mappedDims.push_back({targetIdx, sourceIdx});
+            sourceIdx++;
+            targetIdx++;
+        }
+    }
+
+    // Sanity check: Ensure total elements match if shapes are static
+    if (sourceType.hasStaticShape() && targetType.hasStaticShape() &&
+        sourceType.getNumElements() != targetType.getNumElements()) {
+         // This check might be redundant given the logic above, but good for safety
+         // unless dynamic shapes were involved.
+         bool sourceHasDynamic = !sourceType.hasStaticShape();
+         bool targetHasDynamic = !targetType.hasStaticShape();
+         if (!sourceHasDynamic && !targetHasDynamic) {
+            // llvm::errs() << "Element count mismatch: " << sourceType << " vs " << targetType << "\n";
+            return std::nullopt;
+         }
+    }
+
+
+    return mapping;
+}
+
+
 // reshape(slice(x)) -> slice(reshape(x))
-// Only applies if the reshape adds exactly one unit dimension.
 struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
+
+  // Helper function to find the original operand dimension index corresponding
+  // to a given dimension index in the slice's result.
+  // Returns -1 on failure (e.g., index out of bounds).
+  // Assumption: Slice does not collapse non-unit dimensions.
+  int64_t findOriginalDimForSliceResultDim(stablehlo::SliceOp sliceOp, int64_t sliceResultDimIndex) const {
+        auto operandType = sliceOp.getOperand().getType().dyn_cast<RankedTensorType>();
+        auto resultType = sliceOp.getType().dyn_cast<RankedTensorType>();
+        if (!operandType || !resultType || !operandType.hasRank() || !resultType.hasRank()) {
+            return -1;
+        }
+         if (sliceResultDimIndex < 0) return -1;
+
+        int64_t currentResultDim = 0;
+        for (int64_t operandDim = 0; operandDim < operandType.getRank(); ++operandDim) {
+            // Slice parameters must be valid for this dimension
+            if (operandDim >= sliceOp.getStartIndices().size()) return -1; // Safety
+
+            int64_t start = sliceOp.getStartIndices()[operandDim];
+            int64_t limit = sliceOp.getLimitIndices()[operandDim];
+            int64_t stride = sliceOp.getStrides()[operandDim];
+            // Correctly handle potential negative strides or limits < starts if needed by HLO semantics,
+            // but standard slices usually have limit > start, stride > 0.
+            // Assuming standard slice semantics for size calculation.
+            int64_t resultSize = (limit > start && stride > 0) ? (limit - start -1) / stride + 1 : 0;
+
+            if (resultSize > 0) {
+                if (currentResultDim == sliceResultDimIndex) {
+                    return operandDim;
+                }
+                currentResultDim++;
+            } else if (resultSize < 0) {
+                // Handle potential future support for negative strides if necessary
+                return -1; // Indicate error or unhandled case for now
+            }
+        }
+        // If we exit loop, sliceResultDimIndex was too large for the actual result rank
+        return -1;
+    }
+
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
                                 PatternRewriter &rewriter) const override {
     auto sliceOp =
         reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::SliceOp>();
-    if (!sliceOp)
-      return failure();
-
-    // Apply only if slice has one user for safety.
-    if (!llvm::hasSingleElement(sliceOp->getUsers()))
-      return failure();
-
-    auto sliceType = sliceOp.getType().dyn_cast<RankedTensorType>();
-    auto reshapeType = reshapeOp.getType().dyn_cast<RankedTensorType>();
-
-    if (!sliceType || !reshapeType || !sliceType.hasStaticShape() ||
-        !reshapeType.hasStaticShape()) {
-      return failure();
-    }
-
-    int64_t addedUnitDimIdx = findAddedUnitDim(sliceType, reshapeType);
-    if (addedUnitDimIdx == -1) {
-      return failure(); // Reshape doesn't just add a single unit dimension.
-    }
-
-    // 1. Reshape the original operand 'x' of the slice.
-    Value originalX = sliceOp.getOperand();
-    auto originalXType = originalX.getType().cast<RankedTensorType>();
-    if (!originalXType.hasStaticShape()) {
-        return failure(); // Need static shape for original operand too.
-    }
-    // Calculate the correct intermediate shape by adding the unit dimension
-    // to the *original* operand's shape (`x`'s shape).
-    SmallVector<int64_t> intermediateShape(originalXType.getShape().begin(),
-                                             originalXType.getShape().end());
-    // Ensure index is valid before insertion
-    if (addedUnitDimIdx < 0 || addedUnitDimIdx > intermediateShape.size()) {
-        // This case should ideally be caught by findAddedUnitDim,
-        // but add a check here for robustness.
+    if (!sliceOp) {
         return failure();
     }
-    intermediateShape.insert(intermediateShape.begin() + addedUnitDimIdx, 1);
 
-    // The intermediate type after reshaping originalX
-    auto intermediateReshapeType = RankedTensorType::get(
-        intermediateShape, // Use the correctly calculated shape
-        originalXType.getElementType());
+    if (!llvm::hasSingleElement(sliceOp->getUsers())) {
+        return failure();
+    }
 
+    auto originalX = sliceOp.getOperand();
+    auto originalXType = originalX.getType().dyn_cast<ShapedType>();
+    auto sliceResultType = sliceOp.getType().dyn_cast<ShapedType>(); // reshapeOp's operand type
+    auto reshapeResultType = reshapeOp.getType().dyn_cast<ShapedType>(); // Final output type
+
+    if (!originalXType || !sliceResultType || !reshapeResultType ||
+        !originalXType.hasRank() || !sliceResultType.hasRank() || !reshapeResultType.hasRank()) {
+        return failure();
+    }
+     // Need static shapes for size calculations in helpers currently
+     if (!originalXType.hasStaticShape() || !sliceResultType.hasStaticShape() || !reshapeResultType.hasStaticShape()) {
+         return failure();
+     }
+
+    // 1. Understand the reshape operation's effect (slice result -> final result)
+    std::optional<UnitDimMapping> mappingOpt = computeUnitDimMapping(sliceResultType, reshapeResultType);
+    if (!mappingOpt) {
+        return rewriter.notifyMatchFailure(reshapeOp, "Reshape does more than add/remove unit dims");
+    }
+    const UnitDimMapping& mapping = *mappingOpt;
+
+    // 2. Calculate the shape of the intermediate tensor (reshaped originalX)
+    // Intermediate shape has same rank as final result shape.
+    // Sizes come from originalX for mapped dims, are 1 for inserted dims.
+    SmallVector<int64_t> intermediateShape;
+    intermediateShape.reserve(reshapeResultType.getRank());
+
+    for (int64_t targetDim = 0; targetDim < reshapeResultType.getRank(); ++targetDim) {
+        if (mapping.isTargetDimInserted(targetDim)) {
+            intermediateShape.push_back(1);
+        } else {
+            std::optional<int64_t> sliceDimOpt = mapping.getSourceDim(targetDim);
+            assert(sliceDimOpt.has_value() && "Mapped target dim must have a source dim");
+            int64_t sliceDim = *sliceDimOpt;
+            int64_t originalDim = findOriginalDimForSliceResultDim(sliceOp, sliceDim);
+            if (originalDim == -1) {
+                return failure();
+            }
+             if (originalDim >= originalXType.getRank()) {
+                 return failure();
+             }
+            intermediateShape.push_back(originalXType.getDimSize(originalDim));
+        }
+    }
+    if (intermediateShape.size() != (size_t)reshapeResultType.getRank()) {
+         return failure();
+    }
+
+    auto intermediateReshapeType = RankedTensorType::get(intermediateShape, originalXType.getElementType());
+
+    // 3. Create the new Reshape operation
     auto newReshape = rewriter.create<stablehlo::ReshapeOp>(
         reshapeOp.getLoc(), intermediateReshapeType, originalX);
 
-    // 2. Calculate the new slice parameters.
-    SmallVector<int64_t> newStarts(reshapeType.getRank());
-    SmallVector<int64_t> newLimits(reshapeType.getRank());
-    SmallVector<int64_t> newStrides(reshapeType.getRank());
+    // 4. Calculate the parameters for the new Slice operation
+    // This slice operates on `newReshape` (which has `intermediateShape`)
+    // and produces the `reshapeResultType`.
+    SmallVector<int64_t> newStarts(intermediateShape.size());
+    SmallVector<int64_t> newLimits(intermediateShape.size());
+    SmallVector<int64_t> newStrides(intermediateShape.size());
 
     ArrayRef<int64_t> oldStarts = sliceOp.getStartIndices();
     ArrayRef<int64_t> oldLimits = sliceOp.getLimitIndices();
     ArrayRef<int64_t> oldStrides = sliceOp.getStrides();
 
-    int64_t oldDimIdx = 0;
-    for (int64_t newDimIdx = 0; newDimIdx < reshapeType.getRank(); ++newDimIdx) {
-      if (newDimIdx == addedUnitDimIdx) {
-        // Slice the entire added unit dimension.
-        newStarts[newDimIdx] = 0;
-        newLimits[newDimIdx] = 1;
-        newStrides[newDimIdx] = 1;
-      } else {
-        // Copy parameters from the corresponding original slice dimension.
-        assert(oldDimIdx < sliceType.getRank() && "Mismatch in dimensions");
-        newStarts[newDimIdx] = oldStarts[oldDimIdx];
-        newLimits[newDimIdx] = oldLimits[oldDimIdx];
-        newStrides[newDimIdx] = oldStrides[oldDimIdx];
-        oldDimIdx++;
-      }
+    // Iterate through the dimensions of the *intermediate* shape.
+    for (int64_t intermediateDim = 0; intermediateDim < intermediateReshapeType.getRank(); ++intermediateDim) {
+        // To determine if this intermediateDim corresponds to an inserted dimension,
+        // we need to know which *target* (final) dimension it corresponds to.
+        // Since we constructed intermediateShape by iterating through targetDim,
+        // the index correspondence holds: intermediateDim directly corresponds to targetDim.
+        int64_t targetDim = intermediateDim;
+
+        if (mapping.isTargetDimInserted(targetDim)) {
+            // This dimension was "inserted" by the original reshapeOp. Slice it fully.
+            newStarts[intermediateDim] = 0;
+            newLimits[intermediateDim] = 1;
+            newStrides[intermediateDim] = 1;
+        } else {
+            // This dimension came from an original dimension via the slice.
+            // Find the corresponding original dimension index.
+            std::optional<int64_t> sliceDimOpt = mapping.getSourceDim(targetDim);
+            assert(sliceDimOpt.has_value() && "Mapped target dim must have a source dim");
+            int64_t sliceDim = *sliceDimOpt;
+
+            int64_t originalDim = findOriginalDimForSliceResultDim(sliceOp, sliceDim);
+            if (originalDim == -1) {
+                 return failure();
+            }
+             if (originalDim >= oldStarts.size()) { // Check against original slice param array size
+                 return failure();
+             }
+
+            // Use the slice parameters from the original sliceOp corresponding to that original dimension.
+            newStarts[intermediateDim] = oldStarts[originalDim];
+            newLimits[intermediateDim] = oldLimits[originalDim];
+            newStrides[intermediateDim] = oldStrides[originalDim];
+        }
     }
-    assert(oldDimIdx == sliceType.getRank() && "Dimension mapping error");
 
-
-    // 3. Create the new slice operation.
-    auto newslice = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-        reshapeOp, // Replace the original reshape op
-        reshapeOp.getType(), // The final result type must match
-        newReshape.getResult(), rewriter.getDenseI64ArrayAttr(newStarts),
+    // 5. Create the new Slice operation
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        sliceOp.getLoc(),
+        reshapeResultType, // The final result type
+        newReshape.getResult(),
+        rewriter.getDenseI64ArrayAttr(newStarts),
         rewriter.getDenseI64ArrayAttr(newLimits),
         rewriter.getDenseI64ArrayAttr(newStrides));
+
+    // 6. Replace the original reshapeOp with the result of the new slice.
+    rewriter.replaceOp(reshapeOp, newSlice.getResult());
 
     return success();
   }
 };
+
 
 LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
                                  SmallVectorImpl<int64_t> &starts,

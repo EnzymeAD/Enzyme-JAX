@@ -36,4 +36,19 @@ module {
     %1 = stablehlo.reshape %0 : (tensor<256x2048xf64>) -> tensor<256x2048x1xf64>
     return %1 : tensor<256x2048x1xf64>
   }
+
+  // Test case where reshape removes one unit dimension and adds two others.
+  // CHECK-LABEL: func.func @reshape_slice_remove_add_unit_dims(%arg0: tensor<1x300x1x2100x1xf64>) -> tensor<1x256x2048x1x1x1xf64> {
+  // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<1x300x1x2100x1xf64>) -> tensor<1x300x2100x1x1x1xf64>
+  // CHECK-NEXT:    %1 = stablehlo.slice %0 [0:1, 6:262, 5:2053, 0:1, 0:1, 0:1] : (tensor<1x300x2100x1x1x1xf64>) -> tensor<1x256x2048x1x1x1xf64>
+  // CHECK-NEXT:    return %1 : tensor<1x256x2048x1x1x1xf64>
+  // CHECK-NEXT:  }
+  func.func @reshape_slice_remove_add_unit_dims(%arg0: tensor<1x300x1x2100x1xf64>) -> tensor<1x256x2048x1x1x1xf64> {
+    // Slice retains rank 5, modifying non-unit dims
+    %0 = stablehlo.slice %arg0 [0:1, 6:262, 0:1, 5:2053, 0:1] : (tensor<1x300x1x2100x1xf64>) -> tensor<1x256x1x2048x1xf64>
+    // Reshape removes dim 2 (size 1) and adds two unit dims at the end (rank 5 -> rank 6)
+    %1 = stablehlo.reshape %0 : (tensor<1x256x1x2048x1xf64>) -> tensor<1x256x2048x1x1x1xf64>
+    return %1 : tensor<1x256x2048x1x1x1xf64>
+  }
+
 }
