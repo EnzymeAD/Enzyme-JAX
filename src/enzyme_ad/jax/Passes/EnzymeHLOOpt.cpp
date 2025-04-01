@@ -8614,8 +8614,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
     SmallVector<Value> newOperands(whileOp.getOperands().begin(),
                                    whileOp.getOperands().end());
 
-
-
     // Create input transposes for each candidate
     for (auto &candidate : outerTransposes) {
       unsigned idx = candidate.idx;
@@ -8644,7 +8642,9 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
       rewriter.setInsertionPoint(yieldOp);
       for (auto &candidate : outerTransposes) {
         unsigned idx = candidate.idx;
-        newReturnValues[idx] = rewriter.create<stablehlo::TransposeOp>(whileOp.getLoc(), newReturnValues[idx], candidate.outerTranspose.getPermutation());
+        newReturnValues[idx] = rewriter.create<stablehlo::TransposeOp>(
+            whileOp.getLoc(), newReturnValues[idx],
+            candidate.outerTranspose.getPermutation());
       }
       rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
                                                        newReturnValues);
@@ -8690,7 +8690,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
     newBodyBlock
         .clear(); // This clears operations but preserves block arguments
 
-
     // Clone operations from old body to new body
     Block &oldBodyBlock = whileOp.getBody().front();
     {
@@ -8703,7 +8702,9 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
         Value newArg = newWhileOp.getBody().getArgument(i);
         for (auto &pair : outerTransposes) {
           if (pair.idx == i) {
-            newArg = rewriter.create<stablehlo::TransposeOp>(pair.outerTranspose.getLoc(), newArg, getInversePermutation(pair.outerTranspose.getPermutation()));
+            newArg = rewriter.create<stablehlo::TransposeOp>(
+                pair.outerTranspose.getLoc(), newArg,
+                getInversePermutation(pair.outerTranspose.getPermutation()));
             break;
           }
         }
@@ -8756,7 +8757,9 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
         Value newArg = newWhileOp.getCond().getArgument(i);
         for (auto &pair : outerTransposes) {
           if (pair.idx == i) {
-            newArg = rewriter.create<stablehlo::TransposeOp>(pair.outerTranspose.getLoc(), newArg, getInversePermutation(pair.outerTranspose.getPermutation()));
+            newArg = rewriter.create<stablehlo::TransposeOp>(
+                pair.outerTranspose.getLoc(), newArg,
+                getInversePermutation(pair.outerTranspose.getPermutation()));
             break;
           }
         }
