@@ -295,9 +295,9 @@ struct DynamicUpdateSliceElim final
 // Given a reshape fromType to toType, remove the eliminated indices from start, and fill any new dimensions with toFill.
 // Check that any removed indices have value checkRemoved, if set
 template<typename T>
-bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T> start, llvm::function<T()> toFillFn, T* checkRemoved = nullptr) {
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T>& start, std::function<T()> toFillFn, T* checkRemoved = nullptr) {
     auto fromShape = fromType.getShape();
-    auto toShape = resultTy.getShape();
+    auto toShape = toType.getShape();
 
     assert(start.size() == fromShape.size());
 
@@ -305,7 +305,7 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, S
     int startidx = 0;
     std::optional<T> toFillVal;
     while (i < fromShape.size() && j < toShape.size()) {
-      if (fromShape[i] == resultShape[j]) {
+      if (fromShape[i] == toShape[j]) {
         // Leave everything as is and carry on
         i++;
         j++;
@@ -368,18 +368,18 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, S
 }
 
 template<typename T>
-bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T> start, T toFill, T* checkRemoved = nullptr) {
-    return transformReshapeSlice(fromType, toType, start, [=](){ return toFill; }, checkRemoved);
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType, SmallVectorImpl<T>& start, T toFill, T* checkRemoved = nullptr) {
+    return transformReshapeSlice<T>(fromType, toType, start, [=](){ return toFill; }, checkRemoved);
 }
 
 template<typename T>
-bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T> start, T toFill, T* checkRemoved = nullptr) {
-  return transformReshapeSlice(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
+bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T>& start, T toFill, T* checkRemoved = nullptr) {
+  return transformReshapeSlice<T>(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
 }
 
 template<typename T>
-bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T> start, llvm::function<T()> toFill, T* checkRemoved = nullptr) {
-  return transformReshapeSlice(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
+bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op, SmallVectorImpl<T>& start, std::function<T()> toFill, T* checkRemoved = nullptr) {
+  return transformReshapeSlice<T>(op.getType(), op.getOperand().getType(), start, toFill, checkRemoved);
 }
 
 struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
@@ -409,7 +409,7 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                      ? startIndices[0].getType().cast<RankedTensorType>()
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
-    if (!transformReshapeSlice(op, startIndices, /*toFill*/[&rewriter]() -> mlir::Value {
+    if (!transformReshapeSlice<mlir::Value>(op, startIndices, /*toFill*/[&]() -> mlir::Value {
       return rewriter.create<stablehlo::ConstantOp>(
           dus.getLoc(), itype, makeAttr(itype, 0).cast<ElementsAttr>());
     }))
@@ -419,7 +419,7 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     SmallVector<int64_t> updateShape(dus.getUpdate().getType().getShape().begin(), dus.getUpdate().getType().getShape().end());
 
     int64_t one = 1;
-    if (!transformReshapeSlice(op, updateShape, /*toFill*/1, /*checkRemoved*/&one))
+    if (!transformReshapeSlice<int64_t>(op, updateShape, /*toFill*/1, /*checkRemoved*/&one))
       return failure();
 
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
@@ -453,24 +453,24 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
     int64_t zero = 0;
     int64_t one = 1;
-    if (!transformReshapeSlice(op, startIndices, /*toFill*/0, /*checkRemoved*/&zero))
+    if (!transformReshapeSlice<int64_t>(op, startIndices, /*toFill*/0, /*checkRemoved*/&zero))
       return failure();
 
     SmallVector<int64_t> limitIndices(slice.getLimitIndices().begin(), slice.getLimitIndices().end());
 
-    if (!transformReshapeSlice(op, limitIndices, /*toFill*/1, /*checkRemoved*/&one))
+    if (!transformReshapeSlice<int64_t>(op, limitIndices, /*toFill*/1, /*checkRemoved*/&one))
       return failure();
 
-    SmallVector<int64_t> stepIndices(slice.getStep().begin(), slice.getStep());
+    SmallVector<int64_t> stepIndices(slice.getStrides().begin(), slice.getStrides().end());
 
-    if (!transformReshapeSlice(op, stepIndices, /*toFill*/1, /*checkRemoved*/&one))
+    if (!transformReshapeSlice<int64_t>(op, stepIndices, /*toFill*/1, /*checkRemoved*/&one))
       return failure();
 
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
         op.getLoc(), op.getType(), slice.getOperand());
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::DynamicSliceOp>(
-        op, newOperand, newUpdate, startIndices);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::SliceOp>(
+        op, newOperand, startIndices, limitIndices, stepIndices);
 
     return success();
   }
@@ -492,24 +492,24 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     SmallVector<int64_t> interior(pad.getInteriorPadding().begin(), pad.getInteriorPadding().end());
 
     int64_t zero = 0;
-    if (!transformReshapeSlice(op, interior, /*toFill*/0, /*checkRemoved*/&zero))
+    if (!transformReshapeSlice<int64_t>(op, interior, /*toFill*/0, /*checkRemoved*/&zero))
       return failure();
 
     SmallVector<int64_t> low(pad.getEdgePaddingLow().begin(), pad.getEdgePaddingLow().end());
 
-    if (!transformReshapeSlice(op, low, /*toFill*/0, /*checkRemoved*/&zero))
+    if (!transformReshapeSlice<int64_t>(op, low, /*toFill*/0, /*checkRemoved*/&zero))
       return failure();
 
     SmallVector<int64_t> high(pad.getEdgePaddingHigh().begin(), pad.getEdgePaddingHigh().end());
 
-    if (!transformReshapeSlice(op, high, /*toFill*/0, /*checkRemoved*/&zero))
+    if (!transformReshapeSlice<int64_t>(op, high, /*toFill*/0, /*checkRemoved*/&zero))
       return failure();
 
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), op.getType(), slice.getOperand());
+        op.getLoc(), op.getType(), pad.getOperand());
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::PadOp>(
-        op, newOperand, pad.getPaddingValue(), low, high, interiors);
+        op, newOperand, pad.getPaddingValue(), low, high, interior);
 
     return success();
   }
