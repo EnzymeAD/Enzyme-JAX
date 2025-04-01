@@ -383,7 +383,7 @@ template <typename T>
 bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op,
                            SmallVectorImpl<T> &start, T toFill,
                            T *checkRemoved = nullptr) {
-  return transformReshapeSlice<T>(op.getType(), op.getOperand().getType(),
+  return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
 }
 
