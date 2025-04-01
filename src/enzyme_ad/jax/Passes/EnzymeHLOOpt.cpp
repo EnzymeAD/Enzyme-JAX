@@ -494,7 +494,6 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     SmallVector<int64_t> operandShape(slice.getOperand().getType().getShape().begin(),
                                   slice.getOperand().getType().getShape().end());
 
-    int64_t one = 1;
     if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
                                         /*checkRemoved*/ &one))
       return failure();
