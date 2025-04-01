@@ -9801,6 +9801,9 @@ struct EnzymeHLOOptPass
     if (passses & 64)
       patterns.add<TransposePad>(context);
 
+    if (passses & 128)
+      patterns.add<ReshapePad>(context);
+
     if (cse) {
       patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
                    CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
