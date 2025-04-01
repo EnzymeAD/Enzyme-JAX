@@ -9776,6 +9776,16 @@ struct BroadcastInDimIsReshape final
     auto inputType = input.getType();
     auto broadcastDims = op.getBroadcastDimensions();
 
+    size_t inputSize = 1;
+    for (auto sz : inputType.getShape())
+      inputSize *= sz;
+    size_t outputSize = 1;
+    for (auto sz : outputType.getShape())
+      outputSize *= sz;
+
+    if (inputSize != outputSize)
+      return failure();
+
     SmallVector<int64_t> nonSingletonDims;
 
     for (size_t i = 0; i < broadcastDims.size(); ++i) {
