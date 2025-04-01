@@ -1373,7 +1373,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
     } else if (auto pforOp = dyn_cast<affine::AffineParallelOp>(
                    parallelOp.getOperation())) {
 
-      SmallVector<int64_t> idxs_to_reduce;
+      SmallVector<int64_t> dims_to_reduce;
       for (auto &&[i, expr] :
            llvm::enumerate(outputMap.getAffineMap().getResults())) {
         auto dim = cast<AffineDimExpr>(expr);
@@ -1382,12 +1382,12 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         if (!operand)
           continue;
         if (operand.getOwner()->getParentOp() == pforOp)
-          idxs_to_reduce.push_back(i);
+          dims_to_reduce.push_back(operand.getArgNumber());
       }
 
       SmallVector<Value> dsts;
       SmallVector<affine::AffineValueMap> submaps;
-      for (auto idx : idxs_to_reduce) {
+      for (auto idx : dims_to_reduce) {
         auto dst = mapping.lookup(pforOp.getIVs()[idx]);
         dsts.push_back(dst);
         submaps.push_back(maps.lookup(dst));
@@ -1395,7 +1395,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
                                           builder, *newPc);
 
-      idxs_to_reduce.clear();
+      SmallVector<int64_t> idxs_to_reduce;
       SmallVector<int64_t> redshape;
       SmallVector<AffineExpr> newExprs;
       for (auto &&[i, expr] :
