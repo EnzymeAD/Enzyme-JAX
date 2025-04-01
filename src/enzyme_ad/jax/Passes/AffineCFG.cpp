@@ -4372,7 +4372,7 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
   }
 };
 
-bool definedOutside(Value v, Operation *op) {
+static bool definedOutside(Value v, Operation *op) {
   return !op->isAncestor(v.getParentBlock()->getParentOp());
 }
 
