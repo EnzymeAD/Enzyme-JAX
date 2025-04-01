@@ -1,4 +1,5 @@
-//===- SortMemory.cpp - Print the MLIR module                     ------------ //
+//===- SortMemory.cpp - Print the MLIR module                     ------------
+////
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -9,8 +10,8 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SetVector.h"
 
@@ -24,11 +25,9 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::affine;
 
-
 bool definedOutsideOrAt(Value v, Operation *op) {
   return !op->isProperAncestor(v.getParentBlock()->getParentOp());
 }
-
 
 bool affineCmp(AffineExpr lhs, AffineExpr rhs);
 
@@ -83,12 +82,8 @@ static unsigned getNestingDepth(Operation *op) {
 void sortParallel(affine::AffineParallelOp par) {
   SmallVector<affine::AffineLoadOp> loads;
   SmallVector<affine::AffineStoreOp> stores;
-  par->walk([&](affine::AffineLoadOp ld) {
-    loads.push_back(ld);
-  });
-  par->walk([&](affine::AffineStoreOp store) {
-    stores.push_back(store);
-  });
+  par->walk([&](affine::AffineLoadOp ld) { loads.push_back(ld); });
+  par->walk([&](affine::AffineStoreOp store) { stores.push_back(store); });
 
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(par) + 1;
@@ -97,8 +92,8 @@ void sortParallel(affine::AffineParallelOp par) {
     MemRefAccess srcAccess(ld);
     for (auto st : stores) {
       MemRefAccess dstAccess(st);
-      DependenceResult result = checkMemrefAccessDependence(
-          srcAccess, dstAccess, depth);
+      DependenceResult result =
+          checkMemrefAccessDependence(srcAccess, dstAccess, depth);
 
       if (result.value == DependenceResult::Failure) {
         return;
@@ -135,13 +130,13 @@ void sortParallel(affine::AffineParallelOp par) {
   llvm::sort(loads, affineCmpLoad);
   llvm::sort(stores, affineCmpStore);
 
-  Operation* first = &par.getBody()->front();
+  Operation *first = &par.getBody()->front();
   for (auto ld : llvm::reverse(loads)) {
     ld->moveBefore(first);
     first = ld;
   }
 
-  Operation* last = par.getBody()->getTerminator();
+  Operation *last = par.getBody()->getTerminator();
   for (auto st : stores) {
     st->moveBefore(last);
   }
@@ -151,9 +146,7 @@ namespace {
 struct SortMemory : public enzyme::impl::SortMemoryBase<SortMemory> {
   using SortMemoryBase::SortMemoryBase;
 
-  void runOnOperation() override {
-    getOperation()->walk(sortParallel);
-  }
+  void runOnOperation() override { getOperation()->walk(sortParallel); }
 };
 
 } // end anonymous namespace
