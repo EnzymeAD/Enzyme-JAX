@@ -315,6 +315,8 @@ broadcastindim_is_reshape<1>;
 
 dot_reshape_pad<1>;
 pad_dot_general<1>(1);
+
+reshape_reduce_window<1>;
             },
             transform-interpreter,
             enzyme-hlo-remove-transform
