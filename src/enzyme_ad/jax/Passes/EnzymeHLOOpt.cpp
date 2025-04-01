@@ -6457,6 +6457,58 @@ struct TransposeReduceWindow final
   }
 };
 
+struct ReshapeOfReduceToReduceOfReshape final
+    : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if the operand of the reshape is a reduce operation
+    auto reduceOp = reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::ReduceOp>();
+    if (!reduceOp)
+      return failure();
+
+    // Ensure the reduce operation has a single input and output
+    if (reduceOp.getInputs().size() != 1 || reduceOp.getResults().size() != 1)
+      return failure();
+
+    // Get the input type of the reduce operation
+    auto reduceInputType = reduceOp.getInputs()[0].getType().cast<RankedTensorType>();
+    if (!reduceInputType)
+      return failure();
+
+    // Get the result type of the reshape operation
+    auto reshapeResultType = reshapeOp.getResult().getType().cast<RankedTensorType>();
+    if (!reshapeResultType)
+      return failure();
+
+    // Ensure the total number of elements remains the same
+    if (reduceInputType.getNumElements() != reshapeResultType.getNumElements())
+      return failure();
+
+    // Compute the new shape for the input of the reduce operation
+    auto reshapeOperandType = reshapeOp.getOperand().getType().cast<RankedTensorType>();
+    auto newReduceInputType = RankedTensorType::get(
+        reshapeOperandType.getShape(), reduceInputType.getElementType());
+
+    // Create a new reshape operation for the input of the reduce
+    auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
+        reshapeOp.getLoc(), newReduceInputType, reduceOp.getInputs()[0]);
+
+    // Create a new reduce operation with the reshaped input
+    auto newReduceOp = rewriter.create<mlir::stablehlo::ReduceOp>(
+        reduceOp.getLoc(), reshapeResultType, newReshapeOp.getResult(),
+        reduceOp.getInitValues(), reduceOp.getDimensions());
+
+    // Move the body of the original reduce operation to the new reduce operation
+    newReduceOp.getBody().takeBody(reduceOp.getBody());
+
+    // Replace the original reshape operation with the new reduce operation
+    rewriter.replaceOp(reshapeOp, newReduceOp.getResults());
+    return success();
+  }
+};
+
 // reshape(concat(...)) -> concat(reshape(...))
 struct ReshapeOfConcatToConcatOfReshape final
     : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
@@ -9723,7 +9775,7 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
+      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape, ReshapeOfReduceToReduceOfReshape,
                    ReshapeDUS>(context);
     }
 
