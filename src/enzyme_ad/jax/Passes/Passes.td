@@ -144,6 +144,10 @@ def PrintPass : Pass<"print"> {
       ];
 }
 
+def SortMemory : Pass<"sort-memory"> {
+  let summary = "Sort memory accesses";
+}
+
 def PrintLocationPass : Pass<"print-location"> {
   let summary = "Print locations of attributed operations";
   let options = [Option<
