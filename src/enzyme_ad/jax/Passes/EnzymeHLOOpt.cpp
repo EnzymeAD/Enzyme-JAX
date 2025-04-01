@@ -6655,6 +6655,22 @@ struct ReshapeOfConcatToConcatOfReshape final
     if (!concatOp)
       return failure();
 
+    SmallVector<int64_t> oneHot(concatOp.getType().getShape().size(), 0);
+    oneHot[concatOp.getDimension()] = 1;
+
+    int64_t zero = 0;
+    if (!transformReshapeSlice<int64_t>(reshapeOp, oneHot, /*toFill*/ 0, &zero))
+      return failure();
+
+    int64_t newDim = -1;
+    for (auto &&[i, val] : llvm::enumerate(oneHot)) {
+      if (val == 1) {
+        assert(newDim == -1);
+        newDim = i;
+      }
+    }
+    assert(newDim != -1);
+
     // Create reshaped operands for the concat operation
     SmallVector<Value> concatOperands;
     for (auto operand : concatOp.getOperands()) {
@@ -6662,21 +6678,15 @@ struct ReshapeOfConcatToConcatOfReshape final
       if (!operandType)
         return failure();
 
-      SmallVector<int64_t> oldShape(operandType.getShape().begin(),
-                                    operandType.getShape().end());
-      SmallVector<int64_t> newShape;
-      bool foundSingletonDim = false;
-      for (int64_t dim : oldShape) {
-        if (dim == 1) {
-          if (foundSingletonDim)
-            return failure();
-          foundSingletonDim = true;
-          continue;
-        }
-        newShape.push_back(dim);
-      }
+      SmallVector<int64_t> shape(operandType.getShape().begin(),
+                                 operandType.getShape().end());
+
+      int64_t one = 1;
+      if (!transformReshapeSlice<int64_t>(reshapeOp, shape, /*toFill*/ 1, &one))
+        return failure();
+
       auto newReshapeType =
-          RankedTensorType::get(newShape, operandType.getElementType());
+          RankedTensorType::get(shape, operandType.getElementType());
       auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
           reshapeOp.getLoc(), newReshapeType, operand);
       concatOperands.push_back(newReshapeOp);
@@ -6685,13 +6695,9 @@ struct ReshapeOfConcatToConcatOfReshape final
     // Create a new concat operation with the reshaped operands
     auto origReshapeOperand = reshapeOp.getOperand().getType().getShape();
     auto origReshapeResult = reshapeOp.getResult().getType().getShape();
-    auto newConcatOp = rewriter.create<mlir::stablehlo::ConcatenateOp>(
-        concatOp.getLoc(), concatOperands,
-        computeNewConcatDim(origReshapeOperand, origReshapeResult,
-                            concatOp.getDimension()));
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConcatenateOp>(
+        reshapeOp, concatOperands, newDim);
 
-    // Replace the original reshape operation with the new concat
-    rewriter.replaceOp(reshapeOp, newConcatOp.getResult());
     return success();
   }
 };
