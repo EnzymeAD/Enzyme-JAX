@@ -355,7 +355,7 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
     return false;
   }
 
-  while (j < fromShape.size()) {
+  while (j < toShape.size()) {
     if (toShape[j] == 1) {
       T toFill = toFillVal ? *toFillVal : toFillFn();
       if (!toFillVal) {
@@ -391,7 +391,7 @@ template <typename T>
 bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op,
                            SmallVectorImpl<T> &start, std::function<T()> toFill,
                            T *checkRemoved = nullptr) {
-  return transformReshapeSlice<T>(op.getType(), op.getOperand().getType(),
+  return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
 }
 
@@ -536,8 +536,17 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &zero))
       return failure();
 
+
+    SmallVector<int64_t> operandShape(pad.getOperand().getType().getShape().begin(),
+                                  pad.getOperand().getType().getShape().end());
+
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), op.getType(), pad.getOperand());
+        op.getLoc(), RankedTensorType::get(operandShape, pad.getOperand().getType().getElementType()), pad.getOperand());
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::PadOp>(
         op, newOperand, pad.getPaddingValue(), low, high, interior);
