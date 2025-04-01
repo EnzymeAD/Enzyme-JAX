@@ -8695,6 +8695,7 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
     Block &oldBodyBlock = whileOp.getBody().front();
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newBodyBlock);
 
       // Set up operand mapping for the body region
       for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
@@ -8709,7 +8710,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
         mapper.map(oldArg, newArg);
       }
 
-      rewriter.setInsertionPointToStart(&newBodyBlock);
       for (auto &op : oldBodyBlock.getOperations()) {
         // Skip the terminator - we'll add it after all other operations
         if (isa<stablehlo::ReturnOp>(op))
