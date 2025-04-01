@@ -6659,8 +6659,7 @@ struct ReshapeOfConcatToConcatOfReshape final
     oneHot[concatOp.getDimension()] = 1;
 
     int64_t zero = 0;
-    if (!transformReshapeSlice<int64_t>(
-            reshapeOp, oneHot, /*toFill*/0, &zero))
+    if (!transformReshapeSlice<int64_t>(reshapeOp, oneHot, /*toFill*/ 0, &zero))
       return failure();
 
     int64_t newDim = -1;
@@ -6680,11 +6679,10 @@ struct ReshapeOfConcatToConcatOfReshape final
         return failure();
 
       SmallVector<int64_t> shape(operandType.getShape().begin(),
-                                    operandType.getShape().end());
+                                 operandType.getShape().end());
 
       int64_t one = 1;
-      if (!transformReshapeSlice<int64_t>(
-            reshapeOp, shape, /*toFill*/1, &one))
+      if (!transformReshapeSlice<int64_t>(reshapeOp, shape, /*toFill*/ 1, &one))
         return failure();
 
       auto newReshapeType =
