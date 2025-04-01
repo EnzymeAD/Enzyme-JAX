@@ -491,15 +491,19 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    SmallVector<int64_t> operandShape(slice.getOperand().getType().getShape().begin(),
-                                  slice.getOperand().getType().getShape().end());
+    SmallVector<int64_t> operandShape(
+        slice.getOperand().getType().getShape().begin(),
+        slice.getOperand().getType().getShape().end());
 
     if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
                                         /*checkRemoved*/ &one))
       return failure();
 
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), RankedTensorType::get(operandShape, slice.getOperand().getType().getElementType()), slice.getOperand());
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              slice.getOperand().getType().getElementType()),
+        slice.getOperand());
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
@@ -543,9 +547,9 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &zero))
       return failure();
 
-
-    SmallVector<int64_t> operandShape(pad.getOperand().getType().getShape().begin(),
-                                  pad.getOperand().getType().getShape().end());
+    SmallVector<int64_t> operandShape(
+        pad.getOperand().getType().getShape().begin(),
+        pad.getOperand().getType().getShape().end());
 
     int64_t one = 1;
     if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
@@ -553,7 +557,10 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), RankedTensorType::get(operandShape, pad.getOperand().getType().getElementType()), pad.getOperand());
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              pad.getOperand().getType().getElementType()),
+        pad.getOperand());
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::PadOp>(
         op, newOperand, pad.getPaddingValue(), low, high, interior);
@@ -9997,7 +10004,8 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
       patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
-                   ReshapeDUS, ReshapeSlice, ReshapePad, ReshapeReduceWindow>(context);
+                   ReshapeDUS, ReshapeSlice, ReshapePad, ReshapeReduceWindow>(
+          context);
     }
 
     if (all_finite)
