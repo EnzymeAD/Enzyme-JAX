@@ -491,8 +491,16 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
+    SmallVector<int64_t> operandShape(slice.getOperand().getType().getShape().begin(),
+                                  slice.getOperand().getType().getShape().end());
+
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
     auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
-        op.getLoc(), op.getType(), slice.getOperand());
+        op.getLoc(), RankedTensorType::get(operandShape, slice.getOperand().getType().getElementType()), slice.getOperand());
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
