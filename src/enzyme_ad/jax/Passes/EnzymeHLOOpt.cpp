@@ -6566,35 +6566,54 @@ struct TransposeReduceWindow final
 
     SmallVector<int64_t> win_dim(reduce.getWindowDimensions().begin(),
                                  reduce.getWindowDimensions().end());
-    SmallVector<int64_t> win_strides(reduce.getWindowStrides()->begin(),
-                                     reduce.getWindowStrides()->end());
-    SmallVector<int64_t> base_dialations(reduce.getBaseDilations()->begin(),
-                                         reduce.getBaseDilations()->end());
-    SmallVector<int64_t> win_dialations(reduce.getWindowDilations()->begin(),
-                                        reduce.getWindowDilations()->end());
+    SmallVector<int64_t> win_strides;
+    if (reduce.getWindowStrides())
+      win_strides.append(reduce.getWindowStrides()->begin(),
+                         reduce.getWindowStrides()->end());
+    SmallVector<int64_t> base_dialations;
+    if (reduce.getBaseDilations())
+      base_dialations.append(reduce.getBaseDilations()->begin(),
+                             reduce.getBaseDilations()->end());
+    SmallVector<int64_t> win_dialations;
+    if (reduce.getWindowDilations())
+      win_dialations.append(reduce.getWindowDilations()->begin(),
+                            reduce.getWindowDilations()->end());
     SmallVector<int64_t> padding_dialations(2 * padding_shape[0]);
 
     auto perm = op.getPermutation();
     for (int64_t i = 0; i < perm.size(); ++i) {
       win_dim[perm[i]] = reduce.getWindowDimensions()[i];
-      win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
-      base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
-      win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
-      padding_dialations[2 * perm[i]] =
-          (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
-      padding_dialations[2 * perm[i] + 1] =
-          (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+      if (reduce.getWindowStrides())
+        win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
+      if (reduce.getBaseDilations())
+        base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
+      if (reduce.getWindowDilations())
+        win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
+      if (reduce.getPadding()) {
+        padding_dialations[2 * perm[i]] =
+            (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
+        padding_dialations[2 * perm[i] + 1] =
+            (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+      }
     }
 
     auto red2 = rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
         op, restys, operands, reduce.getInitValues(),
         rewriter.getDenseI64ArrayAttr(win_dim),
-        rewriter.getDenseI64ArrayAttr(win_strides),
-        rewriter.getDenseI64ArrayAttr(base_dialations),
-        rewriter.getDenseI64ArrayAttr(win_dialations),
-        DenseIntElementsAttr::get(
-            RankedTensorType::get(padding_shape, rewriter.getIntegerType(64)),
-            padding_dialations));
+        (reduce.getWindowStrides() ? rewriter.getDenseI64ArrayAttr(win_strides)
+                                   : DenseI64ArrayAttr()),
+        (reduce.getBaseDilations()
+             ? rewriter.getDenseI64ArrayAttr(base_dialations)
+             : DenseI64ArrayAttr()),
+        (reduce.getWindowDilations()
+             ? rewriter.getDenseI64ArrayAttr(win_dialations)
+             : DenseI64ArrayAttr()),
+        (reduce.getPadding()
+             ? DenseIntElementsAttr::get(
+                   RankedTensorType::get(padding_shape,
+                                         rewriter.getIntegerType(64)),
+                   padding_dialations)
+             : DenseIntElementsAttr()));
 
     red2.getBody().takeBody(reduce.getBody());
     rewriter.eraseOp(reduce);
