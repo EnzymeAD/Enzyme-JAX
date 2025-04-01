@@ -6670,6 +6670,141 @@ struct ReshapeOfConcatToConcatOfReshape final
   }
 };
 
+// reshape(reduce_window(...)) -> reduce_window(reshape(...))
+struct ReshapeReduceWindow final
+    : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if the operand of the reshape is a reduce_window operation
+    auto reduceWindow =
+        reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::ReduceWindowOp>();
+    if (!reduceWindow)
+      return failure();
+
+    // Check if there is any non-reshape user of this reduce_window operation
+    if (llvm::any_of(reduceWindow->getUsers(), [&](Operation *user) {
+          return !isa<mlir::stablehlo::ReshapeOp>(user);
+        }))
+      return failure();
+
+    auto reduceWindowType = reduceWindow.getType(0).dyn_cast<ShapedType>();
+    if (!reduceWindowType || !reduceWindowType.hasStaticShape())
+      return failure();
+    ArrayRef<int64_t> reduceWindowShape = reduceWindowType.getShape();
+
+    auto reshapeType = reshapeOp.getType().dyn_cast<ShapedType>();
+    if (!reshapeType || !reshapeType.hasStaticShape())
+      return failure();
+    ArrayRef<int64_t> reshapeShape = reshapeType.getShape();
+
+    // Create reshaped operands for the reduce_window operation
+    SmallVector<int64_t> windowDims;
+    SmallVector<int64_t> windowStrides;
+    SmallVector<int64_t> windowDilations;
+    SmallVector<int64_t> baseDilations;
+    size_t paddingSize =
+        reduceWindow.getPadding() ? 2 * reshapeShape.size() : 0;
+    SmallVector<int64_t> padding(paddingSize);
+
+    size_t reduceWindowDim = 0;
+    size_t reshapeDim = 0;
+
+    while (reduceWindowDim < reduceWindowShape.size() &&
+           reshapeDim < reshapeShape.size()) {
+      // Original dimension, not being reshaped
+      if (reduceWindowShape[reduceWindowDim] == reshapeShape[reshapeDim]) {
+        windowDims.push_back(
+            reduceWindow.getWindowDimensions()[reduceWindowDim]);
+        if (reduceWindow.getWindowStrides())
+          windowStrides.push_back(
+              (*reduceWindow.getWindowStrides())[reduceWindowDim]);
+        if (reduceWindow.getWindowDilations())
+          windowDilations.push_back(
+              (*reduceWindow.getWindowDilations())[reduceWindowDim]);
+        if (reduceWindow.getBaseDilations())
+          baseDilations.push_back(
+              (*reduceWindow.getBaseDilations())[reduceWindowDim]);
+        if (reduceWindow.getPadding()) {
+          padding[2 * reshapeDim] =
+              (*(reduceWindow.getPadding()->begin() + (2 * reduceWindowDim)))
+                  .getSExtValue();
+          padding[2 * reshapeDim + 1] = (*(reduceWindow.getPadding()->begin() +
+                                           (2 * reduceWindowDim + 1)))
+                                            .getSExtValue();
+        }
+        reduceWindowDim++;
+        reshapeDim++;
+        continue;
+      }
+      // Unit dimension dropped by reshape
+      if (reduceWindowShape[reduceWindowDim] == 1) {
+        reduceWindowDim++;
+        continue;
+      }
+      // Unit dimension added by reshape
+      if (reshapeShape[reshapeDim] == 1) {
+        windowDims.push_back(1);
+        if (reduceWindow.getWindowStrides())
+          windowStrides.push_back(1);
+        if (reduceWindow.getWindowDilations())
+          windowDilations.push_back(1);
+        if (reduceWindow.getBaseDilations())
+          baseDilations.push_back(1);
+        if (reduceWindow.getPadding()) {
+          padding[2 * reshapeDim] = 0;
+          padding[2 * reshapeDim + 1] = 0;
+        }
+        reshapeDim++;
+        continue;
+      }
+      // Adding/dropping non-unit dimension is not supported
+      return failure();
+    }
+
+    while (reduceWindowDim < reduceWindowShape.size()) {
+      if (reduceWindowShape[reduceWindowDim] != 1)
+        return failure();
+      reduceWindowDim++;
+    }
+
+    while (reshapeDim < reshapeShape.size()) {
+      windowDims.push_back(1);
+      if (reduceWindow.getWindowStrides())
+        windowStrides.push_back(1);
+      if (reduceWindow.getWindowDilations())
+        windowDilations.push_back(1);
+      if (reduceWindow.getBaseDilations())
+        baseDilations.push_back(1);
+      if (reduceWindow.getPadding()) {
+        padding[2 * reshapeDim] = 0;
+        padding[2 * reshapeDim + 1] = 0;
+      }
+      reshapeDim++;
+    }
+
+    auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
+        reshapeOp.getLoc(), reshapeType, reduceWindow.getInputs()[0]);
+    auto newReduceWindowOp =
+        rewriter.replaceOpWithNewOp<mlir::stablehlo::ReduceWindowOp>(
+            reshapeOp, TypeRange(reshapeType), newReshapeOp->getResults(),
+            reduceWindow.getInitValues(),
+            rewriter.getDenseI64ArrayAttr(windowDims),
+            rewriter.getDenseI64ArrayAttr(windowStrides),
+            rewriter.getDenseI64ArrayAttr(baseDilations),
+            rewriter.getDenseI64ArrayAttr(windowDilations),
+            DenseIntElementsAttr::get(
+                RankedTensorType::get({(int64_t)reshapeShape.size(), 2},
+                                      rewriter.getIntegerType(64)),
+                padding));
+
+    newReduceWindowOp.getBody().takeBody(reduceWindow.getBody());
+    rewriter.eraseOp(reduceWindow);
+    return success();
+  }
+};
+
 struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -9862,7 +9997,7 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
       patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
-                   ReshapeDUS, ReshapeSlice, ReshapePad>(context);
+                   ReshapeDUS, ReshapeSlice, ReshapePad, ReshapeReduceWindow>(context);
     }
 
     if (all_finite)
