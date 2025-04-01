@@ -9783,7 +9783,8 @@ struct BroadcastInDimIsReshape final
     for (auto sz : outputType.getShape())
       outputSize *= sz;
 
-    if (inputSize != outputSize) return failure();
+    if (inputSize != outputSize)
+      return failure();
 
     SmallVector<int64_t> nonSingletonDims;
 
