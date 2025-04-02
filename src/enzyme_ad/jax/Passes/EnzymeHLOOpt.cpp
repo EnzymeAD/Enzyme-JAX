@@ -608,6 +608,141 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+// Optimization: DUSConcat
+// Pattern:
+//   %concat = stablehlo.concatenate %A, %B, %C, dimension = D
+//   %dus = stablehlo.dynamic_update_slice %concat, %update, %idx0, %idxD, %idxN
+// Constraint: %concat has only %dus as its user.
+// Constraint: The slice defined by %idx0..N and %update shape falls entirely
+//             within one of the inputs (e.g., %B) along dimension D, and
+//             spans fully along other dimensions.
+// Rewrite to:
+//   %idxD_new = %idxD - offset_of_B
+//   %new_dus = stablehlo.dynamic_update_slice %B, %update, %idx0_0, %idxD_new,
+//   %idxN_0 %new_concat = stablehlo.concatenate %A, %new_dus, %C, dimension = D
+//   replaceAllUsesWith(%dus, %new_concat)
+struct DUSConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    // 1. Check if the operand being updated comes from a concatenate op.
+    auto concatOp = dus.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concatOp) {
+      return failure();
+    }
+
+    // 2. Constraint: Check if the concatenate op has only the DUS as its user.
+    if (!llvm::hasSingleElement(concatOp->getUsers())) {
+      return failure();
+    }
+
+    // 3. Get shapes and dimension info.
+    auto dusOperandType =
+        dyn_cast<RankedTensorType>(dus.getOperand().getType());
+    auto updateType = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
+    if (!dusOperandType || !updateType || !dusOperandType.hasStaticShape() ||
+        !updateType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires static shapes for DUS operand and update");
+    }
+
+    int64_t concatDim = concatOp.getDimension();
+    ArrayRef<int64_t> dusOperandShape = dusOperandType.getShape();
+    ArrayRef<int64_t> updateShape = updateType.getShape();
+    SmallVector<Value> startIndices = dus.getStartIndices();
+
+    DenseIntElementsAttr concatStartAttr;
+    if (!matchPattern(startIndices[concatDim], m_Constant(&concatStartAttr))) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires constant start index for concat dimension");
+    }
+    if (concatStartAttr.getNumElements() != 1) {
+      return rewriter.notifyMatchFailure(dus,
+                                         "Concat start index must be a scalar");
+    }
+
+    int64_t concatStartVal = (*concatStartAttr.begin()).getSExtValue();
+    int64_t concatUpdateSize = updateShape[concatDim];
+    int64_t concatEndVal = concatStartVal + concatUpdateSize; // Exclusive end
+
+    int64_t currentOffset = 0;
+    int targetInputIdx = -1;
+    Value targetInputVal;
+
+    for (const auto &indexedInput : llvm::enumerate(concatOp.getInputs())) {
+      Value input = indexedInput.value();
+      auto inputType = dyn_cast<RankedTensorType>(input.getType());
+      if (!inputType || !inputType.hasStaticShape()) {
+        return rewriter.notifyMatchFailure(
+            dus, "Requires static shapes for ConcatOp inputs");
+      }
+      int64_t inputSize = inputType.getShape()[concatDim];
+
+      // Check if the DUS update region falls entirely within this input's
+      // region
+      if (concatStartVal >= currentOffset &&
+          concatEndVal <= (currentOffset + inputSize)) {
+        targetInputIdx = indexedInput.index();
+        targetInputVal = input;
+        break; // Found the target input
+      }
+      currentOffset += inputSize;
+    }
+
+    // If no suitable input was found
+    if (targetInputIdx == -1) {
+      return rewriter.notifyMatchFailure(
+          dus,
+          "DUS update region does not fall entirely within one concat input");
+    }
+
+    SmallVector<Value> newDusStartIndices =
+        llvm::to_vector(dus.getStartIndices());
+    Location loc = dus.getLoc();
+    auto indexElementType = startIndices[concatDim]
+                                .getType()
+                                .cast<ShapedType>()
+                                .getElementType(); // Assuming all start indices
+                                                   // have same scalar type
+    auto indexScalarType = RankedTensorType::get({}, indexElementType);
+
+    int64_t newConcatStartVal = concatStartVal - currentOffset;
+    auto newStartAttr =
+        rewriter.getIntegerAttr(indexElementType, newConcatStartVal);
+    newDusStartIndices[concatDim] = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), newDusStartIndices[concatDim].getType(),
+        makeAttr(newDusStartIndices[concatDim].getType(),
+                 concatStartVal - currentOffset)
+            .cast<ElementsAttr>());
+
+    // Create the new, smaller DUS.
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc,
+        targetInputVal
+            .getType(), // Result type is the same as the input being updated
+        targetInputVal, dus.getUpdate(), newDusStartIndices);
+
+    // Create the list of operands for the new concatenate op.
+    SmallVector<Value> newConcatOperands =
+        llvm::to_vector(concatOp.getInputs());
+    newConcatOperands[targetInputIdx] = newDus.getResult();
+
+    // Create the new concatenate op.
+    auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        concatOp
+            .getLoc(), // Use concatOp's location, maybe dus.getLoc() is better?
+        dus.getType(), // The result type should match the original DUS result
+        newConcatOperands, concatDim);
+
+    // Replace the original DUS with the new concatenate op.
+    rewriter.replaceOp(dus, newConcat.getResult());
+
+    return success();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -10600,7 +10735,7 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
