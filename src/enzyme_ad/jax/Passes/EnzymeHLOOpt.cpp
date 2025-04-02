@@ -9064,7 +9064,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
-// TODO: this is not valid in general but presumes the inner structure is valid from the input
+// TODO: this is not valid in general but presumes the inner structure is valid
+// from the input
 struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -9088,8 +9089,8 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 
-      auto concat = yieldOp.getOperand(idx)
-                     .getDefiningOp<stablehlo::ConcatenateOp>();
+      auto concat =
+          yieldOp.getOperand(idx).getDefiningOp<stablehlo::ConcatenateOp>();
 
       // Check that the while result has exactly one use
       if (!concat)
@@ -9103,14 +9104,17 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
         continue;
 
       stablehlo::SliceOp ops[3] = {
-        concat.getOperands()[0].getDefiningOp<stablehlo::SliceOp>(),
-        concat.getOperands()[1].getDefiningOp<stablehlo::SliceOp>(),
-        concat.getOperands()[2].getDefiningOp<stablehlo::SliceOp>(),
+          concat.getOperands()[0].getDefiningOp<stablehlo::SliceOp>(),
+          concat.getOperands()[1].getDefiningOp<stablehlo::SliceOp>(),
+          concat.getOperands()[2].getDefiningOp<stablehlo::SliceOp>(),
       };
 
-      if (!ops[0]) continue;
-      if (!ops[1]) continue;
-      if (!ops[2]) continue;
+      if (!ops[0])
+        continue;
+      if (!ops[1])
+        continue;
+      if (!ops[2])
+        continue;
 
       if (ops[0].getOperand() != ops[1].getOperand())
         continue;
@@ -9119,24 +9123,25 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 
       bool legal = true;
 
-      for (int opn = 0; opn < 3; opn ++)
-      for (int i=0; i<concat.getType().getShape().size(); i++)
-        if (i != concat.getDimension()) {
-          if (ops[0].getStartIndices()[i] != ops[opn].getStartIndices()[i]) {
-            legal = false;
-            break;
+      for (int opn = 0; opn < 3; opn++)
+        for (int i = 0; i < concat.getType().getShape().size(); i++)
+          if (i != concat.getDimension()) {
+            if (ops[0].getStartIndices()[i] != ops[opn].getStartIndices()[i]) {
+              legal = false;
+              break;
+            }
+            if (ops[opn].getStrides()[i] != 1) {
+              legal = false;
+              break;
+            }
+            if (ops[0].getLimitIndices()[i] != ops[opn].getLimitIndices()[i]) {
+              legal = false;
+              break;
+            }
           }
-          if (ops[opn].getStrides()[i] != 1) {
-            legal = false;
-            break;
-          }
-          if (ops[0].getLimitIndices()[i]  != ops[opn].getLimitIndices()[i]) {
-            legal = false;
-            break;
-          }
-        }
 
-      if (!legal) continue;
+      if (!legal)
+        continue;
 
       int lowerLim = ops[1].getStartIndices()[concat.getDimension()];
       int upperLim = ops[1].getLimitIndices()[concat.getDimension()];
@@ -9146,17 +9151,22 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
       if (ops[0].getLimitIndices()[concat.getDimension()] != upperLim)
         continue;
 
-      int lhsSize = ops[0].getLimitIndices()[concat.getDimension()] - ops[0].getStartIndices()[concat.getDimension()];
-      if (lhsSize != ops[1].getOperand().getType().getShape()[concat.getDimension()] - upperLim)
+      int lhsSize = ops[0].getLimitIndices()[concat.getDimension()] -
+                    ops[0].getStartIndices()[concat.getDimension()];
+      if (lhsSize !=
+          ops[1].getOperand().getType().getShape()[concat.getDimension()] -
+              upperLim)
         continue;
-      int rhsSize = ops[2].getLimitIndices()[concat.getDimension()] - ops[2].getStartIndices()[concat.getDimension()];
+      int rhsSize = ops[2].getLimitIndices()[concat.getDimension()] -
+                    ops[2].getStartIndices()[concat.getDimension()];
       if (rhsSize != lowerLim)
         continue;
 
       // TODO this is unsafe unless the input is verified to have this property
       // For now we will assume it
 
-      candidates.emplace_back(Candidate{idx, concat, lhsSize, rhsSize, ops[0], ops[1], ops[2]});
+      candidates.emplace_back(
+          Candidate{idx, concat, lhsSize, rhsSize, ops[0], ops[1], ops[2]});
     }
 
     // If no candidates found, no rewrite needed
@@ -9177,9 +9187,8 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 
       newOperands[candidate.idx] = rewriter.create<stablehlo::SliceOp>(
           candidate.ops[1].getLoc(), whileOp.getOperands()[candidate.idx],
-          candidate.ops[1].getStartIndices(), candidate.ops[1].getLimitIndices(),
-          candidate.ops[1].getStrides()
-          );
+          candidate.ops[1].getStartIndices(),
+          candidate.ops[1].getLimitIndices(), candidate.ops[1].getStrides());
     }
 
     // Update yield op to use the input of the inner transpose
@@ -9219,25 +9228,44 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
     {
       for (auto &candidate : candidates) {
 
-        SmallVector<int64_t> lowerStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> upperStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> lowerEnds(cast<RankedTensorType>(results[candidate.idx].getType()).getShape().begin(), cast<RankedTensorType>(results[candidate.idx].getType()).getShape().end());
-        SmallVector<int64_t> upperEnds(cast<RankedTensorType>(results[candidate.idx].getType()).getShape().begin(), cast<RankedTensorType>(results[candidate.idx].getType()).getShape().end());
-        SmallVector<int64_t> strides(candidate.concat.getType().getShape().size(), 1);
+        SmallVector<int64_t> lowerStarts(
+            candidate.concat.getType().getShape().size(), 0);
+        SmallVector<int64_t> upperStarts(
+            candidate.concat.getType().getShape().size(), 0);
+        SmallVector<int64_t> lowerEnds(
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .begin(),
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .end());
+        SmallVector<int64_t> upperEnds(
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .begin(),
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .end());
+        SmallVector<int64_t> strides(
+            candidate.concat.getType().getShape().size(), 1);
 
         lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
 
-        upperStarts[candidate.concat.getDimension()] = upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+        upperStarts[candidate.concat.getDimension()] =
+            upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
 
         Value ops[3] = {
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), results[candidate.idx], lowerStarts, lowerEnds, strides),
-          results[candidate.idx],
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), results[candidate.idx], upperStarts, upperEnds, strides),
+            rewriter.create<stablehlo::SliceOp>(
+                candidate.concat.getLoc(), results[candidate.idx], lowerStarts,
+                lowerEnds, strides),
+            results[candidate.idx],
+            rewriter.create<stablehlo::SliceOp>(
+                candidate.concat.getLoc(), results[candidate.idx], upperStarts,
+                upperEnds, strides),
 
         };
-        results[candidate.idx] =
-            rewriter.create<stablehlo::ConcatenateOp>(
-              candidate.concat.getLoc(), ops, candidate.concat.getDimension());
+        results[candidate.idx] = rewriter.create<stablehlo::ConcatenateOp>(
+            candidate.concat.getLoc(), ops, candidate.concat.getDimension());
       }
     }
 
@@ -9281,25 +9309,37 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
         for (auto &candidate : candidates) {
           if (candidate.idx == i) {
 
-        SmallVector<int64_t> lowerStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> upperStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> lowerEnds(cast<RankedTensorType>(newArg.getType()).getShape().begin(), cast<RankedTensorType>(newArg.getType()).getShape().end());
-        SmallVector<int64_t> upperEnds(cast<RankedTensorType>(newArg.getType()).getShape().begin(), cast<RankedTensorType>(newArg.getType()).getShape().end());
-        SmallVector<int64_t> strides(candidate.concat.getType().getShape().size(), 1);
+            SmallVector<int64_t> lowerStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> upperStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> lowerEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> upperEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> strides(
+                candidate.concat.getType().getShape().size(), 1);
 
-        lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
+            lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
 
-        upperStarts[candidate.concat.getDimension()] = upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+            upperStarts[candidate.concat.getDimension()] =
+                upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
 
-        Value ops[3] = {
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), newArg, lowerStarts, lowerEnds, strides),
-          newArg,
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), newArg, upperStarts, upperEnds, strides),
+            Value ops[3] = {
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, lowerStarts,
+                                                    lowerEnds, strides),
+                newArg,
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, upperStarts,
+                                                    upperEnds, strides),
 
-        };
-        newArg =
-            rewriter.create<stablehlo::ConcatenateOp>(
-              candidate.concat.getLoc(), ops, candidate.concat.getDimension());
+            };
+            newArg = rewriter.create<stablehlo::ConcatenateOp>(
+                candidate.concat.getLoc(), ops,
+                candidate.concat.getDimension());
             break;
           }
         }
@@ -9353,25 +9393,37 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
         Value newArg = newWhileOp.getCond().getArgument(i);
         for (auto &candidate : candidates) {
           if (candidate.idx == i) {
-        SmallVector<int64_t> lowerStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> upperStarts(candidate.concat.getType().getShape().size(), 0);
-        SmallVector<int64_t> lowerEnds(cast<RankedTensorType>(newArg.getType()).getShape().begin(), cast<RankedTensorType>(newArg.getType()).getShape().end());
-        SmallVector<int64_t> upperEnds(cast<RankedTensorType>(newArg.getType()).getShape().begin(), cast<RankedTensorType>(newArg.getType()).getShape().end());
-        SmallVector<int64_t> strides(candidate.concat.getType().getShape().size(), 1);
+            SmallVector<int64_t> lowerStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> upperStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> lowerEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> upperEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> strides(
+                candidate.concat.getType().getShape().size(), 1);
 
-        lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
+            lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
 
-        upperStarts[candidate.concat.getDimension()] = upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+            upperStarts[candidate.concat.getDimension()] =
+                upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
 
-        Value ops[3] = {
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), newArg, lowerStarts, lowerEnds, strides),
-          newArg,
-          rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(), newArg, upperStarts, upperEnds, strides),
+            Value ops[3] = {
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, lowerStarts,
+                                                    lowerEnds, strides),
+                newArg,
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, upperStarts,
+                                                    upperEnds, strides),
 
-        };
-        newArg =
-            rewriter.create<stablehlo::ConcatenateOp>(
-              candidate.concat.getLoc(), ops, candidate.concat.getDimension());
+            };
+            newArg = rewriter.create<stablehlo::ConcatenateOp>(
+                candidate.concat.getLoc(), ops,
+                candidate.concat.getDimension());
             break;
           }
         }
@@ -9389,7 +9441,6 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
     return success();
   }
 };
-
 
 // Replace while op iteration variables which are not updated with their
 // upcoming value
