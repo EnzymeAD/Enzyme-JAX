@@ -1045,6 +1045,11 @@ def DUSConcat : EnzymeHLOPatternOp<
   let patterns = ["DUSConcat"];
 }
 
+def DUSPad : EnzymeHLOPatternOp<
+    "dus_pad"> {
+  let patterns = ["DUSPad"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
