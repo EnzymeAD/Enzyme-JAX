@@ -625,20 +625,14 @@ struct DUSConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
+
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
-    // 1. Check if the operand being updated comes from a concatenate op.
     auto concatOp = dus.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concatOp) {
       return failure();
     }
 
-    // 2. Constraint: Check if the concatenate op has only the DUS as its user.
-    if (!llvm::hasSingleElement(concatOp->getUsers())) {
-      return failure();
-    }
-
-    // 3. Get shapes and dimension info.
     auto dusOperandType =
         dyn_cast<RankedTensorType>(dus.getOperand().getType());
     auto updateType = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
