@@ -8809,8 +8809,12 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
       Value bodyArg = body->getArgument(i);
       Value condArg = cond->getArgument(i);
 
-      if (inputValue.getDefiningOp<stablehlo::ConstantOp>() &&
-          bodyArg == bodyTerm->getOperand(i)) {
+      bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
+      if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
+        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+      }
+
+      if (canHoist && bodyArg == bodyTerm->getOperand(i)) {
         // This variable is not updated during iterations
         rewriter.replaceAllUsesWith(bodyArg, inputValue);
         rewriter.replaceAllUsesWith(condArg, inputValue);
