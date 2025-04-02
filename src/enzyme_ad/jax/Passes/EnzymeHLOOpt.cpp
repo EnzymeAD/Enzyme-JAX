@@ -625,7 +625,6 @@ struct DUSConcat final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
-
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
     auto concatOp = dus.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
