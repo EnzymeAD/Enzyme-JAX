@@ -8590,12 +8590,17 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
       return failure();
       
     // Get the counter argument and its start value for later use
-    Value counterArg = whileOp.getCond().getArgument(counterIdx);
+    Value counterArg = whileOp.getBody().getArgument(counterIdx);
     Value startValue = findCounterStartValue(whileOp, counterIdx);
+    
+    // Find the counter step value (how much the counter increments each iteration)
+    // This is needed to correctly scale the induction variable calculation
+    Value counterStepValue = findCounterStepValue(whileOp, counterIdx);
+    if (!counterStepValue)
+      return failure();
     
     // Examine each iteration argument and result
     for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
-
       if(i == counterIdx)
         continue;
       // Get the input, the body argument, and the yielded value
@@ -8616,7 +8621,7 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
         
       // Now we can replace uses of the iterArg inside the loop
       // with a direct calculation based on the counter:
-      // replacement = init_value + (counter - start_value) * step_value
+      // replacement = init_value + ((counter - start_value) * step_value) / counter_step_value
       if (!iterArg.use_empty()) {
         rewriter.setInsertionPointToStart(&bodyBlock);
         
@@ -8626,11 +8631,17 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
             
         // Use addOp.getRhs() instead of constOp.getValue()
         Value stepValue = addOp.getRhs();
+        
+        // First multiply by the step value
         Value scaledOffset = rewriter.create<stablehlo::MulOp>(
             whileOp.getLoc(), iterOffset.getType(), iterOffset, stepValue);
             
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = rewriter.create<stablehlo::DivOp>(
+            whileOp.getLoc(), scaledOffset.getType(), scaledOffset, counterStepValue);
+            
         Value replacement = rewriter.create<stablehlo::AddOp>(
-            whileOp.getLoc(), iterArg.getType(), initValue, scaledOffset);
+            whileOp.getLoc(), iterArg.getType(), initValue, normalizedOffset);
             
         rewriter.modifyOpInPlace(whileOp, 
             [&] { iterArg.replaceAllUsesWith(replacement); });
@@ -8648,11 +8659,17 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
             
         // Use addOp.getRhs() instead of constOp.getValue()
         Value stepValue = addOp.getRhs();
-        Value totalOffset = rewriter.create<stablehlo::MulOp>(
+        
+        // First multiply by the step value
+        Value scaledOffset = rewriter.create<stablehlo::MulOp>(
             whileOp.getLoc(), totalIters.getType(), totalIters, stepValue);
             
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = rewriter.create<stablehlo::DivOp>(
+            whileOp.getLoc(), scaledOffset.getType(), scaledOffset, counterStepValue);
+            
         Value finalValue = rewriter.create<stablehlo::AddOp>(
-            whileOp.getLoc(), result.getType(), initValue, totalOffset);
+            whileOp.getLoc(), result.getType(), initValue, normalizedOffset);
             
         rewriter.replaceAllUsesWith(result, finalValue);
         canonicalized = true;
@@ -8707,7 +8724,41 @@ private:
     // The initial value is the corresponding operand to the while op
     return whileOp.getOperands()[counterIdx];
   }
+
+  // Helper to find the counter step value (how much it increments each iteration)
+  Value findCounterStepValue(stablehlo::WhileOp whileOp, unsigned counterIdx) const {
+    // Get the block argument in the body region
+    Block &bodyBlock = whileOp.getBody().front();
+    BlockArgument counterArg = bodyBlock.getArgument(counterIdx);
+    
+    // Find the terminator to get the yielded value
+    auto returnOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    
+    // Get the yielded value for the counter
+    Value yieldedCounter = returnOp.getOperand(counterIdx);
+    
+    // Look for addition pattern: counter + step or step + counter
+    auto addOp = dyn_cast_or_null<stablehlo::AddOp>(yieldedCounter.getDefiningOp());
+    if (!addOp)
+      return nullptr;
+      
+    // Check both sides of the addition operation (since addition is commutative)
+    if (addOp.getLhs() == counterArg) {
+      // Pattern: counter + step
+      return addOp.getRhs();
+    }
+    
+    if (addOp.getRhs() == counterArg) {
+      // Pattern: step + counter
+      return addOp.getLhs();
+    }
+    
+    // Counter is not directly used in the addition
+    return nullptr;
+  }
 };
+
+
 
 struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
