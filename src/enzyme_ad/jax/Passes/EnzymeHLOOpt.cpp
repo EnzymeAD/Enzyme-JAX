@@ -8822,10 +8822,7 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       if (!DUS)
         continue;
 
-      llvm::errs() << " considering dus: " << DUS << "\n";
-
       if (!DUS->hasOneUse()) {
-        llvm::errs() << " + multi use\n";
       }
 
       mlir::Value conditionalOperand = nullptr;
@@ -8835,21 +8832,18 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() || !whileOp.getBody().getArgument(idx).use_empty();
 
         if (hasArgUse) {
-          llvm::errs() << " + not corresponding idx (but outside loop) with use: " << whileOp.getBody().front().getArgument(idx) << "\n";
           continue;
         }
 
         conditionalOperand = DUS.getOperand();
         hasConditional = true;
       } else {
-        llvm::errs() << " + not corresponding idx: " << whileOp.getBody().front().getArgument(idx) << "\n";
         continue;
       }
 
       bool legal = true;
       for (auto idx : DUS.getStartIndices()) {
         if (!definedOutside(idx, whileOp)) {
-          llvm::errs() << " + not idx not defined outside loop: " << idx << "\n";
           legal = false;
         }
       }
