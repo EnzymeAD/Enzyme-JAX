@@ -8814,8 +8814,7 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
         canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
       }
 
-      if (canHoist &&
-          bodyArg == bodyTerm->getOperand(i)) {
+      if (canHoist && bodyArg == bodyTerm->getOperand(i)) {
         // This variable is not updated during iterations
         rewriter.replaceAllUsesWith(bodyArg, inputValue);
         rewriter.replaceAllUsesWith(condArg, inputValue);
