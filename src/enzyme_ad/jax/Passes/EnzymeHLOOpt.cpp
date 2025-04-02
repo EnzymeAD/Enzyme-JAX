@@ -8567,6 +8567,148 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
   return true;
 }
 
+struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern<stablehlo::WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
+                                PatternRewriter &rewriter) const final {
+    // Only handle while loops with identifiable iteration patterns
+    bool canonicalized = false;
+    
+    // Look for a loop counter variable (induction variable analog)
+    Block &bodyBlock = whileOp.getBody().front();
+    auto returnOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    
+    // Examine each iteration argument and result
+    for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
+      // Get the input, the body argument, and the yielded value
+      Value initValue = whileOp.getOperands()[i];
+      BlockArgument iterArg = bodyBlock.getArgument(i);
+      Value yieldedValue = returnOp.getOperand(i);
+      Value result = whileOp.getResult(i);
+      
+      // Look for a simple addition pattern: iter_arg + constant_step
+      auto addOp = yieldedValue.getDefiningOp<stablehlo::AddOp>();
+      if (!addOp || addOp.getLhs() != iterArg)
+        continue;
+        
+      // Find if the step is a constant
+      auto constOp = addOp.getRhs().getDefiningOp<stablehlo::ConstantOp>();
+      if (!constOp)
+        continue;
+        
+      // Also need to find a counter variable (explicit loop index)
+      // Look for a block argument that is compared to a limit in the condition
+      Value counterArg = nullptr;
+      Value limitValue = nullptr;
+      bool found = findCounterAndLimit(whileOp, counterArg, limitValue);
+      if (!found)
+        continue;
+        
+      // Now we can replace uses of the iterArg inside the loop
+      // with a direct calculation based on the counter:
+      // replacement = init_value + (counter - start_value) * step_value
+      if (!iterArg.use_empty() && counterArg) {
+        rewriter.setInsertionPointToStart(&bodyBlock);
+        
+        // Determine start value of counter (typically 0 or 1)
+        Value startValue = findCounterStartValue(whileOp, counterArg);
+        
+        // Create the calculation for the current iteration
+        Value iterOffset = rewriter.create<stablehlo::SubtractOp>(
+            whileOp.getLoc(), counterArg.getType(), counterArg, startValue);
+            
+        // Use addOp.getRhs() instead of constOp.getValue()
+        Value stepValue = addOp.getRhs();
+        Value scaledOffset = rewriter.create<stablehlo::MulOp>(
+            whileOp.getLoc(), iterOffset.getType(), iterOffset, stepValue);
+            
+        Value replacement = rewriter.create<stablehlo::AddOp>(
+            whileOp.getLoc(), iterArg.getType(), initValue, scaledOffset);
+            
+        rewriter.modifyOpInPlace(whileOp, 
+            [&] { iterArg.replaceAllUsesWith(replacement); });
+        canonicalized = true;
+      }
+      
+      // Similarly replace uses of the result outside the loop
+      // with a calculation based on the final counter value
+      if (!result.use_empty() && limitValue) {
+        rewriter.setInsertionPointAfter(whileOp);
+        
+        // Determine start value of counter
+        Value startValue = findCounterStartValue(whileOp, counterArg);
+        
+        // Calculate total iterations: limit - start
+        Value totalIters = rewriter.create<stablehlo::SubtractOp>(
+            whileOp.getLoc(), limitValue.getType(), limitValue, startValue);
+            
+        // Use addOp.getRhs() instead of constOp.getValue()
+        Value stepValue = addOp.getRhs();
+        Value totalOffset = rewriter.create<stablehlo::MulOp>(
+            whileOp.getLoc(), totalIters.getType(), totalIters, stepValue);
+            
+        Value finalValue = rewriter.create<stablehlo::AddOp>(
+            whileOp.getLoc(), result.getType(), initValue, totalOffset);
+            
+        rewriter.replaceAllUsesWith(result, finalValue);
+        canonicalized = true;
+      }
+    }
+    
+    return success(canonicalized);
+  }
+  
+private:
+  // Helper function to identify the counter variable and its limit
+  bool findCounterAndLimit(stablehlo::WhileOp whileOp, 
+                          Value &counterArg, Value &limitValue) const {
+    // Look in the condition region for a comparison operation
+    Block &condBlock = whileOp.getCond().front();
+    Operation *terminator = condBlock.getTerminator();
+    
+    // Typical pattern: return %comparison
+    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(terminator)) {
+      if (returnOp.getNumOperands() != 1)
+        return false;
+        
+      // Look for a comparison that controls the loop
+      auto compareOp = returnOp.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+      if (!compareOp)
+        return false;
+        
+      // Check if one side is a block argument (our counter)
+      if (auto blockArg = compareOp.getLhs().dyn_cast<BlockArgument>()) {
+        if (blockArg.getOwner() == &condBlock) {
+          counterArg = blockArg;
+          limitValue = compareOp.getRhs();
+          return true;
+        }
+      }
+      
+      if (auto blockArg = compareOp.getRhs().dyn_cast<BlockArgument>()) {
+        if (blockArg.getOwner() == &condBlock) {
+          counterArg = blockArg;
+          limitValue = compareOp.getLhs();
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  // Helper to find the initial value of the counter
+  Value findCounterStartValue(stablehlo::WhileOp whileOp, Value counterArg) const {
+    // Get the index of the counter argument
+    auto blockArg = counterArg.cast<BlockArgument>();
+    unsigned counterIdx = blockArg.getArgNumber();
+    
+    // The initial value is the corresponding operand to the while op
+    return whileOp.getOperands()[counterIdx];
+  }
+};
+
 struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -10037,6 +10179,7 @@ struct EnzymeHLOOptPass
 
     // clang-format off
     patterns.add<
+        WhileOpInductionReplacement,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
