@@ -9064,6 +9064,384 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
+// TODO: this is not valid in general but presumes the inner structure is valid
+// from the input
+struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    // Find yield op in the body
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    // Step 1: Track which results need to be transformed
+    struct Candidate {
+      unsigned idx;
+      stablehlo::ConcatenateOp concat;
+      int lhsSize;
+      int rhsSize;
+      stablehlo::SliceOp ops[3];
+    };
+
+    llvm::SmallVector<Candidate, 4> candidates;
+    bool hasConditional = false;
+
+    for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
+
+      auto concat =
+          yieldOp.getOperand(idx).getDefiningOp<stablehlo::ConcatenateOp>();
+
+      // Check that the while result has exactly one use
+      if (!concat)
+        continue;
+
+      if (!concat->hasOneUse()) {
+        continue;
+      }
+
+      if (concat.getOperands().size() != 3)
+        continue;
+
+      stablehlo::SliceOp ops[3] = {
+          concat.getOperands()[0].getDefiningOp<stablehlo::SliceOp>(),
+          concat.getOperands()[1].getDefiningOp<stablehlo::SliceOp>(),
+          concat.getOperands()[2].getDefiningOp<stablehlo::SliceOp>(),
+      };
+
+      if (!ops[0])
+        continue;
+      if (!ops[1])
+        continue;
+      if (!ops[2])
+        continue;
+
+      if (ops[0].getOperand() != ops[1].getOperand())
+        continue;
+      if (ops[0].getOperand() != ops[2].getOperand())
+        continue;
+
+      bool legal = true;
+
+      for (int opn = 0; opn < 3; opn++)
+        for (int i = 0; i < concat.getType().getShape().size(); i++)
+          if (i != concat.getDimension()) {
+            if (ops[0].getStartIndices()[i] != ops[opn].getStartIndices()[i]) {
+              legal = false;
+              break;
+            }
+            if (ops[opn].getStrides()[i] != 1) {
+              legal = false;
+              break;
+            }
+            if (ops[0].getLimitIndices()[i] != ops[opn].getLimitIndices()[i]) {
+              legal = false;
+              break;
+            }
+          }
+
+      if (!legal)
+        continue;
+
+      int lowerLim = ops[1].getStartIndices()[concat.getDimension()];
+      int upperLim = ops[1].getLimitIndices()[concat.getDimension()];
+      if (ops[2].getStartIndices()[concat.getDimension()] != lowerLim)
+        continue;
+
+      if (ops[0].getLimitIndices()[concat.getDimension()] != upperLim)
+        continue;
+
+      int lhsSize = ops[0].getLimitIndices()[concat.getDimension()] -
+                    ops[0].getStartIndices()[concat.getDimension()];
+      if (lhsSize !=
+          ops[1].getOperand().getType().getShape()[concat.getDimension()] -
+              upperLim)
+        continue;
+      int rhsSize = ops[2].getLimitIndices()[concat.getDimension()] -
+                    ops[2].getStartIndices()[concat.getDimension()];
+      if (rhsSize != lowerLim)
+        continue;
+
+      // TODO this is unsafe unless the input is verified to have this property
+      // For now we will assume it
+
+      candidates.emplace_back(
+          Candidate{idx, concat, lhsSize, rhsSize, ops[0], ops[1], ops[2]});
+    }
+
+    // If no candidates found, no rewrite needed
+    if (candidates.empty())
+      return failure();
+
+    // Step 2 : Make transformations in the original while op
+    // Get the operands of the while op to use later
+    auto whileOperands = llvm::to_vector(whileOp.getOperands());
+
+    // New operands
+    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                   whileOp.getOperands().end());
+
+    // Create input transposes for each candidate
+    for (auto &candidate : candidates) {
+      // Create a new transpose before the while loop
+
+      newOperands[candidate.idx] = rewriter.create<stablehlo::SliceOp>(
+          candidate.ops[1].getLoc(), whileOp.getOperands()[candidate.idx],
+          candidate.ops[1].getStartIndices(),
+          candidate.ops[1].getLimitIndices(), candidate.ops[1].getStrides());
+    }
+
+    // Update yield op to use the input of the inner transpose
+    {
+      // Save the current insertion point
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+
+      // New return values
+      SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(),
+                                         yieldOp.getOperands().end());
+
+      rewriter.setInsertionPoint(yieldOp);
+      for (auto &candidate : candidates) {
+        newReturnValues[candidate.idx] = candidate.ops[1];
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
+                                                       newReturnValues);
+      // Update the yieldOp
+      yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    }
+
+    // Step 3 : Create a new while op with the new operands and move the body of
+    // original whileOp
+    SmallVector<Type> newResultTypes;
+    newResultTypes.reserve(newOperands.size());
+
+    for (auto operand : newOperands) {
+      newResultTypes.push_back(operand.getType());
+    }
+    auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
+        whileOp.getLoc(), newResultTypes, newOperands);
+
+    SmallVector<Value> results;
+    for (auto res : newWhileOp.getResults())
+      results.push_back(res);
+
+    {
+      for (auto &candidate : candidates) {
+
+        SmallVector<int64_t> lowerStarts(
+            candidate.concat.getType().getShape().size(), 0);
+        SmallVector<int64_t> upperStarts(
+            candidate.concat.getType().getShape().size(), 0);
+        SmallVector<int64_t> lowerEnds(
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .begin(),
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .end());
+        SmallVector<int64_t> upperEnds(
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .begin(),
+            cast<RankedTensorType>(results[candidate.idx].getType())
+                .getShape()
+                .end());
+        SmallVector<int64_t> strides(
+            candidate.concat.getType().getShape().size(), 1);
+
+        lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
+
+        upperStarts[candidate.concat.getDimension()] =
+            upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+
+        Value ops[3] = {
+            rewriter.create<stablehlo::SliceOp>(
+                candidate.concat.getLoc(), results[candidate.idx], lowerStarts,
+                lowerEnds, strides),
+            results[candidate.idx],
+            rewriter.create<stablehlo::SliceOp>(
+                candidate.concat.getLoc(), results[candidate.idx], upperStarts,
+                upperEnds, strides),
+
+        };
+        results[candidate.idx] = rewriter.create<stablehlo::ConcatenateOp>(
+            candidate.concat.getLoc(), ops, candidate.concat.getDimension());
+      }
+    }
+
+    // Create blocks in both regions first
+    {
+      // Create a block in the condition region
+      Block *condBlock = rewriter.createBlock(&newWhileOp.getCond());
+
+      // Add arguments to the condition block matching operand types
+      for (auto type : newResultTypes) {
+        condBlock->addArgument(type, whileOp.getLoc());
+      }
+
+      // Create a block in the body region
+      Block *bodyBlock = rewriter.createBlock(&newWhileOp.getBody());
+
+      // Add arguments to the body block matching operand types
+      for (auto type : newResultTypes) {
+        bodyBlock->addArgument(type, whileOp.getLoc());
+      }
+    }
+
+    // Create an IR mapper to map values from old op to new op
+    mlir::IRMapping mapper;
+
+    // Clear the new body block but keep its arguments
+    Block &newBodyBlock = newWhileOp.getBody().front();
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
+
+    // Clone operations from old body to new body
+    Block &oldBodyBlock = whileOp.getBody().front();
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newBodyBlock);
+
+      // Set up operand mapping for the body region
+      for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getBody().getArgument(i);
+        Value newArg = newWhileOp.getBody().getArgument(i);
+        for (auto &candidate : candidates) {
+          if (candidate.idx == i) {
+
+            SmallVector<int64_t> lowerStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> upperStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> lowerEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> upperEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> strides(
+                candidate.concat.getType().getShape().size(), 1);
+
+            lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
+
+            upperStarts[candidate.concat.getDimension()] =
+                upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+
+            Value ops[3] = {
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, lowerStarts,
+                                                    lowerEnds, strides),
+                newArg,
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, upperStarts,
+                                                    upperEnds, strides),
+
+            };
+            newArg = rewriter.create<stablehlo::ConcatenateOp>(
+                candidate.concat.getLoc(), ops,
+                candidate.concat.getDimension());
+            break;
+          }
+        }
+        mapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldBodyBlock.getOperations()) {
+        // Skip the terminator - we'll add it after all other operations
+        if (isa<stablehlo::ReturnOp>(op))
+          continue;
+
+        // Clone the operation with the value mapping
+        rewriter.clone(op, mapper);
+      }
+    }
+
+    // Create a new terminator for the body region using new values
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      SmallVector<Value> newReturnValues;
+
+      // Map old return values to new values using the mapper
+      for (auto oldRetVal : yieldOp.getOperands()) {
+        Value newRetVal = mapper.lookupOrNull(oldRetVal);
+        // If the value isn't in the mapper, maybe it was a block argument or
+        // constant
+        if (!newRetVal)
+          newRetVal = oldRetVal; // Consider more robust handling if needed
+        newReturnValues.push_back(newRetVal);
+      }
+
+      // Create the return op at the end of the body
+      rewriter.setInsertionPointToEnd(&newBodyBlock);
+      rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
+    }
+
+    // Create condition region mapper
+    mlir::IRMapping condMapper;
+
+    // Clear and clone condition region
+    Block &newCondBlock = newWhileOp.getCond().front();
+    newCondBlock.clear();
+    Block &oldCondBlock = whileOp.getCond().front();
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newCondBlock);
+
+      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getCond().getArgument(i);
+        Value newArg = newWhileOp.getCond().getArgument(i);
+        for (auto &candidate : candidates) {
+          if (candidate.idx == i) {
+            SmallVector<int64_t> lowerStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> upperStarts(
+                candidate.concat.getType().getShape().size(), 0);
+            SmallVector<int64_t> lowerEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> upperEnds(
+                cast<RankedTensorType>(newArg.getType()).getShape().begin(),
+                cast<RankedTensorType>(newArg.getType()).getShape().end());
+            SmallVector<int64_t> strides(
+                candidate.concat.getType().getShape().size(), 1);
+
+            lowerEnds[candidate.concat.getDimension()] = candidate.lhsSize;
+
+            upperStarts[candidate.concat.getDimension()] =
+                upperEnds[candidate.concat.getDimension()] - candidate.rhsSize;
+
+            Value ops[3] = {
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, lowerStarts,
+                                                    lowerEnds, strides),
+                newArg,
+                rewriter.create<stablehlo::SliceOp>(candidate.concat.getLoc(),
+                                                    newArg, upperStarts,
+                                                    upperEnds, strides),
+
+            };
+            newArg = rewriter.create<stablehlo::ConcatenateOp>(
+                candidate.concat.getLoc(), ops,
+                candidate.concat.getDimension());
+            break;
+          }
+        }
+        condMapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldCondBlock.getOperations()) {
+        rewriter.clone(op, condMapper);
+      }
+    }
+
+    // Finally, replace all uses of the old while op with the new one
+    rewriter.replaceOp(whileOp, results);
+
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
