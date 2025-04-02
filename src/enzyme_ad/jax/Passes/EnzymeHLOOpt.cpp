@@ -8567,6 +8567,9 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
   return true;
 }
 
+// Currently supports:
+// Indentifies induction variable
+// Supports addition of constant step value
 struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern<stablehlo::WhileOp>::OpRewritePattern;
 
@@ -8601,21 +8604,36 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
     
     // Examine each iteration argument and result
     for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
-      if(i == counterIdx)
+      // Skip the counter variable itself - we don't want to optimize it away
+      if (i == counterIdx)
         continue;
+        
       // Get the input, the body argument, and the yielded value
       Value initValue = whileOp.getOperands()[i];
       BlockArgument iterArg = bodyBlock.getArgument(i);
       Value yieldedValue = returnOp.getOperand(i);
       Value result = whileOp.getResult(i);
       
-      // Look for a simple addition pattern: iter_arg + constant_step
+      // Look for a simple addition pattern: either iter_arg + step or step + iter_arg
       auto addOp = yieldedValue.getDefiningOp<stablehlo::AddOp>();
-      if (!addOp || addOp.getLhs() != iterArg)
+      if (!addOp)
         continue;
         
+      // Check which operand is the iteration argument and which is the step
+      Value stepValue;
+      if (addOp.getLhs() == iterArg) {
+        // Pattern: iter_arg + step
+        stepValue = addOp.getRhs();
+      } else if (addOp.getRhs() == iterArg) {
+        // Pattern: step + iter_arg
+        stepValue = addOp.getLhs();
+      } else {
+        // Neither operand is the iteration argument
+        continue;
+      }
+      
       // Find if the step is a constant
-      auto constOp = addOp.getRhs().getDefiningOp<stablehlo::ConstantOp>();
+      auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
       if (!constOp)
         continue;
         
@@ -8629,9 +8647,6 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
         Value iterOffset = rewriter.create<stablehlo::SubtractOp>(
             whileOp.getLoc(), counterArg.getType(), counterArg, startValue);
             
-        // Use addOp.getRhs() instead of constOp.getValue()
-        Value stepValue = addOp.getRhs();
-        
         // First multiply by the step value
         Value scaledOffset = rewriter.create<stablehlo::MulOp>(
             whileOp.getLoc(), iterOffset.getType(), iterOffset, stepValue);
@@ -8657,10 +8672,7 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
         Value totalIters = rewriter.create<stablehlo::SubtractOp>(
             whileOp.getLoc(), limitValue.getType(), limitValue, startValue);
             
-        // Use addOp.getRhs() instead of constOp.getValue()
-        Value stepValue = addOp.getRhs();
-        
-        // First multiply by the step value
+        // First multiply by the step value (using the same step value identified earlier)
         Value scaledOffset = rewriter.create<stablehlo::MulOp>(
             whileOp.getLoc(), totalIters.getType(), totalIters, stepValue);
             
@@ -8757,7 +8769,6 @@ private:
     return nullptr;
   }
 };
-
 
 
 struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
