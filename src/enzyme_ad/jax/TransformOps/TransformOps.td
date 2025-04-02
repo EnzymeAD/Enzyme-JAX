@@ -1030,6 +1030,11 @@ def ReshapeReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeReduceWindow"];
 }
 
+def WhileDUS : EnzymeHLOPatternOp<
+    "while_dus"> {
+  let patterns = ["WhileDUS"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

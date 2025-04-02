@@ -8789,6 +8789,281 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
+static bool definedOutside(Value v, Operation *op) {
+  return !op->isAncestor(v.getParentBlock()->getParentOp());
+}
+
+struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    // Find yield op in the body
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    // Step 1: Track which results need to be transformed
+    struct DUSCandidate {
+      unsigned idx;
+      stablehlo::DynamicUpdateSliceOp DUS;
+      mlir::Value outerOperand;
+      mlir::Value conditionalOperand;
+    };
+
+    llvm::SmallVector<DUSCandidate, 4> candidates;
+    bool hasConditional = false;
+
+    for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
+
+      auto DUS = yieldOp.getOperand(idx)
+                     .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+      // Check that the while result has exactly one use
+      if (!DUS)
+        continue;
+
+      if (!DUS->hasOneUse()) {
+      }
+
+      mlir::Value conditionalOperand = nullptr;
+      if (DUS.getOperand() == whileOp.getBody().front().getArgument(idx)) {
+      } else if (definedOutside(DUS.getOperand(), whileOp)) {
+
+        bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() ||
+                         !whileOp.getBody().getArgument(idx).use_empty();
+
+        if (hasArgUse) {
+          continue;
+        }
+
+        conditionalOperand = DUS.getOperand();
+        hasConditional = true;
+      } else {
+        continue;
+      }
+
+      bool legal = true;
+      for (auto idx : DUS.getStartIndices()) {
+        if (!definedOutside(idx, whileOp)) {
+          legal = false;
+        }
+      }
+
+      if (!legal)
+        continue;
+
+      candidates.emplace_back(DUSCandidate{idx, DUS, whileOp.getOperands()[idx],
+                                           conditionalOperand});
+    }
+
+    // If no candidates found, no rewrite needed
+    if (candidates.empty())
+      return failure();
+
+    // Step 2 : Make transformations in the original while op
+    // Get the operands of the while op to use later
+    auto whileOperands = llvm::to_vector(whileOp.getOperands());
+
+    // New operands
+    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                   whileOp.getOperands().end());
+
+    // Create input transposes for each candidate
+    for (auto &candidate : candidates) {
+      // Create a new transpose before the while loop
+
+      newOperands[candidate.idx] = rewriter.create<stablehlo::DynamicSliceOp>(
+          candidate.DUS.getLoc(), candidate.outerOperand,
+          candidate.DUS.getStartIndices(),
+          candidate.DUS.getUpdate().getType().getShape());
+    }
+
+    // Update yield op to use the input of the inner transpose
+    {
+      // Save the current insertion point
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+
+      // New return values
+      SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(),
+                                         yieldOp.getOperands().end());
+
+      rewriter.setInsertionPoint(yieldOp);
+      for (auto &candidate : candidates) {
+        newReturnValues[candidate.idx] = candidate.DUS.getUpdate();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
+                                                       newReturnValues);
+      // Update the yieldOp
+      yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    }
+
+    // Step 3 : Create a new while op with the new operands and move the body of
+    // original whileOp
+    SmallVector<Type> newResultTypes;
+    newResultTypes.reserve(newOperands.size());
+
+    for (auto operand : newOperands) {
+      newResultTypes.push_back(operand.getType());
+    }
+    auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
+        whileOp.getLoc(), newResultTypes, newOperands);
+
+    SmallVector<Value> results;
+    for (auto res : newWhileOp.getResults())
+      results.push_back(res);
+
+    {
+      mlir::IRMapping mapper;
+      Value useInner = nullptr;
+      if (hasConditional) {
+
+        for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+          mapper.map(whileOp.getCond().getArgument(i),
+                     whileOp.getOperands()[i]);
+        }
+        for (auto &op : whileOp.getCond().front().getOperations()) {
+          // Skip the terminator - we'll add it after all other operations
+          if (isa<stablehlo::ReturnOp>(op))
+            continue;
+
+          // Clone the operation with the value mapping
+          rewriter.clone(op, mapper);
+        }
+        useInner = whileOp.getCond().front().getTerminator()->getOperand(0);
+        useInner = mapper.lookupOrDefault(useInner);
+      }
+      for (auto &candidate : candidates) {
+        unsigned idx = candidate.idx;
+        Value operand = candidate.outerOperand;
+        if (candidate.conditionalOperand) {
+          operand = rewriter.create<stablehlo::SelectOp>(
+              whileOp.getLoc(), useInner, candidate.conditionalOperand,
+              operand);
+        }
+
+        results[candidate.idx] =
+            rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+                candidate.DUS.getLoc(), operand, results[candidate.idx],
+                candidate.DUS.getStartIndices());
+      }
+    }
+
+    // Create blocks in both regions first
+    {
+      // Create a block in the condition region
+      Block *condBlock = rewriter.createBlock(&newWhileOp.getCond());
+
+      // Add arguments to the condition block matching operand types
+      for (auto type : newResultTypes) {
+        condBlock->addArgument(type, whileOp.getLoc());
+      }
+
+      // Create a block in the body region
+      Block *bodyBlock = rewriter.createBlock(&newWhileOp.getBody());
+
+      // Add arguments to the body block matching operand types
+      for (auto type : newResultTypes) {
+        bodyBlock->addArgument(type, whileOp.getLoc());
+      }
+    }
+
+    // Create an IR mapper to map values from old op to new op
+    mlir::IRMapping mapper;
+
+    // Clear the new body block but keep its arguments
+    Block &newBodyBlock = newWhileOp.getBody().front();
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
+
+    // Clone operations from old body to new body
+    Block &oldBodyBlock = whileOp.getBody().front();
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newBodyBlock);
+
+      // Set up operand mapping for the body region
+      for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getBody().getArgument(i);
+        Value newArg = newWhileOp.getBody().getArgument(i);
+        for (auto &pair : candidates) {
+          if (pair.idx == i) {
+            newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+                pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getStartIndices());
+            break;
+          }
+        }
+        mapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldBodyBlock.getOperations()) {
+        // Skip the terminator - we'll add it after all other operations
+        if (isa<stablehlo::ReturnOp>(op))
+          continue;
+
+        // Clone the operation with the value mapping
+        rewriter.clone(op, mapper);
+      }
+    }
+
+    // Create a new terminator for the body region using new values
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      SmallVector<Value> newReturnValues;
+
+      // Map old return values to new values using the mapper
+      for (auto oldRetVal : yieldOp.getOperands()) {
+        Value newRetVal = mapper.lookupOrNull(oldRetVal);
+        // If the value isn't in the mapper, maybe it was a block argument or
+        // constant
+        if (!newRetVal)
+          newRetVal = oldRetVal; // Consider more robust handling if needed
+        newReturnValues.push_back(newRetVal);
+      }
+
+      // Create the return op at the end of the body
+      rewriter.setInsertionPointToEnd(&newBodyBlock);
+      rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
+    }
+
+    // Create condition region mapper
+    mlir::IRMapping condMapper;
+
+    // Clear and clone condition region
+    Block &newCondBlock = newWhileOp.getCond().front();
+    newCondBlock.clear();
+    Block &oldCondBlock = whileOp.getCond().front();
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newCondBlock);
+
+      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getCond().getArgument(i);
+        Value newArg = newWhileOp.getCond().getArgument(i);
+        for (auto &pair : candidates) {
+          if (pair.idx == i) {
+            newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+                pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getStartIndices());
+            break;
+          }
+        }
+        condMapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldCondBlock.getOperations()) {
+        rewriter.clone(op, condMapper);
+      }
+    }
+
+    // Finally, replace all uses of the old while op with the new one
+    rewriter.replaceOp(whileOp, results);
+
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
