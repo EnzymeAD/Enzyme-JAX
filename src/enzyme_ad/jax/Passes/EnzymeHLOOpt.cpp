@@ -8807,9 +8807,11 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       unsigned idx;
       stablehlo::DynamicUpdateSliceOp DUS;
       mlir::Value outerOperand;
+      mlir::Value conditionalOperand;
     };
 
     llvm::SmallVector<DUSCandidate, 4> candidates;
+    bool hasConditional = false;
 
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 
@@ -8817,23 +8819,46 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
                      .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
 
       // Check that the while result has exactly one use
-      if (!DUS || !DUS->hasOneUse())
+      if (!DUS)
         continue;
 
-      if (DUS.getOperand() != whileOp.getBody().front().getArgument(idx))
+      llvm::errs() << " considering dus: " << DUS << "\n";
+
+      if (!DUS->hasOneUse()) {
+        llvm::errs() << " + multi use\n";
+      }
+
+      mlir::Value conditionalOperand = nullptr;
+      if (DUS.getOperand() == whileOp.getBody().front().getArgument(idx)) {
+      } else if (definedOutside(DUS.getOperand(), whileOp)) {
+
+        bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() || !whileOp.getBody().getArgument(idx).use_empty();
+
+        if (hasArgUse) {
+          llvm::errs() << " + not corresponding idx (but outside loop) with use: " << whileOp.getBody().front().getArgument(idx) << "\n";
+          continue;
+        }
+
+        conditionalOperand = DUS.getOperand();
+        hasConditional = true;
+      } else {
+        llvm::errs() << " + not corresponding idx: " << whileOp.getBody().front().getArgument(idx) << "\n";
         continue;
+      }
 
       bool legal = true;
       for (auto idx : DUS.getStartIndices()) {
-        if (!definedOutside(idx, whileOp))
+        if (!definedOutside(idx, whileOp)) {
+          llvm::errs() << " + not idx not defined outside loop: " << idx << "\n";
           legal = false;
+        }
       }
 
       if (!legal)
         continue;
 
       candidates.emplace_back(
-          DUSCandidate{idx, DUS, whileOp.getOperands()[idx]});
+          DUSCandidate{idx, DUS, whileOp.getOperands()[idx], conditionalOperand});
     }
 
     // If no candidates found, no rewrite needed
@@ -8892,12 +8917,37 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
     for (auto res : newWhileOp.getResults())
       results.push_back(res);
 
+    {
+      mlir::IRMapping mapper;
+      Value useInner = nullptr;
+      if (hasConditional) {
+
+        for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+         mapper.map(whileOp.getCond().getArgument(i), whileOp.getOperands()[i]);
+        }
+        for (auto &op : whileOp.getCond().front().getOperations()) {
+          // Skip the terminator - we'll add it after all other operations
+          if (isa<stablehlo::ReturnOp>(op))
+            continue;
+
+          // Clone the operation with the value mapping
+          rewriter.clone(op, mapper);
+        }
+        useInner = whileOp.getCond().front().getTerminator()->getOperand(0);
+        useInner = mapper.lookupOrDefault(useInner);
+      }
     for (auto &candidate : candidates) {
       unsigned idx = candidate.idx;
+      Value operand = candidate.outerOperand;
+      if (candidate.conditionalOperand) {
+        operand = rewriter.create<stablehlo::SelectOp>(whileOp.getLoc(), useInner, candidate.conditionalOperand, operand);
+      }
 
       results[candidate.idx] = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          candidate.DUS.getLoc(), candidate.outerOperand,
+          candidate.DUS.getLoc(), operand,
           results[candidate.idx], candidate.DUS.getStartIndices());
+    }
+
     }
 
     // Create blocks in both regions first
