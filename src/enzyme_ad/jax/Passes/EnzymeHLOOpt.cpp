@@ -8829,7 +8829,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       if (DUS.getOperand() == whileOp.getBody().front().getArgument(idx)) {
       } else if (definedOutside(DUS.getOperand(), whileOp)) {
 
-        bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() || !whileOp.getBody().getArgument(idx).use_empty();
+        bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() ||
+                         !whileOp.getBody().getArgument(idx).use_empty();
 
         if (hasArgUse) {
           continue;
@@ -8851,8 +8852,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       if (!legal)
         continue;
 
-      candidates.emplace_back(
-          DUSCandidate{idx, DUS, whileOp.getOperands()[idx], conditionalOperand});
+      candidates.emplace_back(DUSCandidate{idx, DUS, whileOp.getOperands()[idx],
+                                           conditionalOperand});
     }
 
     // If no candidates found, no rewrite needed
@@ -8917,7 +8918,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       if (hasConditional) {
 
         for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
-         mapper.map(whileOp.getCond().getArgument(i), whileOp.getOperands()[i]);
+          mapper.map(whileOp.getCond().getArgument(i),
+                     whileOp.getOperands()[i]);
         }
         for (auto &op : whileOp.getCond().front().getOperations()) {
           // Skip the terminator - we'll add it after all other operations
@@ -8930,18 +8932,20 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         useInner = whileOp.getCond().front().getTerminator()->getOperand(0);
         useInner = mapper.lookupOrDefault(useInner);
       }
-    for (auto &candidate : candidates) {
-      unsigned idx = candidate.idx;
-      Value operand = candidate.outerOperand;
-      if (candidate.conditionalOperand) {
-        operand = rewriter.create<stablehlo::SelectOp>(whileOp.getLoc(), useInner, candidate.conditionalOperand, operand);
+      for (auto &candidate : candidates) {
+        unsigned idx = candidate.idx;
+        Value operand = candidate.outerOperand;
+        if (candidate.conditionalOperand) {
+          operand = rewriter.create<stablehlo::SelectOp>(
+              whileOp.getLoc(), useInner, candidate.conditionalOperand,
+              operand);
+        }
+
+        results[candidate.idx] =
+            rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+                candidate.DUS.getLoc(), operand, results[candidate.idx],
+                candidate.DUS.getStartIndices());
       }
-
-      results[candidate.idx] = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          candidate.DUS.getLoc(), operand,
-          results[candidate.idx], candidate.DUS.getStartIndices());
-    }
-
     }
 
     // Create blocks in both regions first
