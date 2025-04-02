@@ -8579,8 +8579,25 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
     Block &bodyBlock = whileOp.getBody().front();
     auto returnOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
     
+    // Find the counter variable and its limit before entering the loop
+    // This is used to identify and optimize induction variables
+    unsigned counterIdx = 0;
+    Value limitValue = nullptr;
+    bool hasCounter = findCounterAndLimit(whileOp, counterIdx, limitValue);
+    
+    // If we can't find a counter variable, we can't optimize induction variables
+    if (!hasCounter)
+      return failure();
+      
+    // Get the counter argument and its start value for later use
+    Value counterArg = whileOp.getCond().getArgument(counterIdx);
+    Value startValue = findCounterStartValue(whileOp, counterIdx);
+    
     // Examine each iteration argument and result
     for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
+
+      if(i == counterIdx)
+        continue;
       // Get the input, the body argument, and the yielded value
       Value initValue = whileOp.getOperands()[i];
       BlockArgument iterArg = bodyBlock.getArgument(i);
@@ -8597,25 +8614,11 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
       if (!constOp)
         continue;
         
-      // Also need to find a counter variable (explicit loop index)
-      // Look for a block argument that is compared to a limit in the condition
-      unsigned counterIdx = 0;
-      Value limitValue = nullptr;
-      bool found = findCounterAndLimit(whileOp, counterIdx, limitValue);
-      if (!found)
-        continue;
-        
       // Now we can replace uses of the iterArg inside the loop
       // with a direct calculation based on the counter:
       // replacement = init_value + (counter - start_value) * step_value
       if (!iterArg.use_empty()) {
         rewriter.setInsertionPointToStart(&bodyBlock);
-        
-        // Determine start value of counter (typically 0 or 1)
-        Value startValue = findCounterStartValue(whileOp, counterIdx);
-        
-        // Get the counter argument from its index
-        Value counterArg = whileOp.getCond().getArgument(counterIdx);
         
         // Create the calculation for the current iteration
         Value iterOffset = rewriter.create<stablehlo::SubtractOp>(
@@ -8638,12 +8641,6 @@ struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp>
       // with a calculation based on the final counter value
       if (!result.use_empty() && limitValue) {
         rewriter.setInsertionPointAfter(whileOp);
-        
-        // Determine start value of counter
-        Value startValue = findCounterStartValue(whileOp, counterIdx);
-        
-        // Get the counter argument from its index
-        Value counterArg = whileOp.getCond().getArgument(counterIdx);
         
         // Calculate total iterations: limit - start
         Value totalIters = rewriter.create<stablehlo::SubtractOp>(
