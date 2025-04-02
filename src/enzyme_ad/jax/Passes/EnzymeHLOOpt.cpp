@@ -8570,6 +8570,7 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
 // Currently supports:
 // Indentifies induction variable
 // Supports addition of constant step value
+// Just supports less than comparision
 struct WhileOpInductionReplacement : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern<stablehlo::WhileOp>::OpRewritePattern;
 
