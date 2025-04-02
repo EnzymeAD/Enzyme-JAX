@@ -8813,7 +8813,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
 
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 
-      auto DUS = yieldOp.getOperand(idx).getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      auto DUS = yieldOp.getOperand(idx)
+                     .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
 
       // Check that the while result has exactly one use
       if (!DUS || !DUS->hasOneUse())
@@ -8828,9 +8829,11 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
           legal = false;
       }
 
-      if (!legal) continue;
+      if (!legal)
+        continue;
 
-      candidates.emplace_back(DUSCandidate{idx, DUS, whileOp.getOperands()[idx]});
+      candidates.emplace_back(
+          DUSCandidate{idx, DUS, whileOp.getOperands()[idx]});
     }
 
     // If no candidates found, no rewrite needed
@@ -8850,8 +8853,7 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       // Create a new transpose before the while loop
 
       newOperands[candidate.idx] = rewriter.create<stablehlo::DynamicSliceOp>(
-          candidate.DUS.getLoc(),
-          candidate.outerOperand,
+          candidate.DUS.getLoc(), candidate.outerOperand,
           candidate.DUS.getStartIndices(),
           candidate.DUS.getUpdate().getType().getShape());
     }
@@ -8894,11 +8896,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       unsigned idx = candidate.idx;
 
       results[candidate.idx] = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                candidate.DUS.getLoc(),
-                candidate.outerOperand,
-                results[candidate.idx],
-                candidate.DUS.getStartIndices()
-                );
+          candidate.DUS.getLoc(), candidate.outerOperand,
+          results[candidate.idx], candidate.DUS.getStartIndices());
     }
 
     // Create blocks in both regions first
@@ -8925,7 +8924,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Clear the new body block but keep its arguments
     Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock.clear(); // This clears operations but preserves block arguments
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
 
     // Clone operations from old body to new body
     Block &oldBodyBlock = whileOp.getBody().front();
@@ -8940,11 +8940,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         for (auto &pair : candidates) {
           if (pair.idx == i) {
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                pair.DUS.getLoc(),
-                pair.outerOperand,
-                newArg,
-                pair.DUS.getStartIndices()
-                );
+                pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getStartIndices());
             break;
           }
         }
@@ -8999,11 +8996,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         for (auto &pair : candidates) {
           if (pair.idx == i) {
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                pair.DUS.getLoc(),
-                pair.outerOperand,
-                newArg,
-                pair.DUS.getStartIndices()
-                );
+                pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getStartIndices());
             break;
           }
         }
