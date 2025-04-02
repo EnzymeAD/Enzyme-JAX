@@ -763,17 +763,18 @@ struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
 
 // Optimization: DUSPad
 // Pattern:
-//   %padded_val = stablehlo.pad %original_data, %pad_val, low=[L...], high=[H...], interior=[0...]
-//   %dus = stablehlo.dynamic_update_slice %padded_val, %update_data, %idx...
+//   %padded_val = stablehlo.pad %original_data, %pad_val, low=[L...],
+//   high=[H...], interior=[0...] %dus = stablehlo.dynamic_update_slice
+//   %padded_val, %update_data, %idx...
 // Constraint: The update region defined by %update_data and %idx falls entirely
 //             within the %original_data region of %padded_val.
 // Constraint: %padded_val has only %dus as its user.
 // Constraint: Interior padding is zero.
 // Rewrite to:
 //   %idx_new = %idx - L // Adjust indices relative to original_data
-//   %new_dus = stablehlo.dynamic_update_slice %original_data, %update_data, %idx_new...
-//   %new_pad = stablehlo.pad %new_dus, %pad_val, low=[L...], high=[H...], interior=[0...]
-//   replaceAllUsesWith(%dus, %new_pad)
+//   %new_dus = stablehlo.dynamic_update_slice %original_data, %update_data,
+//   %idx_new... %new_pad = stablehlo.pad %new_dus, %pad_val, low=[L...],
+//   high=[H...], interior=[0...] replaceAllUsesWith(%dus, %new_pad)
 struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -788,26 +789,35 @@ struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
 
     // 2. Constraint: Check if the pad op has only the DUS as its user.
     if (!llvm::hasSingleElement(padOp->getUsers())) {
-       return rewriter.notifyMatchFailure(dus, "PadOp has multiple users");
+      return rewriter.notifyMatchFailure(dus, "PadOp has multiple users");
     }
 
-    // 3. Constraint: Check for zero interior padding and non-negative edge padding.
-    if (llvm::any_of(padOp.getInteriorPadding(), [](int64_t i){ return i != 0; })) {
-        return rewriter.notifyMatchFailure(dus, "Requires zero interior padding");
+    // 3. Constraint: Check for zero interior padding and non-negative edge
+    // padding.
+    if (llvm::any_of(padOp.getInteriorPadding(),
+                     [](int64_t i) { return i != 0; })) {
+      return rewriter.notifyMatchFailure(dus, "Requires zero interior padding");
     }
-    if (llvm::any_of(padOp.getEdgePaddingLow(), [](int64_t i){ return i < 0; }) ||
-        llvm::any_of(padOp.getEdgePaddingHigh(), [](int64_t i){ return i < 0; })) {
-         return rewriter.notifyMatchFailure(dus, "Requires non-negative edge padding");
+    if (llvm::any_of(padOp.getEdgePaddingLow(),
+                     [](int64_t i) { return i < 0; }) ||
+        llvm::any_of(padOp.getEdgePaddingHigh(),
+                     [](int64_t i) { return i < 0; })) {
+      return rewriter.notifyMatchFailure(dus,
+                                         "Requires non-negative edge padding");
     }
 
     // 4. Get shapes and indices, require static shapes.
-    auto dusOperandType = dyn_cast<RankedTensorType>(dus.getOperand().getType()); // = padOp result type
+    auto dusOperandType = dyn_cast<RankedTensorType>(
+        dus.getOperand().getType()); // = padOp result type
     auto updateType = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
-    auto originalDataType = dyn_cast<RankedTensorType>(padOp.getOperand().getType());
+    auto originalDataType =
+        dyn_cast<RankedTensorType>(padOp.getOperand().getType());
 
     if (!dusOperandType || !updateType || !originalDataType ||
-        !dusOperandType.hasStaticShape() || !updateType.hasStaticShape() || !originalDataType.hasStaticShape()) {
-        return rewriter.notifyMatchFailure(dus, "Requires static shapes for involved tensors");
+        !dusOperandType.hasStaticShape() || !updateType.hasStaticShape() ||
+        !originalDataType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires static shapes for involved tensors");
     }
 
     ArrayRef<int64_t> dusOperandShape = dusOperandType.getShape();
@@ -815,55 +825,64 @@ struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
     ArrayRef<int64_t> originalDataShape = originalDataType.getShape();
     SmallVector<Value> startIndices = dus.getStartIndices();
     ArrayRef<int64_t> lowPadding = padOp.getEdgePaddingLow();
-    // High padding isn't directly used for the check below but needed for reconstruction
+    // High padding isn't directly used for the check below but needed for
+    // reconstruction
     ArrayRef<int64_t> highPadding = padOp.getEdgePaddingHigh();
 
     SmallVector<Value> newDusStartIndices;
     Location loc = dus.getLoc();
-    auto indexElementType = startIndices[0].getType().cast<ShapedType>().getElementType();
+    auto indexElementType =
+        startIndices[0].getType().cast<ShapedType>().getElementType();
     auto indexScalarType = RankedTensorType::get({}, indexElementType);
 
-    // 5. Check if update region is within original data bounds & calculate new indices.
+    // 5. Check if update region is within original data bounds & calculate new
+    // indices.
     for (int64_t d = 0; d < dusOperandShape.size(); ++d) {
-        DenseIntElementsAttr startAttr;
-        if (!matchPattern(startIndices[d], m_Constant(&startAttr)) || startAttr.getNumElements() != 1) {
-            return rewriter.notifyMatchFailure(dus, "Requires constant scalar start indices");
-        }
-        int64_t startVal = (*startAttr.begin()).getSExtValue();
-        int64_t updateSize = updateShape[d];
-        int64_t endVal = startVal + updateSize; // Exclusive end
-        int64_t lowPad = lowPadding[d];
-        int64_t originalSize = originalDataShape[d];
+      DenseIntElementsAttr startAttr;
+      if (!matchPattern(startIndices[d], m_Constant(&startAttr)) ||
+          startAttr.getNumElements() != 1) {
+        return rewriter.notifyMatchFailure(
+            dus, "Requires constant scalar start indices");
+      }
+      int64_t startVal = (*startAttr.begin()).getSExtValue();
+      int64_t updateSize = updateShape[d];
+      int64_t endVal = startVal + updateSize; // Exclusive end
+      int64_t lowPad = lowPadding[d];
+      int64_t originalSize = originalDataShape[d];
 
-        // Check bounds: update [startVal, endVal) must be within original data region [lowPad, lowPad + originalSize)
-        if (startVal < lowPad || endVal > (lowPad + originalSize)) {
-             return rewriter.notifyMatchFailure(dus, "Update region extends into padded area for dim " + std::to_string(d));
-        }
+      // Check bounds: update [startVal, endVal) must be within original data
+      // region [lowPad, lowPad + originalSize)
+      if (startVal < lowPad || endVal > (lowPad + originalSize)) {
+        return rewriter.notifyMatchFailure(
+            dus, "Update region extends into padded area for dim " +
+                     std::to_string(d));
+      }
 
-        // Calculate new start index relative to original data
-        int64_t newStartVal = startVal - lowPad;
-        auto newStartAttr = rewriter.getIntegerAttr(indexElementType, newStartVal);
-        auto newStartConst = rewriter.create<stablehlo::ConstantOp>(
-            loc, indexScalarType, DenseElementsAttr::get(indexScalarType, newStartAttr));
-        newDusStartIndices.push_back(newStartConst);
+      // Calculate new start index relative to original data
+      int64_t newStartVal = startVal - lowPad;
+      auto newStartAttr =
+          rewriter.getIntegerAttr(indexElementType, newStartVal);
+      auto newStartConst = rewriter.create<stablehlo::ConstantOp>(
+          loc, indexScalarType,
+          DenseElementsAttr::get(indexScalarType, newStartAttr));
+      newDusStartIndices.push_back(newStartConst);
     }
 
     // 6. Perform the rewrite.
     // Create the new DUS on the original data.
     auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
         loc,
-        originalDataType,        // Result type matches original data
-        padOp.getOperand(),      // Update the original data
-        dus.getUpdate(),         // Use the same update value
-        newDusStartIndices);     // Use the adjusted indices
+        originalDataType,    // Result type matches original data
+        padOp.getOperand(),  // Update the original data
+        dus.getUpdate(),     // Use the same update value
+        newDusStartIndices); // Use the adjusted indices
 
     // Create the new Pad operation using the result of the new DUS.
     auto newPad = rewriter.create<stablehlo::PadOp>(
         padOp.getLoc(),
-        dus.getType(),           // Result type matches original DUS result
-        newDus.getResult(),      // Pad the result of the new DUS
-        padOp.getPaddingValue(),
-        padOp.getEdgePaddingLowAttr(),
+        dus.getType(),      // Result type matches original DUS result
+        newDus.getResult(), // Pad the result of the new DUS
+        padOp.getPaddingValue(), padOp.getEdgePaddingLowAttr(),
         padOp.getEdgePaddingHighAttr(),
         padOp.getInteriorPaddingAttr()); // Assumed to be zeros by check above
 
@@ -10841,7 +10860,8 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad>(
+          context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
