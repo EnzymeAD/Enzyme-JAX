@@ -1,6 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt="passes=512" --split-input-file | FileCheck %s
-// We enable pass 512 explicitly as DUSDUS and DUSDUSConcat are under that flag bit in your example code.
-// If DUSConcat is moved outside that flag, you might not need the passes= option.
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt --split-input-file | FileCheck %s
 
 module {
   func.func @dus_concat_test(
