@@ -1335,13 +1335,12 @@ struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<stablehlo::WhileOp>(op->getParentOp())) return failure();
+    if (!isa<stablehlo::WhileOp>(op->getParentOp()))
+      return failure();
     for (auto operand : op->getOperands())
       if (!definedOutside(operand, op->getParentOp()))
         return failure();
-    rewriter.modifyOpInPlace(op, [&](){
-      op->moveBefore(op->getParentOp());
-    });
+    rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(op->getParentOp()); });
     return success();
   }
 };
