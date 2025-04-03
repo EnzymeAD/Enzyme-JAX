@@ -776,7 +776,7 @@ def IfPredPropagation : EnzymeHLOPatternOp<
 // benefit 65k + max_constant_expansion flag
 def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "while_simplify"> {
-  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$hoist_all);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
@@ -791,14 +791,14 @@ def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
-  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$single_user);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
     static getPossibleAttrCombinations(::mlir::Builder &builder) {
       return {builder.getDictionaryAttr(
-                  builder.getNamedAttr("sinlge_user",
+                  builder.getNamedAttr("single_user",
                                        builder.getBoolAttr(true)))};
     }
   }];
