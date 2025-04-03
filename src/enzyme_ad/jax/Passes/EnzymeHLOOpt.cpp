@@ -2385,6 +2385,14 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
       if (terminatorOperand.getOperandNumber() == result.getResultNumber())
         continue;
 
+      // We directly yield an argument from a different index (since we skip
+      // the return of the given result).
+      if (auto ba = dyn_cast<BlockArgument>(terminatorOperand.get())) {
+        if (ba.getOwner()->getParentOp() == whileOp) {
+          return false;
+        }
+      }
+
       SetVector<Operation *> backwardSlice;
       BackwardSliceOptions options;
       options.omitBlockArguments = true;
@@ -2407,7 +2415,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(terminator);
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+    auto term2 = rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
@@ -2417,7 +2425,6 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     for (OpResult result : op.getResults()) {
       if (!isLoopResultDead(result))
         continue;
-
       deadResults.push_back(result.getResultNumber());
     }
     if (deadResults.empty())
@@ -2430,7 +2437,6 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     condSlice.remove(op.getCond().front().getTerminator());
     bodySlice.remove(op.getBody().front().getTerminator());
-    replaceTerminator(rewriter, op.getCond(), deadResults);
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
     condSlice = mlir::topologicalSort(condSlice);
@@ -2472,8 +2478,9 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
                                 updated.getCond().begin());
 
-    for (int64_t i : llvm::reverse(deadResults))
+    for (int64_t i : llvm::reverse(deadResults)) {
       op.getBody().eraseArgument(i);
+    }
     rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
                                 updated.getBody().begin());
 
