@@ -10271,7 +10271,7 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 // upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
-  bool max_constant_expansion;
+  bool hoist_all;
   WhileSimplify(bool hoist_all, MLIRContext *context,
                 PatternBenefit benefit = 1,
                 ArrayRef<StringRef> generatedNames = {})
