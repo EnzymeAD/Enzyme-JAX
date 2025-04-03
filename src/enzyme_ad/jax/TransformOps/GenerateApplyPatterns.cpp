@@ -143,7 +143,8 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1) {
-      if (opName == "no_nan_add_sub_simplify")
+      if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" ||
+          opName == "slice_licm")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));

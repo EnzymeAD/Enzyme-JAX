@@ -783,7 +783,7 @@ def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     ::llvm::SmallVector<::mlir::DictionaryAttr>
     static getPossibleAttrCombinations(::mlir::Builder &builder) {
       return {builder.getDictionaryAttr(
-                  builder.getNamedAttr("hoist_all",
+                  builder.getNamedAttr("parameter",
                                        builder.getBoolAttr(false)))};
     }
   }];
@@ -798,7 +798,7 @@ def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     ::llvm::SmallVector<::mlir::DictionaryAttr>
     static getPossibleAttrCombinations(::mlir::Builder &builder) {
       return {builder.getDictionaryAttr(
-                  builder.getNamedAttr("sinlge_user",
+                  builder.getNamedAttr("parameter",
                                        builder.getBoolAttr(true)))};
     }
   }];
