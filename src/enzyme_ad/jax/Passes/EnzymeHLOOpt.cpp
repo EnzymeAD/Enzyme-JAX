@@ -1284,7 +1284,8 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
     if (sliceOp.getLimitIndices()[concatDim] >= dusLimitIndices[concatDim] &&
         sliceOp.getStartIndices()[concatDim] <= dusStartIndices[concatDim]) {
       toConcat.push_back(dusOp.getUpdate());
-    } else if (sliceOp.getLimitIndices()[concatDim] <= dusLimitIndices[concatDim]) {
+    } else if (sliceOp.getLimitIndices()[concatDim] <=
+               dusLimitIndices[concatDim]) {
       assert(sliceOp.getStartIndices()[concatDim] < dusStartIndices[concatDim]);
       SmallVector<int64_t> newStart(dusStartIndices);
       SmallVector<int64_t> newLimit =
@@ -1296,7 +1297,8 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
       toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
           sliceOp.getLoc(), dusOp.getUpdate(), newStart, newLimit,
           sliceOp.getStrides()));
-    } else if (sliceOp.getStartIndices()[concatDim] >= dusStartIndices[concatDim]) {
+    } else if (sliceOp.getStartIndices()[concatDim] >=
+               dusStartIndices[concatDim]) {
       assert(sliceOp.getLimitIndices()[concatDim] > dusLimitIndices[concatDim]);
       SmallVector<int64_t> newStart =
           llvm::to_vector(sliceOp.getStartIndices());
@@ -1322,8 +1324,8 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
 
     auto preType = sliceOp.getType();
 
-    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(sliceOp, toConcat,
-                                                          concatDim);
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        sliceOp, toConcat, concatDim);
     assert(preType == newConcat.getType());
     (void)preType;
     (void)newConcat;
