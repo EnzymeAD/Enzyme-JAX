@@ -608,6 +608,134 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+// Optimization: DUSConcat
+// Pattern:
+//   %concat = stablehlo.concatenate %A, %B, %C, dimension = D
+//   %dus = stablehlo.dynamic_update_slice %concat, %update, %idx0, %idxD, %idxN
+// Constraint: %concat has only %dus as its user.
+// Constraint: The slice defined by %idx0..N and %update shape falls entirely
+//             within one of the inputs (e.g., %B) along dimension D, and
+//             spans fully along other dimensions.
+// Rewrite to:
+//   %idxD_new = %idxD - offset_of_B
+//   %new_dus = stablehlo.dynamic_update_slice %B, %update, %idx0_0, %idxD_new,
+//   %idxN_0 %new_concat = stablehlo.concatenate %A, %new_dus, %C, dimension = D
+//   replaceAllUsesWith(%dus, %new_concat)
+struct DUSConcat final
+    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    auto concatOp = dus.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concatOp) {
+      return failure();
+    }
+
+    auto dusOperandType =
+        dyn_cast<RankedTensorType>(dus.getOperand().getType());
+    auto updateType = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
+    if (!dusOperandType || !updateType || !dusOperandType.hasStaticShape() ||
+        !updateType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires static shapes for DUS operand and update");
+    }
+
+    int64_t concatDim = concatOp.getDimension();
+    ArrayRef<int64_t> dusOperandShape = dusOperandType.getShape();
+    ArrayRef<int64_t> updateShape = updateType.getShape();
+    SmallVector<Value> startIndices = dus.getStartIndices();
+
+    DenseIntElementsAttr concatStartAttr;
+    if (!matchPattern(startIndices[concatDim], m_Constant(&concatStartAttr))) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires constant start index for concat dimension");
+    }
+    if (concatStartAttr.getNumElements() != 1) {
+      return rewriter.notifyMatchFailure(dus,
+                                         "Concat start index must be a scalar");
+    }
+
+    int64_t concatStartVal = (*concatStartAttr.begin()).getSExtValue();
+    int64_t concatUpdateSize = updateShape[concatDim];
+    int64_t concatEndVal = concatStartVal + concatUpdateSize; // Exclusive end
+
+    int64_t currentOffset = 0;
+    int targetInputIdx = -1;
+    Value targetInputVal;
+
+    for (const auto &indexedInput : llvm::enumerate(concatOp.getInputs())) {
+      Value input = indexedInput.value();
+      auto inputType = dyn_cast<RankedTensorType>(input.getType());
+      if (!inputType || !inputType.hasStaticShape()) {
+        return rewriter.notifyMatchFailure(
+            dus, "Requires static shapes for ConcatOp inputs");
+      }
+      int64_t inputSize = inputType.getShape()[concatDim];
+
+      // Check if the DUS update region falls entirely within this input's
+      // region
+      if (concatStartVal >= currentOffset &&
+          concatEndVal <= (currentOffset + inputSize)) {
+        targetInputIdx = indexedInput.index();
+        targetInputVal = input;
+        break; // Found the target input
+      }
+      currentOffset += inputSize;
+    }
+
+    // If no suitable input was found
+    if (targetInputIdx == -1) {
+      return rewriter.notifyMatchFailure(
+          dus,
+          "DUS update region does not fall entirely within one concat input");
+    }
+
+    SmallVector<Value> newDusStartIndices =
+        llvm::to_vector(dus.getStartIndices());
+    Location loc = dus.getLoc();
+    auto indexElementType = startIndices[concatDim]
+                                .getType()
+                                .cast<ShapedType>()
+                                .getElementType(); // Assuming all start indices
+                                                   // have same scalar type
+    auto indexScalarType = RankedTensorType::get({}, indexElementType);
+
+    int64_t newConcatStartVal = concatStartVal - currentOffset;
+    auto newStartAttr =
+        rewriter.getIntegerAttr(indexElementType, newConcatStartVal);
+    newDusStartIndices[concatDim] = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), newDusStartIndices[concatDim].getType(),
+        makeAttr(newDusStartIndices[concatDim].getType(),
+                 concatStartVal - currentOffset)
+            .cast<ElementsAttr>());
+
+    // Create the new, smaller DUS.
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc,
+        targetInputVal
+            .getType(), // Result type is the same as the input being updated
+        targetInputVal, dus.getUpdate(), newDusStartIndices);
+
+    // Create the list of operands for the new concatenate op.
+    SmallVector<Value> newConcatOperands =
+        llvm::to_vector(concatOp.getInputs());
+    newConcatOperands[targetInputIdx] = newDus.getResult();
+
+    // Create the new concatenate op.
+    auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        concatOp
+            .getLoc(), // Use concatOp's location, maybe dus.getLoc() is better?
+        dus.getType(), // The result type should match the original DUS result
+        newConcatOperands, concatDim);
+
+    // Replace the original DUS with the new concatenate op.
+    rewriter.replaceOp(dus, newConcat.getResult());
+
+    return success();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -629,6 +757,138 @@ struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
     }
     rewriter.modifyOpInPlace(
         dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
+    return success();
+  }
+};
+
+// Optimization: DUSPad
+// Pattern:
+//   %padded_val = stablehlo.pad %original_data, %pad_val, low=[L...],
+//   high=[H...], interior=[0...] %dus = stablehlo.dynamic_update_slice
+//   %padded_val, %update_data, %idx...
+// Constraint: The update region defined by %update_data and %idx falls entirely
+//             within the %original_data region of %padded_val.
+// Constraint: %padded_val has only %dus as its user.
+// Constraint: Interior padding is zero.
+// Rewrite to:
+//   %idx_new = %idx - L // Adjust indices relative to original_data
+//   %new_dus = stablehlo.dynamic_update_slice %original_data, %update_data,
+//   %idx_new... %new_pad = stablehlo.pad %new_dus, %pad_val, low=[L...],
+//   high=[H...], interior=[0...] replaceAllUsesWith(%dus, %new_pad)
+struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+
+    // 1. Check if the operand being updated comes from a pad op.
+    auto padOp = dus.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!padOp) {
+      return rewriter.notifyMatchFailure(dus, "Operand is not a PadOp");
+    }
+
+    // 2. Constraint: Check if the pad op has only the DUS as its user.
+    if (!llvm::hasSingleElement(padOp->getUsers())) {
+      return rewriter.notifyMatchFailure(dus, "PadOp has multiple users");
+    }
+
+    // 3. Constraint: Check for zero interior padding and non-negative edge
+    // padding.
+    if (llvm::any_of(padOp.getInteriorPadding(),
+                     [](int64_t i) { return i != 0; })) {
+      return rewriter.notifyMatchFailure(dus, "Requires zero interior padding");
+    }
+    if (llvm::any_of(padOp.getEdgePaddingLow(),
+                     [](int64_t i) { return i < 0; }) ||
+        llvm::any_of(padOp.getEdgePaddingHigh(),
+                     [](int64_t i) { return i < 0; })) {
+      return rewriter.notifyMatchFailure(dus,
+                                         "Requires non-negative edge padding");
+    }
+
+    // 4. Get shapes and indices, require static shapes.
+    auto dusOperandType = dyn_cast<RankedTensorType>(
+        dus.getOperand().getType()); // = padOp result type
+    auto updateType = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
+    auto originalDataType =
+        dyn_cast<RankedTensorType>(padOp.getOperand().getType());
+
+    if (!dusOperandType || !updateType || !originalDataType ||
+        !dusOperandType.hasStaticShape() || !updateType.hasStaticShape() ||
+        !originalDataType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(
+          dus, "Requires static shapes for involved tensors");
+    }
+
+    ArrayRef<int64_t> dusOperandShape = dusOperandType.getShape();
+    ArrayRef<int64_t> updateShape = updateType.getShape();
+    ArrayRef<int64_t> originalDataShape = originalDataType.getShape();
+    SmallVector<Value> startIndices = dus.getStartIndices();
+    ArrayRef<int64_t> lowPadding = padOp.getEdgePaddingLow();
+    // High padding isn't directly used for the check below but needed for
+    // reconstruction
+    ArrayRef<int64_t> highPadding = padOp.getEdgePaddingHigh();
+
+    SmallVector<Value> newDusStartIndices;
+    Location loc = dus.getLoc();
+    auto indexElementType =
+        startIndices[0].getType().cast<ShapedType>().getElementType();
+    auto indexScalarType = RankedTensorType::get({}, indexElementType);
+
+    // 5. Check if update region is within original data bounds & calculate new
+    // indices.
+    for (int64_t d = 0; d < dusOperandShape.size(); ++d) {
+      DenseIntElementsAttr startAttr;
+      if (!matchPattern(startIndices[d], m_Constant(&startAttr)) ||
+          startAttr.getNumElements() != 1) {
+        return rewriter.notifyMatchFailure(
+            dus, "Requires constant scalar start indices");
+      }
+      int64_t startVal = (*startAttr.begin()).getSExtValue();
+      int64_t updateSize = updateShape[d];
+      int64_t endVal = startVal + updateSize; // Exclusive end
+      int64_t lowPad = lowPadding[d];
+      int64_t originalSize = originalDataShape[d];
+
+      // Check bounds: update [startVal, endVal) must be within original data
+      // region [lowPad, lowPad + originalSize)
+      if (startVal < lowPad || endVal > (lowPad + originalSize)) {
+        return rewriter.notifyMatchFailure(
+            dus, "Update region extends into padded area for dim " +
+                     std::to_string(d));
+      }
+
+      // Calculate new start index relative to original data
+      int64_t newStartVal = startVal - lowPad;
+      auto newStartAttr =
+          rewriter.getIntegerAttr(indexElementType, newStartVal);
+      auto newStartConst = rewriter.create<stablehlo::ConstantOp>(
+          loc, indexScalarType,
+          DenseElementsAttr::get(indexScalarType, newStartAttr));
+      newDusStartIndices.push_back(newStartConst);
+    }
+
+    // 6. Perform the rewrite.
+    // Create the new DUS on the original data.
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc,
+        originalDataType,    // Result type matches original data
+        padOp.getOperand(),  // Update the original data
+        dus.getUpdate(),     // Use the same update value
+        newDusStartIndices); // Use the adjusted indices
+
+    // Create the new Pad operation using the result of the new DUS.
+    auto newPad = rewriter.create<stablehlo::PadOp>(
+        padOp.getLoc(),
+        dus.getType(),      // Result type matches original DUS result
+        newDus.getResult(), // Pad the result of the new DUS
+        padOp.getPaddingValue(), padOp.getEdgePaddingLowAttr(),
+        padOp.getEdgePaddingHighAttr(),
+        padOp.getInteriorPaddingAttr()); // Assumed to be zeros by check above
+
+    // Replace the original DUS with the new Pad operation.
+    rewriter.replaceOp(dus, newPad.getResult());
+
     return success();
   }
 };
@@ -7119,6 +7379,147 @@ struct ConstPropThroughBarrier final
   }
 };
 
+// Replaces DUS with a combination of slices and concats.
+// Each run of the pattern handles one dimension at a time.
+struct DUSToConcat final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
+                                PatternRewriter &rewriter) const override {
+
+    // --- Get Info & Check Static Requirements ---
+    Value targetOperand = dusOp.getOperand();
+    Value updateVal = dusOp.getUpdate();
+    SmallVector<Value> dusIndexVals = dusOp.getStartIndices();
+
+    auto targetType = dyn_cast<RankedTensorType>(targetOperand.getType());
+    auto updateType = dyn_cast<RankedTensorType>(updateVal.getType());
+
+    if (!targetType || !updateType || !targetType.hasStaticShape() ||
+        !updateType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(dusOp, "Requires static shapes");
+    }
+
+    ArrayRef<int64_t> targetShape = targetType.getShape();
+    ArrayRef<int64_t> updateShape = updateType.getShape();
+    int rank = targetType.getRank();
+
+    if (rank == 0) {
+      // Replace scalar DUS with the update value directly
+      rewriter.replaceOp(dusOp, updateVal);
+      return success();
+    }
+
+    SmallVector<int64_t> dusStartIndices;
+    dusStartIndices.reserve(rank);
+    for (Value idxVal : dusIndexVals) {
+      DenseIntElementsAttr idxAttr;
+      if (!matchPattern(idxVal, m_Constant(&idxAttr)) ||
+          idxAttr.getNumElements() != 1) {
+        return rewriter.notifyMatchFailure(
+            dusOp, "Requires constant scalar start indices");
+      }
+      dusStartIndices.push_back((*idxAttr.begin()).getSExtValue());
+    }
+
+    // --- Check Constraints ---
+    int differingDim = -1;
+    bool singleDifferingDim = false;
+    for (int d = 0; d < rank; ++d) {
+      // Check if update spans the full dimension
+      if (dusStartIndices[d] == 0 && updateShape[d] == targetShape[d]) {
+        continue; // Spans fully, this dimension is fine
+      }
+      if (differingDim == -1)
+        singleDifferingDim = true;
+      else
+        singleDifferingDim = false;
+      differingDim = d;
+    }
+
+    if (differingDim == -1) {
+      // DUS covers the entire tensor, replace with update value
+      if (targetType == updateType) {
+        rewriter.replaceOp(dusOp, updateVal);
+        return success();
+      } else {
+        // Types mismatch (shouldn't happen with valid DUS?), fail for safety
+        return rewriter.notifyMatchFailure(
+            dusOp, "Full tensor update but types mismatch");
+      }
+    }
+
+    // Check if the differing dimension is a prefix or suffix update
+    bool dusFromBeginning = (dusStartIndices[differingDim] == 0);
+    bool dusToEnd =
+        (dusStartIndices[differingDim] + updateShape[differingDim] ==
+         targetShape[differingDim]);
+
+    Location loc = dusOp.getLoc();
+    SmallVector<Value> newDusIndices = dusIndexVals;
+
+    SmallVector<int64_t> sliceStrides(rank, 1);
+
+    Value slicePre;
+    Value slicePost;
+
+    auto getPrePost = [&](int64_t sliceAt) {
+      SmallVector<int64_t> slicePreStarts(rank, 0);
+      SmallVector<int64_t> slicePreLimits = llvm::to_vector(targetShape);
+
+      SmallVector<int64_t> slicePostStarts(rank, 0);
+      SmallVector<int64_t> slicePostLimits = llvm::to_vector(targetShape);
+
+      slicePreStarts[differingDim] = 0;
+      slicePreLimits[differingDim] = sliceAt;
+
+      slicePostStarts[differingDim] = sliceAt;
+      slicePostLimits[differingDim] = targetShape[differingDim];
+
+      slicePre = rewriter.create<stablehlo::SliceOp>(
+          loc, targetOperand, slicePreStarts, slicePreLimits, sliceStrides);
+
+      slicePost = rewriter.create<stablehlo::SliceOp>(
+          loc, targetOperand, slicePostStarts, slicePostLimits, sliceStrides);
+    };
+
+    auto itype = dusIndexVals[differingDim].getType();
+    auto c0 = rewriter.create<stablehlo::ConstantOp>(
+        loc, itype, makeAttr(itype, 0).cast<ElementsAttr>());
+    newDusIndices[differingDim] = c0;
+
+    if (!dusFromBeginning) {
+      int64_t sliceAt = dusStartIndices[differingDim];
+      getPrePost(sliceAt);
+
+      auto c0 = rewriter.create<stablehlo::ConstantOp>(
+          loc, itype, makeAttr(itype, 0).cast<ElementsAttr>());
+      newDusIndices[differingDim] = c0;
+
+      if (!(singleDifferingDim && dusToEnd)) {
+        slicePost = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+            loc, slicePost, updateVal, newDusIndices);
+      }
+
+    } else {
+      assert(!dusToEnd);
+      int64_t sliceAt =
+          dusStartIndices[differingDim] + updateShape[differingDim];
+      getPrePost(sliceAt);
+
+      if (!(singleDifferingDim && dusFromBeginning)) {
+        slicePre = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+            loc, slicePre, updateVal, newDusIndices);
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        dusOp, dusOp.getType(), ValueRange{slicePre, slicePost}, differingDim);
+
+    return success();
+  }
+};
+
 //////////////// Imported from stablehlo
 static bool isIotaRange(ArrayRef<int64_t> dims) {
   return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
@@ -10818,7 +11219,8 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat>(context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad>(
+          context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);

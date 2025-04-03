@@ -1046,6 +1046,21 @@ def WhileConcat : EnzymeHLOPatternOp<
   let patterns = ["WhileConcat"];
 }
 
+def DUSToConcat : EnzymeHLOPatternOp<
+    "dus_to_concat"> {
+  let patterns = ["DUSToConcat"];
+}
+
+def DUSConcat : EnzymeHLOPatternOp<
+    "dus_concat"> {
+  let patterns = ["DUSConcat"];
+}
+
+def DUSPad : EnzymeHLOPatternOp<
+    "dus_pad"> {
+  let patterns = ["DUSPad"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
