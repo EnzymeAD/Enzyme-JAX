@@ -942,6 +942,12 @@ def TransposeDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeDUS"];
 }
 
+def WhileOpInductionReplacementPatterns : EnzymeHLOPatternOp<
+  "while_op_induction_replacement"
+> {
+  let patterns = ["WhileOpInductionReplacement"];
+}
+
 def TransposeWhilePatterns : EnzymeHLOPatternOp<
   "transpose_while"
 > {
