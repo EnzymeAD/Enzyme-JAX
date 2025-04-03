@@ -308,7 +308,7 @@ if_remove_unused<1>;
 if_inline<1>;
 if_to_select<1>;
 if_pred_propagation<1>;
-while_simplify<1>;
+while_simplify<1>(0);
 while_deadresult<1>;
 
 broadcastindim_is_reshape<1>;
