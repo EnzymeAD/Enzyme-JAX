@@ -8968,6 +8968,224 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
   return true;
 }
 
+// Currently supports:
+// 1. Identifies induction variable
+// 2. Addition of constant step value
+// 3. Less than comparision
+struct WhileOpInductionReplacement
+    : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern<stablehlo::WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
+                                PatternRewriter &rewriter) const final {
+    // Only handle while loops with identifiable iteration patterns
+    bool canonicalized = false;
+
+    // Look for a loop counter variable (induction variable analog)
+    Block &bodyBlock = whileOp.getBody().front();
+    auto returnOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    // Find the counter variable and its limit before entering the loop
+    // This is used to identify and optimize induction variables
+    unsigned counterIdx = 0;
+    Value limitValue = nullptr;
+    bool hasCounter = findCounterAndLimit(whileOp, counterIdx, limitValue);
+
+    // If we can't find a counter variable, we can't optimize induction
+    // variables
+    if (!hasCounter)
+      return failure();
+
+    // Get the counter argument and its start value for later use
+    Value counterArg = whileOp.getBody().getArgument(counterIdx);
+    Value startValue = findCounterStartValue(whileOp, counterIdx);
+
+    // Find the counter step value (how much the counter increments each
+    // iteration) This is needed to correctly scale the induction variable
+    // calculation
+    Value counterStepValue = findCounterStepValue(whileOp, counterIdx);
+    if (!counterStepValue)
+      return failure();
+
+    // Examine each iteration argument and result
+    for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
+      // Skip the counter variable itself - we don't want to optimize it away
+      if (i == counterIdx)
+        continue;
+
+      // Get the input, the body argument, and the yielded value
+      Value initValue = whileOp.getOperands()[i];
+      BlockArgument iterArg = bodyBlock.getArgument(i);
+      Value yieldedValue = returnOp.getOperand(i);
+      Value result = whileOp.getResult(i);
+
+      // Look for a simple addition pattern: either iter_arg + step or step +
+      // iter_arg
+      auto addOp = yieldedValue.getDefiningOp<stablehlo::AddOp>();
+      if (!addOp)
+        continue;
+
+      // Check which operand is the iteration argument and which is the step
+      Value stepValue;
+      if (addOp.getLhs() == iterArg) {
+        // Pattern: iter_arg + step
+        stepValue = addOp.getRhs();
+      } else if (addOp.getRhs() == iterArg) {
+        // Pattern: step + iter_arg
+        stepValue = addOp.getLhs();
+      } else {
+        // Neither operand is the iteration argument
+        continue;
+      }
+
+      // Find if the step is a constant
+      auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
+      if (!constOp)
+        continue;
+
+      // Now we can replace uses of the iterArg inside the loop
+      // with a direct calculation based on the counter:
+      // replacement = init_value + ((counter - start_value) * step_value) /
+      // counter_step_value
+      if (!iterArg.use_empty()) {
+        rewriter.setInsertionPointToStart(&bodyBlock);
+
+        // Create the calculation for the current iteration
+        Value iterOffset = rewriter.create<stablehlo::SubtractOp>(
+            whileOp.getLoc(), counterArg.getType(), counterArg, startValue);
+
+        // First multiply by the step value
+        Value scaledOffset = rewriter.create<stablehlo::MulOp>(
+            whileOp.getLoc(), iterOffset.getType(), iterOffset, stepValue);
+
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = rewriter.create<stablehlo::DivOp>(
+            whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
+            counterStepValue);
+
+        Value replacement = rewriter.create<stablehlo::AddOp>(
+            whileOp.getLoc(), iterArg.getType(), initValue, normalizedOffset);
+
+        rewriter.modifyOpInPlace(
+            whileOp, [&] { iterArg.replaceAllUsesWith(replacement); });
+        canonicalized = true;
+      }
+
+      // Similarly replace uses of the result outside the loop
+      // with a calculation based on the final counter value
+      if (!result.use_empty() && limitValue) {
+        rewriter.setInsertionPointAfter(whileOp);
+
+        // Calculate total iterations: limit - start
+        Value totalIters = rewriter.create<stablehlo::SubtractOp>(
+            whileOp.getLoc(), limitValue.getType(), limitValue, startValue);
+
+        // First multiply by the step value (using the same step value
+        // identified earlier)
+        Value scaledOffset = rewriter.create<stablehlo::MulOp>(
+            whileOp.getLoc(), totalIters.getType(), totalIters, stepValue);
+
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = rewriter.create<stablehlo::DivOp>(
+            whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
+            counterStepValue);
+
+        Value finalValue = rewriter.create<stablehlo::AddOp>(
+            whileOp.getLoc(), result.getType(), initValue, normalizedOffset);
+
+        rewriter.replaceAllUsesWith(result, finalValue);
+        canonicalized = true;
+      }
+    }
+
+    return success(canonicalized);
+  }
+
+private:
+  // Helper function to identify the counter variable and its limit
+  // Returns the index of the counter argument and the limit value
+  bool findCounterAndLimit(stablehlo::WhileOp whileOp, unsigned &counterIdx,
+                           Value &limitValue) const {
+    // Look in the condition region for a comparison operation
+    Block &condBlock = whileOp.getCond().front();
+    Operation *terminator = condBlock.getTerminator();
+
+    // Typical pattern: return %comparison
+    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(terminator)) {
+      if (returnOp.getNumOperands() != 1)
+        return false;
+
+      // Look for a comparison that controls the loop
+      auto compareOp =
+          returnOp.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+      if (!compareOp)
+        return false;
+
+      // Check if one side is a block argument (our counter)
+      if (auto blockArg = compareOp.getLhs().dyn_cast<BlockArgument>()) {
+        if (blockArg.getOwner() == &condBlock) {
+          counterIdx = blockArg.getArgNumber();
+          limitValue = compareOp.getRhs();
+          return true;
+        }
+      }
+
+      if (auto blockArg = compareOp.getRhs().dyn_cast<BlockArgument>()) {
+        if (blockArg.getOwner() == &condBlock) {
+          counterIdx = blockArg.getArgNumber();
+          limitValue = compareOp.getLhs();
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Helper to find the initial value of the counter
+  Value findCounterStartValue(stablehlo::WhileOp whileOp,
+                              unsigned counterIdx) const {
+    // The initial value is the corresponding operand to the while op
+    return whileOp.getOperands()[counterIdx];
+  }
+
+  // Helper to find the counter step value (how much it increments each
+  // iteration)
+  Value findCounterStepValue(stablehlo::WhileOp whileOp,
+                             unsigned counterIdx) const {
+    // Get the block argument in the body region
+    Block &bodyBlock = whileOp.getBody().front();
+    BlockArgument counterArg = bodyBlock.getArgument(counterIdx);
+
+    // Find the terminator to get the yielded value
+    auto returnOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    // Get the yielded value for the counter
+    Value yieldedCounter = returnOp.getOperand(counterIdx);
+
+    // Look for addition pattern: counter + step or step + counter
+    auto addOp =
+        dyn_cast_or_null<stablehlo::AddOp>(yieldedCounter.getDefiningOp());
+    if (!addOp)
+      return nullptr;
+
+    // Check both sides of the addition operation (since addition is
+    // commutative)
+    if (addOp.getLhs() == counterArg) {
+      // Pattern: counter + step
+      return addOp.getRhs();
+    }
+
+    if (addOp.getRhs() == counterArg) {
+      // Pattern: step + counter
+      return addOp.getLhs();
+    }
+
+    // Counter is not directly used in the addition
+    return nullptr;
+  }
+};
+
 struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -11096,6 +11314,7 @@ struct EnzymeHLOOptPass
 
     // clang-format off
     patterns.add<
+        WhileOpInductionReplacement,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
