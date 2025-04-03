@@ -10271,6 +10271,12 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 // upcoming value
 struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
+  bool hoist_all;
+  WhileSimplify(bool hoist_all, MLIRContext *context,
+                PatternBenefit benefit = 1,
+                ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        hoist_all(hoist_all) {}
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp op,
                                 PatternRewriter &rewriter) const override {
@@ -10290,6 +10296,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
       bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
       if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
         canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+      } else if (hoist_all) {
+        canHoist = true;
       }
 
       if (canHoist && bodyArg == bodyTerm->getOperand(i)) {
@@ -11313,6 +11321,12 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
   patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
+                                       bool hoistAll, MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
+}
+
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                              bool allowOnFloatingPointMath,
                                              MLIRContext &context,
@@ -11553,7 +11567,6 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         BroadcastInDimIsReshape,
         WhileDeadResults,
-        WhileSimplify,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
@@ -11563,6 +11576,9 @@ struct EnzymeHLOOptPass
         ReduceTransposeSimplify,
         BroadcastIotaSimplify
       >(context);
+
+    patterns.add<WhileSimplify>(false, context);
+
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));

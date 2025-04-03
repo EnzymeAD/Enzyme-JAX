@@ -773,9 +773,20 @@ def IfPredPropagation : EnzymeHLOPatternOp<
   let patterns = ["IfPredPropagation"];
 }
 
-def WhileSimplify : EnzymeHLOPatternOp<
+// benefit 65k + max_constant_expansion flag
+def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "while_simplify"> {
-  let patterns = ["WhileSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("hoist_all",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<

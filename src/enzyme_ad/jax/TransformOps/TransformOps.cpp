@@ -32,6 +32,10 @@ void ApplyNoNanAddSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanAddSubSimplify(patterns, getParameter(), *getContext(),
                          PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyWhileSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addWhileSimplify(patterns, getParameter(), *getContext(),
+                   PatternBenefit(getBenefit().value_or(0)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));

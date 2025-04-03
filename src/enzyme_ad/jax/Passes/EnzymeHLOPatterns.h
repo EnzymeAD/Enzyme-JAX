@@ -24,6 +24,8 @@ void addNoNanAddSubSimplify(RewritePatternSet &patterns,
                             PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
+void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
+                      MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);
