@@ -9920,7 +9920,6 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
-
 struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -9946,7 +9945,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
       bool legal = true;
       // Skip DUS candidates which can be removed in a better form by WhileDUS
       if (auto DUS = yieldOp.getOperand(idx)
-                     .getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+                         .getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
 
         bool legalDUS = true;
         if (DUS.getOperand() == whileOp.getBody().front().getArgument(idx)) {
@@ -9964,7 +9963,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
         }
 
         if (legalDUS)
-        legal = false;
+          legal = false;
       }
 
       if (!legal)
@@ -9983,23 +9982,27 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
       SmallVector<int64_t> upperBounds(T.getShape().size(), 0);
 
       // We want to find a smaller window to use as the inductive variable
-      // This means that no slice can read from outside the window (otherwise we need the data).
-      // We also want to ensure that no dynamic update slice overwrites outside the window
-      //. This is because we want to just do a single DUS of the original input outside the window
+      // This means that no slice can read from outside the window (otherwise we
+      // need the data). We also want to ensure that no dynamic update slice
+      // overwrites outside the window
+      //. This is because we want to just do a single DUS of the original input
+      //outside the window
 
       SmallVector<Value> todo = {argOperand, condOperand};
       while (!todo.empty()) {
         auto cur = todo.pop_back_val();
         for (auto &u : cur.getUses()) {
-          Operation* user = u.getOwner();
+          Operation *user = u.getOwner();
           if (auto use = dyn_cast<stablehlo::SliceOp>(user)) {
-            for (int i=0; i<rank; i++) {
+            for (int i = 0; i < rank; i++) {
               if (use.getStrides()[i] != 1) {
                 legal = false;
                 break;
               }
-              lowerBounds[i] = std::min(lowerBounds[i], use.getStartIndices()[i]);
-              upperBounds[i] = std::max(upperBounds[i], use.getLimitIndices()[i]);
+              lowerBounds[i] =
+                  std::min(lowerBounds[i], use.getStartIndices()[i]);
+              upperBounds[i] =
+                  std::max(upperBounds[i], use.getLimitIndices()[i]);
             }
             continue;
           }
@@ -10009,11 +10012,11 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
               legal = false;
               break;
             }
-            for (int i=0; i<rank; i++) {
-
+            for (int i = 0; i < rank; i++) {
 
               DenseIntElementsAttr idxAttr;
-              if (!matchPattern(use.getStartIndices()[i], m_Constant(&idxAttr)) ||
+              if (!matchPattern(use.getStartIndices()[i],
+                                m_Constant(&idxAttr)) ||
                   idxAttr.getNumElements() != 1) {
                 legal = false;
                 break;
@@ -10037,19 +10040,21 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
               legal = false;
               break;
             }
-	    continue;
+            continue;
           }
 
           legal = false;
           break;
         }
-        if (!legal) break;
+        if (!legal)
+          break;
       }
-      if (!legal) continue;
+      if (!legal)
+        continue;
 
       bool seenSlice = false;
 
-      for (int i=0; i<rank; i++) {
+      for (int i = 0; i < rank; i++) {
         if (lowerBounds[i] >= upperBounds[i]) {
           legal = false;
           continue;
@@ -10064,9 +10069,12 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
         }
       }
 
-      if (!legal || !seenSlice) continue;
+      if (!legal || !seenSlice)
+        continue;
 
-      candidates.emplace_back(Candidate{idx, lowerBounds, upperBounds, argOperand, condOperand, whileOp.getOperands()[idx]});
+      candidates.emplace_back(Candidate{idx, lowerBounds, upperBounds,
+                                        argOperand, condOperand,
+                                        whileOp.getOperands()[idx]});
     }
 
     // If no candidates found, no rewrite needed
@@ -10101,10 +10109,10 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
 
       rewriter.setInsertionPoint(yieldOp);
       for (auto &candidate : candidates) {
-      SmallVector<int64_t> strides(candidate.lowerBounds.size(), 1);
+        SmallVector<int64_t> strides(candidate.lowerBounds.size(), 1);
         newReturnValues[candidate.idx] = rewriter.create<stablehlo::SliceOp>(
-          candidate.argOperand.getLoc(), newReturnValues[candidate.idx],
-          candidate.lowerBounds, candidate.upperBounds, strides);
+            candidate.argOperand.getLoc(), newReturnValues[candidate.idx],
+            candidate.lowerBounds, candidate.upperBounds, strides);
       }
       rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
                                                        newReturnValues);
@@ -10134,16 +10142,15 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
         Value operand = candidate.outerOperand;
         SmallVector<Value> starts;
         for (auto idx : candidate.lowerBounds) {
-          starts.push_back(
-            rewriter.create<stablehlo::ConstantOp>(
-              candidate.argOperand.getLoc(), ctype, makeAttr(ctype, idx).cast<ElementsAttr>())
-            );
+          starts.push_back(rewriter.create<stablehlo::ConstantOp>(
+              candidate.argOperand.getLoc(), ctype,
+              makeAttr(ctype, idx).cast<ElementsAttr>()));
         }
 
         results[candidate.idx] =
             rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                candidate.argOperand.getLoc(), candidate.outerOperand, results[candidate.idx],
-                starts);
+                candidate.argOperand.getLoc(), candidate.outerOperand,
+                results[candidate.idx], starts);
       }
     }
 
@@ -10186,19 +10193,22 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
         Value newArg = newWhileOp.getBody().getArgument(i);
         for (auto &pair : candidates) {
           if (pair.idx == i) {
-            auto ctype = RankedTensorType::get({}, cast<RankedTensorType>(pair.argOperand.getType()).getElementType());
+            auto ctype = RankedTensorType::get(
+                {}, cast<RankedTensorType>(pair.argOperand.getType())
+                        .getElementType());
             auto padVal = rewriter.create<stablehlo::ConstantOp>(
-              pair.argOperand.getLoc(), ctype, makeAttr(ctype, 0).cast<ElementsAttr>());
+                pair.argOperand.getLoc(), ctype,
+                makeAttr(ctype, 0).cast<ElementsAttr>());
 
             SmallVector<int64_t> slow = llvm::to_vector(pair.lowerBounds);
-            SmallVector<int64_t> shigh = llvm::to_vector(cast<RankedTensorType>(pair.argOperand.getType()).getShape());
-            for (int i=0; i<shigh.size(); i++)
+            SmallVector<int64_t> shigh = llvm::to_vector(
+                cast<RankedTensorType>(pair.argOperand.getType()).getShape());
+            for (int i = 0; i < shigh.size(); i++)
               shigh[i] -= pair.upperBounds[i];
             SmallVector<int64_t> sint(shigh.size(), 0);
 
             newArg = rewriter.create<stablehlo::PadOp>(
-                pair.argOperand.getLoc(), newArg, padVal,
-                slow, shigh, sint);
+                pair.argOperand.getLoc(), newArg, padVal, slow, shigh, sint);
             break;
           }
         }
@@ -10246,25 +10256,28 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
-      
+
       for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
         auto oldArg = whileOp.getCond().getArgument(i);
         Value newArg = newWhileOp.getCond().getArgument(i);
         for (auto &pair : candidates) {
           if (pair.idx == i) {
-            auto ctype = RankedTensorType::get({}, cast<RankedTensorType>(pair.condOperand.getType()).getElementType());
+            auto ctype = RankedTensorType::get(
+                {}, cast<RankedTensorType>(pair.condOperand.getType())
+                        .getElementType());
             auto padVal = rewriter.create<stablehlo::ConstantOp>(
-              pair.condOperand.getLoc(), ctype, makeAttr(ctype, 0).cast<ElementsAttr>());
+                pair.condOperand.getLoc(), ctype,
+                makeAttr(ctype, 0).cast<ElementsAttr>());
 
             SmallVector<int64_t> slow = llvm::to_vector(pair.lowerBounds);
-            SmallVector<int64_t> shigh = llvm::to_vector(cast<RankedTensorType>(pair.condOperand.getType()).getShape());
-            for (int i=0; i<shigh.size(); i++)
+            SmallVector<int64_t> shigh = llvm::to_vector(
+                cast<RankedTensorType>(pair.condOperand.getType()).getShape());
+            for (int i = 0; i < shigh.size(); i++)
               shigh[i] -= pair.upperBounds[i];
             SmallVector<int64_t> sint(shigh.size(), 0);
 
             newArg = rewriter.create<stablehlo::PadOp>(
-                pair.condOperand.getLoc(), newArg, padVal,
-                slow, shigh, sint);
+                pair.condOperand.getLoc(), newArg, padVal, slow, shigh, sint);
             break;
           }
         }
@@ -10281,7 +10294,6 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
     return success();
   }
 };
-
 
 // TODO: this is not valid in general but presumes the inner structure is valid
 // from the input
