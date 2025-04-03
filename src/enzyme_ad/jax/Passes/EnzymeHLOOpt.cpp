@@ -11322,9 +11322,8 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
-                                      bool hoistAll,
-                                      MLIRContext &context,
-                                      PatternBenefit benefit) {
+                                       bool hoistAll, MLIRContext &context,
+                                       PatternBenefit benefit) {
   patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
 }
 
