@@ -32,7 +32,7 @@ void ApplyNoNanAddSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanAddSubSimplify(patterns, getParameter(), *getContext(),
                          PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplWhileSimplify::populatePatterns(RewritePatternSet &patterns) {
+void ApplyWhileSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addWhileSimplify(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(0)));
 }

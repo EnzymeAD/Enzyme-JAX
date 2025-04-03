@@ -10297,7 +10297,7 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
       if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
         canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
       } else if (hoist_all) {
-        canHost = true;
+        canHoist = true;
       }
 
       if (canHoist && bodyArg == bodyTerm->getOperand(i)) {
@@ -11319,6 +11319,13 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
                                       MLIRContext &context,
                                       PatternBenefit benefit) {
   patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
+}
+
+void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
+                                      bool hoistAll,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
 }
 
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
