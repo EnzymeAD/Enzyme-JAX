@@ -1358,9 +1358,8 @@ struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 struct SliceLICM : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
   bool single_user;
-  SliceLICM(bool single_user, MLIRContext *context,
-                PatternBenefit benefit = 1,
-                ArrayRef<StringRef> generatedNames = {})
+  SliceLICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
+            ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         single_user(single_user) {}
 
@@ -1373,7 +1372,8 @@ struct SliceLICM : public OpRewritePattern<stablehlo::SliceOp> {
         return failure();
       if (single_user) {
         for (auto U : operand.getUsers()) {
-          if (U == op) continue;
+          if (U == op)
+            continue;
           if (op->getParentOp()->isAncestor(U))
             return failure();
         }
@@ -11359,11 +11359,10 @@ void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
-                                       bool single_user, MLIRContext &context,
-                                       PatternBenefit benefit) {
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
   patterns.insert<SliceLICM>(single_user, &context, benefit);
 }
-
 
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                              bool allowOnFloatingPointMath,

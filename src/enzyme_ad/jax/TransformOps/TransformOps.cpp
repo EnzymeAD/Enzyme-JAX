@@ -38,7 +38,7 @@ void ApplyWhileSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
 }
 void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
-                   PatternBenefit(getBenefit().value_or(1)));
+               PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
