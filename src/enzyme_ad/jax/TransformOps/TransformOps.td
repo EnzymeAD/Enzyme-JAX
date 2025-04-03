@@ -1097,6 +1097,10 @@ def DUSLICM : EnzymeHLOPatternOp<
   let patterns = ["DUSLICM"];
 }
 
+def WhileInductionReduction : EnzymeHLOPatternOp<
+    "while_induction_reduction"> {
+  let patterns = ["WhileInductionReduction"];
+}
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
