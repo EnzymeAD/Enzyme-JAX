@@ -10273,8 +10273,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
   bool max_constant_expansion;
   WhileSimplify(bool hoist_all, MLIRContext *context,
-                     PatternBenefit benefit = 1,
-                     ArrayRef<StringRef> generatedNames = {})
+                PatternBenefit benefit = 1,
+                ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         hoist_all(hoist_all) {}
 
@@ -11572,7 +11572,7 @@ struct EnzymeHLOOptPass
       >(context);
 
     patterns.add<WhileSimplify>(false, context);
-    
+
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
