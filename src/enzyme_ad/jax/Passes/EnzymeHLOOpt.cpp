@@ -1181,6 +1181,151 @@ struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+
+    auto dusOp =
+        sliceOp.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dusOp) {
+      return rewriter.notifyMatchFailure(sliceOp, "Operand is not a DUS");
+    }
+
+    // Constraint: DUS has only the slice as user
+    if (!dusOp.getResult().hasOneUse()) {
+      return rewriter.notifyMatchFailure(sliceOp, "DUS has multiple users");
+    }
+
+    // Get DUS info
+    Value targetOperand = dusOp.getOperand();
+    Value updateVal = dusOp.getUpdate();
+    SmallVector<Value> dusIndexVals = dusOp.getStartIndices();
+
+    auto targetType = dyn_cast<RankedTensorType>(targetOperand.getType());
+    auto updateType = dyn_cast<RankedTensorType>(updateVal.getType());
+    auto sliceResultType =
+        dyn_cast<RankedTensorType>(sliceOp.getType()); // Type of %283
+
+    if (!targetType || !updateType || !sliceResultType ||
+        !targetType.hasStaticShape() || !updateType.hasStaticShape() ||
+        !sliceResultType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(sliceOp, "Requires static shapes");
+    }
+
+    ArrayRef<int64_t> updateShape = updateType.getShape();
+    int rank = targetType.getRank();
+
+    // Constraint: DUS indices must be constant
+    SmallVector<int64_t> dusStartIndices;
+    dusStartIndices.reserve(rank);
+    for (Value idxVal : dusIndexVals) {
+      DenseIntElementsAttr idxAttr;
+      if (!matchPattern(idxVal, m_Constant(&idxAttr)) ||
+          idxAttr.getNumElements() != 1) {
+        return rewriter.notifyMatchFailure(
+            sliceOp, "DUS indices must be constant scalars");
+      }
+      dusStartIndices.push_back((*idxAttr.begin()).getSExtValue());
+    }
+
+    if (llvm::any_of(sliceOp.getStrides(), [](int64_t s) { return s != 1; })) {
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "Requires slice strides of 1");
+    }
+
+    int concatDim = -1; // Dimension along which to concatenate results
+
+    SmallVector<int64_t> dusLimitIndices;
+    for (int d = 0; d < rank; ++d) {
+      int64_t dusStart = dusStartIndices[d];
+      int64_t dusEnd = dusStart + updateShape[d];
+      dusLimitIndices.push_back(dusEnd);
+      int64_t sliceStart = sliceOp.getStartIndices()[d];
+      int64_t sliceLimit = sliceOp.getLimitIndices()[d];
+
+      if (dusStart == sliceStart && dusEnd == sliceLimit) {
+        continue;
+      }
+
+      if (concatDim != -1) {
+        return failure();
+      }
+      concatDim = d;
+
+      // if entirely within one or the other, use the other pattern
+      // 1) if we are outside the update
+      if (sliceLimit <= dusStart || sliceStart >= dusEnd) {
+        return failure();
+      }
+
+      // 2) we are fully within the update
+      if (sliceStart >= dusStart & sliceStart <= dusEnd) {
+        return failure();
+      }
+    }
+
+    if (concatDim == -1)
+      return failure();
+
+    SmallVector<Value> toConcat;
+
+    if (sliceOp.getStartIndices()[concatDim] < dusStartIndices[concatDim]) {
+      assert(sliceOp.getLimitIndices()[concatDim] > dusStartIndices[concatDim]);
+      SmallVector<int64_t> newLimit =
+          llvm::to_vector(sliceOp.getLimitIndices());
+      newLimit[concatDim] = dusStartIndices[concatDim];
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), dusOp.getOperand(), sliceOp.getStartIndices(),
+          newLimit, sliceOp.getStrides()));
+    }
+
+    if (sliceOp.getLimitIndices()[concatDim] <= dusLimitIndices[concatDim]) {
+      assert(sliceOp.getStartIndices()[concatDim] < dusStartIndices[concatDim]);
+      SmallVector<int64_t> newStart(dusStartIndices);
+      SmallVector<int64_t> newLimit =
+          llvm::to_vector(sliceOp.getLimitIndices());
+      for (int i = 0; i < rank; i++) {
+        newStart[i] -= dusStartIndices[i];
+        newLimit[i] -= dusStartIndices[i];
+      }
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), dusOp.getUpdate(), newStart, newLimit,
+          sliceOp.getStrides()));
+    }
+
+    if (sliceOp.getStartIndices()[concatDim] >= dusStartIndices[concatDim]) {
+      assert(sliceOp.getLimitIndices()[concatDim] > dusLimitIndices[concatDim]);
+      SmallVector<int64_t> newStart =
+          llvm::to_vector(sliceOp.getStartIndices());
+      SmallVector<int64_t> newLimit(dusLimitIndices);
+      for (int i = 0; i < rank; i++) {
+        newStart[i] -= dusStartIndices[i];
+        newLimit[i] -= dusStartIndices[i];
+      }
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), dusOp.getUpdate(), newStart, newLimit,
+          sliceOp.getStrides()));
+    }
+
+    if (sliceOp.getLimitIndices()[concatDim] > dusLimitIndices[concatDim]) {
+      assert(sliceOp.getStartIndices()[concatDim] < dusLimitIndices[concatDim]);
+      SmallVector<int64_t> newStart =
+          llvm::to_vector(sliceOp.getStartIndices());
+      newStart[concatDim] = dusLimitIndices[concatDim];
+      toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), dusOp.getOperand(), dusLimitIndices,
+          sliceOp.getLimitIndices(), sliceOp.getStrides()));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(sliceOp, toConcat,
+                                                          concatDim);
+
+    return success();
+  }
+};
+
 // slice(broadcast x) -> broadcast(slice x)
 struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -11257,8 +11402,8 @@ struct EnzymeHLOOptPass
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad>(
-          context);
+                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
+                   SliceDUSToConcat>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
