@@ -2345,7 +2345,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
   bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
-                        bool retryIfNewDead) const {
+                        bool &retryIfNewDead) const {
     // Not dead if the result is in use.
     if (!result.use_empty())
       return false;
