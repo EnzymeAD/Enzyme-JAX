@@ -1315,7 +1315,7 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
           llvm::to_vector(sliceOp.getStartIndices());
       newStart[concatDim] = dusLimitIndices[concatDim];
       toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
-          sliceOp.getLoc(), dusOp.getOperand(), dusLimitIndices,
+          sliceOp.getLoc(), dusOp.getOperand(), newStart,
           sliceOp.getLimitIndices(), sliceOp.getStrides()));
     }
 
