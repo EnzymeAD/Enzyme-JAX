@@ -39,22 +39,31 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<24x38x62xf32>, %arg1: tensor<i64>) -> tensor<24x38x62xf32> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %c_1 = stablehlo.constant dense<7> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [7:17, 7:31, 7:55] : (tensor<24x38x62xf32>) -> tensor<10x24x48xf32>
-// CHECK-NEXT:    %1:2 = stablehlo.while(%iterArg = %c, %iterArg_2 = %0) : tensor<i64>, tensor<10x24x48xf32>
+// CHECK:  func.func @main(%arg0: tensor<144x1024x1008xf64>, %arg1: tensor<i64>, %arg2: tensor<128x1009x1008xf64>, %arg3: tensor<1x1008x1008xf64>, %arg4: tensor<1x1008x1008xf64>) -> tensor<144x1024x1008xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<129> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<7> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [7:137, 1:1024, 0:1008] : (tensor<144x1024x1008xf64>) -> tensor<130x1023x1008xf64>
+// CHECK-NEXT:    %1:2 = stablehlo.while(%iterArg = %c_1, %iterArg_3 = %0) : tensor<i64>, tensor<130x1023x1008xf64>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:      %3 = stablehlo.compare  LT, %iterArg, %arg1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %3 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %3 = stablehlo.slice %iterArg_2 [0:10, 0:24, 0:48] : (tensor<10x24x48xf32>) -> tensor<10x24x48xf32>
-// CHECK-NEXT:      "test.use"(%3) : (tensor<10x24x48xf32>) -> ()
-// CHECK-NEXT:      %4 = "test.update"() : () -> tensor<10x24x48xf32>
-// CHECK-NEXT:      %5 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %5, %4 : tensor<i64>, tensor<10x24x48xf32>
+// CHECK-NEXT:      %3 = stablehlo.dynamic_update_slice %iterArg_3, %arg2, %c_2, %c_0, %c_1 : (tensor<130x1023x1008xf64>, tensor<128x1009x1008xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<130x1023x1008xf64>
+// CHECK-NEXT:      %4 = stablehlo.slice %3 [1:129, 1:1023, 1001:1008] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x7xf64>
+// CHECK-NEXT:      %5 = stablehlo.slice %3 [1:129, 1:1023, 0:1008] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x1008xf64>
+// CHECK-NEXT:      %6 = stablehlo.slice %3 [1:129, 1:1023, 0:7] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x7xf64>
+// CHECK-NEXT:      %7 = stablehlo.slice %3 [1:129, 0:1022, 1001:1008] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x7xf64>
+// CHECK-NEXT:      %8 = stablehlo.slice %3 [1:129, 0:1022, 0:1008] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x1008xf64>
+// CHECK-NEXT:      %9 = stablehlo.slice %3 [1:129, 0:1022, 0:7] : (tensor<130x1023x1008xf64>) -> tensor<128x1022x7xf64>
+// CHECK-NEXT:      "test.use"(%4, %5, %6, %7, %8, %9) : (tensor<128x1022x7xf64>, tensor<128x1022x1008xf64>, tensor<128x1022x7xf64>, tensor<128x1022x7xf64>, tensor<128x1022x1008xf64>, tensor<128x1022x7xf64>) -> ()
+// CHECK-NEXT:      %10 = stablehlo.dynamic_update_slice %3, %arg3, %c_1, %c_0, %c_1 : (tensor<130x1023x1008xf64>, tensor<1x1008x1008xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<130x1023x1008xf64>
+// CHECK-NEXT:      %11 = stablehlo.dynamic_update_slice %10, %arg4, %c, %c_0, %c_1 : (tensor<130x1023x1008xf64>, tensor<1x1008x1008xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<130x1023x1008xf64>
+// CHECK-NEXT:      %12 = stablehlo.add %iterArg, %c_2 : tensor<i64>
+// CHECK-NEXT:      %13 = stablehlo.slice %11 [0:130, 0:1023, 0:1008] : (tensor<130x1023x1008xf64>) -> tensor<130x1023x1008xf64>
+// CHECK-NEXT:      stablehlo.return %12, %13 : tensor<i64>, tensor<130x1023x1008xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1#1, %c_1, %c_1, %c_1 : (tensor<24x38x62xf32>, tensor<10x24x48xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<24x38x62xf32>
-// CHECK-NEXT:    return %2 : tensor<24x38x62xf32>
+// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1#1, %c_0, %c_2, %c_1 : (tensor<144x1024x1008xf64>, tensor<130x1023x1008xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<144x1024x1008xf64>
+// CHECK-NEXT:    return %2 : tensor<144x1024x1008xf64>
 // CHECK-NEXT:  }
