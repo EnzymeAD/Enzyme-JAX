@@ -1326,6 +1326,10 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
+static bool definedOutside(Value v, Operation *op) {
+  return !op->isAncestor(v.getParentBlock()->getParentOp());
+}
+
 struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1340,7 +1344,7 @@ struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     });
     return success();
   }
-}
+};
 
 // slice(broadcast x) -> broadcast(slice x)
 struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
@@ -9606,10 +9610,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
     return success();
   }
 };
-
-static bool definedOutside(Value v, Operation *op) {
-  return !op->isAncestor(v.getParentBlock()->getParentOp());
-}
 
 struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
