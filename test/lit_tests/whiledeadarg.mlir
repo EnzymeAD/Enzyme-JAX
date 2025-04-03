@@ -22,7 +22,7 @@ func.func @while_deadarg(%arg0: tensor<2x6x3xf32>, %arg1: tensor<3x3xf32>, %arg2
   %12 = stablehlo.reshape %11 : (tensor<3x2xf32>) -> tensor<3x2x1xf32>
   %13 = stablehlo.pad %12, %cst, low = [0, 0, 0], high = [0, 0, 5], interior = [0, 0, 0] : (tensor<3x2x1xf32>, tensor<f32>) -> tensor<3x2x6xf32>
 
-  // CHECK: %{{.+}}:8 = stablehlo.while
+  // CHECK: %{{.+}}:5 = stablehlo.while
   %14:9 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %13, %iterArg_4 = %1, %iterArg_5 = %2, %iterArg_6 = %arg3, %iterArg_7 = %arg4, %iterArg_8 = %arg5, %iterArg_9 = %11, %iterArg_10 = %0) : tensor<i64>, tensor<3x2x6xf32>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2xui64>, tensor<3x2xf32>, tensor<3x6x2xf32>
    cond {
     %19 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
