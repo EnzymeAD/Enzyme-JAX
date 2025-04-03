@@ -1326,6 +1326,22 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
+struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<stablehlo::WhileOp>(op->getParentOp())) return failure();
+    for (auto operand : op->getOperands())
+      if (!definedOutside(operand, op->getParentOp()))
+        return failure();
+    rewriter.modifyOpInPlace(op, [&](){
+      op->moveBefore(op->getParentOp());
+    });
+    return success();
+  }
+}
+
 // slice(broadcast x) -> broadcast(slice x)
 struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -11403,7 +11419,7 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
                    ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat>(context);
+                   SliceDUSToConcat, DUSLICM>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
