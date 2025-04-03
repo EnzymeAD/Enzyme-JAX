@@ -1281,7 +1281,11 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
           newLimit, sliceOp.getStrides()));
     }
 
-    if (sliceOp.getLimitIndices()[concatDim] <= dusLimitIndices[concatDim]) {
+    if (sliceOp.getLimitIndices()[concatDim] >= dusLimitIndices[concatDim] &&
+        sliceOp.getStartIndices()[concatDim] <= dusStartIndices[concatDim]) {
+      toConcat.push_back(dusOp.getUpdate());
+    } else if (sliceOp.getLimitIndices()[concatDim] <=
+               dusLimitIndices[concatDim]) {
       assert(sliceOp.getStartIndices()[concatDim] < dusStartIndices[concatDim]);
       SmallVector<int64_t> newStart(dusStartIndices);
       SmallVector<int64_t> newLimit =
@@ -1293,9 +1297,8 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
       toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
           sliceOp.getLoc(), dusOp.getUpdate(), newStart, newLimit,
           sliceOp.getStrides()));
-    }
-
-    if (sliceOp.getStartIndices()[concatDim] >= dusStartIndices[concatDim]) {
+    } else if (sliceOp.getStartIndices()[concatDim] >=
+               dusStartIndices[concatDim]) {
       assert(sliceOp.getLimitIndices()[concatDim] > dusLimitIndices[concatDim]);
       SmallVector<int64_t> newStart =
           llvm::to_vector(sliceOp.getStartIndices());
@@ -1315,13 +1318,37 @@ struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
           llvm::to_vector(sliceOp.getStartIndices());
       newStart[concatDim] = dusLimitIndices[concatDim];
       toConcat.push_back(rewriter.create<stablehlo::SliceOp>(
-          sliceOp.getLoc(), dusOp.getOperand(), dusLimitIndices,
+          sliceOp.getLoc(), dusOp.getOperand(), newStart,
           sliceOp.getLimitIndices(), sliceOp.getStrides()));
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(sliceOp, toConcat,
-                                                          concatDim);
+    auto preType = sliceOp.getType();
 
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        sliceOp, toConcat, concatDim);
+    assert(preType == newConcat.getType());
+    (void)preType;
+    (void)newConcat;
+
+    return success();
+  }
+};
+
+static bool definedOutside(Value v, Operation *op) {
+  return !op->isAncestor(v.getParentBlock()->getParentOp());
+}
+
+struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<stablehlo::WhileOp>(op->getParentOp()))
+      return failure();
+    for (auto operand : op->getOperands())
+      if (!definedOutside(operand, op->getParentOp()))
+        return failure();
+    rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(op->getParentOp()); });
     return success();
   }
 };
@@ -9591,10 +9618,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
-static bool definedOutside(Value v, Operation *op) {
-  return !op->isAncestor(v.getParentBlock()->getParentOp());
-}
-
 struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -11403,7 +11426,7 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
                    ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat>(context);
+                   SliceDUSToConcat, DUSLICM>(context);
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
