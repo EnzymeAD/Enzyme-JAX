@@ -2344,7 +2344,8 @@ struct ShiftRightLogicalSimplify final
 struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  bool isLoopResultDead(OpResult result) const {
+  bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
+                        bool &retryIfNewDead) const {
     // Not dead if the result is in use.
     if (!result.use_empty())
       return false;
@@ -2385,13 +2386,30 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
       if (terminatorOperand.getOperandNumber() == result.getResultNumber())
         continue;
 
+      if (llvm::is_contained(deadResults, terminatorOperand.getOperandNumber()))
+        continue;
+      // We directly yield an argument from a different index (since we skip
+      // the return of the given result).
+      if (auto ba = dyn_cast<BlockArgument>(terminatorOperand.get())) {
+        if (ba.getOwner()->getParentOp() == whileOp) {
+          if (terminatorOperand.get() == bodyArgument) {
+            retryIfNewDead = true;
+            return false;
+          } else {
+            continue;
+          }
+        }
+      }
+
       SetVector<Operation *> backwardSlice;
       BackwardSliceOptions options;
       options.omitBlockArguments = true;
       getBackwardSlice(terminatorOperand.get(), &backwardSlice, options);
       for (Operation *op : backwardSlice) {
-        if (llvm::is_contained(op->getOperands(), bodyArgument))
+        if (llvm::is_contained(op->getOperands(), bodyArgument)) {
+          retryIfNewDead = true;
           return false;
+        }
       }
     }
     return true;
@@ -2407,21 +2425,31 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(terminator);
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+    auto term2 = rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
   LogicalResult matchAndRewrite(mlir::stablehlo::WhileOp op,
                                 PatternRewriter &rewriter) const override {
     SmallVector<int64_t> deadResults;
-    for (OpResult result : op.getResults()) {
-      if (!isLoopResultDead(result))
+    do {
+      bool newDead = false;
+      bool retry = false;
+      for (OpResult result : op.getResults()) {
+        if (llvm::is_contained(deadResults, result.getResultNumber()))
+          continue;
+        if (!isLoopResultDead(result, deadResults, retry))
+          continue;
+        deadResults.push_back(result.getResultNumber());
+        newDead = true;
+      }
+      if (newDead && retry)
         continue;
-
-      deadResults.push_back(result.getResultNumber());
-    }
+    } while (false);
     if (deadResults.empty())
       return failure();
+
+    llvm::sort(deadResults);
 
     SetVector<Operation *> condSlice, bodySlice;
     for (int64_t i : deadResults) {
@@ -2430,7 +2458,6 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     condSlice.remove(op.getCond().front().getTerminator());
     bodySlice.remove(op.getBody().front().getTerminator());
-    replaceTerminator(rewriter, op.getCond(), deadResults);
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
     condSlice = mlir::topologicalSort(condSlice);
@@ -2472,8 +2499,9 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
                                 updated.getCond().begin());
 
-    for (int64_t i : llvm::reverse(deadResults))
+    for (int64_t i : llvm::reverse(deadResults)) {
       op.getBody().eraseArgument(i);
+    }
     rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
                                 updated.getBody().begin());
 
