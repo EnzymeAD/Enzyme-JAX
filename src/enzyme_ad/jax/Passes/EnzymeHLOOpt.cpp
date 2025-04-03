@@ -1353,6 +1353,37 @@ struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
+// Replace while op iteration variables which are not updated with their
+// upcoming value
+struct SliceLICM : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+  bool single_user;
+  SliceLICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
+            ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        single_user(single_user) {}
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<stablehlo::WhileOp>(op->getParentOp()))
+      return failure();
+    for (auto operand : op->getOperands()) {
+      if (!definedOutside(operand, op->getParentOp()))
+        return failure();
+      if (single_user) {
+        for (auto U : operand.getUsers()) {
+          if (U == op)
+            continue;
+          if (op->getParentOp()->isAncestor(U))
+            return failure();
+        }
+      }
+    }
+    rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(op->getParentOp()); });
+    return success();
+  }
+};
+
 // slice(broadcast x) -> broadcast(slice x)
 struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -11325,6 +11356,12 @@ void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
                                        bool hoistAll, MLIRContext &context,
                                        PatternBenefit benefit) {
   patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
+}
+
+void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<SliceLICM>(single_user, &context, benefit);
 }
 
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
