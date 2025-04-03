@@ -1040,6 +1040,11 @@ def WhileConcat : EnzymeHLOPatternOp<
   let patterns = ["WhileConcat"];
 }
 
+def DUSToConcat : EnzymeHLOPatternOp<
+    "dus_to_concat"> {
+  let patterns = ["DUSToConcat"];
+}
+
 def DUSConcat : EnzymeHLOPatternOp<
     "dus_concat"> {
   let patterns = ["DUSConcat"];
