@@ -9053,6 +9053,9 @@ struct WhileOpInductionReplacement
       if (!addOp)
         continue;
 
+      if (!addOp.getType().getElementType().isInteger())
+        continue;
+
       // Check which operand is the iteration argument and which is the step
       Value stepValue;
       if (addOp.getLhs() == iterArg) {
@@ -9147,6 +9150,13 @@ private:
       auto compareOp =
           returnOp.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
       if (!compareOp)
+        return false;
+
+      if (compareOp.getComparisonDirection() !=
+          stablehlo::ComparisonDirection::LT)
+        return false;
+
+      if (!compareOp.getLhs().getType().getElementType().isInteger())
         return false;
 
       // Check if one side is a block argument (our counter)
