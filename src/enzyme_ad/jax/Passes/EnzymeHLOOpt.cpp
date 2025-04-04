@@ -1340,12 +1340,11 @@ static bool definedOutside(Value v, Operation *op) {
 
 // Replace while op iteration variables which are not updated with their
 // upcoming value
-template<typename T>
-struct LICM : public OpRewritePattern<T> {
+template <typename T> struct LICM : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
   bool single_user;
   LICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
-            ArrayRef<StringRef> generatedNames = {})
+       ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern<T>(context, benefit, generatedNames),
         single_user(single_user) {}
 
@@ -1373,11 +1372,12 @@ struct LICM : public OpRewritePattern<T> {
 struct LICMElementwise : public OpTraitRewritePattern<OpTrait::Elementwise> {
   using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
   bool single_user;
-  LICMElementwise(bool single_user, MLIRContext *context, PatternBenefit benefit = 1)
+  LICMElementwise(bool single_user, MLIRContext *context,
+                  PatternBenefit benefit = 1)
       : OpTraitRewritePattern<OpTrait::Elementwise>(context, benefit),
         single_user(single_user) {}
 
-  LogicalResult matchAndRewrite(Operation* op,
+  LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
     if (!isa<stablehlo::WhileOp>(op->getParentOp()))
       return failure();
@@ -9241,6 +9241,9 @@ struct WhileOpInductionReplacement
     if (!hasCounter)
       return failure();
 
+    if (!definedOutside(limitValue, whileOp))
+      return failure();
+
     // Get the counter argument and its start value for later use
     Value counterArg = whileOp.getBody().getArgument(counterIdx);
     Value startValue = findCounterStartValue(whileOp, counterIdx);
@@ -11799,45 +11802,47 @@ void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<stablehlo::SliceOp>>(single_user, &context, benefit);
 }
 
-void mlir::transform::addDUSLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context, benefit);
+void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
+                                 MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context,
+                                                         benefit);
 }
 
-void mlir::transform::addPadLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
+void mlir::transform::addPadLICM(RewritePatternSet &patterns, bool single_user,
+                                 MLIRContext &context, PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::PadOp>>(single_user, &context, benefit);
 }
 
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
   patterns.insert<LICMElementwise>(single_user, &context, benefit);
 }
 
 void mlir::transform::addConcatenateLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::ConcatenateOp>>(single_user, &context, benefit);
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ConcatenateOp>>(single_user, &context,
+                                                  benefit);
 }
 
 void mlir::transform::addBroadcastInDimLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::BroadcastInDimOp>>(single_user, &context, benefit);
+                                            bool single_user,
+                                            MLIRContext &context,
+                                            PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::BroadcastInDimOp>>(single_user, &context,
+                                                     benefit);
 }
 
 void mlir::transform::addReshapeLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
+                                     bool single_user, MLIRContext &context,
+                                     PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::ReshapeOp>>(single_user, &context, benefit);
 }
 
 void mlir::transform::addTransposeLICM(RewritePatternSet &patterns,
-                                   bool single_user, MLIRContext &context,
-                                   PatternBenefit benefit) {
+                                       bool single_user, MLIRContext &context,
+                                       PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::TransposeOp>>(single_user, &context, benefit);
 }
 

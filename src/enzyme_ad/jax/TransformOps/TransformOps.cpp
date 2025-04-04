@@ -42,31 +42,34 @@ void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
 }
 void ApplyDUSLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addDUSLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+             PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyPadLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+             PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyElementwiseLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+void ApplyElementwiseLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
   addElementwiseLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+                     PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyConcatenateLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+void ApplyConcatenateLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
   addConcatenateLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+                     PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyBroadcastInDimLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+void ApplyBroadcastInDimLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
   addBroadcastInDimLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+                        PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyReshapeLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addReshapeLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+                 PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyTransposeLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addTransposeLICM(patterns, getParameter(), *getContext(),
-               PatternBenefit(getBenefit().value_or(1)));
+                   PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
