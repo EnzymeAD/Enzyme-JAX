@@ -1338,32 +1338,46 @@ static bool definedOutside(Value v, Operation *op) {
   return !op->isAncestor(v.getParentBlock()->getParentOp());
 }
 
-struct DUSLICM final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+// Replace while op iteration variables which are not updated with their
+// upcoming value
+template<typename T>
+struct LICM : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+  bool single_user;
+  LICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
+            ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern<T>(context, benefit, generatedNames),
+        single_user(single_user) {}
 
-  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp op,
+  LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     if (!isa<stablehlo::WhileOp>(op->getParentOp()))
       return failure();
-    for (auto operand : op->getOperands())
+    for (auto operand : op->getOperands()) {
       if (!definedOutside(operand, op->getParentOp()))
         return failure();
+      if (single_user) {
+        for (auto U : operand.getUsers()) {
+          if (U == op)
+            continue;
+          if (op->getParentOp()->isAncestor(U))
+            return failure();
+        }
+      }
+    }
     rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(op->getParentOp()); });
     return success();
   }
 };
 
-// Replace while op iteration variables which are not updated with their
-// upcoming value
-struct SliceLICM : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LICMElementwise : public OpTraitRewritePattern<OpTrait::Elementwise> {
+  using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
   bool single_user;
-  SliceLICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
-            ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+  LICMElementwise(bool single_user, MLIRContext *context, PatternBenefit benefit = 1)
+      : OpTraitRewritePattern<OpTrait::Elementwise>(context, benefit),
         single_user(single_user) {}
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+  LogicalResult matchAndRewrite(Operation* op,
                                 PatternRewriter &rewriter) const override {
     if (!isa<stablehlo::WhileOp>(op->getParentOp()))
       return failure();
@@ -11782,7 +11796,49 @@ void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
                                    bool single_user, MLIRContext &context,
                                    PatternBenefit benefit) {
-  patterns.insert<SliceLICM>(single_user, &context, benefit);
+  patterns.insert<LICM<stablehlo::SliceOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addDUSLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addPadLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::PadOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICMElementwise>(single_user, &context, benefit);
+}
+
+void mlir::transform::addConcatenateLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ConcatenateOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addBroadcastInDimLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::BroadcastInDimOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addReshapeLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ReshapeOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addTransposeLICM(RewritePatternSet &patterns,
+                                   bool single_user, MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::TransposeOp>>(single_user, &context, benefit);
 }
 
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
@@ -11893,12 +11949,14 @@ struct EnzymeHLOOptPass
              BinopPadToConcat<stablehlo::MulOp>, ConcatPad, PadReduceWindow>(
             context);
 
-    if (passses & 512)
+    if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
                    ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat, DUSLICM>(context);
+                   SliceDUSToConcat>(context);
+      patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
+    }
 
     if (passses & 1024)
       patterns.add<FullReduceReshapeOrTranspose>(context);
