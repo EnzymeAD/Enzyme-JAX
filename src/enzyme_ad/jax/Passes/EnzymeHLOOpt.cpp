@@ -7624,6 +7624,47 @@ struct ConstPropThroughBarrier final
   }
 };
 
+struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
+                                PatternRewriter &rewriter) const override {
+    auto i32 = rewriter.getI32Type();
+
+    auto unrankedI32 = RankedTensorType::get({}, i32);
+
+    auto startIndices = dusOp.getStartIndices();
+
+    SmallVector<int64_t> newStartIndicesConst;
+    for (auto idx : startIndices) {
+      if (idx.getType().cast<RankedTensorType>().getElementType() == i32)
+        return failure();
+
+      llvm::APInt val;
+      if (!matchPattern(idx, m_ConstantInt(&val)))
+        return failure();
+
+      if (val.getSignificantBits() > 32)
+        return failure();
+
+      newStartIndicesConst.push_back(val.getZExtValue());
+    }
+
+    SmallVector<Value> newStartIndices;
+    for (auto [val, idx] :
+         llvm::zip_equal(newStartIndicesConst, startIndices)) {
+      newStartIndices.push_back(rewriter.create<stablehlo::ConstantOp>(
+          idx.getLoc(), unrankedI32,
+          makeAttr(unrankedI32, val).cast<ElementsAttr>()));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        dusOp, dusOp.getOperand(), dusOp.getUpdate(), newStartIndices);
+
+    return success();
+  }
+};
+
 // Replaces DUS with a combination of slices and concats.
 // Each run of the pattern handles one dimension at a time.
 struct DUSToConcat final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
