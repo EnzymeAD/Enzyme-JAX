@@ -9236,12 +9236,12 @@ struct WhileOpInductionReplacement
     Value limitValue = nullptr;
     bool hasCounter = findCounterAndLimit(whileOp, counterIdx, limitValue);
 
-    if (!definedOutside(limitValue, whileOp))
-      return failure();
-
     // If we can't find a counter variable, we can't optimize induction
     // variables
     if (!hasCounter)
+      return failure();
+
+    if (!definedOutside(limitValue, whileOp))
       return failure();
 
     // Get the counter argument and its start value for later use
