@@ -7630,7 +7630,6 @@ struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
                                 PatternRewriter &rewriter) const override {
     auto i32 = rewriter.getI32Type();
-    auto i64 = rewriter.getI64Type();
 
     auto unrankedI32 = RankedTensorType::get({}, i32);
 
