@@ -29,19 +29,19 @@ void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
 void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
 void addDUSLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                MLIRContext &context, PatternBenefit benefit);
 void addPadLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                MLIRContext &context, PatternBenefit benefit);
 void addElementwiseLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                        MLIRContext &context, PatternBenefit benefit);
 void addConcatenateLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                        MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                           MLIRContext &context, PatternBenefit benefit);
 void addReshapeLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                    MLIRContext &context, PatternBenefit benefit);
 void addTransposeLICM(RewritePatternSet &patterns, bool single_user,
-                  MLIRContext &context, PatternBenefit benefit);
+                      MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);
