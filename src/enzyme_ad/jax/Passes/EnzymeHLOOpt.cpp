@@ -11992,7 +11992,7 @@ private:
   }
 };
 
-// (add (mul a x) (mul a y)) -> (add a (mul x y))
+// (add (mul a x) (mul a y)) -> (mul a (add x y))
 template <typename Op>
 struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
@@ -12036,9 +12036,9 @@ struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
     if (!common)
       return failure();
 
-    auto newMul =
-        rewriter.create<stablehlo::MulOp>(op.getLoc(), lhsVal, rhsVal);
-    rewriter.replaceOpWithNewOp<Op>(op, common, newMul.getResult());
+    auto newMul = rewriter.create<Op>(op.getLoc(), lhsVal, rhsVal);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, common,
+                                                  newMul.getResult());
 
     return success();
   }
