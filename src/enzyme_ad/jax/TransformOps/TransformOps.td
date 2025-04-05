@@ -450,6 +450,12 @@ def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
   let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
 }
 
+def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
+    "associative_common_mul_op_reordering"> {
+  let patterns = ["AssociativeCommonMulOpReordering<stablehlo::AddOp>",
+                  "AssociativeCommonMulOpReordering<stablehlo::SubtractOp>"];
+}
+
 def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
     "associative_binary_op_reordering"> {
   let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
@@ -1226,6 +1232,12 @@ def PadConcatToConcatPad : EnzymeHLOPatternOp<
     "pad_concat_to_concat_pad"> {
   let patterns = ["PadConcatToConcatPad"];
 }
+
+def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
+    "slice_select_to_select_slice"> {
+  let patterns = ["SliceSelect"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

@@ -11992,6 +11992,58 @@ private:
   }
 };
 
+// (add (mul a x) (mul a y)) -> (mul a (add x y))
+template <typename Op>
+struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsMul = lhs.template getDefiningOp<stablehlo::MulOp>();
+    auto rhsMul = rhs.template getDefiningOp<stablehlo::MulOp>();
+
+    if (!lhsMul || !rhsMul)
+      return failure();
+
+    Value common = nullptr, lhsVal, rhsVal;
+
+    if (lhsMul.getLhs() == rhsMul.getRhs()) {
+      common = lhsMul.getLhs();
+      rhsVal = rhsMul.getLhs();
+      lhsVal = lhsMul.getRhs();
+    }
+
+    if (lhsMul.getLhs() == rhsMul.getLhs()) {
+      common = lhsMul.getLhs();
+      rhsVal = rhsMul.getRhs();
+      lhsVal = lhsMul.getRhs();
+    }
+
+    if (lhsMul.getRhs() == rhsMul.getRhs()) {
+      common = lhsMul.getRhs();
+      rhsVal = rhsMul.getLhs();
+      lhsVal = lhsMul.getLhs();
+    }
+
+    if (lhsMul.getRhs() == rhsMul.getLhs()) {
+      common = lhsMul.getRhs();
+      rhsVal = rhsMul.getRhs();
+      lhsVal = lhsMul.getLhs();
+    }
+
+    if (!common)
+      return failure();
+
+    auto newMul = rewriter.create<Op>(op.getLoc(), lhsVal, rhsVal);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, common,
+                                                  newMul.getResult());
+
+    return success();
+  }
+};
+
 // This lets us reorder the following
 // Case 1: (op x (op (op y x) y)) -> (op (op x y) (op x y))
 // Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
@@ -12559,6 +12611,56 @@ struct PadConcatToConcatPad
   }
 };
 
+struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+
+    auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+
+    if (!selOp)
+      return failure();
+
+    if (!selOp->hasOneUse())
+      return failure();
+
+    bool scalar_pred = false;
+    Value pred = selOp.getPred();
+    Value on_true = selOp.getOnTrue();
+    Value on_false = selOp.getOnFalse();
+
+    if (dyn_cast<RankedTensorType>(pred.getType()).getRank() == 0) {
+      scalar_pred = true;
+    }
+
+    Value slicedPred;
+    if (!scalar_pred) {
+      // slice predicate
+      slicedPred = rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), pred, sliceOp.getStartIndices(),
+          sliceOp.getLimitIndices(), sliceOp.getStrides());
+    } else {
+      slicedPred = pred;
+    }
+    Value slicedOnTrue = rewriter.create<stablehlo::SliceOp>(
+        sliceOp.getLoc(), on_true, sliceOp.getStartIndices(),
+        sliceOp.getLimitIndices(), sliceOp.getStrides());
+
+    Value slicedOnFalse = rewriter.create<stablehlo::SliceOp>(
+        sliceOp.getLoc(), on_false, sliceOp.getStartIndices(),
+        sliceOp.getLimitIndices(), sliceOp.getStrides());
+
+    auto newSelectOp = rewriter.create<stablehlo::SelectOp>(
+        sliceOp.getLoc(), slicedPred, slicedOnTrue, slicedOnFalse);
+
+    rewriter.replaceOp(sliceOp, newSelectOp.getResult());
+
+    return success();
+    ;
+  }
+};
+
 struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
   using OpRewritePattern<stablehlo::PadOp>::OpRewritePattern;
 
@@ -12826,7 +12928,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad, PadReduceWindow>(context);
+                 PadConcatToConcatPad, SliceSelect, PadReduceWindow>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
