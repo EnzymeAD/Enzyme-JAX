@@ -12558,7 +12558,7 @@ struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
 
   LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
-    
+
     auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
 
     if (!selOp)
