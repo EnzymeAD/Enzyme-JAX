@@ -11806,6 +11806,130 @@ struct BroadcastInDimIsReshape final
   }
 };
 
+struct PadConcatToConcatPad
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
+                                PatternRewriter &rewriter) const override {
+    
+    // Check if all operands are pad ops with the same padding value
+    SmallVector<stablehlo::PadOp> padOps;
+    Value padValue;
+
+    for (Value operand : concatOp.getOperands()) {
+      auto padOp = operand.getDefiningOp<stablehlo::PadOp>();
+      if (!padOp)
+        return failure();
+
+      if (padOps.empty()) {
+        padValue = padOp.getPaddingValue();
+      } else if (padValue != padOp.getPaddingValue()) {
+        return failure(); // Different padding values not supported
+      }
+
+      padOps.push_back(padOp);
+    }
+
+    int64_t concatDim = concatOp.getDimension();
+    int64_t rank = padOps[0].getEdgePaddingLow().size();
+
+    // Compute conservative common padding (largest common padding for all
+    // tensors)
+    SmallVector<int64_t> commonLowPadding(rank,
+                                          std::numeric_limits<int64_t>::max());
+    SmallVector<int64_t> commonHighPadding(rank,
+                                           std::numeric_limits<int64_t>::max());
+    SmallVector<int64_t> interiorPadding(rank,
+                                         0); // Assuming interior padding is 0
+
+    // Find minimum padding across all inputs (conservative common padding)
+    for (auto padOp : padOps) {
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        commonLowPadding[dim] =
+            std::min(commonLowPadding[dim], padOp.getEdgePaddingLow()[dim]);
+        commonHighPadding[dim] =
+            std::min(commonHighPadding[dim], padOp.getEdgePaddingHigh()[dim]);
+      }
+    }
+
+    // Collect original operands with adjusted padding
+    SmallVector<Value> adjOperands;
+
+    for (auto padOp : padOps) {
+      // Compute the difference between this tensor's padding and common padding
+      SmallVector<int64_t> diffLowPadding(rank);
+      SmallVector<int64_t> diffHighPadding(rank);
+
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        diffLowPadding[dim] =
+            padOp.getEdgePaddingLow()[dim] - commonLowPadding[dim];
+        diffHighPadding[dim] =
+            padOp.getEdgePaddingHigh()[dim] - commonHighPadding[dim];
+      }
+
+      // Check if we need any additional padding for this tensor
+      bool needsExtraPad = false;
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        if (diffLowPadding[dim] > 0 || diffHighPadding[dim] > 0) {
+          needsExtraPad = true;
+          break;
+        }
+      }
+
+      if (needsExtraPad) {
+        // Apply the difference padding to the original tensor
+        auto adjustedOp = rewriter.create<stablehlo::PadOp>(
+            padOp.getLoc(),
+            // Compute the result type with proper shape
+            padOp.getType(), padOp.getOperand(), padValue,
+            rewriter.getI64TensorAttr(diffLowPadding),
+            rewriter.getI64TensorAttr(diffHighPadding),
+            rewriter.getI64TensorAttr(interiorPadding));
+
+        adjOperands.push_back(adjustedOp);
+      } else {
+        // No extra padding needed, use original tensor
+        adjOperands.push_back(padOp.getOperand());
+      }
+    }
+
+    // Create concatenation with adjusted operands
+    auto newConcatType =
+        RankedTensorType::get(computeConcatShape(adjOperands, concatDim),
+                              concatOp.getType().getElementType());
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        concatOp.getLoc(), newConcatType, adjOperands, concatDim);
+
+    // Apply the common padding to get the final result
+    auto result = rewriter.create<stablehlo::PadOp>(
+        concatOp.getLoc(), concatOp.getType(), newConcatOp, padValue,
+        rewriter.getI64TensorAttr(commonLowPadding),
+        rewriter.getI64TensorAttr(commonHighPadding),
+        rewriter.getI64TensorAttr(interiorPadding));
+
+    rewriter.replaceOp(concatOp, result);
+    return success();
+  }
+
+private:
+  // Helper to compute shape after concatenation
+  SmallVector<int64_t> computeConcatShape(ArrayRef<Value> operands,
+                                          int64_t concatDim) {
+    auto firstType = cast<RankedTensorType>(operands[0].getType());
+    auto shape = llvm::to_vector(firstType.getShape());
+
+    // Sum up the sizes in the concatenation dimension
+    for (size_t i = 1; i < operands.size(); ++i) {
+      auto nextType = cast<RankedTensorType>(operands[i].getType());
+      shape[concatDim] += nextType.getShape()[concatDim];
+    }
+
+    return shape;
+  }
+};
+
 struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
   using OpRewritePattern<stablehlo::PadOp>::OpRewritePattern;
 
