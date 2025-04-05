@@ -1229,7 +1229,7 @@ def PadConcatToConcatPad : EnzymeHLOPatternOp<
 
 def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
     "slice_select_to_select_slice"> {
-  let patterns = ["SliceSelectToSelectSlice"];
+  let patterns = ["SliceSelect"];
 }
 
 // TODO: better naming for parameters requires a static interface for

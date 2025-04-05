@@ -12440,6 +12440,7 @@ struct BroadcastInDimIsReshape final
   }
 };
 
+<<<<<<< HEAD
 struct PadConcatToConcatPad
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
@@ -12553,7 +12554,7 @@ struct PadConcatToConcatPad
   }
 };
 
-struct SliceSelectToSelectSlice : public OpRewritePattern<stablehlo::SelectOp> {
+struct SliceSelect : public OpRewritePattern<stablehlo::SelectOp> {
   using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::SelectOp selectOp,
@@ -12828,6 +12829,7 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
                  PadConcatToConcatPad, PadReduceWindow>(context);
@@ -12837,6 +12839,11 @@ struct EnzymeHLOOptPass
              BinopPadToConcat<stablehlo::MulOp>, ConcatPad,SliceSelectToSelectSlice, PadReduceWindow>(
             context);
 >>>>>>> 541e466 (init commit)
+=======
+    patterns.add<BinopPadToConcat<stablehlo::AddOp>,
+                 BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
+                 SliceSelect, PadReduceWindow>(context);
+>>>>>>> a71a5ff (rename op)
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
