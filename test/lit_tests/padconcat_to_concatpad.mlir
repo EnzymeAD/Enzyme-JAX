@@ -28,3 +28,11 @@ func.func @test_pad_clean(%arg0 : tensor<128x2032x2032xf64>, %arg1 : tensor<1x20
   %concat = stablehlo.concatenate %p2,%p1,%p3, dim = 0 : (tensor<1x2033x2032xf64>, tensor<128x2033x2032xf64>, tensor<1x2033x2032xf64>) -> tensor<130x2033x2032xf64>
   return %concat : tensor<130x2033x2032xf64>
 }
+
+
+// CHECK-NEXT: func.func @test_pad_clean(%arg0: tensor<128x2032x2032xf64>, %arg1: tensor<1x2032x2032xf64>, %arg2: tensor<1x2032x2032xf64>) -> tensor<130x2033x2032xf64> {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<5.000000e-01> : tensor<f64>
+// CHECK-NEXT:   %0 = stablehlo.concatenate %arg1, %arg0, %arg2, dim = 0 : (tensor<1x2032x2032xf64>, tensor<128x2032x2032xf64>, tensor<1x2032x2032xf64>) -> tensor<130x2032x2032xf64>
+// CHECK-NEXT:   %1 = stablehlo.pad %0, %cst, low = [0, 1, 0], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<130x2032x2032xf64>, tensor<f64>) -> tensor<130x2033x2032xf64>
+// CHECK-NEXT:   return %1 : tensor<130x2033x2032xf64>
+  // CHECK-NEXT: }
