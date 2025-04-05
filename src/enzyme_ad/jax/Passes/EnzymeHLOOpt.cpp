@@ -11997,10 +11997,7 @@ template <typename Op>
 struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(Op op,
-                                PatternRewriter &rewriter) const final {
-    llvm::errs() << "here\n";
-
+  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
