@@ -1351,7 +1351,8 @@ template <typename T> struct LICM : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     auto whileOp = op->template getParentOfType<stablehlo::WhileOp>();
-    if (!whileOp) return failure();
+    if (!whileOp)
+      return failure();
     for (auto operand : op->getOperands()) {
       if (!definedOutside(operand, whileOp))
         return failure();
@@ -6898,36 +6899,42 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
   LogicalResult matchAndRewrite(stablehlo::SliceOp op,
                                 PatternRewriter &rewriter) const override {
     auto ifop = op.getOperand().getDefiningOp<stablehlo::IfOp>();
-    if (!ifop) return failure();
-    if (!llvm::hasSingleElement(op.getOperand().getUsers())) return failure();
-
+    if (!ifop)
+      return failure();
+    if (!llvm::hasSingleElement(op.getOperand().getUsers()))
+      return failure();
 
     OpOperand &use = *op.getOperand().getUses().begin();
-    
+
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifop->getResultTypes());
     ifResultTypes[use.getOperandNumber()] = op.getType();
 
-    auto newIf = rewriter.create<stablehlo::IfOp>(
-          ifop.getLoc(),
-          ifResultTypes,
-          ifop.getPred());
-
+    auto newIf = rewriter.create<stablehlo::IfOp>(ifop.getLoc(), ifResultTypes,
+                                                  ifop.getPred());
 
     Operation *trueTerm = ifop.getTrueBranch().front().getTerminator();
     Operation *falseTerm = ifop.getFalseBranch().front().getTerminator();
-    
+
     rewriter.setInsertionPoint(trueTerm);
-    auto newTrue = rewriter.create<stablehlo::SliceOp>(op.getLoc(), trueTerm->getOperands()[use.getOperandNumber()], op.getStartIndices(), op.getLimitIndices(), op.getStrides());    
-    rewriter.modifyOpInPlace(trueTerm, [&] { trueTerm->setOperand(use.getOperandNumber(), newTrue); });
+    auto newTrue = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), trueTerm->getOperands()[use.getOperandNumber()],
+        op.getStartIndices(), op.getLimitIndices(), op.getStrides());
+    rewriter.modifyOpInPlace(trueTerm, [&] {
+      trueTerm->setOperand(use.getOperandNumber(), newTrue);
+    });
 
     rewriter.setInsertionPoint(falseTerm);
-    auto newFalse = rewriter.create<stablehlo::SliceOp>(op.getLoc(), falseTerm->getOperands()[use.getOperandNumber()], op.getStartIndices(), op.getLimitIndices(), op.getStrides());    
-    rewriter.modifyOpInPlace(falseTerm, [&] { falseTerm->setOperand(use.getOperandNumber(), newFalse); });
+    auto newFalse = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), falseTerm->getOperands()[use.getOperandNumber()],
+        op.getStartIndices(), op.getLimitIndices(), op.getStrides());
+    rewriter.modifyOpInPlace(falseTerm, [&] {
+      falseTerm->setOperand(use.getOperandNumber(), newFalse);
+    });
 
     newIf.getTrueBranch().takeBody(ifop.getTrueBranch());
     newIf.getFalseBranch().takeBody(ifop.getFalseBranch());
 
-    for (int i=0; i<ifop.getNumResults(); i++) {
+    for (int i = 0; i < ifop.getNumResults(); i++) {
       if (i == use.getOperandNumber()) {
         rewriter.replaceOp(op, newIf.getResult(i));
       } else {
@@ -6938,7 +6945,6 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
     rewriter.eraseOp(ifop);
     return success();
   }
-
 };
 
 struct SliceReshapeConcat : public OpRewritePattern<stablehlo::SliceOp> {
@@ -10028,10 +10034,10 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
 };
 
 struct IVInfo {
-  int index;          // Index of the induction variable in the while op arguments
-  int64_t step;       // Step size (how much IV increments each iteration)
+  int index;    // Index of the induction variable in the while op arguments
+  int64_t step; // Step size (how much IV increments each iteration)
   Value limit;
-  bool isValid;       // Whether we successfully identified the IV and step
+  bool isValid; // Whether we successfully identified the IV and step
 };
 
 IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
@@ -10040,16 +10046,20 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
   // 1. Get the condition block and its return operation
   if (whileOp.getBody().empty() || whileOp.getCond().empty())
     return result;
-  
-  Block& condBlock = whileOp.getCond().front();
-  if (condBlock.empty()) return result;
+
+  Block &condBlock = whileOp.getCond().front();
+  if (condBlock.empty())
+    return result;
 
   auto condReturn = dyn_cast<stablehlo::ReturnOp>(condBlock.getTerminator());
-  if (!condReturn || condReturn.getNumOperands() != 1) return result;
+  if (!condReturn || condReturn.getNumOperands() != 1)
+    return result;
 
   // 2. Check if the return operand comes from a compare operation
-  auto compareOp = condReturn.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
-  if (!compareOp) return result;
+  auto compareOp =
+      condReturn.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+  if (!compareOp)
+    return result;
 
   // 3. Identify which block argument is used in the comparison (the IV)
   Value lhs = compareOp.getLhs();
@@ -10059,21 +10069,26 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
   BlockArgument ivArg = nullptr;
   Value limit;
   for (BlockArgument arg : condBlock.getArguments()) {
-    if (lhs == arg && 
-      (compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT || compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE)
-      ) {
+    if (lhs == arg && (compareOp.getComparisonDirection() ==
+                           stablehlo::ComparisonDirection::LT ||
+                       compareOp.getComparisonDirection() ==
+                           stablehlo::ComparisonDirection::NE)) {
       ivArg = arg;
       limit = rhs;
       break;
     }
-    if (rhs == arg && compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::GT || compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+    if (rhs == arg && compareOp.getComparisonDirection() ==
+                          stablehlo::ComparisonDirection::GT ||
+        compareOp.getComparisonDirection() ==
+            stablehlo::ComparisonDirection::NE) {
       ivArg = arg;
       limit = rhs;
       break;
     }
   }
 
-  if (!ivArg) return result;
+  if (!ivArg)
+    return result;
 
   if (!definedOutside(limit, whileOp))
     return result;
@@ -10084,34 +10099,36 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
   result.index = ivArg.getArgNumber();
 
   // 4. Now analyze the body region to find the step
-  Block& bodyBlock = whileOp.getBody().front();
+  Block &bodyBlock = whileOp.getBody().front();
   auto bodyReturn = dyn_cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
-  if (!bodyReturn || bodyReturn.getNumOperands() <= result.index) return result;
+  if (!bodyReturn || bodyReturn.getNumOperands() <= result.index)
+    return result;
 
   // Get the value being returned for the IV position
   Value updatedIV = bodyReturn.getOperand(result.index);
 
   // Look for an add operation that defines the updated IV
   auto addOp = updatedIV.getDefiningOp<stablehlo::AddOp>();
-  if (!addOp) return result;
+  if (!addOp)
+    return result;
 
   // One operand should be the IV, the other the step
   Value addLhs = addOp.getLhs();
   Value addRhs = addOp.getRhs();
 
   // Check if one side is a constant (the step)
-  for (int i=0; i<2; i++) {
-    if (addOp->getOperand(i) != whileOp.getBody().getArgument(ivArg.getArgNumber()))
+  for (int i = 0; i < 2; i++) {
+    if (addOp->getOperand(i) !=
+        whileOp.getBody().getArgument(ivArg.getArgNumber()))
       continue;
 
     DenseIntElementsAttr idxAttr;
-    if (!matchPattern(addOp->getOperand(1-i),
-                      m_Constant(&idxAttr)))
+    if (!matchPattern(addOp->getOperand(1 - i), m_Constant(&idxAttr)))
       continue;
 
-     result.step = (*idxAttr.begin()).getSExtValue();
-     result.isValid = true;
-     break;
+    result.step = (*idxAttr.begin()).getSExtValue();
+    result.isValid = true;
+    break;
   }
 
   return result;
@@ -10125,7 +10142,8 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
   if (!concatOp)
     return nullptr;
 
-  // Check if we have exactly 3 operands (left border, main tensor, right border)
+  // Check if we have exactly 3 operands (left border, main tensor, right
+  // border)
   if (concatOp.getInputs().size() != 3)
     return nullptr;
 
@@ -10136,7 +10154,7 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
   // Check first and last operands
   auto firstSlice = concatOp.getOperand(0).getDefiningOp<stablehlo::SliceOp>();
   auto lastSlice = concatOp.getOperand(concatOp.getNumOperands() - 1)
-                         .getDefiningOp<stablehlo::SliceOp>();
+                       .getDefiningOp<stablehlo::SliceOp>();
 
   // Check the middle tensor (should be the main tensor)
   Value middleTensor = concatOp.getOperand(1);
@@ -10146,7 +10164,8 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
     return nullptr;
 
   // The slices must come from the same source tensor
-  if (firstSlice.getOperand() != middleTensor || lastSlice.getOperand() != middleTensor)
+  if (firstSlice.getOperand() != middleTensor ||
+      lastSlice.getOperand() != middleTensor)
     return nullptr;
 
   // Verify the slices are taking border elements
@@ -10156,104 +10175,116 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
     return nullptr;
 
   // Check that first slice is taking the first element along concat dimension
-  if (firstSlice.getStartIndices()[concatDim] != 0 || 
+  if (firstSlice.getStartIndices()[concatDim] != 0 ||
       firstSlice.getLimitIndices()[concatDim] != 1)
     return nullptr;
 
-   // Check the rest of the firstSlice indices are the same size as the middle tensor
-   if (lastSlice.getStartIndices()[concatDim] != middleTensorType.getShape()[concatDim]-1 ||
-       lastSlice.getLimitIndices()[concatDim] != middleTensorType.getShape()[concatDim])
+  // Check the rest of the firstSlice indices are the same size as the middle
+  // tensor
+  if (lastSlice.getStartIndices()[concatDim] !=
+          middleTensorType.getShape()[concatDim] - 1 ||
+      lastSlice.getLimitIndices()[concatDim] !=
+          middleTensorType.getShape()[concatDim])
     return nullptr;
 
-   for (int i = 0; i < firstSlice.getStartIndices().size(); i++) {
-    if(i==concatDim) //Already checked
+  for (int i = 0; i < firstSlice.getStartIndices().size(); i++) {
+    if (i == concatDim) // Already checked
       continue;
 
-    //check limit indices are the same size as the middle tensor
+    // check limit indices are the same size as the middle tensor
     if (firstSlice.getLimitIndices()[i] != middleTensorType.getShape()[i])
       return nullptr;
-    //check start indices are 0
+    // check start indices are 0
     if (firstSlice.getStartIndices()[i] != 0)
       return nullptr;
 
-    //check limit indices are the same size as the middle tensor
+    // check limit indices are the same size as the middle tensor
     if (lastSlice.getLimitIndices()[i] != middleTensorType.getShape()[i])
       return nullptr;
-    //check start indices are 0
+    // check start indices are 0
     if (lastSlice.getStartIndices()[i] != 0)
       return nullptr;
-   }
+  }
 
-    return concatOp;
+  return concatOp;
 }
 
-struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
+struct WhileRepeatedInductionReduction
+    : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  template<typename CRangeT, typename RangeT>
-  static stablehlo::IfOp createConditional(PatternRewriter &rewriter, stablehlo::WhileOp whileOp, IVInfo &ivInfo, CRangeT &candidates,
-                Value iv, const RangeT toSlice) {
-      SmallVector<Type> ifResultTypes;
+  template <typename CRangeT, typename RangeT>
+  static stablehlo::IfOp createConditional(PatternRewriter &rewriter,
+                                           stablehlo::WhileOp whileOp,
+                                           IVInfo &ivInfo, CRangeT &candidates,
+                                           Value iv, const RangeT toSlice) {
+    SmallVector<Type> ifResultTypes;
 
-      SmallVector<Value> oldReturns;
+    SmallVector<Value> oldReturns;
+    for (auto &candidate : candidates) {
+      ifResultTypes.push_back(whileOp.getOperands()[candidate.idx].getType());
+      oldReturns.push_back(whileOp.getOperands()[candidate.idx]);
+    }
+
+    auto ifOp = rewriter.create<stablehlo::IfOp>(
+        whileOp.getLoc(), ifResultTypes,
+        rewriter.create<stablehlo::CompareOp>(
+            whileOp.getLoc(), iv, ivInfo.limit,
+            stablehlo::ComparisonDirection::EQ));
+
+    // Create the then and else regions for the if operation
+    Region &thenRegion = ifOp.getTrueBranch();
+    Region &elseRegion = ifOp.getFalseBranch();
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *thenBlock = rewriter.createBlock(&thenRegion);
+      rewriter.setInsertionPointToStart(thenBlock);
+      rewriter.create<stablehlo::ReturnOp>(whileOp.getLoc(), oldReturns);
+    }
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *elseBlock = rewriter.createBlock(&elseRegion);
+      rewriter.setInsertionPointToStart(elseBlock);
+      SmallVector<Value> newReturns;
+
       for (auto &candidate : candidates) {
-        ifResultTypes.push_back(whileOp.getOperands()[candidate.idx].getType());
-        oldReturns.push_back(whileOp.getOperands()[candidate.idx]);
+        auto T =
+            cast<RankedTensorType>(candidate.middleTensor.getType()).getShape();
+
+        SmallVector<int64_t> interior(T.size(), 1);
+
+        SmallVector<int64_t> firstLower(T.size(), 0);
+
+        SmallVector<int64_t> firstUpper = llvm::to_vector(T);
+        firstUpper[candidate.concat.getDimension()] = 1;
+
+        SmallVector<int64_t> thirdLower(T.size(), 0);
+        thirdLower[candidate.concat.getDimension()] =
+            T[candidate.concat.getDimension()] - 1;
+
+        SmallVector<int64_t> thirdUpper = llvm::to_vector(T);
+
+        Value args[3] = {
+            rewriter
+                .create<stablehlo::SliceOp>(whileOp.getLoc(),
+                                            toSlice[candidate.idx], firstLower,
+                                            firstUpper, interior)
+                .getResult(),
+            toSlice[candidate.idx],
+            rewriter
+                .create<stablehlo::SliceOp>(whileOp.getLoc(),
+                                            toSlice[candidate.idx], thirdLower,
+                                            thirdUpper, interior)
+                .getResult(),
+        };
+
+        newReturns.push_back(rewriter.create<stablehlo::ConcatenateOp>(
+            candidate.concat.getLoc(), args, candidate.concat.getDimension()));
       }
-
-      auto ifOp = rewriter.create<stablehlo::IfOp>(
-          whileOp.getLoc(),
-          ifResultTypes,
-          rewriter.create<stablehlo::CompareOp>(
-            whileOp.getLoc(),
-          iv,
-          ivInfo.limit,
-          stablehlo::ComparisonDirection::EQ
-          ));
-
-        // Create the then and else regions for the if operation
-        Region &thenRegion = ifOp.getTrueBranch();
-        Region &elseRegion = ifOp.getFalseBranch();
-        
-        {
-          OpBuilder::InsertionGuard guard(rewriter);
-          Block* thenBlock = rewriter.createBlock(&thenRegion);
-          rewriter.setInsertionPointToStart(thenBlock);
-          rewriter.create<stablehlo::ReturnOp>(whileOp.getLoc(), oldReturns);
-        }
-
-        {
-        OpBuilder::InsertionGuard guard(rewriter);
-          Block* elseBlock = rewriter.createBlock(&elseRegion);
-          rewriter.setInsertionPointToStart(elseBlock);
-          SmallVector<Value> newReturns;
-
-          for (auto &candidate : candidates) {
-            auto T = cast<RankedTensorType>(candidate.middleTensor.getType()).getShape();
-
-            SmallVector<int64_t> interior(T.size(), 1);
-
-            SmallVector<int64_t> firstLower(T.size(), 0);
-
-            SmallVector<int64_t> firstUpper = llvm::to_vector(T);
-            firstUpper[candidate.concat.getDimension()] = 1;
-
-
-            SmallVector<int64_t> thirdLower(T.size(), 0);
-            thirdLower[candidate.concat.getDimension()] = T[candidate.concat.getDimension()] - 1;
-
-            SmallVector<int64_t> thirdUpper = llvm::to_vector(T);
-
-            Value args[3] = {
-              rewriter.create<stablehlo::SliceOp>(whileOp.getLoc(), toSlice[candidate.idx], firstLower, firstUpper, interior).getResult(),
-              toSlice[candidate.idx],
-              rewriter.create<stablehlo::SliceOp>(whileOp.getLoc(), toSlice[candidate.idx], thirdLower, thirdUpper, interior).getResult(),
-            };
-
-            newReturns.push_back(rewriter.create<stablehlo::ConcatenateOp>(candidate.concat.getLoc(), args, candidate.concat.getDimension()));
-          }
-          rewriter.create<stablehlo::ReturnOp>(whileOp.getLoc(), newReturns);
-        }
+      rewriter.create<stablehlo::ReturnOp>(whileOp.getLoc(), newReturns);
+    }
 
     return ifOp;
   }
@@ -10268,7 +10299,7 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
     if (ivInfo.step != 1)
       return failure();
 
-        // Find yield op in the body
+    // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
 
@@ -10287,7 +10318,8 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 
       auto concat = detectReplicationPadding(yieldOp.getOperand(idx));
-      if (!concat) continue;
+      if (!concat)
+        continue;
 
       auto T = concat.getType();
 
@@ -10296,8 +10328,9 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
       SmallVector<int64_t> innerStrides(T.getShape().size(), 1);
       innerStarts[concat.getDimension()] += 1;
       innerEnds[concat.getDimension()] -= 1;
-      candidates.emplace_back(Candidate{
-          idx, concat, concat.getOperand(1), whileOp.getOperands()[idx], innerStarts, innerEnds, innerStrides});
+      candidates.emplace_back(Candidate{idx, concat, concat.getOperand(1),
+                                        whileOp.getOperands()[idx], innerStarts,
+                                        innerEnds, innerStrides});
     }
 
     // If no candidates found, no rewrite needed
@@ -10353,7 +10386,8 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
     for (auto res : newWhileOp.getResults())
       results.push_back(res);
 
-    auto ifOp = createConditional(rewriter, whileOp, ivInfo, candidates, whileOp.getOperands()[ivInfo.index], results);
+    auto ifOp = createConditional(rewriter, whileOp, ivInfo, candidates,
+                                  whileOp.getOperands()[ivInfo.index], results);
     for (auto res : ifOp->getResults()) {
       results[candidates[res.getResultNumber()].idx] = res;
     }
@@ -10382,7 +10416,8 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
 
     // Clear the new body block but keep its arguments
     Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock.clear(); // This clears operations but preserves block arguments
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
 
     // Clone operations from old body to new body
     Block &oldBodyBlock = whileOp.getBody().front();
@@ -10397,7 +10432,11 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
         mapper.map(oldArg, newArg);
       }
 
-      for (auto res : createConditional(rewriter, whileOp, ivInfo, candidates, newWhileOp.getBody().getArgument(ivInfo.index), newWhileOp.getBody().getArguments())->getResults()) {
+      for (auto res :
+           createConditional(rewriter, whileOp, ivInfo, candidates,
+                             newWhileOp.getBody().getArgument(ivInfo.index),
+                             newWhileOp.getBody().getArguments())
+               ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
         mapper.map(whileOp.getBody().getArgument(idx), res);
       }
@@ -10450,7 +10489,11 @@ struct WhileRepeatedInductionReduction : public OpRewritePattern<stablehlo::Whil
         condMapper.map(oldArg, newArg);
       }
 
-      for (auto res : createConditional(rewriter, whileOp, ivInfo, candidates, newWhileOp.getCond().getArgument(ivInfo.index), newWhileOp.getCond().getArguments())->getResults()) {
+      for (auto res :
+           createConditional(rewriter, whileOp, ivInfo, candidates,
+                             newWhileOp.getCond().getArgument(ivInfo.index),
+                             newWhileOp.getCond().getArguments())
+               ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
         condMapper.map(whileOp.getBody().getArgument(idx), res);
       }
@@ -12440,8 +12483,8 @@ struct EnzymeHLOOptPass
                  GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
                  PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, SliceConcat, SliceIf, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
+                 ReduceConcat, ConcatSlice, SliceConcat, SliceIf,
+                 SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>>(context);
