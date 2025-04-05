@@ -11813,6 +11813,10 @@ struct PadConcatToConcatPad
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
                                 PatternRewriter &rewriter) const override {
 
+    if (concatOp.getNumOperands() <= 1) {
+      return failure();
+    }
+
     // Check if all operands are pad ops with the same padding value
     SmallVector<stablehlo::PadOp> padOps;
     Value padValue;
@@ -11851,6 +11855,18 @@ struct PadConcatToConcatPad
       }
     }
 
+    bool noCommonPad = true;
+
+    for (int64_t dim = 0; dim < rank; ++dim) {
+      if (commonLowPadding[dim] != 0 || commonHighPadding[dim] != 0) {
+        noCommonPad = false;
+        break;
+      }
+    }
+
+    if (noCommonPad) {
+      return failure();
+    }
     // Collect original operands with adjusted padding
     SmallVector<Value> adjOperands;
 
