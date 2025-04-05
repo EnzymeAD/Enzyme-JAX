@@ -11812,7 +11812,7 @@ struct PadConcatToConcatPad
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
                                 PatternRewriter &rewriter) const override {
-    
+
     // Check if all operands are pad ops with the same padding value
     SmallVector<stablehlo::PadOp> padOps;
     Value padValue;
@@ -11916,7 +11916,7 @@ struct PadConcatToConcatPad
 private:
   // Helper to compute shape after concatenation
   SmallVector<int64_t> computeConcatShape(ArrayRef<Value> operands,
-                                          int64_t concatDim) {
+                                          int64_t concatDim) const {
     auto firstType = cast<RankedTensorType>(operands[0].getType());
     auto shape = llvm::to_vector(firstType.getShape());
 
