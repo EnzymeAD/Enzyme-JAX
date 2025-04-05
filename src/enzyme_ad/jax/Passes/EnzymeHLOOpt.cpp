@@ -12766,10 +12766,6 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       return failure();
 
     auto T = op.getType();
-    if (T.getShape().size() > 3) {
-      return rewriter.notifyMatchFailure(
-          op, "toconv not supported on input dimension > 3");
-    }
 
     for (auto v : intermediates) {
       if (v == op)
