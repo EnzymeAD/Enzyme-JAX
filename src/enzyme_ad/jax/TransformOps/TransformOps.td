@@ -1217,6 +1217,11 @@ def SliceIf : EnzymeHLOPatternOp<
   let patterns = ["SliceIf"];
 }
 
+def ConstPadConcatToConcat : EnzymeHLOPatternOp<
+    "const_pad_concat_to_concat"> {
+  let patterns = ["ConstPadConcatToConcat"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 

@@ -25,3 +25,19 @@ module {
 // CHECK-NEXT:    %[[i3:.+]] = stablehlo.reduce(%[[i2]] init: %[[i0]]) applies stablehlo.add across dimensions = [0, 1] : (tensor<5x4xf32>, tensor<f32>) -> tensor<f32>
 // CHECK-NEXT:    return %[[i3]] : tensor<f32>
 // CHECK-NEXT:  }
+
+module {
+  func.func @main(%arg0: tensor<3x4x5x6xf32>) -> tensor<6x4xf32> {
+    %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %0 = stablehlo.transpose %arg0, dims = [0, 3, 1, 2] : (tensor<3x4x5x6xf32>) -> tensor<3x6x4x5xf32>
+    %1 = stablehlo.reduce(%0 init: %cst_2) applies stablehlo.add across dimensions = [0, 3] : (tensor<3x6x4x5xf32>, tensor<f32>) -> tensor<6x4xf32>
+    return %1 : tensor<6x4xf32>
+  }
+}
+
+// CHECK:  func.func @main(%arg0: tensor<3x4x5x6xf32>) -> tensor<6x4xf32> {
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.reduce(%arg0 init: %[[i0]]) applies stablehlo.add across dimensions = [0, 2] : (tensor<3x4x5x6xf32>, tensor<f32>) -> tensor<4x6xf32>
+// CHECK-NEXT:    %[[i2:.+]] = stablehlo.transpose %[[i1]], dims = [1, 0] : (tensor<4x6xf32>) -> tensor<6x4xf32>
+// CHECK-NEXT:    return %[[i2]] : tensor<6x4xf32>
+// CHECK-NEXT:  }
