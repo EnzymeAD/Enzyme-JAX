@@ -12742,6 +12742,303 @@ struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
   }
 };
 
+template <typename T> struct Term {
+  double constantFactor;
+  Value valFactor;
+  T term;
+  Term(double constantFactor, Value valFactor, T term)
+      : constantFactor(constantFactor), valFactor(valFactor), term(term) {}
+};
+
+template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
+  using OpRewritePattern<ST>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ST op,
+                                PatternRewriter &rewriter) const override {
+
+    if (!op.getType().getElementType().isFloat())
+      return failure();
+
+    SmallVector<Term<stablehlo::SliceOp>> done;
+    SmallVector<Term<Value>> todo;
+    todo.emplace_back(1.0, (Value) nullptr, (Value)op.getResult());
+    SmallVector<Value> intermediates;
+    SmallPtrSet<Operation *, 1> seen;
+    while (!todo.empty()) {
+      auto cur = todo.pop_back_val();
+      if (auto add = cur.term.getDefiningOp<stablehlo::AddOp>()) {
+        todo.emplace_back(cur.constantFactor, cur.valFactor, add.getLhs());
+        todo.emplace_back(cur.constantFactor, cur.valFactor, add.getRhs());
+        intermediates.push_back(add);
+        seen.insert(add);
+        continue;
+      }
+      if (auto sub = cur.term.getDefiningOp<stablehlo::SubtractOp>()) {
+        todo.emplace_back(cur.constantFactor, cur.valFactor, sub.getLhs());
+        todo.emplace_back(-cur.constantFactor, cur.valFactor, sub.getRhs());
+        intermediates.push_back(sub);
+        seen.insert(sub);
+        continue;
+      }
+      if (auto mul = cur.term.getDefiningOp<stablehlo::MulOp>()) {
+        bool legal = false;
+        for (int i = 0; i < 2; i++) {
+          SplatElementsAttr other;
+          if (!matchPattern(mul->getOperand(1 - i), m_Constant(&other)))
+            continue;
+          todo.emplace_back(cur.constantFactor * other.getSplatValue<double>(),
+                            cur.valFactor, mul->getOperand(i));
+          legal = true;
+          break;
+        }
+        if (legal) {
+          intermediates.push_back(mul);
+          seen.insert(mul);
+          continue;
+        }
+      }
+      if (auto div = cur.term.getDefiningOp<stablehlo::DivOp>()) {
+        SplatElementsAttr other;
+        if (matchPattern(div.getRhs(), m_Constant(&other))) {
+          todo.emplace_back(cur.constantFactor / other.getSplatValue<double>(),
+                            cur.valFactor, div.getLhs());
+          intermediates.push_back(div);
+          seen.insert(div);
+          continue;
+        }
+      }
+      if (auto sl = cur.term.getDefiningOp<stablehlo::SliceOp>()) {
+        done.emplace_back(cur.constantFactor, cur.valFactor, sl);
+        seen.insert(sl);
+        continue;
+      }
+      if (auto dfop = cur.term.getDefiningOp())
+        return rewriter.notifyMatchFailure(
+            dfop, "operand is not a linear slice term");
+      else
+        return rewriter.notifyMatchFailure(
+            op, "had operand that is not a linear slice term");
+    }
+
+    if (done.size() < 2)
+      return failure();
+
+    auto T = op.getType();
+
+    for (auto v : intermediates) {
+      if (v == op)
+        continue;
+      for (auto u : v.getUsers()) {
+        if (!seen.contains(u)) {
+          return rewriter.notifyMatchFailure(
+              u, "Had use outside of intermediates");
+        }
+      }
+    }
+
+    ssize_t offsetDim = -1;
+    for (int i = 0; i < done.size(); i++) {
+      if (done[i].term.getOperand() != done[0].term.getOperand())
+        return rewriter.notifyMatchFailure(done[i].term, "mismatched base");
+      if (done[i].valFactor)
+        return failure();
+      ssize_t mismatch = -1;
+      for (int j = 0; j < T.getShape().size(); j++) {
+        if (done[i].term.getStrides()[j] != 1)
+          return rewriter.notifyMatchFailure(done[i].term, "non-one stride");
+        if (done[i].term.getStartIndices()[j] !=
+                done[0].term.getStartIndices()[j] ||
+            done[i].term.getLimitIndices()[j] !=
+                done[0].term.getLimitIndices()[j]) {
+          if (mismatch != -1) {
+            if (mismatch != j)
+              return rewriter.notifyMatchFailure(
+                  done[i].term, "multi dimensional mismatch of slice");
+          } else {
+            mismatch = j;
+          }
+        }
+      }
+      if (mismatch == -1) {
+        continue;
+      }
+      if (offsetDim == -1) {
+        offsetDim = mismatch;
+        continue;
+      }
+      if (offsetDim == mismatch) {
+        continue;
+      }
+
+      return rewriter.notifyMatchFailure(done[i].term,
+                                         "multi dimensional mismatch of slice");
+    }
+
+    if (offsetDim == -1) {
+      return rewriter.notifyMatchFailure(done[0].term,
+                                         "no dimensional mismatch of slice");
+    }
+
+    std::map<int, double> terms;
+    for (int i = 0; i < done.size(); i++) {
+      int offset = (int)done[i].term.getStartIndices()[offsetDim] -
+                   (int)done[0].term.getStartIndices()[offsetDim];
+      terms[offset] += done[i].constantFactor;
+    }
+    assert(terms.size() > 1);
+
+    int startidx = terms.begin()->first;
+    auto lastItr = terms.end();
+    lastItr--;
+    int lastidx = lastItr->first;
+    assert(lastidx != startidx);
+
+    SmallVector<double> pad(lastidx + 1 - startidx);
+    // Check contiguous
+    for (auto &term : terms) {
+      pad[term.first - startidx] += term.second;
+    }
+
+    SmallVector<int64_t> newStart =
+        llvm::to_vector(done[0].term.getStartIndices());
+    SmallVector<int64_t> newLimit =
+        llvm::to_vector(done[0].term.getLimitIndices());
+    SmallVector<int64_t> newStride = llvm::to_vector(done[0].term.getStrides());
+    newStart[offsetDim] += startidx;
+    newLimit[offsetDim] += lastidx;
+
+    Value input = rewriter.create<stablehlo::SliceOp>(
+        done[0].term.getLoc(), done[0].term.getOperand(), newStart, newLimit,
+        newStride);
+    size_t newOffsetDim = offsetDim;
+    RankedTensorType pre_reshape = T;
+    size_t reshapeOffsetDim = 0;
+    SmallVector<int64_t> permutation;
+    if (T.getShape().size() > 2) {
+      if (newOffsetDim != 0 && newOffsetDim != T.getShape().size() - 1) {
+        for (int i = 0; i < T.getShape().size(); i++)
+          permutation.push_back(i);
+        permutation[newOffsetDim] = 0;
+        permutation[0] = newOffsetDim;
+        input = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), input,
+                                                        permutation);
+        newOffsetDim = 0;
+      }
+      if (newOffsetDim == 0) {
+        auto RT = cast<RankedTensorType>(input.getType());
+        pre_reshape = RT;
+        reshapeOffsetDim = newOffsetDim;
+        int64_t newDims[3] = {RT.getShape()[newOffsetDim], 1, 1};
+        for (int i = 1; i < RT.getShape().size(); i++) {
+          newDims[1] *= RT.getShape()[i];
+        }
+        input = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+            input);
+      } else {
+        assert(newOffsetDim == T.getShape().size() - 1);
+
+        auto RT = cast<RankedTensorType>(input.getType());
+        pre_reshape = RT;
+        reshapeOffsetDim = newOffsetDim;
+        int64_t newDims[3] = {1, 1, RT.getShape()[newOffsetDim]};
+        for (int i = 0; i < RT.getShape().size() - 1; i++) {
+          newDims[0] *= RT.getShape()[i];
+        }
+        input = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+            input);
+        newOffsetDim = 2;
+      }
+    } else if (T.getShape().size() < 3) {
+      SmallVector<int64_t> newDims =
+          llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
+      reshapeOffsetDim = newOffsetDim;
+      while (newDims.size() < 3) {
+        newDims.insert(newDims.begin(), 1);
+        newOffsetDim++;
+      }
+      pre_reshape = cast<RankedTensorType>(input.getType());
+      input = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+          input);
+    }
+    SmallVector<int64_t> nonOffsetDims;
+    for (int i = 0;
+         i < cast<RankedTensorType>(input.getType()).getShape().size(); i++) {
+      if (i != newOffsetDim)
+        nonOffsetDims.push_back(i);
+    }
+
+    auto fty =
+        RankedTensorType::get({lastidx + 1 - startidx}, rewriter.getF64Type());
+    Value filter = rewriter
+                       .create<stablehlo::ConstantOp>(
+                           op.getLoc(), fty, DenseFPElementsAttr::get(fty, pad))
+                       .getResult();
+    filter = rewriter
+                 .create<stablehlo::ConvertOp>(
+                     op.getLoc(),
+                     RankedTensorType::get({lastidx + 1 - startidx},
+                                           op.getType().getElementType()),
+                     filter)
+                 .getResult();
+    filter = rewriter
+                 .create<stablehlo::ReshapeOp>(
+                     op.getLoc(),
+                     RankedTensorType::get({lastidx + 1 - startidx, 1, 1},
+                                           op.getType().getElementType()),
+                     filter)
+                 .getResult();
+
+    // Create convolution dimension numbers
+    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*input_batch_dimension=*/nonOffsetDims[0],
+        /*input_feature_dimension=*/nonOffsetDims[1],
+        /*input_spatial_dimensions=*/{(int64_t)newOffsetDim},
+        /*kernel_input_feature_dimension=*/1,
+        /*kernel_output_feature_dimension=*/2,
+        /*kernel_spatial_dimensions=*/{0},
+        /*output_batch_dimension=*/nonOffsetDims[0],
+        /*output_feature_dimension=*/nonOffsetDims[1],
+        /*output_spatial_dimensions=*/{(int64_t)newOffsetDim});
+
+    // Create the convolution operation
+    SmallVector<int64_t> outShape =
+        llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
+    outShape[newOffsetDim] -= (lastidx - startidx);
+    auto convOutType =
+        RankedTensorType::get(outShape, op.getType().getElementType());
+    Value conv = rewriter.create<stablehlo::ConvolutionOp>(
+        op.getLoc(), convOutType, input, filter,
+        /*window_strides=*/nullptr,
+        /*padding=*/nullptr,
+        /*lhs_dilation=*/nullptr,
+        /*rhs_dilation=*/nullptr,
+        /*window_reversal=*/nullptr,
+        /*conv_dimension_numbers=*/convDims,
+        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*precision_config=*/nullptr);
+
+    if (conv.getType() != pre_reshape) {
+      SmallVector<int64_t> post_shape = llvm::to_vector(pre_reshape.getShape());
+      post_shape[reshapeOffsetDim] -= (lastidx - startidx);
+      RankedTensorType post_reshape =
+          RankedTensorType::get(post_shape, pre_reshape.getElementType());
+      conv = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), post_reshape,
+                                                   conv);
+    }
+    if (permutation.size())
+      conv = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), conv,
+                                                     permutation);
+
+    rewriter.replaceOp(op, ValueRange{conv});
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -13079,6 +13376,8 @@ struct EnzymeHLOOptPass
         ReduceTransposeSimplify,
         BroadcastIotaSimplify
       >(context);
+
+    patterns.add<SumToConv<stablehlo::AddOp>, SumToConv<stablehlo::SubtractOp>>(context);
 
     patterns.add<WhileSimplify>(false, context);
 
