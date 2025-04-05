@@ -1222,6 +1222,10 @@ def ConstPadConcatToConcat : EnzymeHLOPatternOp<
   let patterns = ["ConstPadConcatToConcat"];
 }
 
+def PadConcatToConcatPad : EnzymeHLOPatternOp<
+    "pad_concat_to_concat_pad"> {
+  let patterns = ["PadConcatToConcatPad"];
+}
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
