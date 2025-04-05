@@ -27,7 +27,7 @@ void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
 void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
                       MLIRContext &context, PatternBenefit benefit);
 void addWhileLICM(RewritePatternSet &patterns, bool hoist_all,
-                      MLIRContext &context, PatternBenefit benefit);
+                  MLIRContext &context, PatternBenefit benefit);
 void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
 void addDUSLICM(RewritePatternSet &patterns, bool single_user,

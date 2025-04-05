@@ -38,7 +38,7 @@ void ApplyWhileSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
 }
 void ApplyWhileLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addWhileLICM(patterns, getParameter(), *getContext(),
-                   PatternBenefit(getBenefit().value_or(0)));
+               PatternBenefit(getBenefit().value_or(0)));
 }
 void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
