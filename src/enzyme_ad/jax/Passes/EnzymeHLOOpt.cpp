@@ -12845,6 +12845,12 @@ void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
   patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
 }
 
+void mlir::transform::addWhileLICM(RewritePatternSet &patterns,
+                                       bool hoistAll, MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<WhileLICM>(hoistAll, &context, benefit);
+}
+
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
                                    bool single_user, MLIRContext &context,
                                    PatternBenefit benefit) {
