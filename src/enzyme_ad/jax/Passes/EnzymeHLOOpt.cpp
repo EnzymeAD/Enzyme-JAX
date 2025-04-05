@@ -12553,6 +12553,56 @@ struct PadConcatToConcatPad
   }
 };
 
+struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
+  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+
+    auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+
+    if (!selOp)
+      return failure();
+
+    if (!selOp->hasOneUse())
+      return failure();
+
+    bool scalar_pred = false;
+    Value pred = selOp.getPred();
+    Value on_true = selOp.getOnTrue();
+    Value on_false = selOp.getOnFalse();
+
+    if (dyn_cast<RankedTensorType>(pred.getType()).getRank() == 0) {
+      scalar_pred = true;
+    }
+
+    Value slicedPred;
+    if (!scalar_pred) {
+      // slice predicate
+      slicedPred = rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), pred, sliceOp.getStartIndices(),
+          sliceOp.getLimitIndices(), sliceOp.getStrides());
+    } else {
+      slicedPred = pred;
+    }
+    Value slicedOnTrue = rewriter.create<stablehlo::SliceOp>(
+        sliceOp.getLoc(), on_true, sliceOp.getStartIndices(),
+        sliceOp.getLimitIndices(), sliceOp.getStrides());
+
+    Value slicedOnFalse = rewriter.create<stablehlo::SliceOp>(
+        sliceOp.getLoc(), on_false, sliceOp.getStartIndices(),
+        sliceOp.getLimitIndices(), sliceOp.getStrides());
+
+    auto newSelectOp = rewriter.create<stablehlo::SelectOp>(
+        sliceOp.getLoc(), slicedPred, slicedOnTrue, slicedOnFalse);
+
+    rewriter.replaceOp(sliceOp, newSelectOp.getResult());
+
+    return success();
+    ;
+  }
+};
+
 struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
   using OpRewritePattern<stablehlo::PadOp>::OpRewritePattern;
 
@@ -12820,7 +12870,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad, PadReduceWindow>(context);
+                 PadConcatToConcatPad, SliceSelect, PadReduceWindow>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
