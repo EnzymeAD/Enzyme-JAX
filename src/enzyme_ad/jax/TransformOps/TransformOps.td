@@ -1238,6 +1238,12 @@ def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
   let patterns = ["SliceSelect"];
 }
 
+
+def SumToConv : EnzymeHLOPatternOp<
+    "sum_to_conv"> {
+  let patterns = ["SumToConv<stablehlo::AddOp>", "SumToConv<stablehlo::SubtractOp>"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
