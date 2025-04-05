@@ -1212,6 +1212,11 @@ def WhileRepeatedInductionReduction : EnzymeHLOPatternOp<
   let patterns = ["WhileRepeatedInductionReduction"];
 }
 
+def WhilePadInductionReduction : EnzymeHLOPatternOp<
+    "while_pad_induction_reduction"> {
+  let patterns = ["WhilePadInductionReduction"];
+}
+
 def SliceIf : EnzymeHLOPatternOp<
     "slice_if"> {
   let patterns = ["SliceIf"];
