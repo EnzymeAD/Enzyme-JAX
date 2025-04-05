@@ -1207,6 +1207,16 @@ def WhileInductionReduction : EnzymeHLOPatternOp<
   let patterns = ["WhileInductionReduction"];
 }
 
+def WhileRepeatedInductionReduction : EnzymeHLOPatternOp<
+    "while_repeated_induction_reduction"> {
+  let patterns = ["WhileRepeatedInductionReduction"];
+}
+
+def SliceIf : EnzymeHLOPatternOp<
+    "slice_if"> {
+  let patterns = ["SliceIf"];
+}
+
 def ConstPadConcatToConcat : EnzymeHLOPatternOp<
     "const_pad_concat_to_concat"> {
   let patterns = ["ConstPadConcatToConcat"];
