@@ -11879,8 +11879,7 @@ struct PadConcatToConcatPad
         auto adjustedOp = rewriter.create<stablehlo::PadOp>(
             padOp.getLoc(),
             padOp.getOperand(), // we pad the input operand
-            padOp.getPaddingValue(), rewriter.getI64TensorAttr(diffLowPadding),
-            rewriter.getI64TensorAttr(diffHighPadding),
+            padOp.getPaddingValue(), diffLowPadding, diffHighPadding,
             padOp.getInteriorPaddingAttr());
 
         adjOperands.push_back(adjustedOp);
@@ -11890,40 +11889,18 @@ struct PadConcatToConcatPad
       }
     }
 
-    // Create concatenation with adjusted operands
-    auto newConcatType =
-        RankedTensorType::get(computeConcatShape(adjOperands, concatDim),
-                              concatOp.getType().getElementType());
-
     auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
-        concatOp.getLoc(), newConcatType, adjOperands, concatDim);
+        concatOp.getLoc(), adjOperands, concatDim);
 
     // Apply the common padding to get the final result
     auto result = rewriter.create<stablehlo::PadOp>(
-        concatOp.getLoc(), newConcatOp, padValue,
-        rewriter.getI64TensorAttr(commonLowPadding),
-        rewriter.getI64TensorAttr(commonHighPadding),
-        rewriter.getI64TensorAttr(interiorPadding));
+        concatOp.getLoc(), newConcatOp, padValue, commonLowPadding,
+        commonHighPadding, interiorPadding);
 
     rewriter.replaceOp(concatOp, result);
     return success();
   }
 
-private:
-  // Helper to compute shape after concatenation
-  SmallVector<int64_t> computeConcatShape(ArrayRef<Value> operands,
-                                          int64_t concatDim) const {
-    auto firstType = cast<RankedTensorType>(operands[0].getType());
-    auto shape = llvm::to_vector(firstType.getShape());
-
-    // Sum up the sizes in the concatenation dimension
-    for (auto i = 1; i < operands.size(); ++i) {
-      auto nextType = cast<RankedTensorType>(operands[i].getType());
-      shape[concatDim] += nextType.getShape()[concatDim];
-    }
-
-    return shape;
-  }
 };
 
 struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
