@@ -12400,7 +12400,7 @@ struct PadConcatToConcatPad
     if (!commonPad) {
       return failure();
     }
-    
+
     // Collect original operands with adjusted padding
     SmallVector<Value> adjOperands;
 
