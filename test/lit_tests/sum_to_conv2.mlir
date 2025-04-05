@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=sum_to_conv;convert_simplify;reshape_simplify" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=sum_to_conv;convert_simplify;reshape_op_canon" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module @reactant_simple_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%200: tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64> {
