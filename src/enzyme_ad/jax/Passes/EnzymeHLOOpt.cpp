@@ -11394,8 +11394,80 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
         cond->eraseArgument(i);
 
         deleted++;
-      } else if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid &&
-                 ivInfo.step != 0) {
+      } else {
+        operands.push_back(opOperand.getOperandNumber());
+      }
+    }
+
+    if (operands.size() == op->getNumOperands())
+      return failure();
+
+    SmallVector<Value> newOperands;
+    newOperands.reserve(operands.size());
+
+    for (auto opOperand : operands) {
+      newOperands.push_back(op->getOperand(opOperand));
+    }
+
+    auto newWhile =
+        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands);
+    newWhile.getCond().takeBody(op.getCond());
+    newWhile.getBody().takeBody(op.getBody());
+
+    // Replace uses for remaining results.
+    for (const auto &it : llvm::enumerate(operands)) {
+      Value oldRes = op->getResult(it.value());
+      Value newRes = newWhile->getResult(it.index());
+
+      rewriter.replaceAllUsesWith(oldRes, newRes);
+    }
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+// Replace while op iteration variables which are not updated with their
+// upcoming value
+struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+  bool hoist_all;
+  WhileLICM(bool hoist_all, MLIRContext *context, PatternBenefit benefit = 1,
+            ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        hoist_all(hoist_all) {}
+
+  LogicalResult matchAndRewrite(stablehlo::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<unsigned> operands;
+
+    Block *cond = &op.getCond().front(), *body = &op.getBody().front();
+    Operation *bodyTerm = body->getTerminator();
+
+    int deleted = 0;
+
+    // Find the index of IV and the step to check for 1 iteration
+    auto ivInfo = extractSimpleIVInfo(op);
+
+    for (auto &opOperand : op->getOpOperands()) {
+      Value inputValue = opOperand.get();
+
+      auto i = opOperand.getOperandNumber() - deleted;
+      Value bodyArg = body->getArgument(i);
+      Value condArg = cond->getArgument(i);
+
+      bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
+      if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
+        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+      } else if (hoist_all) {
+        canHoist = true;
+      }
+
+      Value bodyRes = bodyTerm->getOperand(i);
+
+      if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid &&
+          ivInfo.step != 0) {
 
         Value resultReplacement;
         {
@@ -13070,6 +13142,12 @@ void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
   patterns.insert<WhileSimplify>(hoistAll, &context, benefit);
 }
 
+void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
+                                   MLIRContext &context,
+                                   PatternBenefit benefit) {
+  patterns.insert<WhileLICM>(hoistAll, &context, benefit);
+}
+
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
                                    bool single_user, MLIRContext &context,
                                    PatternBenefit benefit) {
@@ -13380,6 +13458,8 @@ struct EnzymeHLOOptPass
     patterns.add<SumToConv<stablehlo::AddOp>, SumToConv<stablehlo::SubtractOp>>(context);
 
     patterns.add<WhileSimplify>(false, context);
+
+    patterns.add<WhileLICM>(false, context);
 
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

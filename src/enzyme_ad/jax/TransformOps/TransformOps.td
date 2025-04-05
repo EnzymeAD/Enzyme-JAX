@@ -795,6 +795,21 @@ def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "while_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(false)))};
+    }
+  }];
+}
+
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
