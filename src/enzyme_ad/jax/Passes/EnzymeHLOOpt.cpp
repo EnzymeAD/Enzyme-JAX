@@ -11806,6 +11806,139 @@ struct BroadcastInDimIsReshape final
   }
 };
 
+// 
+// %0 = stablehlo.slice %arg1 [1:1092] : (tensor<1095xf64>) -> tensor<1091xf64>
+// %1 = stablehlo.slice %arg1 [0:1091] : (tensor<1095xf64>) -> tensor<1091xf64>
+// %2 = stablehlo.slice %arg1 [2:1093] : (tensor<1095xf64>) -> tensor<1091xf64>
+// %3 = stablehlo.add %1, %0 : tensor<1091xf64>
+// %4 = stablehlo.add %3, %2 : tensor<1091xf64>
+// %5 = stablehlo.slice %arg0 [0:1] : (tensor<1092xf64>) -> tensor<1xf64>
+// %6 = stablehlo.concatenate %5, %4, dim = 0 : (tensor<1xf64>, tensor<1091xf64>) -> tensor<1092xf64>
+//
+struct ReplaceSlidingWindowSumWithConvPattern final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                mlir::PatternRewriter &rewriter) const override {
+    // Match concatenation along dimension 0 with exactly 2 operands
+    if (concat.getDimension() != 0 || concat.getOperands().size() != 2)
+      return failure();
+
+    // Match first operand as a slice (prefix slice)
+    auto prefixSlice = concat.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!prefixSlice)
+      return failure();
+
+    // Match second operand as add operation
+    Value sumResult = concat.getOperands()[1];
+    auto addOp = sumResult.getDefiningOp<stablehlo::AddOp>();
+    if (!addOp)
+      return failure();
+
+    // Match first operand of add as another add operation
+    auto firstAddOp = addOp.getOperands()[0].getDefiningOp<stablehlo::AddOp>();
+    if (!firstAddOp)
+      return failure();
+
+    // Match the three slice operations that feed into the add operations
+    auto middleSlice = firstAddOp.getLhs().getDefiningOp<stablehlo::SliceOp>();
+    auto leftSlice = firstAddOp.getRhs().getDefiningOp<stablehlo::SliceOp>();
+    auto rightSlice = addOp.getRhs().getDefiningOp<stablehlo::SliceOp>();
+    
+    if (!leftSlice || !middleSlice || !rightSlice)
+      return failure();
+    
+    // Verify all slices come from the same input tensor
+    Value baseTensor = leftSlice.getOperand();
+    if (middleSlice.getOperand() != baseTensor || 
+        rightSlice.getOperand() != baseTensor)
+      return failure();
+    
+    SmallVector<int64_t> starts;
+    starts.push_back(leftSlice.getStartIndices()[0]);
+    starts.push_back(middleSlice.getStartIndices()[0]);
+    starts.push_back(rightSlice.getStartIndices()[0]);
+
+    if (starts.size() != 3) return failure();
+
+    std::sort(starts.begin(), starts.end());
+    if (starts[0] + 1 != starts[1] || starts[1] + 1 != starts[2])
+      return failure();
+
+    // The kernel size is 3 for this specific pattern
+    const int64_t kernelSize = 3;
+
+    // Get the base tensor type
+    auto baseType = baseTensor.getType().cast<RankedTensorType>();
+    int64_t inputLength = baseType.getDimSize(0);
+    auto elementType = baseType.getElementType();
+    
+    // Reshape base tensor to [1, N, 1, 1] for convolution
+    auto convInputType = RankedTensorType::get({1, inputLength, 1}, elementType);
+    Value reshapedInput = rewriter.create<stablehlo::ReshapeOp>(
+        concat.getLoc(), convInputType, baseTensor);
+    
+    // Create kernel [1, 1, 1] of shape [1, 3, 1]
+    SmallVector<APFloat> kernelValues;
+    if (elementType.isF64()) {
+        kernelValues.assign(kernelSize, APFloat(1.0));
+    } else {
+        kernelValues.assign(kernelSize, APFloat(1.0f));
+    }
+    
+    auto kernelType = RankedTensorType::get({1, kernelSize, 1}, elementType);
+    auto kernelAttr = DenseElementsAttr::get(kernelType, kernelValues);
+    Value kernel = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), kernelType, kernelAttr);
+    
+    // Calculate output length for the convolution
+    int64_t outputLen = inputLength - kernelSize + 1;
+    auto convOutType = RankedTensorType::get({1, outputLen, 1}, elementType);
+    
+    // Create convolution dimension numbers
+    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*input_batch_dimension=*/0,
+        /*input_feature_dimension=*/2,
+        /*input_spatial_dimensions=*/{1},
+        /*kernel_input_feature_dimension=*/2,
+        /*kernel_output_feature_dimension=*/0,
+        /*kernel_spatial_dimensions=*/{1},
+        /*output_batch_dimension=*/0,
+        /*output_feature_dimension=*/2,
+        /*output_spatial_dimensions=*/{1});
+    
+    // Create the convolution operation
+    Value conv = rewriter.create<stablehlo::ConvolutionOp>(
+        concat.getLoc(), convOutType, reshapedInput, kernel,
+        /*window_strides=*/nullptr,
+        /*padding=*/nullptr,
+        /*lhs_dilation=*/nullptr,
+        /*rhs_dilation=*/nullptr,
+        /*window_reversal=*/nullptr,
+        /*conv_dimension_numbers=*/convDims,
+        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*precision_config=*/nullptr);
+    llvm::errs() << conv << "\n";
+    
+    // Reshape the convolution result back to 1D
+    Value flattened = rewriter.create<stablehlo::ReshapeOp>(
+        concat.getLoc(),
+        RankedTensorType::get({outputLen}, elementType),
+        conv);
+    
+    // Create the final result by concatenating the prefix slice with the convolution result
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        concat, concat.getType(),
+        ValueRange{prefixSlice.getResult(), flattened},
+        /*dimension=*/0);
+    
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -12000,7 +12133,7 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
                    ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat>(context);
+                   SliceDUSToConcat, ReplaceSlidingWindowSumWithConvPattern>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
     }
 
