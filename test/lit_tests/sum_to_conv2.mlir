@@ -10,7 +10,7 @@ module @reactant_simple_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK:  func.func @main(%arg0: tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64> {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<[[[-1.000000e+00]], [[1.000000e+00]]]> : tensor<2x1x1xf64>
+// CHECK-NEXT{LITERAL}:    %cst = stablehlo.constant dense<[[[-1.000000e+00]], [[1.000000e+00]]]> : tensor<2x1x1xf64>
 // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<128x1007x1008xf64>) -> tensor<128x1015056x1xf64>
 // CHECK-NEXT:    %1 = stablehlo.convolution(%0, %cst) dim_numbers = [0, b, f]x[0, i, o]->[0, b, f], window = {} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<128x1015056x1xf64>, tensor<2x1x1xf64>) -> tensor<127x1015056x1xf64>
 // CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<127x1015056x1xf64>) -> tensor<127x1007x1008xf64>
