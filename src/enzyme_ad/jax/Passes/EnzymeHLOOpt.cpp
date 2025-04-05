@@ -12900,7 +12900,7 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
         newDims.insert(newDims.begin(), 1);
         newOffsetDim++;
       }
-      pre_reshape = T;
+      pre_reshape = cast<RankedTensorType>(input.getType());
       input = rewriter.create<stablehlo::ReshapeOp>(
           op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
           input);
