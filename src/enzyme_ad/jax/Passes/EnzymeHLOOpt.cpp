@@ -11433,9 +11433,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
 struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
   bool hoist_all;
-  WhileLICM(bool hoist_all, MLIRContext *context,
-                PatternBenefit benefit = 1,
-                ArrayRef<StringRef> generatedNames = {})
+  WhileLICM(bool hoist_all, MLIRContext *context, PatternBenefit benefit = 1,
+            ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         hoist_all(hoist_all) {}
 
@@ -11468,7 +11467,7 @@ struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
       Value bodyRes = bodyTerm->getOperand(i);
 
       if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid &&
-                 ivInfo.step != 0) {
+          ivInfo.step != 0) {
 
         Value resultReplacement;
         {
