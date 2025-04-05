@@ -75,7 +75,7 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
   return %results#1 : tensor<1x2034x2032xf64>
 }
 
-// CHECK-NEXT:  func.func @while_loop_example(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32>, %arg2: tensor<i32>) -> tensor<1x2034x2032xf64> {
+// CHECK:  func.func @while_loop_example(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32>, %arg2: tensor<i32>) -> tensor<1x2034x2032xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i32>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:1, 1:2033, 0:2032] : (tensor<1x2034x2032xf64>) -> tensor<1x2032x2032xf64>
