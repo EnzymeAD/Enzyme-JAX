@@ -11464,28 +11464,30 @@ struct ReduceTransposeSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 
     // Map non-reduced dimensions
     SmallVector<bool> isReduced(transposeInputType.getRank(), false);
-    for (auto dim : reduceDimensions) {
+    for (auto dim : newReduceDimensions) {
       isReduced[dim] = true;
     }
 
-    SmallVector<int64_t> oldDims, newDims;
-    for (int64_t i = 0; i < transposePermutation.size(); ++i) {
-      if (!isReduced[transposePermutation[i]]) {
-        oldDims.push_back(transposePermutation[i]);
-      }
-      if (!isReduced[i]) {
-        newDims.push_back(i);
-      }
+    // Count the number of reduced dimensions before the transpose dim
+    SmallVector<int64_t> reducedDimsBeforeTranspose(
+        transposePermutation.size());
+    reducedDimsBeforeTranspose[0] = isReduced[0];
+    for (int64_t i = 1; i < transposePermutation.size(); ++i) {
+      reducedDimsBeforeTranspose[i] =
+          reducedDimsBeforeTranspose[i - 1] + isReduced[i];
     }
 
     // Create final permutation
-    SmallVector<int64_t> finalPermutation(newDims.size());
-    for (int64_t i = 0; i < newDims.size(); ++i) {
-      for (int64_t j = 0; j < oldDims.size(); ++j) {
-        if (newDims[i] == oldDims[j]) {
-          finalPermutation[j] = i;
-          break;
-        }
+    // original permutation - reduced dimensions before transposed dim
+    SmallVector<int64_t> finalPermutation(transposePermutation.size() -
+                                          newReduceDimensions.size());
+    int64_t j = 0;
+    for (int64_t i = 0; i < transposePermutation.size(); ++i) {
+      if (!isReduced[transposePermutation[i]]) {
+        finalPermutation[j] =
+            transposePermutation[i] -
+            reducedDimsBeforeTranspose[transposePermutation[i]];
+        ++j;
       }
     }
 
@@ -11868,8 +11870,8 @@ struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
     auto newSplattedConstOp = rewriter.create<stablehlo::ConstantOp>(
         padOp.getLoc(), constTensorType, padConst.resizeSplat(constTensorType));
 
-    // Now, instead of padding the concatenation result, we insert the pad slice
-    // via a new concatenate.
+    // Now, instead of padding the concatenation result, we insert the pad
+    // slice via a new concatenate.
     auto origOperands = concatOp.getOperands();
     SmallVector<Value, 4> newOperands(origOperands.begin(), origOperands.end());
     if (padAtLow) {
