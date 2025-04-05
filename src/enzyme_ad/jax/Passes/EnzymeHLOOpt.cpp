@@ -9986,7 +9986,9 @@ struct ReduceSliceFromReplicationPaddingInWhile : public OpRewritePattern<stable
     
     Region &bodyRegion = whileOp.getBody();
     Block &bodyBlock = bodyRegion.front();
-  
+
+    //TODO: Add check for no users in cond body
+
     // Get the terminator (yield) operation
     Operation *yieldOp = bodyBlock.getTerminator();
     if (!isa<stablehlo::ReturnOp>(yieldOp) || yieldOp->getNumOperands() == 0)
@@ -9997,6 +9999,7 @@ struct ReduceSliceFromReplicationPaddingInWhile : public OpRewritePattern<stable
     std::vector<Type> newResultTypes;
     std::vector<Value> newInitValues;
     int index = 0;
+    bool changed = false;
     std::vector<std::tuple<stablehlo::ConcatenateOp, stablehlo::SliceOp>> replicationPaddingPatterns;
     for (Value yieldOperand : yieldOp->getOperands()) {
       auto result = detectReplicationPaddingInYieldOperand(yieldOperand);
@@ -10017,9 +10020,13 @@ struct ReduceSliceFromReplicationPaddingInWhile : public OpRewritePattern<stable
             elementType
         );
         newInitValues.push_back(empty);
+        changed = true;
       }
       index++;
     }
+
+    if (!changed)
+      return failure();
 
     // 3. Create a new while op with the modified body and new Result types and new init values
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(

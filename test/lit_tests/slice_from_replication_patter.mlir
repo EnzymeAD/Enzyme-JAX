@@ -20,8 +20,8 @@ func.func @while_loop_example(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32>
       %next_counter = stablehlo.add %iter_counter, %one : tensor<i32>
       
       //Slice the tensor to get 1x2032x2032 
-      %slice_tensor = stablehlo.slice %iter_tensor [0:1, 0:2032, 0:2032] : (tensor<1x2034x2032xf64>) -> tensor<1x2032x2032xf64>
-
+      %add_tensor = stablehlo.add %iter_tensor, %iter_tensor : tensor<1x2034x2032xf64>
+      %slice_tensor = stablehlo.slice %add_tensor [0:1, 0:2032, 0:2032] : (tensor<1x2034x2032xf64>) -> tensor<1x2032x2032xf64>
       // Slice operations as in your example
       %slice_top = stablehlo.slice %slice_tensor [0:1, 0:1, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
       %slice_bottom = stablehlo.slice %slice_tensor [0:1, 2031:2032, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
