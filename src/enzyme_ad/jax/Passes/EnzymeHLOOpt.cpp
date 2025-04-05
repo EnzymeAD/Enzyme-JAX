@@ -12388,18 +12388,19 @@ struct PadConcatToConcatPad
       }
     }
 
-    bool noCommonPad = true;
+    bool commonPad = false;
 
     for (int64_t dim = 0; dim < rank; ++dim) {
       if (commonLowPadding[dim] != 0 || commonHighPadding[dim] != 0) {
-        noCommonPad = false;
+        commonPad = true;
         break;
       }
     }
 
-    if (noCommonPad) {
+    if (!commonPad) {
       return failure();
     }
+    
     // Collect original operands with adjusted padding
     SmallVector<Value> adjOperands;
 
