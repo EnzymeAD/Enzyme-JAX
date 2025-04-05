@@ -12460,6 +12460,9 @@ struct PadConcatToConcatPad
       if (!padOp)
         return failure();
 
+      if (!padOp->hasOneUse())
+        return failure();
+
       if (padOps.empty()) {
         padValue = padOp.getPaddingValue();
       } else if (padValue != padOp.getPaddingValue()) {
@@ -12471,6 +12474,9 @@ struct PadConcatToConcatPad
 
     int64_t concatDim = concatOp.getDimension();
     int64_t rank = padOps[0].getEdgePaddingLow().size();
+
+    if (rank <= 0)
+      return failure();
 
     // Compute smallest common padding for all tensors
     SmallVector<int64_t> commonLowPadding(rank,
