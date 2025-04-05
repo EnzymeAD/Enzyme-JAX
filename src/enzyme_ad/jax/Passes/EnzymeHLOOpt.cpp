@@ -11992,6 +11992,58 @@ private:
   }
 };
 
+// (add (mul a x) (mul a y)) -> (mul a (add x y))
+template <typename Op>
+struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsMul = lhs.template getDefiningOp<stablehlo::MulOp>();
+    auto rhsMul = rhs.template getDefiningOp<stablehlo::MulOp>();
+
+    if (!lhsMul || !rhsMul)
+      return failure();
+
+    Value common = nullptr, lhsVal, rhsVal;
+
+    if (lhsMul.getLhs() == rhsMul.getRhs()) {
+      common = lhsMul.getLhs();
+      rhsVal = rhsMul.getLhs();
+      lhsVal = lhsMul.getRhs();
+    }
+
+    if (lhsMul.getLhs() == rhsMul.getLhs()) {
+      common = lhsMul.getLhs();
+      rhsVal = rhsMul.getRhs();
+      lhsVal = lhsMul.getRhs();
+    }
+
+    if (lhsMul.getRhs() == rhsMul.getRhs()) {
+      common = lhsMul.getRhs();
+      rhsVal = rhsMul.getLhs();
+      lhsVal = lhsMul.getLhs();
+    }
+
+    if (lhsMul.getRhs() == rhsMul.getLhs()) {
+      common = lhsMul.getRhs();
+      rhsVal = rhsMul.getRhs();
+      lhsVal = lhsMul.getLhs();
+    }
+
+    if (!common)
+      return failure();
+
+    auto newMul = rewriter.create<Op>(op.getLoc(), lhsVal, rhsVal);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, common,
+                                                  newMul.getResult());
+
+    return success();
+  }
+};
+
 // This lets us reorder the following
 // Case 1: (op x (op (op y x) y)) -> (op (op x y) (op x y))
 // Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))

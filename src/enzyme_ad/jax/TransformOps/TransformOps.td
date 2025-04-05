@@ -450,6 +450,12 @@ def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
   let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
 }
 
+def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
+    "associative_common_mul_op_reordering"> {
+  let patterns = ["AssociativeCommonMulOpReordering<stablehlo::AddOp>",
+                  "AssociativeCommonMulOpReordering<stablehlo::SubtractOp>"];
+}
+
 def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
     "associative_binary_op_reordering"> {
   let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
