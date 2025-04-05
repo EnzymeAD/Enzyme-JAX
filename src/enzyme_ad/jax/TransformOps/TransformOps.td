@@ -1206,6 +1206,17 @@ def WhileInductionReduction : EnzymeHLOPatternOp<
     "while_induction_reduction"> {
   let patterns = ["WhileInductionReduction"];
 }
+
+def WhileRepeatedInductionReduction : EnzymeHLOPatternOp<
+    "while_repeated_induction_reduction"> {
+  let patterns = ["WhileRepeatedInductionReduction"];
+}
+
+def SliceIf : EnzymeHLOPatternOp<
+    "slice_if"> {
+  let patterns = ["SliceIf"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
