@@ -11464,28 +11464,30 @@ struct ReduceTransposeSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 
     // Map non-reduced dimensions
     SmallVector<bool> isReduced(transposeInputType.getRank(), false);
-    for (auto dim : reduceDimensions) {
+    for (auto dim : newReduceDimensions) {
       isReduced[dim] = true;
     }
 
-    SmallVector<int64_t> oldDims, newDims;
-    for (int64_t i = 0; i < transposePermutation.size(); ++i) {
-      if (!isReduced[transposePermutation[i]]) {
-        oldDims.push_back(transposePermutation[i]);
-      }
-      if (!isReduced[i]) {
-        newDims.push_back(i);
-      }
+    // Count the number of reduced dimensions before the transpose dim
+    SmallVector<int64_t> reducedDimsBeforeTranspose(
+        transposePermutation.size());
+    reducedDimsBeforeTranspose[0] = isReduced[0];
+    for (int64_t i = 1; i < transposePermutation.size(); ++i) {
+      reducedDimsBeforeTranspose[i] =
+          reducedDimsBeforeTranspose[i - 1] + isReduced[i];
     }
 
     // Create final permutation
-    SmallVector<int64_t> finalPermutation(newDims.size());
-    for (int64_t i = 0; i < newDims.size(); ++i) {
-      for (int64_t j = 0; j < oldDims.size(); ++j) {
-        if (newDims[i] == oldDims[j]) {
-          finalPermutation[j] = i;
-          break;
-        }
+    // original permutation - reduced dimensions before transposed dim
+    SmallVector<int64_t> finalPermutation(transposePermutation.size() -
+                                          newReduceDimensions.size());
+    int64_t j = 0;
+    for (int64_t i = 0; i < transposePermutation.size(); ++i) {
+      if (!isReduced[transposePermutation[i]]) {
+        finalPermutation[j] =
+            transposePermutation[i] -
+            reducedDimsBeforeTranspose[transposePermutation[i]];
+        ++j;
       }
     }
 
@@ -11933,8 +11935,88 @@ struct ReplaceSlidingWindowSumWithConvPattern final
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         concat, concat.getType(),
         ValueRange{prefixSlice.getResult(), flattened},
-        /*dimension=*/0);
-    
+        /*dimension=*/0);  
+    return success();
+  }
+};
+
+struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
+  using OpRewritePattern<stablehlo::PadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::PadOp padOp,
+                                PatternRewriter &rewriter) const override {
+    auto concatOp =
+        padOp.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concatOp)
+      return failure();
+
+    if (!concatOp->hasOneUse())
+      return failure();
+
+    DenseElementsAttr padConst;
+    if (!matchPattern(padOp.getPaddingValue(), m_Constant(&padConst)))
+      return failure();
+
+    // Ensure interior padding is all zero.
+    for (int64_t ip : padOp.getInteriorPadding())
+      if (ip != 0)
+        return failure();
+
+    // Count how many dimensions have nonzero pad.
+    int nonZeroPads = 0;
+    int padDim = -1;
+    for (int i = 0, e = padOp.getEdgePaddingLow().size(); i < e; ++i) {
+      int64_t low = padOp.getEdgePaddingLow()[i];
+      int64_t high = padOp.getEdgePaddingHigh()[i];
+      if (low != 0 || high != 0) {
+        ++nonZeroPads;
+        padDim = i;
+      }
+    }
+    // Only handle the case with a single padded dimension.
+    if (nonZeroPads != 1)
+      return failure();
+
+    // Ensure the padded dimension (padDim) matches the concatenate op's
+    // dimension.
+    if (padDim != concatOp.getDimension())
+      return failure();
+
+    // For simplicity, require padding on only one side.
+    bool padAtLow = (padOp.getEdgePaddingLow()[padDim] > 0);
+    bool padAtHigh = (padOp.getEdgePaddingHigh()[padDim] > 0);
+    if (padAtLow && padAtHigh)
+      return failure();
+
+    // Create a constant tensor to replace the pad.
+    // Its shape is the same as the output except in padDim where its size
+    // equals the pad amount.
+    auto outShape = padOp.getType().getShape();
+    int64_t padAmount = padAtLow ? padOp.getEdgePaddingLow()[padDim]
+                                 : padOp.getEdgePaddingHigh()[padDim];
+    SmallVector<int64_t> constShape(outShape.begin(), outShape.end());
+    constShape[padDim] = padAmount;
+    auto elemType = padOp.getType().getElementType();
+    auto constTensorType = RankedTensorType::get(constShape, elemType);
+    // Use the pad constant (splat) to create the constant tensor.
+    auto newSplattedConstOp = rewriter.create<stablehlo::ConstantOp>(
+        padOp.getLoc(), constTensorType, padConst.resizeSplat(constTensorType));
+
+    // Now, instead of padding the concatenation result, we insert the pad
+    // slice via a new concatenate.
+    auto origOperands = concatOp.getOperands();
+    SmallVector<Value, 4> newOperands(origOperands.begin(), origOperands.end());
+    if (padAtLow) {
+      // Insert the pad slice at the beginning.
+      newOperands.insert(newOperands.begin(), newSplattedConstOp);
+    } else {
+      // Insert the pad slice at the end.
+      newOperands.push_back(newSplattedConstOp);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        padOp, padOp.getResult().getType(), newOperands,
+        concatOp.getDimension());
     return success();
   }
 };
@@ -12218,6 +12300,11 @@ struct EnzymeHLOOptPass
       patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
                    ReshapeDUS, ReshapeSlice, ReshapePad, ReshapeReduceWindow>(
           context);
+    }
+
+    if (passses & (2048 * 128)) {
+      // Conflicts with ConcatPad
+      patterns.add<ConstPadConcatToConcat>(context);
     }
 
     if (all_finite)
