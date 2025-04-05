@@ -11900,7 +11900,6 @@ struct PadConcatToConcatPad
     rewriter.replaceOp(concatOp, result);
     return success();
   }
-
 };
 
 struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
@@ -12168,10 +12167,9 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering<stablehlo::AndOp>,
                  AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
 
-    patterns
-        .add<BinopPadToConcat<stablehlo::AddOp>,
-             BinopPadToConcat<stablehlo::MulOp>, ConcatPad, PadReduceWindow>(
-            context);
+    patterns.add<BinopPadToConcat<stablehlo::AddOp>,
+                 BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
+                 PadConcatToConcatPad, PadReduceWindow>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
