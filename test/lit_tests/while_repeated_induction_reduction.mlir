@@ -84,7 +84,7 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
 // CHECK-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %4 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %4 = stablehlo.compare  EQ, %iterArg, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CHECK-NEXT:      %4 = stablehlo.compare  EQ, %iterArg, %c : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:      %5 = "stablehlo.if"(%4) ({
 // CHECK-NEXT:        stablehlo.return %arg0 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:      }, {
@@ -97,7 +97,7 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
 // CHECK-NEXT:      %7 = "test.create"(%5) : (tensor<1x2034x2032xf64>) -> tensor<1x2032x2032xf64>
 // CHECK-NEXT:      stablehlo.return %6, %7 : tensor<i32>, tensor<1x2032x2032xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %2 = stablehlo.compare  EQ, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CHECK-NEXT:    %2 = stablehlo.compare  LT, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:    %3 = "stablehlo.if"(%2) ({
 // CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:    }, {
@@ -119,13 +119,13 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
 // CHECK-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %4 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %4 = stablehlo.compare  EQ, %iterArg, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CHECK-NEXT:      %4 = stablehlo.compare  EQ, %iterArg, %c : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:      %5 = stablehlo.add %iterArg, %c_0 : tensor<i32>
 // CHECK-NEXT:      %6 = stablehlo.select %4, %0, %iterArg_1 : tensor<i1>, tensor<1x2032x2032xf64>
 // CHECK-NEXT:      %7 = "test.create"(%6) : (tensor<1x2032x2032xf64>) -> tensor<1x2032x2032xf64>
 // CHECK-NEXT:      stablehlo.return %5, %7 : tensor<i32>, tensor<1x2032x2032xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %2 = stablehlo.compare  EQ, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CHECK-NEXT:    %2 = stablehlo.compare  LT, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:    %3 = "stablehlo.if"(%2) ({
 // CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:    }, {

@@ -10037,11 +10037,14 @@ struct IVInfo {
   int index;    // Index of the induction variable in the while op arguments
   int64_t step; // Step size (how much IV increments each iteration)
   Value limit;
+  Value start;
   bool isValid; // Whether we successfully identified the IV and step
+  bool zeroStart;
+  bool canonical;
 };
 
 IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
-  IVInfo result = {-1, 0, nullptr, false};
+  IVInfo result = {-1, 0, nullptr, nullptr, false, false, false};
 
   // 1. Get the condition block and its return operation
   if (whileOp.getBody().empty() || whileOp.getCond().empty())
@@ -10131,6 +10134,15 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
     break;
   }
 
+  result.start = whileOp.getOperands()[result.index];
+
+  DenseIntElementsAttr inpAttr;
+  if (matchPattern(result.start, m_Constant(&inpAttr))) {
+    result.zeroStart = (*inpAttr.begin()).getSExtValue() == 0;
+  }
+
+  result.canonical = result.zeroStart && result.step == 1;
+
   return result;
 }
 
@@ -10214,10 +10226,10 @@ struct WhileRepeatedInductionReduction
   using OpRewritePattern::OpRewritePattern;
 
   template <typename CRangeT, typename RangeT>
-  static stablehlo::IfOp createConditional(PatternRewriter &rewriter,
-                                           stablehlo::WhileOp whileOp,
-                                           IVInfo &ivInfo, CRangeT &candidates,
-                                           Value iv, const RangeT toSlice) {
+  static stablehlo::IfOp
+  createConditional(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+                    IVInfo &ivInfo, CRangeT &candidates, Value iv,
+                    const RangeT toSlice, bool cloneCond) {
     SmallVector<Type> ifResultTypes;
 
     SmallVector<Value> oldReturns;
@@ -10226,11 +10238,32 @@ struct WhileRepeatedInductionReduction
       oldReturns.push_back(whileOp.getOperands()[candidate.idx]);
     }
 
-    auto ifOp = rewriter.create<stablehlo::IfOp>(
-        whileOp.getLoc(), ifResultTypes,
-        rewriter.create<stablehlo::CompareOp>(
-            whileOp.getLoc(), iv, ivInfo.limit,
-            stablehlo::ComparisonDirection::EQ));
+    Value condition;
+
+    if (cloneCond) {
+      IRMapping mapper;
+
+      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+        mapper.map(whileOp.getCond().getArgument(i), whileOp.getOperands()[i]);
+      }
+      for (auto &op : whileOp.getCond().front().getOperations()) {
+        // Skip the terminator - we'll add it after all other operations
+        if (isa<stablehlo::ReturnOp>(op))
+          continue;
+
+        // Clone the operation with the value mapping
+        rewriter.clone(op, mapper);
+      }
+      condition = whileOp.getCond().front().getTerminator()->getOperand(0);
+      condition = mapper.lookupOrDefault(condition);
+    } else {
+      condition = rewriter.create<stablehlo::CompareOp>(
+          whileOp.getLoc(), iv, ivInfo.start,
+          stablehlo::ComparisonDirection::EQ);
+    }
+
+    auto ifOp = rewriter.create<stablehlo::IfOp>(whileOp.getLoc(),
+                                                 ifResultTypes, condition);
 
     // Create the then and else regions for the if operation
     Region &thenRegion = ifOp.getTrueBranch();
@@ -10296,7 +10329,7 @@ struct WhileRepeatedInductionReduction
     if (!ivInfo.isValid)
       return failure();
 
-    if (ivInfo.step != 1)
+    if (ivInfo.step == 0)
       return failure();
 
     // Find yield op in the body
@@ -10386,8 +10419,9 @@ struct WhileRepeatedInductionReduction
     for (auto res : newWhileOp.getResults())
       results.push_back(res);
 
-    auto ifOp = createConditional(rewriter, whileOp, ivInfo, candidates,
-                                  whileOp.getOperands()[ivInfo.index], results);
+    auto ifOp =
+        createConditional(rewriter, whileOp, ivInfo, candidates,
+                          whileOp.getOperands()[ivInfo.index], results, true);
     for (auto res : ifOp->getResults()) {
       results[candidates[res.getResultNumber()].idx] = res;
     }
@@ -10435,7 +10469,7 @@ struct WhileRepeatedInductionReduction
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
                              newWhileOp.getBody().getArgument(ivInfo.index),
-                             newWhileOp.getBody().getArguments())
+                             newWhileOp.getBody().getArguments(), false)
                ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
         mapper.map(whileOp.getBody().getArgument(idx), res);
@@ -10492,7 +10526,7 @@ struct WhileRepeatedInductionReduction
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
                              newWhileOp.getCond().getArgument(ivInfo.index),
-                             newWhileOp.getCond().getArguments())
+                             newWhileOp.getCond().getArguments(), false)
                ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
         condMapper.map(whileOp.getBody().getArgument(idx), res);
@@ -11327,6 +11361,10 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
     Operation *bodyTerm = body->getTerminator();
 
     int deleted = 0;
+
+    // Find the index of IV and the step to check for 1 iteration
+    auto ivInfo = extractSimpleIVInfo(op);
+
     for (auto &opOperand : op->getOpOperands()) {
       Value inputValue = opOperand.get();
 
@@ -11341,7 +11379,9 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
         canHoist = true;
       }
 
-      if (canHoist && bodyArg == bodyTerm->getOperand(i)) {
+      Value bodyRes = bodyTerm->getOperand(i);
+
+      if (canHoist && bodyArg == bodyRes) {
         // This variable is not updated during iterations
         rewriter.replaceAllUsesWith(bodyArg, inputValue);
         rewriter.replaceAllUsesWith(condArg, inputValue);
@@ -11349,6 +11389,67 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
                                  [&] { bodyTerm->setOperands(i, 1, {}); });
         rewriter.replaceAllUsesWith(op.getResult(opOperand.getOperandNumber()),
                                     inputValue);
+
+        body->eraseArgument(i);
+        cond->eraseArgument(i);
+
+        deleted++;
+      } else if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid &&
+                 ivInfo.step != 0) {
+
+        Value resultReplacement;
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          IRMapping mapper;
+
+          for (unsigned i = 0; i < op.getCond().getNumArguments(); ++i) {
+            mapper.map(op.getCond().getArgument(i), op.getOperands()[i]);
+          }
+          for (auto &op : op.getCond().front().getOperations()) {
+            // Skip the terminator - we'll add it after all other operations
+            if (isa<stablehlo::ReturnOp>(op))
+              continue;
+
+            // Clone the operation with the value mapping
+            rewriter.clone(op, mapper);
+          }
+          Value useInner = op.getCond().front().getTerminator()->getOperand(0);
+          useInner = mapper.lookupOrDefault(useInner);
+
+          resultReplacement = rewriter.create<stablehlo::SelectOp>(
+              op.getLoc(), useInner, inputValue, bodyRes);
+        }
+
+        // This variable is not updated during iterations
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&op.getBody().front());
+          auto replacement = rewriter.create<stablehlo::SelectOp>(
+              op.getLoc(),
+              rewriter.create<stablehlo::CompareOp>(
+                  op.getLoc(), op.getBody().getArgument(ivInfo.index),
+                  ivInfo.start, stablehlo::ComparisonDirection::EQ),
+              inputValue, bodyRes);
+          rewriter.replaceAllUsesWith(bodyArg, replacement);
+        }
+
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&op.getCond().front());
+          auto replacement = rewriter.create<stablehlo::SelectOp>(
+              op.getLoc(),
+              rewriter.create<stablehlo::CompareOp>(
+                  op.getLoc(), op.getCond().getArgument(ivInfo.index),
+                  ivInfo.start, stablehlo::ComparisonDirection::EQ),
+              inputValue, bodyRes);
+          rewriter.replaceAllUsesWith(condArg, replacement);
+        }
+
+        rewriter.modifyOpInPlace(bodyTerm,
+                                 [&] { bodyTerm->setOperands(i, 1, {}); });
+
+        rewriter.replaceAllUsesWith(op.getResult(opOperand.getOperandNumber()),
+                                    resultReplacement);
 
         body->eraseArgument(i);
         cond->eraseArgument(i);
