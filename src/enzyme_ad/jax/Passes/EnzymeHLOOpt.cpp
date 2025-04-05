@@ -12853,14 +12853,53 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
     newStart[offsetDim] += startidx;
     newLimit[offsetDim] += lastidx;
 
-    auto input0 = rewriter.create<stablehlo::SliceOp>(
+    Value input = rewriter.create<stablehlo::SliceOp>(
         done[0].term.getLoc(), done[0].term.getOperand(), newStart, newLimit,
         newStride);
-    Value input = input0;
     size_t newOffsetDim = offsetDim;
-    if (T.getShape().size() < 3) {
+    RankedTensorType pre_reshape = T;
+    size_t reshapeOffsetDim = 0;
+    SmallVector<int64_t> permutation;
+    if (T.getShape().size() > 2) {
+      if (newOffsetDim != 0 && newOffsetDim != T.getShape().size() - 1) {
+        for (int i=0; i<T.getShape().size(); i++)
+          permutation.push_back(i);
+        permutation[newOffsetDim] = 0;
+        permutation[0] = newOffsetDim;
+        input = rewriter.create<stablehlo::TransposeOp>(
+            op.getLoc(), input, permutation);
+        newOffsetDim = 0;
+      }
+      if (newOffsetDim == 0) {
+        auto RT = cast<RankedTensorType>(input.getType());
+        pre_reshape = RT;
+        reshapeOffsetDim = newOffsetDim;
+        int64_t newDims[3] = { RT.getShape()[newOffsetDim], 1, 1 };
+        for (int i=1; i<RT.getShape().size(); i++) {
+          newDims[1] *= RT.getShape()[i];
+        }
+        input = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+            input);
+      } else {
+        assert(newOffsetDim == T.getShape().size() - 1);
+
+        auto RT = cast<RankedTensorType>(input.getType());
+        pre_reshape = RT;
+        reshapeOffsetDim = newOffsetDim;
+        int64_t newDims[3] = { 1, 1, RT.getShape()[newOffsetDim] };
+        for (int i=0; i<RT.getShape().size()-1; i++) {
+          newDims[0] *= RT.getShape()[i];
+        }
+        input = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+            input);
+        newOffsetDim = 2;
+      }
+    } else if (T.getShape().size() < 3) {
       SmallVector<int64_t> newDims =
-          llvm::to_vector(input0.getType().getShape());
+          llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
+      reshapeOffsetDim = newOffsetDim;
       while (newDims.size() < 3) {
         newDims.insert(newDims.begin(), 1);
         newOffsetDim++;
@@ -12868,6 +12907,7 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       input = rewriter.create<stablehlo::ReshapeOp>(
           op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
           input);
+      pre_reshape = T;
     }
     SmallVector<int64_t> nonOffsetDims;
     for (int i = 0;
@@ -12928,9 +12968,16 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
         /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
         /*precision_config=*/nullptr);
 
-    if (T.getShape().size() < 3) {
-      conv = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), T, conv);
+    if (conv.getType() != pre_reshape) {
+      SmallVector<int64_t> post_shape = llvm::to_vector(pre_reshape.getShape());
+      post_shape[reshapeOffsetDim] -= (lastidx - startidx);
+      RankedTensorType post_reshape = RankedTensorType::get(post_shape, pre_reshape.getElementType());
+      conv = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), post_reshape, conv);
     }
+    if (permutation.size())
+      conv = rewriter.create<stablehlo::TransposeOp>(
+            op.getLoc(), conv, permutation);
+
     rewriter.replaceOp(op, ValueRange{conv});
     return success();
   }
