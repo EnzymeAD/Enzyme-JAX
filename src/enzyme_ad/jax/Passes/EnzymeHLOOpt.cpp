@@ -12558,8 +12558,9 @@ struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
 
   LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
-    auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
     
+    auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+
     if (!selOp)
       return failure();
 
@@ -12869,7 +12870,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad,SliceSelect, PadReduceWindow>(context);
+                 PadConcatToConcatPad, SliceSelect, PadReduceWindow>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
