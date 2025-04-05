@@ -10226,10 +10226,10 @@ struct WhileRepeatedInductionReduction
   using OpRewritePattern::OpRewritePattern;
 
   template <typename CRangeT, typename RangeT>
-  static stablehlo::IfOp createConditional(PatternRewriter &rewriter,
-                                           stablehlo::WhileOp whileOp,
-                                           IVInfo &ivInfo, CRangeT &candidates,
-                                           Value iv, const RangeT toSlice, bool cloneCond) {
+  static stablehlo::IfOp
+  createConditional(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+                    IVInfo &ivInfo, CRangeT &candidates, Value iv,
+                    const RangeT toSlice, bool cloneCond) {
     SmallVector<Type> ifResultTypes;
 
     SmallVector<Value> oldReturns;
@@ -10244,8 +10244,7 @@ struct WhileRepeatedInductionReduction
       IRMapping mapper;
 
       for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
-        mapper.map(whileOp.getCond().getArgument(i),
-                   whileOp.getOperands()[i]);
+        mapper.map(whileOp.getCond().getArgument(i), whileOp.getOperands()[i]);
       }
       for (auto &op : whileOp.getCond().front().getOperations()) {
         // Skip the terminator - we'll add it after all other operations
@@ -10257,14 +10256,14 @@ struct WhileRepeatedInductionReduction
       }
       condition = whileOp.getCond().front().getTerminator()->getOperand(0);
       condition = mapper.lookupOrDefault(condition);
-    } else {      
+    } else {
       condition = rewriter.create<stablehlo::CompareOp>(
           whileOp.getLoc(), iv, ivInfo.start,
           stablehlo::ComparisonDirection::EQ);
     }
 
-    auto ifOp = rewriter.create<stablehlo::IfOp>(
-        whileOp.getLoc(), ifResultTypes, condition);
+    auto ifOp = rewriter.create<stablehlo::IfOp>(whileOp.getLoc(),
+                                                 ifResultTypes, condition);
 
     // Create the then and else regions for the if operation
     Region &thenRegion = ifOp.getTrueBranch();
@@ -10420,8 +10419,9 @@ struct WhileRepeatedInductionReduction
     for (auto res : newWhileOp.getResults())
       results.push_back(res);
 
-    auto ifOp = createConditional(rewriter, whileOp, ivInfo, candidates,
-                                  whileOp.getOperands()[ivInfo.index], results, true);
+    auto ifOp =
+        createConditional(rewriter, whileOp, ivInfo, candidates,
+                          whileOp.getOperands()[ivInfo.index], results, true);
     for (auto res : ifOp->getResults()) {
       results[candidates[res.getResultNumber()].idx] = res;
     }
@@ -11394,7 +11394,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
         cond->eraseArgument(i);
 
         deleted++;
-      } else if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid && ivInfo.step != 0) {
+      } else if (canHoist && definedOutside(bodyRes, op) && ivInfo.isValid &&
+                 ivInfo.step != 0) {
 
         Value resultReplacement;
         {
@@ -11402,8 +11403,7 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
           IRMapping mapper;
 
           for (unsigned i = 0; i < op.getCond().getNumArguments(); ++i) {
-            mapper.map(op.getCond().getArgument(i),
-                       op.getOperands()[i]);
+            mapper.map(op.getCond().getArgument(i), op.getOperands()[i]);
           }
           for (auto &op : op.getCond().front().getOperations()) {
             // Skip the terminator - we'll add it after all other operations
@@ -11416,12 +11416,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
           Value useInner = op.getCond().front().getTerminator()->getOperand(0);
           useInner = mapper.lookupOrDefault(useInner);
 
-          resultReplacement= rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(),
-            useInner,
-            inputValue,
-            bodyRes
-          );
+          resultReplacement = rewriter.create<stablehlo::SelectOp>(
+              op.getLoc(), useInner, inputValue, bodyRes);
         }
 
         // This variable is not updated during iterations
@@ -11429,13 +11425,11 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(&op.getBody().front());
           auto replacement = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(),
-            rewriter.create<stablehlo::CompareOp>(
-            op.getLoc(), op.getBody().getArgument(ivInfo.index), ivInfo.start,
-            stablehlo::ComparisonDirection::EQ),
-            inputValue,
-            bodyRes
-          );
+              op.getLoc(),
+              rewriter.create<stablehlo::CompareOp>(
+                  op.getLoc(), op.getBody().getArgument(ivInfo.index),
+                  ivInfo.start, stablehlo::ComparisonDirection::EQ),
+              inputValue, bodyRes);
           rewriter.replaceAllUsesWith(bodyArg, replacement);
         }
 
@@ -11443,13 +11437,11 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(&op.getCond().front());
           auto replacement = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(),
-            rewriter.create<stablehlo::CompareOp>(
-            op.getLoc(), op.getCond().getArgument(ivInfo.index), ivInfo.start,
-            stablehlo::ComparisonDirection::EQ),
-            inputValue,
-            bodyRes
-          );
+              op.getLoc(),
+              rewriter.create<stablehlo::CompareOp>(
+                  op.getLoc(), op.getCond().getArgument(ivInfo.index),
+                  ivInfo.start, stablehlo::ComparisonDirection::EQ),
+              inputValue, bodyRes);
           rewriter.replaceAllUsesWith(condArg, replacement);
         }
 
