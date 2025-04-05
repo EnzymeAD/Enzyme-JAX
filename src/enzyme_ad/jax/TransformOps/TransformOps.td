@@ -1226,6 +1226,12 @@ def PadConcatToConcatPad : EnzymeHLOPatternOp<
     "pad_concat_to_concat_pad"> {
   let patterns = ["PadConcatToConcatPad"];
 }
+
+def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
+    "slice_select_to_select_slice"> {
+  let patterns = ["SliceSelect"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
