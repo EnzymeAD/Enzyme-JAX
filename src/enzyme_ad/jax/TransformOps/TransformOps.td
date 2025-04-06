@@ -1267,6 +1267,11 @@ def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
   let patterns = ["SliceSelect"];
 }
 
+def TransposeSelect : EnzymeHLOPatternOp<
+    "transpose_select"> {
+  let patterns = ["TransposeSelect"];
+}
+
 def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<
     "sum_to_conv"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

@@ -13645,6 +13645,37 @@ struct SumToReduceWindow
   }
 };
 
+struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp transposeOp,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp =
+        transposeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    if (!selectOp->hasOneUse())
+      return failure();
+
+    SmallVector<int64_t> permutation;
+    for (int i = 0; i < transposeOp.getPermutation().size(); i++) {
+      permutation.push_back(transposeOp.getPermutation()[i]);
+    }
+
+    auto predTransposed = rewriter.create<stablehlo::TransposeOp>(
+        transposeOp.getLoc(), selectOp.getPred(), permutation);
+    auto onTrueTransposed = rewriter.create<stablehlo::TransposeOp>(
+        transposeOp.getLoc(), selectOp.getOnTrue(), permutation);
+    auto onFalseTransposed = rewriter.create<stablehlo::TransposeOp>(
+        transposeOp.getLoc(), selectOp.getOnFalse(), permutation);
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        transposeOp, predTransposed, onTrueTransposed, onFalseTransposed);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -13934,9 +13965,9 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns
-          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
-               TransposeIota, TransposeReduceWindow, TransposeReduce>(context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
+                   TransposeDUS, TransposeIota, TransposeReduceWindow,
+                   TransposeReduce, TransposeSelect>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
