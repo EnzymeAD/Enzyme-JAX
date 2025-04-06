@@ -18,7 +18,7 @@ module @reactant_simple_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // AGGRESSIVE-NEXT:    return %2 : tensor<127x1007x1008xf64>
 // AGGRESSIVE-NEXT:  }
 
-// CHECK-NEXT:  func.func @main(%arg0: tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64> {
+// CHECK:  func.func @main(%arg0: tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64> {
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [1:128, 0:1007, 0:1008] : (tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64>
 // CHECK-NEXT:    %1 = stablehlo.slice %arg0 [0:127, 0:1007, 0:1008] : (tensor<128x1007x1008xf64>) -> tensor<127x1007x1008xf64>
 // CHECK-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<127x1007x1008xf64>
