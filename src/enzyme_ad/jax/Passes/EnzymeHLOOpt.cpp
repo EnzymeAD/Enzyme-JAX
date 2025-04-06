@@ -13127,12 +13127,11 @@ template <typename T> struct Term {
       : constantFactor(constantFactor), valFactor(valFactor), term(term) {}
 };
 
-template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
+template <typename ST, typename Child> struct SumToReductionBase : public OpRewritePattern<ST> {
   using OpRewritePattern<ST>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ST op,
                                 PatternRewriter &rewriter) const override {
-
     if (!op.getType().getElementType().isFloat())
       return failure();
 
@@ -13329,6 +13328,63 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       Value input = rewriter.create<stablehlo::SliceOp>(
           done[0].term.getLoc(), done[0].term.getOperand(), newStart, newLimit,
           newStride);
+
+      auto fty = RankedTensorType::get({lastidx + 1 - startidx},
+                                       rewriter.getF64Type());
+      Value filter =
+          rewriter
+              .create<stablehlo::ConstantOp>(op.getLoc(), fty,
+                                             DenseFPElementsAttr::get(fty, pad))
+              .getResult();
+      filter = rewriter
+                   .create<stablehlo::ConvertOp>(
+                       op.getLoc(),
+                       RankedTensorType::get({lastidx + 1 - startidx},
+                                             op.getType().getElementType()),
+                       filter)
+                   .getResult();
+
+      auto conv = Child::makeReduction(rewriter, input, offsetDim, T, filter);
+      finalToAdd.emplace_back(1, nullptr, conv);
+      hasMerge = true;
+    }
+
+    if (!hasMerge)
+      return failure();
+
+    assert(finalToAdd.size());
+
+    Value result = nullptr;
+    for (auto term : finalToAdd) {
+      Value intermediate = term.term;
+      if (term.constantFactor != 1) {
+
+        intermediate = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), intermediate,
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), intermediate.getType(),
+                makeAttr(intermediate.getType(), term.constantFactor)
+                    .cast<ElementsAttr>()));
+      }
+      if (result == nullptr)
+        result = intermediate;
+      else
+        result = rewriter.create<stablehlo::AddOp>(op.getLoc(), result,
+                                                   intermediate);
+    }
+    assert(result);
+    rewriter.replaceOp(op, ValueRange{result});
+    return success();
+  }
+};
+
+
+template <typename ST> struct SumToConv : public SumToReductionBase<ST, SumToConv<ST> {
+  using SumToReductionBase<ST, SumToConv<ST>>::OpRewritePattern;
+  using SumToReductionBase<ST, SumToConv<ST>>::matchAndRewrite;
+
+  Value makeReduction(PatternRewriter &rewriter, Value input, size_t offsetDim, RankedTensorType T, Value filter) {
+
       size_t newOffsetDim = offsetDim;
       RankedTensorType pre_reshape = T;
       size_t reshapeOffsetDim = 0;
@@ -13393,20 +13449,6 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
         std::swap(nonOffsetDims[1], nonOffsetDims[0]);
       }
 
-      auto fty = RankedTensorType::get({lastidx + 1 - startidx},
-                                       rewriter.getF64Type());
-      Value filter =
-          rewriter
-              .create<stablehlo::ConstantOp>(op.getLoc(), fty,
-                                             DenseFPElementsAttr::get(fty, pad))
-              .getResult();
-      filter = rewriter
-                   .create<stablehlo::ConvertOp>(
-                       op.getLoc(),
-                       RankedTensorType::get({lastidx + 1 - startidx},
-                                             op.getType().getElementType()),
-                       filter)
-                   .getResult();
       filter = rewriter
                    .create<stablehlo::ReshapeOp>(
                        op.getLoc(),
@@ -13458,38 +13500,134 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       if (permutation.size())
         conv = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), conv,
                                                        permutation);
-
-      finalToAdd.emplace_back(1, nullptr, conv);
-      hasMerge = true;
+      return conv;
     }
+};
 
-    if (!hasMerge)
-      return failure();
 
-    assert(finalToAdd.size());
+template <typename ST> struct SumToDot : public SumToReductionBase<ST, SumToDot<ST> {
+  using SumToReductionBase<ST, SumToDot<ST>>::OpRewritePattern;
+  using SumToReductionBase<ST, SumToDot<ST>>::matchAndRewrite;
 
-    Value result = nullptr;
-    for (auto term : finalToAdd) {
-      Value intermediate = term.term;
-      if (term.constantFactor != 1) {
+  Value makeReduction(PatternRewriter &rewriter, Value input, size_t offsetDim, RankedTensorType T, Value filter) {
 
-        intermediate = rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), intermediate,
-            rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), intermediate.getType(),
-                makeAttr(intermediate.getType(), term.constantFactor)
-                    .cast<ElementsAttr>()));
+      size_t newOffsetDim = offsetDim;
+      RankedTensorType pre_reshape = T;
+      size_t reshapeOffsetDim = 0;
+      SmallVector<int64_t> permutation;
+
+      if (T.getShape().size() > 2) {
+        if (newOffsetDim != 0 && newOffsetDim != T.getShape().size() - 1) {
+          for (int i = 0; i < T.getShape().size(); i++)
+            permutation.push_back(i);
+          permutation[newOffsetDim] = 0;
+          permutation[0] = newOffsetDim;
+          input = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), input,
+                                                          permutation);
+          newOffsetDim = 0;
+        }
+        if (newOffsetDim == 0) {
+          auto RT = cast<RankedTensorType>(input.getType());
+          pre_reshape = RT;
+          reshapeOffsetDim = newOffsetDim;
+          int64_t newDims[3] = {RT.getShape()[newOffsetDim], 1, 1};
+          for (int i = 1; i < RT.getShape().size(); i++) {
+            newDims[1] *= RT.getShape()[i];
+          }
+          input = rewriter.create<stablehlo::ReshapeOp>(
+              op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+              input);
+        } else {
+          assert(newOffsetDim == T.getShape().size() - 1);
+
+          auto RT = cast<RankedTensorType>(input.getType());
+          pre_reshape = RT;
+          reshapeOffsetDim = newOffsetDim;
+          int64_t newDims[3] = {1, 1, RT.getShape()[newOffsetDim]};
+          for (int i = 0; i < RT.getShape().size() - 1; i++) {
+            newDims[0] *= RT.getShape()[i];
+          }
+          input = rewriter.create<stablehlo::ReshapeOp>(
+              op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+              input);
+          newOffsetDim = 2;
+        }
+      } else if (T.getShape().size() < 3) {
+        SmallVector<int64_t> newDims =
+            llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
+        reshapeOffsetDim = newOffsetDim;
+        while (newDims.size() < 3) {
+          newDims.insert(newDims.begin(), 1);
+          newOffsetDim++;
+        }
+        pre_reshape = cast<RankedTensorType>(input.getType());
+        input = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), RankedTensorType::get(newDims, T.getElementType()),
+            input);
       }
-      if (result == nullptr)
-        result = intermediate;
-      else
-        result = rewriter.create<stablehlo::AddOp>(op.getLoc(), result,
-                                                   intermediate);
+      SmallVector<int64_t> nonOffsetDims;
+      auto CT = cast<RankedTensorType>(input.getType()).getShape();
+      for (int i = 0; i < CT.size(); i++) {
+        if (i != newOffsetDim)
+          nonOffsetDims.push_back(i);
+      }
+      if (CT[nonOffsetDims[1]] != 1 && CT[nonOffsetDims[0]] == 1) {
+        std::swap(nonOffsetDims[1], nonOffsetDims[0]);
+      }
+
+      filter = rewriter
+                   .create<stablehlo::ReshapeOp>(
+                       op.getLoc(),
+                       RankedTensorType::get({lastidx + 1 - startidx, 1, 1},
+                                             op.getType().getElementType()),
+                       filter)
+                   .getResult();
+
+      // Create convolution dimension numbers
+      auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+          rewriter.getContext(),
+          /*input_batch_dimension=*/nonOffsetDims[0],
+          /*input_feature_dimension=*/nonOffsetDims[1],
+          /*input_spatial_dimensions=*/{(int64_t)newOffsetDim},
+          /*kernel_input_feature_dimension=*/1,
+          /*kernel_output_feature_dimension=*/2,
+          /*kernel_spatial_dimensions=*/{0},
+          /*output_batch_dimension=*/nonOffsetDims[0],
+          /*output_feature_dimension=*/nonOffsetDims[1],
+          /*output_spatial_dimensions=*/{(int64_t)newOffsetDim});
+
+      // Create the convolution operation
+      SmallVector<int64_t> outShape =
+          llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
+      outShape[newOffsetDim] -= (lastidx - startidx);
+      auto convOutType =
+          RankedTensorType::get(outShape, op.getType().getElementType());
+      Value conv = rewriter.create<stablehlo::ConvolutionOp>(
+          op.getLoc(), convOutType, input, filter,
+          /*window_strides=*/nullptr,
+          /*padding=*/nullptr,
+          /*lhs_dilation=*/nullptr,
+          /*rhs_dilation=*/nullptr,
+          /*window_reversal=*/nullptr,
+          /*conv_dimension_numbers=*/convDims,
+          /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+          /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+          /*precision_config=*/nullptr);
+
+      if (conv.getType() != pre_reshape) {
+        SmallVector<int64_t> post_shape =
+            llvm::to_vector(pre_reshape.getShape());
+        post_shape[reshapeOffsetDim] -= (lastidx - startidx);
+        RankedTensorType post_reshape =
+            RankedTensorType::get(post_shape, pre_reshape.getElementType());
+        conv = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), post_reshape,
+                                                     conv);
+      }
+      if (permutation.size())
+        conv = rewriter.create<stablehlo::TransposeOp>(op.getLoc(), conv,
+                                                       permutation);
+      return conv;
     }
-    assert(result);
-    rewriter.replaceOp(op, ValueRange{result});
-    return success();
-  }
 };
 
 ///////////////  End Imported from stablehlo
@@ -13837,7 +13975,7 @@ struct EnzymeHLOOptPass
         BroadcastIotaSimplify
       >(context);
 
-    patterns.add<SumToConv<stablehlo::AddOp>, SumToConv<stablehlo::SubtractOp>>(context);
+    patterns.add<SumToDot<stablehlo::AddOp>, SumToDot<stablehlo::SubtractOp>>(context);
 
     patterns.add<WhileSimplify>(false, context);
 

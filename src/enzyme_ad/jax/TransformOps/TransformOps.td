@@ -1264,6 +1264,11 @@ def SumToConv : EnzymeHLOPatternOp<
   let patterns = ["SumToConv<stablehlo::AddOp>", "SumToConv<stablehlo::SubtractOp>"];
 }
 
+def SumToDot : EnzymeHLOPatternOp<
+    "sum_to_dot"> {
+  let patterns = ["SumToDot<stablehlo::AddOp>", "SumToDot<stablehlo::SubtractOp>"];
+}
+
 // TODO: better naming for parameters requires a static interface for
 // constructing them in search.
 
