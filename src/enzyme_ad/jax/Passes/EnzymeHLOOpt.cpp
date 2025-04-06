@@ -6905,10 +6905,19 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
     if (!llvm::hasSingleElement(op.getOperand().getUsers()))
       return failure();
 
-    OpOperand &use = *op.getOperand().getUses().begin();
+    ssize_t opIdx = -1;
+    for (OpOperand &use : op.getOperand().getUses()) {
+      if (opIdx != -1) {
+        llvm_unreachable("multi use is not possible");
+      } else {
+        opIdx = use.getOperandNumber();
+      }
+    }
+    if (opIdx == -1)
+      llvm_unreachable("zero use is not possible");
 
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifop->getResultTypes());
-    ifResultTypes[use.getOperandNumber()] = op.getType();
+    ifResultTypes[opIdx] = op.getType();
 
     auto newIf = rewriter.create<stablehlo::IfOp>(ifop.getLoc(), ifResultTypes,
                                                   ifop.getPred());
@@ -6918,25 +6927,23 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
 
     rewriter.setInsertionPoint(trueTerm);
     auto newTrue = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), trueTerm->getOperands()[use.getOperandNumber()],
-        op.getStartIndices(), op.getLimitIndices(), op.getStrides());
-    rewriter.modifyOpInPlace(trueTerm, [&] {
-      trueTerm->setOperand(use.getOperandNumber(), newTrue);
-    });
+        op.getLoc(), trueTerm->getOperands()[opIdx], op.getStartIndices(),
+        op.getLimitIndices(), op.getStrides());
+    rewriter.modifyOpInPlace(trueTerm,
+                             [&] { trueTerm->setOperand(opIdx, newTrue); });
 
     rewriter.setInsertionPoint(falseTerm);
     auto newFalse = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), falseTerm->getOperands()[use.getOperandNumber()],
-        op.getStartIndices(), op.getLimitIndices(), op.getStrides());
-    rewriter.modifyOpInPlace(falseTerm, [&] {
-      falseTerm->setOperand(use.getOperandNumber(), newFalse);
-    });
+        op.getLoc(), falseTerm->getOperands()[opIdx], op.getStartIndices(),
+        op.getLimitIndices(), op.getStrides());
+    rewriter.modifyOpInPlace(falseTerm,
+                             [&] { falseTerm->setOperand(opIdx, newFalse); });
 
     newIf.getTrueBranch().takeBody(ifop.getTrueBranch());
     newIf.getFalseBranch().takeBody(ifop.getFalseBranch());
 
     for (int i = 0; i < ifop.getNumResults(); i++) {
-      if (i == use.getOperandNumber()) {
+      if (i == opIdx) {
         rewriter.replaceOp(op, newIf.getResult(i));
       } else {
         rewriter.replaceAllUsesWith(ifop.getResult(i), newIf.getResult(i));
