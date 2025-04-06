@@ -678,6 +678,10 @@ def ApplyCSENegPatterns : EnzymeHLOPatternOp<
     "cse_neg"> {
   let patterns = ["CSE<stablehlo::NegOp>"];
 }
+def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
+    "cse_abs"> {
+  let patterns = ["CSE<stablehlo::AbsOp>"];
+}
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
@@ -1265,6 +1269,11 @@ def PadConcatToConcatPad : EnzymeHLOPatternOp<
 def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
     "slice_select_to_select_slice"> {
   let patterns = ["SliceSelect"];
+}
+
+def TransposeSelect : EnzymeHLOPatternOp<
+    "transpose_select"> {
+  let patterns = ["TransposeSelect"];
 }
 
 def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<

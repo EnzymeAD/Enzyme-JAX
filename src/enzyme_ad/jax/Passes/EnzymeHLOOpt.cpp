@@ -13645,6 +13645,47 @@ struct SumToReduceWindow
   }
 };
 
+struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp transposeOp,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp =
+        transposeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    if (!selectOp->hasOneUse())
+      return failure();
+
+    Value pred = selectOp.getPred();
+    bool scalar_pred =
+        dyn_cast<RankedTensorType>(pred.getType()).getRank() == 0;
+
+    Value newPred;
+    if (!scalar_pred) {
+      newPred = rewriter.create<stablehlo::TransposeOp>(
+          transposeOp.getLoc(), pred, transposeOp.getPermutation());
+    } else {
+      newPred = pred;
+    }
+
+    SmallVector<int64_t> permutation;
+    for (int i = 0; i < transposeOp.getPermutation().size(); i++) {
+      permutation.push_back(transposeOp.getPermutation()[i]);
+    }
+
+    auto onTrueTransposed = rewriter.create<stablehlo::TransposeOp>(
+        transposeOp.getLoc(), selectOp.getOnTrue(), permutation);
+    auto onFalseTransposed = rewriter.create<stablehlo::TransposeOp>(
+        transposeOp.getLoc(), selectOp.getOnFalse(), permutation);
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        transposeOp, newPred, onTrueTransposed, onFalseTransposed);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -13908,7 +13949,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>>(context, PatternBenefit(65000));
+                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -13934,9 +13976,9 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns
-          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
-               TransposeIota, TransposeReduceWindow, TransposeReduce>(context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
+                   TransposeDUS, TransposeIota, TransposeReduceWindow,
+                   TransposeReduce, TransposeSelect>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
