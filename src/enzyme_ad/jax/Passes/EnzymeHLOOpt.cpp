@@ -7038,13 +7038,21 @@ struct TransposeElementwise final
     : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  bool onlySingleUser;
+
+  TransposeElementwise(bool onlySingleUser, MLIRContext *context,
+                       PatternBenefit benefit = 1,
+                       ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        onlySingleUser(onlySingleUser) {}
+
   LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
                                 PatternRewriter &rewriter) const override {
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
 
-    if (!llvm::hasSingleElement(elem->getUsers()))
+    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
       return failure();
 
     if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
@@ -13758,6 +13766,13 @@ void mlir::transform::addConcatenateOpCanon(RewritePatternSet &patterns,
   patterns.insert<ConcatenateOpCanon>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
+                                              bool onlySingleUser,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
+}
+
 namespace {
 
 struct EnzymeHLOOptPass
@@ -13915,9 +13930,10 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSlice, TransposeElementwise,
-                   TransposeConcat, TransposeDUS, TransposeIota,
-                   TransposeReduceWindow, TransposeReduce>(context);
+      patterns
+          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
+               TransposeIota, TransposeReduceWindow, TransposeReduce>(context);
+      patterns.add<TransposeElementwise>(true, context);
     }
 
     if (passses & (2048 * 64)) {

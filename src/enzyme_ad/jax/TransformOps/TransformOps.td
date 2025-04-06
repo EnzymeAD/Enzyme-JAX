@@ -380,6 +380,21 @@ def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
+    "transpose_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyConcatPushBinopAddPatterns : EnzymeHLOPatternOp<
     "concat_push_binop_add"> {
   let patterns = ["ConcatPushBinop<stablehlo::AddOp>"];
@@ -1116,12 +1131,6 @@ def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
   "transpose_reshape_to_broadcast"
 > {
   let patterns = ["TransposeReshapeToBroadcast"];
-}
-
-def TransposeElementwisePatterns : EnzymeHLOPatternOp<
-  "transpose_elementwise"
-> {
-  let patterns = ["TransposeElementwise"];
 }
 
 def TransposeConcatPatterns : EnzymeHLOPatternOp<

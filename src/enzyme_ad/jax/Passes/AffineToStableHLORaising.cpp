@@ -1800,8 +1800,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                    "less dims than stored value: "
                                 << *op << "\n";
                    auto flags = OpPrintingFlags();
-                   for (auto iv
-                        : accessValueMap.getOperands()) {
+                   for (auto iv : accessValueMap.getOperands()) {
                      iv.printAsOperand(llvm::dbgs(), flags);
                      llvm::dbgs() << ", ";
                    } llvm::dbgs()
@@ -1898,14 +1897,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           llvm::dbgs()
               << "affine.store is dependent on less dims than stored value: "
               << *op << "\n";
-          auto flags = OpPrintingFlags(); for (auto iv
-                                               : accessValueMap.getOperands()) {
+          auto flags = OpPrintingFlags();
+          for (auto iv : accessValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
+          } llvm::dbgs()
+          << "\n";
           accessValueMap.getAffineMap().dump();
-          for (auto iv
-               : updateValueMap.getOperands()) {
+          for (auto iv : updateValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
           } llvm::dbgs()
