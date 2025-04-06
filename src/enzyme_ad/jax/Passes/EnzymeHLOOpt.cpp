@@ -13290,6 +13290,7 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
     RankedTensorType pre_reshape = T;
     size_t reshapeOffsetDim = 0;
     SmallVector<int64_t> permutation;
+
     if (T.getShape().size() > 2) {
       if (newOffsetDim != 0 && newOffsetDim != T.getShape().size() - 1) {
         for (int i = 0; i < T.getShape().size(); i++)
@@ -13340,10 +13341,13 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
           input);
     }
     SmallVector<int64_t> nonOffsetDims;
-    for (int i = 0;
-         i < cast<RankedTensorType>(input.getType()).getShape().size(); i++) {
+    auto CT = cast<RankedTensorType>(input.getType()).getShape();
+    for (int i = 0; i < CT.size(); i++) {
       if (i != newOffsetDim)
         nonOffsetDims.push_back(i);
+    }
+    if (CT[nonOffsetDims[1]] != 1 && CT[nonOffsetDims[0]] == 1) {
+      std::swap(nonOffsetDims[1], nonOffsetDims[0]);
     }
 
     auto fty =
