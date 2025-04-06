@@ -27,8 +27,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -2361,22 +2361,25 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
 
   LogicalResult matchAndRewrite(arith::AddFOp op,
                                 PatternRewriter &rewriter) const final {
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       auto lhs = op->getOperand(i).getDefiningOp<arith::AddFOp>();
-      if (!lhs) continue;
-      auto rhs = op->getOperand(1-i);
+      if (!lhs)
+        continue;
+      auto rhs = op->getOperand(1 - i);
       if (auto ba0 = dyn_cast<BlockArgument>(rhs)) {
-         if (isa<affine::AffineForOp>(ba0.getOwner()->getParentOp()))
-            continue;
+        if (isa<affine::AffineForOp>(ba0.getOwner()->getParentOp()))
+          continue;
       }
-      for (int j=0; j<2; j++) {
-	  auto ba = dyn_cast<BlockArgument>(lhs->getOperand(j));
-	  if (!ba) continue;
-         if (!isa<affine::AffineForOp>(ba.getOwner()->getParentOp()))
-            continue;
-	 auto add2 = rewriter.create<arith::AddFOp>(op.getLoc(), rhs, lhs->getOperand(1-j));
-	rewriter.replaceOpWithNewOp<arith::AddFOp>(op, add2, ba);
-	return success();
+      for (int j = 0; j < 2; j++) {
+        auto ba = dyn_cast<BlockArgument>(lhs->getOperand(j));
+        if (!ba)
+          continue;
+        if (!isa<affine::AffineForOp>(ba.getOwner()->getParentOp()))
+          continue;
+        auto add2 = rewriter.create<arith::AddFOp>(op.getLoc(), rhs,
+                                                   lhs->getOperand(1 - j));
+        rewriter.replaceOpWithNewOp<arith::AddFOp>(op, add2, ba);
+        return success();
       }
     }
     return failure();
@@ -2392,19 +2395,18 @@ struct AffineToStableHLORaisingPass
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising};
     std::vector<func::FuncOp> funcs;
-    
+
     auto context = getOperation()->getContext();
 
     if (enable_lockstep_for) {
 
-    RewritePatternSet patterns(context);
-        patterns
-        .add<PushReductionsDown>(context);
-	    GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
-      signalPassFailure();
-    }
+      RewritePatternSet patterns(context);
+      patterns.add<PushReductionsDown>(context);
+      GreedyRewriteConfig config;
+      if (failed(applyPatternsAndFoldGreedily(getOperation(),
+                                              std::move(patterns), config))) {
+        signalPassFailure();
+      }
     }
 
     auto op = getOperation();
