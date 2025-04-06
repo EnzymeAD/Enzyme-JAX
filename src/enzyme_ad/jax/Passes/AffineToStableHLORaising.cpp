@@ -1762,7 +1762,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                    "less dims than stored value: "
                                 << *op << "\n";
                    auto flags = OpPrintingFlags();
-                   for (auto iv : accessValueMap.getOperands()) {
+                   for (auto iv
+                        : accessValueMap.getOperands()) {
                      iv.printAsOperand(llvm::dbgs(), flags);
                      llvm::dbgs() << ", ";
                    } llvm::dbgs()
