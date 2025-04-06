@@ -54,4 +54,7 @@ void addSelectOpCanon(RewritePatternSet &patterns, int64_t maxConstantExpansion,
 void addConcatenateOpCanon(RewritePatternSet &patterns,
                            int64_t maxConstantExpansion, MLIRContext &context,
                            PatternBenefit benefit);
+void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
+                             MLIRContext &context, PatternBenefit benefit);
+
 } // namespace mlir::transform
