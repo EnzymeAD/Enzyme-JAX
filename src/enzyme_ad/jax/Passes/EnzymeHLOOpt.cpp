@@ -5511,6 +5511,9 @@ struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
     if (!reduce)
       return failure();
 
+    if (!llvm::hasSingleElement(reduce.getUsers()))
+      return failure();
+
     unsigned resultNum = std::distance(
         reduce.getResults().begin(), llvm::find(reduce.getResults(), operand));
 
@@ -5555,6 +5558,7 @@ struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
         rewriter.replaceAllUsesWith(oldRes, newRes);
       }
     }
+    rewriter.eraseOp(reduce);
 
     return success();
   }
