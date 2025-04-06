@@ -122,6 +122,17 @@ struct ArithRaisingPass
 
 #undef RAISE_UNARY
 
+    op->walk([=](arith::BitcastOp op) {
+      auto ty = dyn_cast<RankedTensorType>(op.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(op);
+      auto res = builder.create<stablehlo::BitcastConvertOp>(op.getLoc(), ty,
+                                                             op.getIn());
+      op.replaceAllUsesWith(res.getResult());
+      op.erase();
+    });
     op->walk([=](arith::TruncFOp truncOp) {
       auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
       if (!use_stablehlo || !ty)
