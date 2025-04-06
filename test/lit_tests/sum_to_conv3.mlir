@@ -16,7 +16,7 @@ module @reactant_problem... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK:  func.func @main(%arg0: tensor<3x32x16xf64> {tf.aliasing_output = 0 : i32}, %arg1: tensor<3x32x16xf64>) -> tensor<1x32x16xf64> {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<[[[1.000000e+00]], [[2.000000e+00]], [[1.000000e+00]]]> : tensor<3x1x1xf64>
+// CHECK-NEXT{LITERAL}:    %cst = stablehlo.constant dense<[[[1.000000e+00]], [[2.000000e+00]], [[1.000000e+00]]]> : tensor<3x1x1xf64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [1:2, 0:32, 0:16] : (tensor<3x32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %1 = stablehlo.reshape %arg1 : (tensor<3x32x16xf64>) -> tensor<3x512x1xf64>
 // CHECK-NEXT:    %2 = stablehlo.convolution(%1, %cst) dim_numbers = [0, b, f]x[0, i, o]->[0, b, f], window = {} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<3x512x1xf64>, tensor<3x1x1xf64>) -> tensor<1x512x1xf64>
