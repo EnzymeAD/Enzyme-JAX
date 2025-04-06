@@ -11163,13 +11163,31 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
             for (int i = 0; i < pair.lowerBounds.size(); i++) {
               update_starts.push_back(rewriter.create<stablehlo::ConstantOp>(
                   pair.argOperand.getLoc(), itype,
-                  makeAttr(itype, pair.lowerUpdateBounds[i])
+                  makeAttr(itype,
+                           pair.lowerUpdateBounds[i] - pair.lowerBounds[i])
                       .cast<ElementsAttr>()));
             }
 
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                pair.argOperand.getLoc(), pair.outerOperand, newArg,
+                pair.argOperand.getLoc(), pair.outerSlice, newArg,
                 update_starts);
+
+            auto ctype = RankedTensorType::get(
+                {}, cast<RankedTensorType>(pair.argOperand.getType())
+                        .getElementType());
+            auto padVal = rewriter.create<stablehlo::ConstantOp>(
+                pair.argOperand.getLoc(), ctype,
+                makeAttr(ctype, 0).cast<ElementsAttr>());
+
+            SmallVector<int64_t> slow = llvm::to_vector(pair.lowerBounds);
+            SmallVector<int64_t> shigh = llvm::to_vector(
+                cast<RankedTensorType>(pair.argOperand.getType()).getShape());
+            for (int i = 0; i < shigh.size(); i++)
+              shigh[i] -= pair.upperBounds[i];
+            SmallVector<int64_t> sint(shigh.size(), 0);
+
+            newArg = rewriter.create<stablehlo::PadOp>(
+                pair.argOperand.getLoc(), newArg, padVal, slow, shigh, sint);
             break;
           }
         }
@@ -11229,13 +11247,30 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
             for (int i = 0; i < pair.lowerBounds.size(); i++) {
               update_starts.push_back(rewriter.create<stablehlo::ConstantOp>(
                   pair.argOperand.getLoc(), itype,
-                  makeAttr(itype, pair.lowerUpdateBounds[i])
+                  makeAttr(itype,
+                           pair.lowerUpdateBounds[i] - pair.lowerBounds[i])
                       .cast<ElementsAttr>()));
             }
 
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                pair.argOperand.getLoc(), pair.outerOperand, newArg,
+                pair.argOperand.getLoc(), pair.outerSlice, newArg,
                 update_starts);
+            auto ctype = RankedTensorType::get(
+                {}, cast<RankedTensorType>(pair.condOperand.getType())
+                        .getElementType());
+            auto padVal = rewriter.create<stablehlo::ConstantOp>(
+                pair.condOperand.getLoc(), ctype,
+                makeAttr(ctype, 0).cast<ElementsAttr>());
+
+            SmallVector<int64_t> slow = llvm::to_vector(pair.lowerBounds);
+            SmallVector<int64_t> shigh = llvm::to_vector(
+                cast<RankedTensorType>(pair.condOperand.getType()).getShape());
+            for (int i = 0; i < shigh.size(); i++)
+              shigh[i] -= pair.upperBounds[i];
+            SmallVector<int64_t> sint(shigh.size(), 0);
+
+            newArg = rewriter.create<stablehlo::PadOp>(
+                pair.condOperand.getLoc(), newArg, padVal, slow, shigh, sint);
             break;
           }
         }
