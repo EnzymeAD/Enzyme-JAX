@@ -13611,14 +13611,6 @@ struct SumToReduceWindow
     Location locs[2] = {input.getLoc(), input.getLoc()};
     auto block = rewriter.createBlock(&redwin.getBody(), {}, tys, locs);
 
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(block);
-      auto addOp = rewriter.create<stablehlo::AddOp>(
-          input.getLoc(), block->getArgument(0), block->getArgument(1));
-      rewriter.create<stablehlo::ReturnOp>(input.getLoc(), addOp.getResult());
-    }
-
     Value result = redwin->getResult(0);
     if (factor != 1) {
       result = rewriter.create<stablehlo::MulOp>(
@@ -13627,6 +13619,16 @@ struct SumToReduceWindow
               input.getLoc(), result.getType(),
               makeAttr(result.getType(), factor).cast<ElementsAttr>()));
     }
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(block);
+      auto addOp = rewriter.create<stablehlo::AddOp>(
+          input.getLoc(), block->getArgument(0), block->getArgument(1));
+      auto ret = rewriter.create<stablehlo::ReturnOp>(input.getLoc(),
+                                                      addOp.getResult());
+    }
+
     return result;
   }
 };
