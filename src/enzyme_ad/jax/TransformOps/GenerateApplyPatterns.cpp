@@ -148,7 +148,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "dus_licm" || opName == "pad_licm" ||
           opName == "elementwise_licm" || opName == "concatenate_licm" ||
           opName == "broadcastindim_licm" || opName == "reshape_licm" ||
-          opName == "transpose_licm")
+          opName == "transpose_licm" || opName == "transpose_elementwise" )
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
