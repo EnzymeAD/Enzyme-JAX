@@ -5549,13 +5549,12 @@ struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
                                 newReduce.getRegion().begin());
     for (auto [i, oldRes, newRes] :
          llvm::enumerate(reduce.getResults(), newReduce.getResults())) {
-      if (i == resultNum)
-        rewriter.replaceAllUsesWith(transpose.getResult(), newRes);
-      else
+      if (i == resultNum) {
+        rewriter.replaceOp(transpose, newRes);
+      } else {
         rewriter.replaceAllUsesWith(oldRes, newRes);
+      }
     }
-    rewriter.eraseOp(transpose);
-    rewriter.eraseOp(reduce);
 
     return success();
   }
