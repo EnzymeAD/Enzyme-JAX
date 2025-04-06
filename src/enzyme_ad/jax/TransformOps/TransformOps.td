@@ -678,6 +678,10 @@ def ApplyCSENegPatterns : EnzymeHLOPatternOp<
     "cse_neg"> {
   let patterns = ["CSE<stablehlo::NegOp>"];
 }
+def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
+    "cse_abs"> {
+  let patterns = ["CSE<stablehlo::AbsOp>"];
+}
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {

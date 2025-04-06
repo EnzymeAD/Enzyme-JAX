@@ -13949,7 +13949,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>>(context, PatternBenefit(65000));
+                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
