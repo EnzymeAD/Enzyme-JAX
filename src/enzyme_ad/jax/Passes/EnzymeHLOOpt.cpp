@@ -13658,20 +13658,30 @@ struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
     if (!selectOp->hasOneUse())
       return failure();
 
+    Value pred = selectOp.getPred();
+    bool scalar_pred =
+        dyn_cast<RankedTensorType>(pred.getType()).getRank() == 0;
+
+    Value newPred;
+    if (!scalar_pred) {
+      newPred = rewriter.create<stablehlo::TransposeOp>(
+          transposeOp.getLoc(), pred, transposeOp.getPermutation());
+    } else {
+      newPred = pred;
+    }
+
     SmallVector<int64_t> permutation;
     for (int i = 0; i < transposeOp.getPermutation().size(); i++) {
       permutation.push_back(transposeOp.getPermutation()[i]);
     }
 
-    auto predTransposed = rewriter.create<stablehlo::TransposeOp>(
-        transposeOp.getLoc(), selectOp.getPred(), permutation);
     auto onTrueTransposed = rewriter.create<stablehlo::TransposeOp>(
         transposeOp.getLoc(), selectOp.getOnTrue(), permutation);
     auto onFalseTransposed = rewriter.create<stablehlo::TransposeOp>(
         transposeOp.getLoc(), selectOp.getOnFalse(), permutation);
 
     rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-        transposeOp, predTransposed, onTrueTransposed, onFalseTransposed);
+        transposeOp, newPred, onTrueTransposed, onFalseTransposed);
     return success();
   }
 };
