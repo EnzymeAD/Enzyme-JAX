@@ -185,6 +185,10 @@ def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
     "abs_positive_simplify"> {
   let patterns = ["AbsPositiveSimplify"];
 }
+def AbsSimplifyPatterns : EnzymeHLOPatternOp<
+    "abs_simplify"> {
+  let patterns = ["AbsSimplify"];
+}
 
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
