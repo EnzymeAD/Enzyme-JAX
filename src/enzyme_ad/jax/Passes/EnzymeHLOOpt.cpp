@@ -13609,7 +13609,6 @@ struct SumToReduceWindow
 
     Type tys[2] = {unrankedTensorType, unrankedTensorType};
     Location locs[2] = {input.getLoc(), input.getLoc()};
-    auto block = rewriter.createBlock(&redwin.getBody(), {}, tys, locs);
 
     Value result = redwin->getResult(0);
     if (factor != 1) {
@@ -13622,6 +13621,7 @@ struct SumToReduceWindow
 
     {
       OpBuilder::InsertionGuard guard(rewriter);
+      auto block = rewriter.createBlock(&redwin.getBody(), {}, tys, locs);
       rewriter.setInsertionPointToStart(block);
       auto addOp = rewriter.create<stablehlo::AddOp>(
           input.getLoc(), block->getArgument(0), block->getArgument(1));
