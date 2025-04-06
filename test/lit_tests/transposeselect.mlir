@@ -8,10 +8,10 @@ func.func @transpose_select1(%arg0: tensor<3x4x5xf64>, %arg1: tensor<3x4x5xi1>) 
 }
 
 // CHECK:  func.func @transpose_select1(%arg0: tensor<3x4x5xf64>, %arg1: tensor<3x4x5xi1>) -> tensor<5x3x4xf64> {
-// CHECK-NEXT:    %0 = stablehlo.negate %arg0 : (tensor<3x4x5xf64>) -> tensor<3x4x5xf64>
-// CHECK-NEXT:    %1 = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<3x4x5xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT:    %0 = stablehlo.negate %arg0 : tensor<3x4x5xf64>
+// CHECK-NEXT:    %1 = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<3x4x5xi1>) -> tensor<5x3x4xi1>
 // CHECK-NEXT:    %2 = stablehlo.transpose %0, dims = [2, 0, 1] : (tensor<3x4x5xf64>) -> tensor<5x3x4xf64>
-// CHECK-NEXT:    %3 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x3x4xf64>) -> tensor<5x3x4xf64>
-// CHECK-NEXT:    %4 = stablehlo.select %1, %2, %3 : (tensor<5x3x4xf64>, tensor<5x3x4xf64>, tensor<5x3x4xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT: %3 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<3x4x5xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT:    %4 = stablehlo.select %1, %2, %3 : tensor<5x3x4xi1>, tensor<5x3x4xf64>
 // CHECK-NEXT:    return %4 : tensor<5x3x4xf64>
 // CHECK-NEXT:  }
