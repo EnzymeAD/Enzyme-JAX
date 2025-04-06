@@ -36,15 +36,18 @@ module {
 // CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %6 = stablehlo.slice %arg0 [8:9, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %7 = stablehlo.slice %arg1 [0:7, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<7x32x16xf64>
-// CHECK-NEXT:    %8 = stablehlo.slice %arg1 [1:8, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<7x32x16xf64>
-// CHECK-NEXT:    %9 = arith.addf %8, %7 : tensor<7x32x16xf64>
-// CHECK-NEXT:    %10 = stablehlo.broadcast_in_dim %4, dims = [1, 2] : (tensor<32x16xf64>) -> tensor<7x32x16xf64>
-// CHECK-NEXT{LITERAL}:    %11 = "stablehlo.reduce_window"(%9, %cst) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<[[6, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 7, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
+// CHECK-NEXT:    %8 = stablehlo.reverse %7, dims = [0] : tensor<7x32x16xf64>
+// CHECK-NEXT:    %9 = stablehlo.slice %arg1 [1:8, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<7x32x16xf64>
+// CHECK-NEXT:    %10 = stablehlo.reverse %9, dims = [0] : tensor<7x32x16xf64>
+// CHECK-NEXT:    %11 = arith.addf %10, %8 : tensor<7x32x16xf64>
+// CHECK-NEXT:    %12 = stablehlo.broadcast_in_dim %4, dims = [1, 2] : (tensor<32x16xf64>) -> tensor<7x32x16xf64>
+// CHECK-NEXT{LITERAL}:    %13 = "stablehlo.reduce_window"(%11, %cst) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<[[6, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 7, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// CHECK-NEXT:      %14 = stablehlo.add %arg2, %arg3 : tensor<f64>
-// CHECK-NEXT:      stablehlo.return %14 : tensor<f64>
+// CHECK-NEXT:      %17 = stablehlo.add %arg2, %arg3 : tensor<f64>
+// CHECK-NEXT:      stablehlo.return %17 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<7x32x16xf64>, tensor<f64>) -> tensor<7x32x16xf64>
-// CHECK-NEXT:    %12 = stablehlo.add %11, %10 : tensor<7x32x16xf64>
-// CHECK-NEXT:    %13 = stablehlo.concatenate %12, %5, %6, dim = 0 : (tensor<7x32x16xf64>, tensor<1x32x16xf64>, tensor<1x32x16xf64>) -> tensor<9x32x16xf64>
-// CHECK-NEXT:    return %13, %arg1 : tensor<9x32x16xf64>, tensor<9x32x16xf64>
+// CHECK-NEXT:    %14 = stablehlo.add %13, %12 : tensor<7x32x16xf64>
+// CHECK-NEXT:    %15 = stablehlo.reverse %14, dims = [0] : tensor<7x32x16xf64>
+// CHECK-NEXT:    %16 = stablehlo.concatenate %15, %5, %6, dim = 0 : (tensor<7x32x16xf64>, tensor<1x32x16xf64>, tensor<1x32x16xf64>) -> tensor<9x32x16xf64>
+// CHECK-NEXT:    return %16, %arg1 : tensor<9x32x16xf64>, tensor<9x32x16xf64>
 // CHECK-NEXT:  }
