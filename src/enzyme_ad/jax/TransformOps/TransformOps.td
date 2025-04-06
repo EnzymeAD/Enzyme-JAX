@@ -1258,10 +1258,24 @@ def SliceSelectToSelectSlice : EnzymeHLOPatternOp<
   let patterns = ["SliceSelect"];
 }
 
-
-def SumToConv : EnzymeHLOPatternOp<
+def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<
     "sum_to_conv"> {
-  let patterns = ["SumToConv<stablehlo::AddOp>", "SumToConv<stablehlo::SubtractOp>"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(false)))};
+    }
+  }];
+}
+
+def SumToReduceWindow : EnzymeHLOPatternOp<
+    "sum_to_reducewindow"> {
+  let patterns = ["SumToReduceWindow<stablehlo::AddOp>", "SumToReduceWindow<stablehlo::SubtractOp>"];
 }
 
 // TODO: better naming for parameters requires a static interface for

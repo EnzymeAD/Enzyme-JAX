@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=sum_to_conv;convert_simplify;reshape_op_canon;noop_slice" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=sum_to_conv(1);convert_simplify;reshape_op_canon;noop_slice" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module @reactant_problem... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   llvm.module_flags [#llvm.mlir.module_flag<warning, "Dwarf Version", 2>, #llvm.mlir.module_flag<warning, "Debug Info Version", 3>]
