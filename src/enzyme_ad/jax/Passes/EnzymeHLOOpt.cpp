@@ -13213,14 +13213,14 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       }
     }
 
-    llvm::MapVector<Value, SmallVector<Term<stablehlo::SliceOp> > > doneMapping;
+    llvm::MapVector<Value, SmallVector<Term<stablehlo::SliceOp>>> doneMapping;
 
     for (auto result : done0) {
       doneMapping[result.term.getOperand()].push_back(result);
     }
 
     bool hasMerge = false;
-    
+
     SmallVector<Term<Value>> finalToAdd;
 
     for (auto &&[_, done] : doneMapping) {
@@ -13233,7 +13233,7 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       ssize_t offsetDim = -1;
       bool legal = true;
       for (int i = 0; i < done.size(); i++) {
-        assert (done[i].term.getOperand() == done[0].term.getOperand());
+        assert(done[i].term.getOperand() == done[0].term.getOperand());
         if (done[i].valFactor) {
           legal = false;
           break;
@@ -13241,7 +13241,8 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
         ssize_t mismatch = -1;
         for (int j = 0; j < T.getShape().size(); j++) {
           if (done[i].term.getStrides()[j] != 1) {
-            LLVM_DEBUG(llvm::dbgs() << "Non-one stride for " << done[i].term << "\n");
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Non-one stride for " << done[i].term << "\n");
             legal = false;
             break;
           }
@@ -13251,7 +13252,9 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
                   done[0].term.getLimitIndices()[j]) {
             if (mismatch != -1) {
               if (mismatch != j) {
-                LLVM_DEBUG(llvm::dbgs() << "Multi-dimensional mismatch of slice between " << done[i].term << " and " << done[0].term << "\n");
+                LLVM_DEBUG(llvm::dbgs()
+                           << "Multi-dimensional mismatch of slice between "
+                           << done[i].term << " and " << done[0].term << "\n");
                 legal = false;
                 break;
               }
@@ -13271,7 +13274,9 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
           continue;
         }
 
-        LLVM_DEBUG(llvm::dbgs() << "Multi-dimensional(2) mismatch of slice between " << done[i].term << " and " << done[0].term << "\n");
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Multi-dimensional(2) mismatch of slice between "
+                   << done[i].term << " and " << done[0].term << "\n");
         legal = false;
         break;
       }
@@ -13316,7 +13321,8 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
           llvm::to_vector(done[0].term.getStartIndices());
       SmallVector<int64_t> newLimit =
           llvm::to_vector(done[0].term.getLimitIndices());
-      SmallVector<int64_t> newStride = llvm::to_vector(done[0].term.getStrides());
+      SmallVector<int64_t> newStride =
+          llvm::to_vector(done[0].term.getStrides());
       newStart[offsetDim] += startidx;
       newLimit[offsetDim] += lastidx;
 
@@ -13387,12 +13393,13 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
         std::swap(nonOffsetDims[1], nonOffsetDims[0]);
       }
 
-      auto fty =
-          RankedTensorType::get({lastidx + 1 - startidx}, rewriter.getF64Type());
-      Value filter = rewriter
-                         .create<stablehlo::ConstantOp>(
-                             op.getLoc(), fty, DenseFPElementsAttr::get(fty, pad))
-                         .getResult();
+      auto fty = RankedTensorType::get({lastidx + 1 - startidx},
+                                       rewriter.getF64Type());
+      Value filter =
+          rewriter
+              .create<stablehlo::ConstantOp>(op.getLoc(), fty,
+                                             DenseFPElementsAttr::get(fty, pad))
+              .getResult();
       filter = rewriter
                    .create<stablehlo::ConvertOp>(
                        op.getLoc(),
@@ -13440,7 +13447,8 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
           /*precision_config=*/nullptr);
 
       if (conv.getType() != pre_reshape) {
-        SmallVector<int64_t> post_shape = llvm::to_vector(pre_reshape.getShape());
+        SmallVector<int64_t> post_shape =
+            llvm::to_vector(pre_reshape.getShape());
         post_shape[reshapeOffsetDim] -= (lastidx - startidx);
         RankedTensorType post_reshape =
             RankedTensorType::get(post_shape, pre_reshape.getElementType());
@@ -13455,32 +13463,28 @@ template <typename ST> struct SumToConv : public OpRewritePattern<ST> {
       hasMerge = true;
     }
 
-    if (!hasMerge) return failure();
+    if (!hasMerge)
+      return failure();
 
     assert(finalToAdd.size());
-    
+
     Value result = nullptr;
     for (auto term : finalToAdd) {
       Value intermediate = term.term;
       if (term.constantFactor != 1) {
 
         intermediate = rewriter.create<stablehlo::MulOp>(
-          op.getLoc(),
-          intermediate,
-          rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(),
-            intermediate.getType(),
-            makeAttr(intermediate.getType(), term.constantFactor).cast<ElementsAttr>())
-        );
+            op.getLoc(), intermediate,
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), intermediate.getType(),
+                makeAttr(intermediate.getType(), term.constantFactor)
+                    .cast<ElementsAttr>()));
       }
       if (result == nullptr)
         result = intermediate;
       else
-        result = rewriter.create<stablehlo::AddOp>(
-          op.getLoc(),
-          result,
-          intermediate
-          );
+        result = rewriter.create<stablehlo::AddOp>(op.getLoc(), result,
+                                                   intermediate);
     }
     assert(result);
     rewriter.replaceOp(op, ValueRange{result});
