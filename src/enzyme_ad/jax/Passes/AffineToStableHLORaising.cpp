@@ -200,53 +200,6 @@ emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
   maps[iota] = accessMap;
 }
 
-// Given an affine map for a load/store operation, compute the startIndices,
-// limitIndices and strides corresponding in the memref based on the loop
-// induction variables.
-//
-// (i) -> (0, i, 10) will give [0:1:1, begin:end:step, 10:11:1]
-// (i) -> (2 * i, i + 2, 10) will give [begin*2:end*2:2*step,
-// begin+2:end+2:step, 10:11:1]
-//
-// with begin:end:step corresponding to the range of the iv i.
-static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
-                                      SmallVectorImpl<int64_t> &strides,
-                                      SmallVectorImpl<int64_t> &reverseDims) {
-  auto rank = accessValueMap.getNumResults();
-
-  strides.reserve(rank);
-
-  for (unsigned i = 0; i < rank; i++) {
-    auto expr = accessValueMap.getResult(i);
-
-    if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
-      strides.push_back(1);
-      continue;
-    }
-
-    Value iv = getIVForExpr(accessValueMap, expr);
-    if (affine::isAffineForInductionVar(iv)) {
-      strides.push_back(1);
-      continue;
-    }
-
-    auto range = computeExprRange(accessValueMap, expr);
-
-    if (!range.has_value())
-      return failure();
-
-    if (range->step < 0) {
-      // 0:-1:-180 -> -179:1:1
-      strides.push_back(-range->step);
-      reverseDims.push_back(i);
-    } else {
-      strides.push_back(range->step);
-    }
-  }
-
-  return success();
-}
-
 // The name is parallel context but a more accurate description would be
 // LockStepContext
 struct ParallelContext {
@@ -336,6 +289,54 @@ struct ParallelContext {
     return pc;
   }
 };
+
+// Given an affine map for a load/store operation, compute the startIndices,
+// limitIndices and strides corresponding in the memref based on the loop
+// induction variables.
+//
+// (i) -> (0, i, 10) will give [0:1:1, begin:end:step, 10:11:1]
+// (i) -> (2 * i, i + 2, 10) will give [begin*2:end*2:2*step,
+// begin+2:end+2:step, 10:11:1]
+//
+// with begin:end:step corresponding to the range of the iv i.
+static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
+                                      SmallVectorImpl<int64_t> &strides,
+                                      SmallVectorImpl<int64_t> &reverseDims,
+                                      ParallelContext pc) {
+  auto rank = accessValueMap.getNumResults();
+
+  strides.reserve(rank);
+
+  for (unsigned i = 0; i < rank; i++) {
+    auto expr = accessValueMap.getResult(i);
+
+    if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
+      strides.push_back(1);
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, expr);
+    if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
+      strides.push_back(1);
+      continue;
+    }
+
+    auto range = computeExprRange(accessValueMap, expr);
+
+    if (!range.has_value())
+      return failure();
+
+    if (range->step < 0) {
+      // 0:-1:-180 -> -179:1:1
+      strides.push_back(-range->step);
+      reverseDims.push_back(i);
+    } else {
+      strides.push_back(range->step);
+    }
+  }
+
+  return success();
+}
 
 static SmallVector<int64_t>
 affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
@@ -1204,6 +1205,8 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value reduce_broadcasted = mapping.lookup(reduced_val);
       auto reduce_map = maps.lookup(reduce_broadcasted);
 
+      LLVM_DEBUG(llvm::errs() << "reduce inner op: " << innerOp << "\n");
+
       auto forOp = cast<affine::AffineForOp>(
           iters[reduced_idx].getOwner()->getParentOp());
 
@@ -1597,7 +1600,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+    if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Failed to affine map to slice: " << *op << "\n");
       return failure();
@@ -1733,7 +1736,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims).failed()) {
+    if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Failed to affine map to slice: " << *op << "\n");
       return failure();
@@ -1761,8 +1764,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                    "less dims than stored value: "
                                 << *op << "\n";
                    auto flags = OpPrintingFlags();
-                   for (auto iv
-                        : accessValueMap.getOperands()) {
+                   for (auto iv : accessValueMap.getOperands()) {
                      iv.printAsOperand(llvm::dbgs(), flags);
                      llvm::dbgs() << ", ";
                    } llvm::dbgs()
@@ -1859,14 +1861,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           llvm::dbgs()
               << "affine.store is dependent on less dims than stored value: "
               << *op << "\n";
-          auto flags = OpPrintingFlags(); for (auto iv
-                                               : accessValueMap.getOperands()) {
+          auto flags = OpPrintingFlags();
+          for (auto iv : accessValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
+          } llvm::dbgs()
+          << "\n";
           accessValueMap.getAffineMap().dump();
-          for (auto iv
-               : updateValueMap.getOperands()) {
+          for (auto iv : updateValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
           } llvm::dbgs()
