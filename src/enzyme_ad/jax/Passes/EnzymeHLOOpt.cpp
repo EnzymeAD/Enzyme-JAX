@@ -10654,6 +10654,9 @@ struct WhilePadInductionReduction
       if (!pad)
         continue;
 
+      if (!definedOutside(pad.getPaddingValue(), whileOp))
+        continue;
+
       // Store original attributes directly
       candidates.emplace_back(
           Candidate{idx, pad, pad.getOperand(), pad.getPaddingValue(),
