@@ -92,6 +92,10 @@ void SelectOpCanonPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSelectOpCanon(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplySumToConvPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addSumToConv(patterns, getParameter(), *getContext(),
+               PatternBenefit(getBenefit().value_or(0)));
+}
 
 } // namespace transform
 } // namespace mlir

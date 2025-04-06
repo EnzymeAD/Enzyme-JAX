@@ -17,6 +17,8 @@ class RewritePatternSet;
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h.inc"
 
 namespace mlir::transform {
+void addSumToConv(RewritePatternSet &patterns, bool collapseDims,
+                  MLIRContext &context, PatternBenefit benefit);
 void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
                       MLIRContext &context, PatternBenefit benefit);
 void addNoNanAddSubSimplify(RewritePatternSet &patterns,
