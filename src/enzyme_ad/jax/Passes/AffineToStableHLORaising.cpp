@@ -1205,8 +1205,6 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value reduce_broadcasted = mapping.lookup(reduced_val);
       auto reduce_map = maps.lookup(reduce_broadcasted);
 
-      LLVM_DEBUG(llvm::errs() << "reduce inner op: " << innerOp << "\n");
-
       auto forOp = cast<affine::AffineForOp>(
           iters[reduced_idx].getOwner()->getParentOp());
 
