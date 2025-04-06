@@ -143,12 +143,12 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1) {
-      if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" || opName == "sum_to_conv" ||
-          opName == "while_licm" || opName == "slice_licm" ||
-          opName == "dus_licm" || opName == "pad_licm" ||
-          opName == "elementwise_licm" || opName == "concatenate_licm" ||
-          opName == "broadcastindim_licm" || opName == "reshape_licm" ||
-          opName == "transpose_licm")
+      if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" ||
+          opName == "sum_to_conv" || opName == "while_licm" ||
+          opName == "slice_licm" || opName == "dus_licm" ||
+          opName == "pad_licm" || opName == "elementwise_licm" ||
+          opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
+          opName == "reshape_licm" || opName == "transpose_licm")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));

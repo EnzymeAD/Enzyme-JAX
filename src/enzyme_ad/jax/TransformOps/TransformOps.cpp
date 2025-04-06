@@ -94,7 +94,7 @@ void SelectOpCanonPatterns::populatePatterns(RewritePatternSet &patterns) {
 }
 void ApplySumToConvPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSumToConv(patterns, getParameter(), *getContext(),
-                   PatternBenefit(getBenefit().value_or(0)));
+               PatternBenefit(getBenefit().value_or(0)));
 }
 
 } // namespace transform
