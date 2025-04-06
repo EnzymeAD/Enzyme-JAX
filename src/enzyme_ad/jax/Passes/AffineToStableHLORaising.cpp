@@ -1024,14 +1024,44 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
     assert(mapped);
     mapping.map(res, mapped);
   }
+  for (auto [from, to] : forMapping.getValueMap()) {
+    Block *b = from.getParentBlock();
+    // This checks whether `tmpBlock` is an ancestor of `from`. If it is not,
+    // then we need to reflect any change in the `forMapping` in the global
+    // `mapping`. We need to do this because memref arguments to the function we
+    // are raising get remapped as the raising process goes on.
+    bool shouldRemap;
+    while (true) {
+      if (!b) {
+        shouldRemap = true;
+        break;
+      }
+      if (b == tmpBlock.get()) {
+        shouldRemap = false;
+        break;
+      }
+      Operation *op = b->getParentOp();
+      if (op) {
+        b = op->getBlock();
+      } else {
+        shouldRemap = true;
+        break;
+      }
+    }
+    if (shouldRemap)
+      mapping.map(from, to);
+  }
   return success();
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
-    affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
+    affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  if (!forOp.hasConstantBounds())
+  IRMapping mapping = parentMapping;
+  if (!forOp.hasConstantBounds()) {
+    LLVM_DEBUG(llvm::dbgs() << "ForOp does not have constant bounds\n");
     return failure();
+  }
 
   Value iv = forOp.getInductionVar();
   InductionVariableRange range{forOp.getConstantLowerBound(),
@@ -1071,8 +1101,11 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     auto tensorInit = mapping.lookup(init);
     auto broadcastInit =
         pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
-    if (!broadcastInit)
+    if (!broadcastInit) {
+      LLVM_DEBUG(llvm::dbgs() << "Could not broadcast an init\n"
+                              << init << "\n");
       return failure();
+    }
     inits.push_back(broadcastInit->v);
     mapping.map(iterArg, iterArgInBody);
     maps[iterArgInBody] = broadcastInit->avm;
@@ -1111,6 +1144,8 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
               .failed()) {
+        LLVM_DEBUG(llvm::dbgs() << "Failed to raise inner op\n"
+                                << innerOp << "\n");
         return failure();
       }
     }
@@ -1148,6 +1183,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[whileRes] = maps.lookup(mapping.lookup(forIterArg));
   }
 
+  parentMapping = mapping;
   return success();
 }
 
@@ -1161,8 +1197,9 @@ template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineForOp op) {
 
 template <class T>
 static LogicalResult tryRaisingParallelOpToStableHLO(
-    T parallelOp, IRMapping &mapping, OpBuilder &builder,
+    T parallelOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
 
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
@@ -1478,6 +1515,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
     }
   }
 
+  parentMapping = mapping;
   return success();
 }
 
