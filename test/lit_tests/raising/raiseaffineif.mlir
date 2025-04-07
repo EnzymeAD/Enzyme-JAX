@@ -114,224 +114,149 @@ module {
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<1> : tensor<180xi64>
 // CHECK-NEXT:    %8 = stablehlo.multiply %7, %c_8 : tensor<180xi64>
 // CHECK-NEXT:    %9 = stablehlo.slice %arg6 [7:92, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %10 = stablehlo.reverse %9, dims = [] : tensor<85x180xf64>
-// CHECK-NEXT:    %11 = stablehlo.reshape %10 : (tensor<85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %12 = stablehlo.slice %arg3 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %13 = stablehlo.reverse %12, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %14 = stablehlo.reshape %13 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %15 = stablehlo.broadcast_in_dim %11, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %14, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %17 = arith.mulf %15, %16 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %18 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %19 = stablehlo.broadcast_in_dim %17, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %20 = arith.divf %18, %19 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %21 = stablehlo.slice %arg5 [7:92, 8:188] : (tensor<99x194xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %22 = stablehlo.reverse %21, dims = [] : tensor<85x180xf64>
-// CHECK-NEXT:    %23 = stablehlo.reshape %22 : (tensor<85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %24 = stablehlo.broadcast_in_dim %23, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %25 = stablehlo.broadcast_in_dim %14, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %26 = arith.mulf %24, %25 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %27 = stablehlo.broadcast_in_dim %26, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %28 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %10 = stablehlo.reshape %9 : (tensor<85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %11 = stablehlo.slice %arg3 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %12 = stablehlo.reshape %11 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %13 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %14 = stablehlo.broadcast_in_dim %12, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %15 = arith.mulf %13, %14 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %17 = arith.divf %16, %15 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %18 = stablehlo.slice %arg5 [7:92, 8:188] : (tensor<99x194xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %19 = stablehlo.reshape %18 : (tensor<85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %20 = stablehlo.broadcast_in_dim %19, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %21 = stablehlo.broadcast_in_dim %12, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %22 = arith.mulf %20, %21 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %23 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %24 = arith.mulf %22, %23 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %25 = stablehlo.slice %arg5 [7:92, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %26 = stablehlo.reshape %25 : (tensor<85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %27 = stablehlo.broadcast_in_dim %26, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %28 = stablehlo.broadcast_in_dim %12, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
 // CHECK-NEXT:    %29 = arith.mulf %27, %28 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %30 = stablehlo.slice %arg5 [7:92, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %31 = stablehlo.reverse %30, dims = [] : tensor<85x180xf64>
-// CHECK-NEXT:    %32 = stablehlo.reshape %31 : (tensor<85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %33 = stablehlo.broadcast_in_dim %32, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %34 = stablehlo.broadcast_in_dim %14, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %35 = arith.mulf %33, %34 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %36 = stablehlo.broadcast_in_dim %35, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %37 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %38 = arith.mulf %36, %37 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %39 = stablehlo.broadcast_in_dim %29, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %40 = stablehlo.broadcast_in_dim %38, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %41 = arith.subf %39, %40 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %42 = stablehlo.slice %arg4 [8:93, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %43 = stablehlo.reverse %42, dims = [] : tensor<85x180xf64>
-// CHECK-NEXT:    %44 = stablehlo.reshape %43 : (tensor<85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %45 = stablehlo.broadcast_in_dim %44, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %46 = stablehlo.broadcast_in_dim %14, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %47 = arith.mulf %45, %46 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %48 = stablehlo.broadcast_in_dim %47, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %49 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %50 = arith.mulf %48, %49 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %51 = stablehlo.slice %arg4 [7:92, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %52 = stablehlo.reverse %51, dims = [] : tensor<85x180xf64>
-// CHECK-NEXT:    %53 = stablehlo.reshape %52 : (tensor<85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %54 = stablehlo.broadcast_in_dim %53, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %55 = stablehlo.broadcast_in_dim %14, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %56 = arith.mulf %54, %55 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %57 = stablehlo.broadcast_in_dim %56, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %58 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %59 = arith.mulf %57, %58 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %60 = stablehlo.broadcast_in_dim %50, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %61 = stablehlo.broadcast_in_dim %59, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %62 = arith.subf %60, %61 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %63 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %64 = stablehlo.broadcast_in_dim %c, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %65 = arith.addi %63, %64 : tensor<20xi64>
-// CHECK-NEXT:    %66 = stablehlo.slice %arg9 [8:28, 7:92, 7:187] : (tensor<35x99x194xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %67 = stablehlo.reverse %66, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %68 = stablehlo.reshape %67 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %69 = arith.negf %68 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %70 = stablehlo.slice %arg1 [8:28] : (tensor<34xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %71 = stablehlo.reverse %70, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %72 = stablehlo.reshape %71 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %73 = stablehlo.slice %arg7 [0:1, 7:92, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
-// CHECK-NEXT:    %74 = stablehlo.reverse %73, dims = [] : tensor<1x85x180xf64>
-// CHECK-NEXT:    %75 = stablehlo.reshape %74 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %76 = stablehlo.broadcast_in_dim %72, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %77 = stablehlo.broadcast_in_dim %75, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %78 = arith.cmpf ole, %76, %77 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %79 = stablehlo.broadcast_in_dim %65, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %80 = stablehlo.broadcast_in_dim %c_1, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %81 = arith.cmpi sgt, %79, %80 : tensor<20xi64>
-// CHECK-NEXT:    %82 = stablehlo.broadcast_in_dim %81, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %83 = stablehlo.broadcast_in_dim %78, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %84 = arith.ori %82, %83 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %85 = stablehlo.broadcast_in_dim %65, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %86 = stablehlo.broadcast_in_dim %c_1, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %87 = arith.cmpi sle, %85, %86 : tensor<20xi64>
-// CHECK-NEXT:    %88 = stablehlo.broadcast_in_dim %87, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %89 = stablehlo.broadcast_in_dim %84, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %90 = arith.andi %88, %89 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %91 = stablehlo.slice %arg1 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %92 = stablehlo.reverse %91, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %93 = stablehlo.reshape %92 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %94 = stablehlo.broadcast_in_dim %93, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %95 = stablehlo.broadcast_in_dim %75, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %96 = arith.cmpf ole, %94, %95 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %97 = stablehlo.broadcast_in_dim %90, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %98 = stablehlo.broadcast_in_dim %96, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %99 = arith.ori %97, %98 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %100 = stablehlo.slice %arg8 [8:28, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %101 = stablehlo.reverse %100, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %102 = stablehlo.reshape %101 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %103 = stablehlo.slice %arg8 [7:27, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %104 = stablehlo.reverse %103, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %105 = stablehlo.reshape %104 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %106 = stablehlo.broadcast_in_dim %102, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %107 = stablehlo.broadcast_in_dim %105, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %108 = arith.subf %106, %107 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %109 = stablehlo.broadcast_in_dim %99, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %110 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %111 = stablehlo.broadcast_in_dim %108, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %112 = arith.select %109, %110, %111 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %113 = stablehlo.slice %arg2 [9:29] : (tensor<35xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %114 = stablehlo.reverse %113, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %115 = stablehlo.reshape %114 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %116 = stablehlo.broadcast_in_dim %112, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %117 = stablehlo.broadcast_in_dim %115, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %118 = arith.divf %116, %117 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %119 = stablehlo.broadcast_in_dim %69, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %120 = stablehlo.broadcast_in_dim %118, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %121 = arith.mulf %119, %120 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %30 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %31 = arith.mulf %29, %30 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %32 = arith.subf %24, %31 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %33 = stablehlo.slice %arg4 [8:93, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %34 = stablehlo.reshape %33 : (tensor<85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %35 = stablehlo.broadcast_in_dim %34, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %36 = stablehlo.broadcast_in_dim %12, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %37 = arith.mulf %35, %36 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %38 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %39 = arith.mulf %37, %38 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %40 = stablehlo.slice %arg4 [7:92, 7:187] : (tensor<99x194xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %41 = stablehlo.reshape %40 : (tensor<85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %42 = stablehlo.broadcast_in_dim %41, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %43 = stablehlo.broadcast_in_dim %12, dims = [2] : (tensor<20xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %44 = arith.mulf %42, %43 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %45 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %46 = arith.mulf %44, %45 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %47 = arith.subf %39, %46 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %48 = stablehlo.broadcast_in_dim %c, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %49 = arith.addi %2, %48 : tensor<20xi64>
+// CHECK-NEXT:    %50 = stablehlo.slice %arg9 [8:28, 7:92, 7:187] : (tensor<35x99x194xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %51 = stablehlo.reshape %50 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %52 = arith.negf %51 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %53 = stablehlo.slice %arg1 [8:28] : (tensor<34xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %54 = stablehlo.reshape %53 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %55 = stablehlo.slice %arg7 [0:1, 7:92, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
+// CHECK-NEXT:    %56 = stablehlo.reshape %55 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %57 = stablehlo.broadcast_in_dim %54, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %58 = stablehlo.broadcast_in_dim %56, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %59 = arith.cmpf ole, %57, %58 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %60 = stablehlo.broadcast_in_dim %c_1, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %61 = arith.cmpi sgt, %49, %60 : tensor<20xi64>
+// CHECK-NEXT:    %62 = stablehlo.broadcast_in_dim %61, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %63 = arith.ori %62, %59 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %64 = stablehlo.broadcast_in_dim %c_1, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %65 = arith.cmpi sle, %49, %64 : tensor<20xi64>
+// CHECK-NEXT:    %66 = stablehlo.broadcast_in_dim %65, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %67 = arith.andi %66, %63 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %68 = stablehlo.slice %arg1 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %69 = stablehlo.reshape %68 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %70 = stablehlo.broadcast_in_dim %69, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %71 = stablehlo.broadcast_in_dim %56, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %72 = arith.cmpf ole, %70, %71 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %73 = arith.ori %67, %72 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %74 = stablehlo.slice %arg8 [8:28, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %75 = stablehlo.reshape %74 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %76 = stablehlo.slice %arg8 [7:27, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %77 = stablehlo.reshape %76 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %78 = arith.subf %75, %77 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %79 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %80 = arith.select %73, %79, %78 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %81 = stablehlo.slice %arg2 [9:29] : (tensor<35xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %82 = stablehlo.reshape %81 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %83 = stablehlo.broadcast_in_dim %82, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %84 = arith.divf %80, %83 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %85 = arith.mulf %52, %84 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
 // CHECK-NEXT:    %c_9 = stablehlo.constant dense<-19> : tensor<i64>
-// CHECK-NEXT:    %122 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %123 = stablehlo.broadcast_in_dim %c_9, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %124 = stablehlo.add %122, %123 : tensor<20xi64>
+// CHECK-NEXT:    %86 = stablehlo.broadcast_in_dim %c_9, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %87 = stablehlo.add %2, %86 : tensor<20xi64>
 // CHECK-NEXT:    %c_10 = stablehlo.constant dense<0> : tensor<20xi64>
-// CHECK-NEXT:    %125 = stablehlo.compare  EQ, %124, %c_10 : (tensor<20xi64>, tensor<20xi64>) -> tensor<20xi1>
-// CHECK-NEXT:    %126 = stablehlo.broadcast_in_dim %125, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %127 = stablehlo.broadcast_in_dim %121, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %128 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %129 = stablehlo.select %126, %127, %128 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %130 = stablehlo.broadcast_in_dim %84, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %131 = stablehlo.broadcast_in_dim %96, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %132 = arith.ori %130, %131 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %133 = stablehlo.broadcast_in_dim %87, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %134 = stablehlo.broadcast_in_dim %132, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %135 = arith.andi %133, %134 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %136 = stablehlo.broadcast_in_dim %135, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %137 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %138 = stablehlo.broadcast_in_dim %129, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %139 = arith.select %136, %137, %138 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %140 = stablehlo.broadcast_in_dim %11, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %141 = stablehlo.broadcast_in_dim %139, dims = [2, 0, 1] : (tensor<20x85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %142 = arith.mulf %140, %141 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %143 = stablehlo.slice %arg9 [7:27, 7:92, 7:187] : (tensor<35x99x194xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %144 = stablehlo.reverse %143, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %145 = stablehlo.reshape %144 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %146 = arith.negf %145 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %147 = stablehlo.slice %arg1 [6:26] : (tensor<34xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %148 = stablehlo.reverse %147, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %149 = stablehlo.reshape %148 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %150 = stablehlo.broadcast_in_dim %149, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %151 = stablehlo.broadcast_in_dim %75, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %152 = arith.cmpf ole, %150, %151 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %153 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %154 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %155 = arith.cmpi ult, %153, %154 : tensor<20xi64>
-// CHECK-NEXT:    %156 = stablehlo.broadcast_in_dim %155, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %157 = stablehlo.broadcast_in_dim %152, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %158 = arith.ori %156, %157 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %159 = stablehlo.broadcast_in_dim %2, dims = [0] : (tensor<20xi64>) -> tensor<20xi64>
-// CHECK-NEXT:    %160 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i64>) -> tensor<20xi64>
-// CHECK-NEXT:    %161 = arith.cmpi uge, %159, %160 : tensor<20xi64>
-// CHECK-NEXT:    %162 = stablehlo.broadcast_in_dim %161, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %163 = stablehlo.broadcast_in_dim %158, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %164 = arith.andi %162, %163 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %165 = stablehlo.broadcast_in_dim %96, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %166 = stablehlo.broadcast_in_dim %164, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %167 = arith.ori %165, %166 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %168 = stablehlo.slice %arg8 [6:26, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %169 = stablehlo.reverse %168, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %170 = stablehlo.reshape %169 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %171 = stablehlo.broadcast_in_dim %105, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %172 = stablehlo.broadcast_in_dim %170, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %173 = arith.subf %171, %172 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %174 = stablehlo.broadcast_in_dim %167, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %175 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %176 = stablehlo.broadcast_in_dim %173, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %177 = arith.select %174, %175, %176 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %178 = stablehlo.slice %arg2 [8:28] : (tensor<35xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %179 = stablehlo.reverse %178, dims = [] : tensor<20xf64>
-// CHECK-NEXT:    %180 = stablehlo.reshape %179 : (tensor<20xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %181 = stablehlo.broadcast_in_dim %177, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %182 = stablehlo.broadcast_in_dim %180, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %183 = arith.divf %181, %182 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
-// CHECK-NEXT:    %184 = stablehlo.broadcast_in_dim %146, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %185 = stablehlo.broadcast_in_dim %183, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %186 = arith.mulf %184, %185 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %88 = stablehlo.compare  EQ, %87, %c_10 : (tensor<20xi64>, tensor<20xi64>) -> tensor<20xi1>
+// CHECK-NEXT:    %89 = stablehlo.broadcast_in_dim %88, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %90 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %91 = stablehlo.select %89, %85, %90 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %92 = arith.ori %63, %72 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %93 = stablehlo.broadcast_in_dim %65, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %94 = arith.andi %93, %92 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %95 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %96 = arith.select %94, %95, %91 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %97 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %98 = stablehlo.broadcast_in_dim %96, dims = [2, 0, 1] : (tensor<20x85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %99 = arith.mulf %97, %98 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %100 = stablehlo.slice %arg9 [7:27, 7:92, 7:187] : (tensor<35x99x194xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %101 = stablehlo.reshape %100 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %102 = arith.negf %101 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %103 = stablehlo.slice %arg1 [6:26] : (tensor<34xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %104 = stablehlo.reshape %103 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %105 = stablehlo.broadcast_in_dim %104, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %106 = stablehlo.broadcast_in_dim %56, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %107 = arith.cmpf ole, %105, %106 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %108 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %109 = arith.cmpi ult, %2, %108 : tensor<20xi64>
+// CHECK-NEXT:    %110 = stablehlo.broadcast_in_dim %109, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %111 = arith.ori %110, %107 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %112 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i64>) -> tensor<20xi64>
+// CHECK-NEXT:    %113 = arith.cmpi uge, %2, %112 : tensor<20xi64>
+// CHECK-NEXT:    %114 = stablehlo.broadcast_in_dim %113, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %115 = arith.andi %114, %111 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %116 = arith.ori %72, %115 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %117 = stablehlo.slice %arg8 [6:26, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %118 = stablehlo.reshape %117 : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %119 = arith.subf %77, %118 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %120 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %121 = arith.select %116, %120, %119 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %122 = stablehlo.slice %arg2 [8:28] : (tensor<35xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %123 = stablehlo.reshape %122 : (tensor<20xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %124 = stablehlo.broadcast_in_dim %123, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %125 = arith.divf %121, %124 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
+// CHECK-NEXT:    %126 = arith.mulf %102, %125 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x85x180xf64>
 // CHECK-NEXT:    %c_11 = stablehlo.constant dense<0> : tensor<20xi64>
-// CHECK-NEXT:    %187 = stablehlo.compare  EQ, %2, %c_11 : (tensor<20xi64>, tensor<20xi64>) -> tensor<20xi1>
-// CHECK-NEXT:    %188 = stablehlo.broadcast_in_dim %187, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %189 = stablehlo.broadcast_in_dim %186, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %190 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %191 = stablehlo.select %188, %189, %190 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %192 = stablehlo.broadcast_in_dim %96, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %193 = stablehlo.broadcast_in_dim %158, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %194 = arith.ori %192, %193 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %195 = stablehlo.broadcast_in_dim %161, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %196 = stablehlo.broadcast_in_dim %194, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %197 = arith.andi %195, %196 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %198 = stablehlo.broadcast_in_dim %197, dims = [0, 1, 2] : (tensor<20x85x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %199 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %200 = stablehlo.broadcast_in_dim %191, dims = [0, 1, 2] : (tensor<20x85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %201 = arith.select %198, %199, %200 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
-// CHECK-NEXT:    %202 = stablehlo.broadcast_in_dim %11, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %203 = stablehlo.broadcast_in_dim %201, dims = [2, 0, 1] : (tensor<20x85x180xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %204 = arith.mulf %202, %203 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %205 = stablehlo.broadcast_in_dim %142, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %206 = stablehlo.broadcast_in_dim %204, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %207 = arith.subf %205, %206 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %208 = stablehlo.broadcast_in_dim %41, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %209 = stablehlo.broadcast_in_dim %62, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %210 = arith.addf %208, %209 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %211 = stablehlo.broadcast_in_dim %210, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %212 = stablehlo.broadcast_in_dim %207, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %213 = arith.addf %211, %212 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %214 = stablehlo.broadcast_in_dim %20, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %215 = stablehlo.broadcast_in_dim %213, dims = [0, 1, 2] : (tensor<85x180x20xf64>) -> tensor<85x180x20xf64>
-// CHECK-NEXT:    %216 = arith.mulf %214, %215 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
-// CHECK-NEXT:    %217 = arith.negf %216 : tensor<85x180x20xf64>
+// CHECK-NEXT:    %127 = stablehlo.compare  EQ, %2, %c_11 : (tensor<20xi64>, tensor<20xi64>) -> tensor<20xi1>
+// CHECK-NEXT:    %128 = stablehlo.broadcast_in_dim %127, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %129 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %130 = stablehlo.select %128, %126, %129 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %131 = arith.ori %72, %111 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %132 = stablehlo.broadcast_in_dim %113, dims = [0] : (tensor<20xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %133 = arith.andi %132, %131 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %134 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %135 = arith.select %133, %134, %130 : tensor<20x85x180xi1>, tensor<20x85x180xf64>
+// CHECK-NEXT:    %136 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %137 = stablehlo.broadcast_in_dim %135, dims = [2, 0, 1] : (tensor<20x85x180xf64>) -> tensor<85x180x20xf64>
+// CHECK-NEXT:    %138 = arith.mulf %136, %137 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %139 = arith.subf %99, %138 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %140 = arith.addf %32, %47 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %141 = arith.addf %140, %139 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %142 = arith.mulf %17, %141 {fastmathFlags = #llvm.fastmath<none>} : tensor<85x180x20xf64>
+// CHECK-NEXT:    %143 = arith.negf %142 : tensor<85x180x20xf64>
 // CHECK-NEXT:    %c_12 = stablehlo.constant dense<7> : tensor<i64>
 // CHECK-NEXT:    %c_13 = stablehlo.constant dense<7> : tensor<i64>
 // CHECK-NEXT:    %c_14 = stablehlo.constant dense<7> : tensor<i64>
-// CHECK-NEXT:    %218 = stablehlo.broadcast_in_dim %217, dims = [1, 2, 0] : (tensor<85x180x20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %219 = stablehlo.reverse %218, dims = [] : tensor<20x85x180xf64>
-// CHECK-NEXT:    %220 = stablehlo.dynamic_update_slice %arg0, %219, %c_12, %c_13, %c_14 : (tensor<34x99x194xf64>, tensor<20x85x180xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
-// CHECK-NEXT:    return %220, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9 : tensor<34x99x194xf64>, tensor<34xf64>, tensor<35xf64>, tensor<34xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<1x99x194xf64>, tensor<34x99x194xf64>, tensor<35x99x194xf64>
+// CHECK-NEXT:    %144 = stablehlo.broadcast_in_dim %143, dims = [1, 2, 0] : (tensor<85x180x20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %145 = stablehlo.dynamic_update_slice %arg0, %144, %c_12, %c_13, %c_14 : (tensor<34x99x194xf64>, tensor<20x85x180xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
+// CHECK-NEXT:    return %145, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9 : tensor<34x99x194xf64>, tensor<34xf64>, tensor<35xf64>, tensor<34xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<99x194xf64>, tensor<1x99x194xf64>, tensor<34x99x194xf64>, tensor<35x99x194xf64>
 // CHECK-NEXT:  }
 
 // -----

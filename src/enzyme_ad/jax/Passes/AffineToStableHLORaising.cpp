@@ -399,6 +399,9 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
   SetVector<Value> ivs;
 
+  bool needsBroadcastA = false;
+  SmallVector<bool> needsBroadcastBs(shapeBs.size(), false);
+
   for (auto [i, EA] : llvm::enumerate(src.getAffineMap().getResults())) {
     broadcastDimensionsA[i] = outputShape.size();
 
@@ -428,6 +431,8 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
       if (broadcastDimensionsB[i] != -1)
         continue; // dim already set in A
 
+      needsBroadcastA = true;
+
       Value ivB = getIVForExpr(dst, EB);
 
       for (auto &&[dst2, broadcastDimensionsB2] :
@@ -450,18 +455,33 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
   auto TA = a.getType().cast<RankedTensorType>();
 
-  a = builder
-          .create<stablehlo::BroadcastInDimOp>(
-              a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
-          .getResult();
+  if (needsBroadcastA) {
+    a = builder
+            .create<stablehlo::BroadcastInDimOp>(
+                a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
+            .getResult();
+  }
 
   for (size_t i = 0; i < dsts.size(); i++) {
     auto TB = bs[i].getType().cast<RankedTensorType>();
-    bs[i] = builder
-                .create<stablehlo::BroadcastInDimOp>(
-                    bs[i].getLoc(), TB.clone(outputShape), bs[i],
-                    broadcastDimensionsBs[i])
-                .getResult();
+
+    bool needsBroadcast = false;
+    if (TB.getShape().size() == outputShape.size()) {
+      for (auto bdim : llvm::enumerate(broadcastDimensionsBs[i])) {
+        if (bdim.index() != bdim.value()) {
+          needsBroadcast = true;
+          break;
+        }
+      }
+    } else
+      needsBroadcast = true;
+
+    if (needsBroadcast)
+      bs[i] = builder
+                  .create<stablehlo::BroadcastInDimOp>(
+                      bs[i].getLoc(), TB.clone(outputShape), bs[i],
+                      broadcastDimensionsBs[i])
+                  .getResult();
   }
 
   affine::AffineValueMap outputMap(
@@ -1702,25 +1722,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       newVal = builder.create<stablehlo::DynamicSliceOp>(
           op->getLoc(), T, inputTen, startIndices, outputShape);
     } else {
+      bool needSlice = false;
+
       SmallVector<int64_t> startIndices;
       SmallVector<int64_t> limitIndices;
 
-      for (auto E : accessValueMap.getAffineMap().getResults()) {
+      for (auto [E, stride, sz] : llvm::zip_equal(
+               accessValueMap.getAffineMap().getResults(), strides,
+               inputTen.getType().cast<RankedTensorType>().getShape())) {
+        int64_t start, limit;
         if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
-          startIndices.push_back(constOp.getValue());
-          limitIndices.push_back(constOp.getValue() + 1);
-          continue;
+          start = constOp.getValue();
+          limit = constOp.getValue() + 1;
+          stride = 1;
+        } else {
+          auto range = computeExprRange(accessValueMap, E);
+          start = range->step < 0 ? range->ub - range->step : range->lb;
+          limit = range->step < 0 ? range->lb - range->step : range->ub;
         }
 
-        auto range = computeExprRange(accessValueMap, E);
-        startIndices.push_back(range->step < 0 ? range->ub - range->step
-                                               : range->lb);
-        limitIndices.push_back(range->step < 0 ? range->lb - range->step
-                                               : range->ub);
+        needSlice |= sz != (limit - start) / stride;
+
+        startIndices.push_back(start);
+        limitIndices.push_back(limit);
       }
 
-      newVal = builder.create<stablehlo::SliceOp>(
-          op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+      if (needSlice)
+        newVal = builder.create<stablehlo::SliceOp>(
+            op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+      else
+        newVal = inputTen;
     }
 
     if (reverseDims.size())
