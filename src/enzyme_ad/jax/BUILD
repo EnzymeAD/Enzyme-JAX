@@ -10,6 +10,12 @@ exports_files([
 
 licenses(["notice"])
 
+
+config_setting(
+    name = "is_clang_build",
+    define_values = {"using_clang": "true"},
+)
+
 package(
     default_visibility = ["//:__subpackages__"],
     features = ["layering_check"],
@@ -201,6 +207,10 @@ cc_library(
     name = "RaisingTransformOps",
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
+    copts = select({
+        "//conditions:default": [],
+        ":is_clang_build": ["-fbracket-depth=768"],
+    }),
     deps = [
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
@@ -224,6 +234,10 @@ cc_library(
         "TransformOps/GenerateApplyPatterns.cpp",
         "TransformOps/TransformOps.cpp",
     ],
+    copts = select({
+        "//conditions:default": [],
+        ":is_clang_build": ["-fbracket-depth=768"],
+    }),
     hdrs = ["TransformOps/TransformOps.h"],
     deps = [
         ":TransformOpsImplIncGen",

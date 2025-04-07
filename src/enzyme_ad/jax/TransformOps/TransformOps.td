@@ -1314,6 +1314,11 @@ def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyXOrSimplifyPatterns : EnzymeHLOPatternOp<
+    "xor_simplify"> {
+  let patterns = ["XorSimplify"];
+}
+
 def SumToReduceWindow : EnzymeHLOPatternOp<
     "sum_to_reducewindow"> {
   let patterns = ["SumToReduceWindow<stablehlo::AddOp>", "SumToReduceWindow<stablehlo::SubtractOp>"];

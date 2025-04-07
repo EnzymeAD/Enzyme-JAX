@@ -51,6 +51,7 @@ jobs:
           - '3.12'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
+      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
       - name: Make space on disk
         run: sudo rm -rf /opt/*
@@ -70,7 +71,7 @@ jobs:
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
-          bazel build --color=yes //:enzymexlamlir-opt --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
         uses: actions/upload-artifact@v4
         with:
@@ -80,7 +81,7 @@ jobs:
       - name: Build wheel
         timeout-minutes: 240
         run: |
-          bazel build --color=yes :wheel --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -89,15 +90,15 @@ jobs:
           retention-days: 90
       - name: Update Python requirements files
         run: |
-          bazel run --color=yes //builddeps:requirements.update
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Run tests
         if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
         run: |
-          bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
       - name: Run lit tests
         if: ${{ startsWith(matrix.os, 'ubuntu-') }}
         run: |
-          bazel test --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }} 
