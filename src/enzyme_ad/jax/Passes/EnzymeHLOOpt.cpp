@@ -3877,7 +3877,6 @@ struct BroadcastToReshape final
         break;
       }
       if (!reshaped) {
-        // llvm::errs() << " replaced to reshape: " << op << "\n";
         if (auto rop = op.getOperand().getDefiningOp()) {
           rewriter.setInsertionPointAfter(rop);
         } else if (auto ba = dyn_cast<BlockArgument>(op.getOperand())) {
@@ -3887,12 +3886,9 @@ struct BroadcastToReshape final
                                                           op.getOperand());
       } else {
         if (before) {
-          // llvm::errs() << " moved reshape: " << reshaped << "\n";
           rewriter.modifyOpInPlace(reshaped,
                                    [&]() { reshaped->moveBefore(op); });
         }
-        // llvm::errs() << " replaced op with reshape: " << op << " " <<
-        // reshaped << "\n";
         rewriter.replaceOp(op, reshaped);
       }
     }
@@ -7609,18 +7605,23 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!elem)
       return failure();
 
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+      return failure();
+
     bool singleUse = true;
+    SmallVector<stablehlo::ReshapeOp> toReplace;
     for (auto U : elem->getUsers()) {
-      if (U != op) {
-        singleUse = false;
-        break;
+      if (auto re = dyn_cast<stablehlo::ReshapeOp>(U)) {
+        if (re.getType() == op.getType()) {
+          toReplace.push_back(re);
+          continue;
+        }
       }
+      singleUse = false;
+      break;
     }
 
     if (onlySingleUser && !singleUse)
-      return failure();
-
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
       return failure();
 
     if (singleUse) {
@@ -7629,62 +7630,62 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       rewriter.setInsertionPoint(rewriter.getInsertionBlock(), pt);
     }
 
-    // llvm::errs() << " reshaping " << *elem << " reshape: " << op << "\n";
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
       auto NT = RankedTensorType::get(
           op.getType().getShape(),
           cast<RankedTensorType>(v.getType()).getElementType());
       stablehlo::ReshapeOp reshaped = nullptr;
+      bool before;
       for (auto u : v.getUsers()) {
         auto re = dyn_cast<stablehlo::ReshapeOp>(u);
         if (!re)
           continue;
         if (re.getType() != NT)
           continue;
+        auto &&[legal, before2] = fastDoesADominateB(elem, re, v);
+        if (!legal) {
+          continue;
+        }
+        before = before2;
         reshaped = re;
         break;
       }
       if (!reshaped) {
-        //    llvm::errs() << " creating new reshape of arg " << v << "\n";
+        if (auto rop = v.getDefiningOp()) {
+          rewriter.setInsertionPointAfter(rop);
+        } else if (auto ba = dyn_cast<BlockArgument>(v)) {
+          rewriter.setInsertionPointToStart(ba.getOwner());
+        }
         reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
       } else {
-        auto &&[legal, before] = fastDoesADominateB(op, reshaped, v);
-        if (legal) {
-          if (before) {
-            // llvm::errs() << " moved reshape " << reshaped << " of arg " << v
-            // << "\n";
-            rewriter.modifyOpInPlace(reshaped,
-                                     [&]() { reshaped->moveBefore(op); });
-          }
-        } else {
-          // llvm::errs() << " non block reshape reshape " << reshaped << " of
-          // arg " << v << "\n";
+        if (before) {
           if (auto rop = v.getDefiningOp()) {
-            rewriter.setInsertionPointAfter(rop);
-          } else if (auto ba = dyn_cast<BlockArgument>(v)) {
-            rewriter.setInsertionPointToStart(ba.getOwner());
+            rewriter.modifyOpInPlace(reshaped,
+                                     [&]() { reshaped->moveAfter(rop); });
+          } else {
+            rewriter.modifyOpInPlace(reshaped,
+                                     [&]() { reshaped->moveBefore(elem); });
           }
-          reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
         }
       }
       ops.push_back(reshaped);
     }
 
     if (singleUse) {
-      // llvm::errs() << " modifying in place\n";
       rewriter.modifyOpInPlace(elem, [&]() {
         elem->setOperands(ops);
         elem->getResult(0).setType(op.getType());
       });
-      rewriter.replaceOp(op, elem);
+      for (auto re : toReplace)
+        rewriter.replaceOp(re, elem);
     } else {
-      rewriter.setInsertionPointAfter(op);
+      rewriter.setInsertionPointAfter(elem);
       auto newOp = rewriter.create(
           elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
           TypeRange(op.getType()), elem->getAttrs(), {}, {});
-      // llvm::errs() << " created reshaped elem: " << newOp << "\n";
-      rewriter.replaceOp(op, newOp);
+      for (auto re : toReplace)
+        rewriter.replaceOp(re, newOp);
     }
     return success();
   }
