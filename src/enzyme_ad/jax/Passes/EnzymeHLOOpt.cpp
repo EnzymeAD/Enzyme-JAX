@@ -3787,9 +3787,36 @@ struct BroadcastToReshape final
     // replace with reshape
     if (op.getType() == op.getOperand().getType())
       rewriter.replaceOp(op, op.getOperand());
-    else
+    else {
       rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                         op.getOperand());
+    auto NT = op.getType();
+    stablehlo::ReshapeOp reshaped = nullptr;
+    for (auto u : op.getOperand().getUsers()) {
+      auto re = dyn_cast<stablehlo::ReshapeOp>(u);
+      if (!re)
+        continue;
+      if (re.getType() != NT)
+        continue;
+      reshaped = re;
+      break;
+    }
+    if (!reshaped) {
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                        op.getOperand());
+    } else {
+      if (reshaped->getBlock() == op->getBlock()) {
+        if (op->isBeforeInBlock(reshaped)) {
+          rewriter.modifyOpInPlace(reshaped,
+                                   [&]() { reshaped->moveBefore(op); });
+        }
+        rewriter.replaceOp(op, reshaped);
+      } else {
+        rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                          op.getOperand());
+      }
+    }
+    }
     return success();
   }
 };
@@ -7495,6 +7522,10 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const override {
+    if (op.getType() == op.getOperand.getType()) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
