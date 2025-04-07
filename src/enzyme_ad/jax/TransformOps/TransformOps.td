@@ -1233,6 +1233,11 @@ def WhileDUS : EnzymeHLOPatternOp<
   let patterns = ["WhileDUS"];
 }
 
+def DUSSliceSimplify : EnzymeHLOPatternOp<
+    "dus_slice_simplify"> {
+  let patterns = ["DUSSliceSimplify"];
+}
+
 def WhileConcat : EnzymeHLOPatternOp<
     "while_concat"> {
   let patterns = ["WhileConcat"];
