@@ -3529,6 +3529,15 @@ struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
   }
 };
 
+struct AbsConstProp final : OpRewritePattern<mlir::stablehlo::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    return unaryConstProp<mlir::stablehlo::absOp>(op, rewriter);
+  }
+};
+
 struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -12765,48 +12774,6 @@ struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
   }
 };
 
-struct AbsSimplify final : public OpRewritePattern<stablehlo::AbsOp> {
-  using OpRewritePattern<stablehlo::AbsOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(stablehlo::AbsOp op,
-                                PatternRewriter &rewriter) const override {
-    // Match when the operand is a constant.
-    DenseElementsAttr constantAttr;
-    if (!matchPattern(op.getOperand(), m_Constant(&constantAttr)))
-      return failure();
-
-    auto type = constantAttr.getType();
-    auto elemType = type.getElementType();
-
-    // For floating point elements.
-    if (elemType.isa<FloatType>()) {
-      SmallVector<APFloat, 8> newValues;
-      for (auto val : constantAttr.getValues<APFloat>()) {
-        APFloat absVal(val);
-        if (absVal.isNegative())
-          absVal.changeSign();
-        newValues.push_back(absVal);
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, DenseElementsAttr::get(type, newValues));
-      return success();
-    }
-
-    // For integer elements.
-    if (elemType.isa<IntegerType>()) {
-      SmallVector<APInt, 8> newValues;
-      for (auto val : constantAttr.getValues<APInt>()) {
-        newValues.push_back(val.abs());
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, DenseElementsAttr::get(type, newValues));
-      return success();
-    }
-
-    return failure();
-  }
-};
-
 static SmallVector<int64_t>
 findReshapeInsertionDims(RankedTensorType inputType,
                          RankedTensorType outputType) {
@@ -13883,8 +13850,7 @@ struct EnzymeHLOOptPass
              BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             AbsSimplify, TransposeReshapeToBroadcast>(context,
-                                                       PatternBenefit(65000));
+             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
@@ -13893,8 +13859,8 @@ struct EnzymeHLOOptPass
                  SliceReshapePad, DotReshapeDot, ConcatConstProp,
                  DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
                  LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceIf,
                  SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
