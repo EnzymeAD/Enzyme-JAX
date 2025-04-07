@@ -7712,10 +7712,10 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           continue;
         if (!isa<T>(nop))
           continue;
+        if (nop->getBlock() != op->getBlock())
+          continue;
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop, OperationEquivalence::IgnoreLocations))
-          continue;
-        if (nop->getBlock() != op->getBlock())
           continue;
         if (nop->isBeforeInBlock(op)) {
           rewriter.replaceOp(op, nop);
