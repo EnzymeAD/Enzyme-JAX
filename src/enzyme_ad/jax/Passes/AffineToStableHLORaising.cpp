@@ -1722,25 +1722,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       newVal = builder.create<stablehlo::DynamicSliceOp>(
           op->getLoc(), T, inputTen, startIndices, outputShape);
     } else {
+      bool needSlice = false;
+
       SmallVector<int64_t> startIndices;
       SmallVector<int64_t> limitIndices;
 
-      for (auto E : accessValueMap.getAffineMap().getResults()) {
+      for (auto [E, stride, sz] : llvm::zip_equal(
+               accessValueMap.getAffineMap().getResults(), strides,
+               inputTen.getType().cast<RankedTensorType>().getShape())) {
+        int64_t start, limit;
         if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
-          startIndices.push_back(constOp.getValue());
-          limitIndices.push_back(constOp.getValue() + 1);
-          continue;
+          start = constOp.getValue();
+          limit = constOp.getValue() + 1;
+          stride = 1;
+        } else {
+          auto range = computeExprRange(accessValueMap, E);
+          start = range->step < 0 ? range->ub - range->step : range->lb;
+          limit = range->step < 0 ? range->lb - range->step : range->ub;
         }
 
-        auto range = computeExprRange(accessValueMap, E);
-        startIndices.push_back(range->step < 0 ? range->ub - range->step
-                                               : range->lb);
-        limitIndices.push_back(range->step < 0 ? range->lb - range->step
-                                               : range->ub);
+        needSlice |= sz != (limit - start) / stride;
+
+        startIndices.push_back(start);
+        limitIndices.push_back(limit);
       }
 
-      newVal = builder.create<stablehlo::SliceOp>(
-          op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+      if (needSlice)
+        newVal = builder.create<stablehlo::SliceOp>(
+            op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
+      else
+        newVal = inputTen;
     }
 
     if (reverseDims.size())
