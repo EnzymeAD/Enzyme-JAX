@@ -399,6 +399,9 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
   SetVector<Value> ivs;
 
+  bool needsBroadcastA = false;
+  SmallVector<bool> needsBroadcastBs(shapeBs.size(), false);
+
   for (auto [i, EA] : llvm::enumerate(src.getAffineMap().getResults())) {
     broadcastDimensionsA[i] = outputShape.size();
 
@@ -428,6 +431,8 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
       if (broadcastDimensionsB[i] != -1)
         continue; // dim already set in A
 
+      needsBroadcastA = true;
+
       Value ivB = getIVForExpr(dst, EB);
 
       for (auto &&[dst2, broadcastDimensionsB2] :
@@ -450,18 +455,33 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
   auto TA = a.getType().cast<RankedTensorType>();
 
-  a = builder
-          .create<stablehlo::BroadcastInDimOp>(
-              a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
-          .getResult();
+  if (needsBroadcastA) {
+    a = builder
+            .create<stablehlo::BroadcastInDimOp>(
+                a.getLoc(), TA.clone(outputShape), a, broadcastDimensionsA)
+            .getResult();
+  }
 
   for (size_t i = 0; i < dsts.size(); i++) {
     auto TB = bs[i].getType().cast<RankedTensorType>();
-    bs[i] = builder
-                .create<stablehlo::BroadcastInDimOp>(
-                    bs[i].getLoc(), TB.clone(outputShape), bs[i],
-                    broadcastDimensionsBs[i])
-                .getResult();
+
+    bool needsBroadcast = false;
+    if (TB.getShape().size() == outputShape.size()) {
+      for (auto bdim : llvm::enumerate(broadcastDimensionsBs[i])) {
+        if (bdim.index() != bdim.value()) {
+          needsBroadcast = true;
+          break;
+        }
+      }
+    } else
+      needsBroadcast = true;
+
+    if (needsBroadcast)
+      bs[i] = builder
+                  .create<stablehlo::BroadcastInDimOp>(
+                      bs[i].getLoc(), TB.clone(outputShape), bs[i],
+                      broadcastDimensionsBs[i])
+                  .getResult();
   }
 
   affine::AffineValueMap outputMap(
@@ -1801,8 +1821,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                    "less dims than stored value: "
                                 << *op << "\n";
                    auto flags = OpPrintingFlags();
-                   for (auto iv
-                        : accessValueMap.getOperands()) {
+                   for (auto iv : accessValueMap.getOperands()) {
                      iv.printAsOperand(llvm::dbgs(), flags);
                      llvm::dbgs() << ", ";
                    } llvm::dbgs()
@@ -1899,14 +1918,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           llvm::dbgs()
               << "affine.store is dependent on less dims than stored value: "
               << *op << "\n";
-          auto flags = OpPrintingFlags(); for (auto iv
-                                               : accessValueMap.getOperands()) {
+          auto flags = OpPrintingFlags();
+          for (auto iv : accessValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
+          } llvm::dbgs()
+          << "\n";
           accessValueMap.getAffineMap().dump();
-          for (auto iv
-               : updateValueMap.getOperands()) {
+          for (auto iv : updateValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
           } llvm::dbgs()
