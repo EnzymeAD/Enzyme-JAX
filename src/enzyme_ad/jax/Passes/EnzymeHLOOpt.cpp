@@ -7769,6 +7769,146 @@ struct ConstPropThroughBarrier final
   }
 };
 
+// If there is a dus where part of the updated region is not used by later slice
+// operations, pre-slice the operand and update to the original dus
+struct DUSSliceSimplify final
+    : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
+                                PatternRewriter &rewriter) const override {
+    auto res = dusOp.getResult();
+    auto update = dusOp.getUpdate();
+    auto updateShape = update.getType().getShape();
+    auto operand = dusOp.getOperand();
+
+    auto resShape = res.getType().getShape();
+    auto resRank = res.getType().getRank();
+
+    SmallVector<int64_t> ignoredStart(resShape);
+    SmallVector<int64_t> ignoredEnd(resRank, 0);
+    SmallVector<stablehlo::SliceOp> slices;
+    slices.reserve(resRank);
+    for (auto &use : res.getUses()) {
+      if (auto slice = dyn_cast<stablehlo::SliceOp>(use.getOwner())) {
+        ignoredStart = llvm::map_to_vector(
+            llvm::zip(slice.getStartIndices(), ignoredStart), [&](auto p) {
+              auto &[start, oldIgnoreStart] = p;
+              if (start < oldIgnoreStart)
+                return start;
+              return oldIgnoreStart;
+            });
+        ignoredEnd = llvm::map_to_vector(
+            llvm::zip(slice.getStartIndices(),
+                      slice.getResult().getType().getShape(), ignoredEnd),
+            [&](auto p) {
+              auto &[start, sliceSize, oldIgnoreEnd] = p;
+              int64_t thisIgnoreEnd = start + sliceSize;
+              if (thisIgnoreEnd > oldIgnoreEnd)
+                return thisIgnoreEnd;
+              return oldIgnoreEnd;
+            });
+        slices.push_back(slice);
+      } else {
+        return rewriter.notifyMatchFailure(use.getOwner(),
+                                           "Found non slice user");
+      }
+    }
+
+    if (slices.empty())
+      return rewriter.notifyMatchFailure(dusOp, "No slice users found");
+
+    if (llvm::all_of(ignoredStart,
+                     [](int64_t ignored) { return ignored == 0; }) &&
+        llvm::all_of(llvm::zip(ignoredEnd, resShape), [](auto p) {
+          auto &[i, s] = p;
+          return i == s;
+        }))
+      return rewriter.notifyMatchFailure(dusOp, "No ignored regions");
+
+    assert(llvm::all_of(llvm::zip(ignoredStart, ignoredEnd), [](auto p) {
+      auto &[s, e] = p;
+      return s <= e;
+    }));
+
+    SmallVector<Value> dusIndexVals = dusOp.getStartIndices();
+    SmallVector<int64_t> dusStartIndices;
+    dusStartIndices.reserve(resRank);
+    for (Value idxVal : dusIndexVals) {
+      DenseIntElementsAttr idxAttr;
+      if (!matchPattern(idxVal, m_Constant(&idxAttr)) ||
+          idxAttr.getNumElements() != 1)
+        return rewriter.notifyMatchFailure(
+            dusOp, "DUS indices must be constant scalars");
+      dusStartIndices.push_back((*idxAttr.begin()).getSExtValue());
+    }
+    SmallVector<int64_t> dusEndIndices = llvm::map_to_vector(
+        llvm::zip(dusStartIndices, updateShape),
+        [](auto p) { return std::get<0>(p) + std::get<1>(p); });
+
+    SmallVector<int64_t> strideOne(resRank, 1);
+
+    auto loc = dusOp->getLoc();
+    auto preSliceOperand = rewriter.create<stablehlo::SliceOp>(
+        loc, operand, ignoredStart, ignoredEnd, strideOne);
+
+    auto ignoredUpdateStart = llvm::map_to_vector(
+        llvm::zip(ignoredStart, dusStartIndices), [](auto p) -> int64_t {
+          auto &[ignoredStart, dusStart] = p;
+          if (ignoredStart > dusStart)
+            return ignoredStart - dusStart;
+          return 0;
+        });
+    auto ignoredUpdateEnd =
+        llvm::map_to_vector(llvm::zip(ignoredEnd, dusEndIndices, updateShape),
+                            [](auto p) -> int64_t {
+                              auto &[ignoredEnd, dusEnd, updateShape] = p;
+                              if (ignoredEnd < dusEnd)
+                                return updateShape - (dusEnd - ignoredEnd);
+                              return updateShape;
+                            });
+    Value preSliceUpdate = rewriter.create<stablehlo::SliceOp>(
+        loc, update, ignoredUpdateStart, ignoredUpdateEnd, strideOne);
+
+    Type itype = dusIndexVals[0].getType();
+    SmallVector<Value> newDusIndices = llvm::map_to_vector(
+        llvm::zip(ignoredStart, dusStartIndices), [&](auto p) -> Value {
+          auto &[ignored, dusStart] = p;
+          int64_t start = 0;
+          if (ignored > dusStart)
+            start = ignored - dusStart;
+
+          return rewriter.create<stablehlo::ConstantOp>(
+              loc, itype, makeAttr(itype, start).cast<ElementsAttr>());
+        });
+
+    auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc, preSliceOperand, preSliceUpdate, newDusIndices);
+
+    for (auto slice : slices) {
+      SmallVector<int64_t> starts(slice.getStartIndices());
+      SmallVector<int64_t> sizes(slice.getResult().getType().getShape());
+      SmallVector<int64_t> limits;
+      starts = llvm::map_to_vector(llvm::zip(starts, ignoredStart),
+                                   [](auto p) -> int64_t {
+                                     auto &[s, i] = p;
+                                     assert(s >= i);
+                                     return s - i;
+                                   });
+      limits =
+          llvm::map_to_vector(llvm::zip(starts, sizes), [](auto p) -> int64_t {
+            auto &[start, size] = p;
+            return start + size;
+          });
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          slice, newDus, starts, limits, slice.getStrides());
+    }
+    rewriter.eraseOp(dusOp);
+
+    return success();
+  }
+};
+
 struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
