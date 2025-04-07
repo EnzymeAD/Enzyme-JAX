@@ -523,7 +523,7 @@ def ShardPointToPoint : Pass<"shard-point-to-point"> {
   let summary = "Annotate shards to ensure point to point communication";
   let dependentDialects = [
     "stablehlo::StablehloDialect",  
-    "mhlo::MhloDialect", 
+    "sdy::ShardyDialect",
   ];
 }
 
