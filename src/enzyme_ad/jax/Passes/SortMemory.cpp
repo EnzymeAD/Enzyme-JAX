@@ -85,13 +85,17 @@ void sortParallel(affine::AffineParallelOp par) {
   par->walk([&](affine::AffineLoadOp ld) { loads.push_back(ld); });
   par->walk([&](affine::AffineStoreOp store) { stores.push_back(store); });
 
-  // Dep check depth would be number of enclosing loops + 1.
-  unsigned depth = ::getNestingDepth(par) + 1;
+  // Dep check depth within the loop would be number of enclosing loops + number
+  // of IVs for this parallel loop + 1.
+  unsigned depth = ::getNestingDepth(par) + par.getNumDims() + 1;
 
   for (auto ld : loads) {
-    MemRefAccess srcAccess(ld);
+    MemRefAccess dstAccess(ld);
     for (auto st : stores) {
-      MemRefAccess dstAccess(st);
+      MemRefAccess srcAccess(st);
+
+      // if there is a store dependent the load for the same memref, then it is
+      // not valid to move loads at the beginning of the loop.
       DependenceResult result =
           checkMemrefAccessDependence(srcAccess, dstAccess, depth);
 
