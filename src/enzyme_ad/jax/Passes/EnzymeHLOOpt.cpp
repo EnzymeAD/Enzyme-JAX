@@ -11057,7 +11057,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
         upper[i] -= candidate.lowerBounds[i];
       }
       newOperands[candidate.idx] = rewriter.create<stablehlo::SliceOp>(
-          candidate.argOperand.getLoc(), candidate.outerOperand, lower, upper,
+          candidate.argOperand.getLoc(), candidate.outerSlice, lower, upper,
           strides);
     }
 
