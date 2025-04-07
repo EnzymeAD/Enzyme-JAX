@@ -7609,7 +7609,14 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!elem)
       return failure();
 
-    bool singleUse = llvm::hasSingleElement(elem->getUsers());
+    bool singleUse = true;
+    for (auto U : elem->getUsers()) {
+      if (U != op) {
+        singleUse = false;
+        break;
+      }
+    }
+
     if (onlySingleUser && !singleUse)
       return failure();
 
