@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dus_slice_simplify" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=dus_slice_simplify" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 module {
   func.func @foo(%in: tensor<528x2048x2048xf64>, %update: tensor<1x2032x2032xf64>) -> (tensor<528x2048x2032xf64>, tensor<512x2032x2032xf64>) {
     %c_22 = stablehlo.constant dense<2040> : tensor<i32>
