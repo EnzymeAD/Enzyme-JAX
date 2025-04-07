@@ -3746,6 +3746,66 @@ struct BroadcastReshape final
   }
 };
 
+// Returns legal, and if reshaped comes before op
+std::pair<bool, bool> fastDoesADominateB(Operation* reshaped, Operation* op, Value v) {
+	assert(reshaped);
+	assert(op);
+	size_t limit = 1000;
+        if (reshaped->getBlock() == op->getBlock()) {
+	   if (op->getBlock()->isOpOrderValid() || op->getBlock()->getOperations().size() <= limit) {
+	      return std::make_pair(true, reshaped->isBeforeInBlock(op));
+	   }
+	}
+	if (v)
+	if (auto pred = v.getDefiningOp()) {
+	      bool seenReshape = false;
+	      bool seenUser = false;
+	      Operation* cur = pred->getNextNode();
+	      for (int i=0; cur && i<limit; i++) {
+	      	if (cur->isAncestor(reshaped)) {
+		  seenReshape = true;	  
+		}
+		if (cur->isAncestor(op)) {
+		  seenUser = true;
+		}
+		if (seenReshape || seenUser) break;
+	      }
+	      if (seenReshape && !seenUser) {
+		return std::make_pair(true, true);
+	      }
+	      if (!seenReshape && seenUser) {
+		return std::make_pair(true, false);
+	      }
+	}
+	{
+	      bool seenUser = false;
+	      Operation* cur = reshaped->getNextNode();
+	      for (int i=0; cur && i<limit; i++) {
+	      	if (cur->isAncestor(op)) {
+		  seenUser = true;
+		  return std::make_pair(true, true);	  
+		}
+	      }
+	      if (!cur) {
+	        std::make_pair(true, false);
+	      }
+	}
+	{
+	      bool seenReshape = false;
+	      Operation* cur = op->getNextNode();
+	      for (int i=0; cur && i<limit; i++) {
+	      	if (cur->isAncestor(reshaped)) {
+		  seenReshape = true;
+		  return std::make_pair(true, false);	  
+		}
+	      }
+	      if (!cur) {
+	        std::make_pair(true, true);
+	      }
+	}
+	return std::make_pair(false, false);
+}
+
 struct BroadcastToReshape final
     : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3790,29 +3850,36 @@ struct BroadcastToReshape final
     else {
       auto NT = op.getType();
       stablehlo::ReshapeOp reshaped = nullptr;
+      bool before = false;
       for (auto u : op.getOperand().getUsers()) {
         auto re = dyn_cast<stablehlo::ReshapeOp>(u);
         if (!re)
           continue;
         if (re.getType() != NT)
           continue;
+	  auto &&[legal, before2] = fastDoesADominateB(op, re, op.getOperand());
+	 if (!legal) continue;
+	before = before2; 
         reshaped = re;
         break;
       }
       if (!reshaped) {
+	//llvm::errs() << " replaced to reshape: " << op << "\n";
+	if (auto rop = op.getOperand().getDefiningOp()) {
+	  rewriter.setInsertionPointAfter(rop);
+	} else if (auto ba = dyn_cast<BlockArgument>(op.getOperand())) {
+	  rewriter.setInsertionPointToStart(ba.getOwner());
+	}
         rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                           op.getOperand());
       } else {
-        if (reshaped->getBlock() == op->getBlock()) {
-          if (op->isBeforeInBlock(reshaped)) {
+	  if (before) {
+	   // llvm::errs() << " moved reshape: " << reshaped << "\n";
             rewriter.modifyOpInPlace(reshaped,
                                      [&]() { reshaped->moveBefore(op); });
           }
+	  //llvm::errs() << " replaced op with reshape: " << op << " " << reshaped << "\n";
           rewriter.replaceOp(op, reshaped);
-        } else {
-          rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
-                                                            op.getOperand());
-        }
       }
     }
     return success();
@@ -7528,12 +7595,20 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!elem)
       return failure();
 
-    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
+    bool singleUse = llvm::hasSingleElement(elem->getUsers());
+    if (onlySingleUser && !singleUse)
       return failure();
 
     if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
       return failure();
 
+    if (singleUse) {
+      auto pt = rewriter.getInsertionPoint ();
+      pt--;
+      rewriter.setInsertionPoint(rewriter.getInsertionBlock(), pt);
+    }
+
+    //llvm::errs() << " reshaping " << *elem << " reshape: " << op << "\n"; 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
       auto NT = RankedTensorType::get(
@@ -7550,23 +7625,38 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         break;
       }
       if (!reshaped) {
+	//    llvm::errs() << " creating new reshape of arg " << v << "\n";
         reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
       } else {
-        if (reshaped->getBlock() == op->getBlock()) {
-          if (op->isBeforeInBlock(reshaped)) {
+	  auto &&[legal, before] = fastDoesADominateB(op, reshaped, v); 
+        if (legal) {
+          if (before) {
+	    //llvm::errs() << " moved reshape " << reshaped << " of arg " << v << "\n";
             rewriter.modifyOpInPlace(reshaped,
                                      [&]() { reshaped->moveBefore(op); });
           }
         } else {
+	   // llvm::errs() << " non block reshape reshape " << reshaped << " of arg " << v << "\n";
           reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
         }
       }
       ops.push_back(reshaped);
     }
+
+    if (singleUse) {
+      //llvm::errs() << " modifying in place\n";
+      rewriter.modifyOpInPlace(elem, [&]() {
+    	elem->setOperands(ops);
+	elem->getResult(0).setType(op.getType());
+      });
+      rewriter.replaceOp(op, elem);
+    } else {
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
         TypeRange(op.getType()), elem->getAttrs(), {}, {});
+    //llvm::errs() << " created reshaped elem: " << newOp << "\n";
     rewriter.replaceOp(op, newOp);
+    }
     return success();
   }
 };
@@ -7769,13 +7859,16 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           continue;
         if (nop->getBlock() != op->getBlock())
           continue;
-        if (nop->isBeforeInBlock(op)) {
-          rewriter.replaceOp(op, nop);
-          return success();
-        } else {
-          rewriter.replaceOp(nop, op);
-          return success();
-        }
+	auto &&[legal, before] = fastDoesADominateB(nop, op, nullptr);
+	if (legal) {
+	  if (before) {
+            rewriter.replaceOp(op, nop);
+            return success();
+	  } else {
+            rewriter.replaceOp(nop, op);
+            return success();
+	  }
+	}
       }
     return failure();
   }
@@ -12470,7 +12563,9 @@ struct CommonCompareExpressionRewrite
           continue;
 
         if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
-          if (user->isBeforeInBlock(op)) {
+	  auto &&[legal, before] = fastDoesADominateB(user, op, opOperand);
+	  if (legal) {
+          if (before) {
             auto negatedCondition = rewriter.create<stablehlo::NotOp>(
                 op.getLoc(), userCompareOp.getResult());
             rewriter.replaceOp(op, negatedCondition);
@@ -12481,6 +12576,7 @@ struct CommonCompareExpressionRewrite
             rewriter.replaceOp(user, negatedCondition);
             return success();
           }
+	  }
         }
       }
     }
@@ -14377,6 +14473,16 @@ struct EnzymeHLOOptPass
     GreedyRewriteConfig config;
     config.maxIterations = max_iterations;
     config.useTopDownTraversal = top_down;
+    getOperation()->walk([](Operation* op) {
+      for (auto &region : op->getRegions()) {
+        for (auto &blk : region.getBlocks()) {
+	  
+	   if (!blk.isOpOrderValid()) {
+	     blk.recomputeOpOrder();
+	   }
+	}
+      }
+		    });
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
       signalPassFailure();

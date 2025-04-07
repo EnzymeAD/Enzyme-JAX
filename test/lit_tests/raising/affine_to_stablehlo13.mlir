@@ -94,9 +94,9 @@ module {
   }
 }
 // CHECK:  func.func private @repeat_iv_raised(%arg0: tensor<10xi64>, %arg1: tensor<10xi64>, %arg2: tensor<10x10xf64>, %arg3: tensor<10xf64>) -> (tensor<10xi64>, tensor<10xi64>, tensor<10x10xf64>, tensor<10xf64>) {
-// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<10xi64>) -> tensor<10x1xi64>
-// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<10xi64>) -> tensor<10x1xi64>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %0, %1, dim = 1 : (tensor<10x1xi64>, tensor<10x1xi64>) -> tensor<10x2xi64>
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<10xi64>) -> tensor<10x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg1 : (tensor<10xi64>) -> tensor<10x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %0, dim = 1 : (tensor<10x1xi64>, tensor<10x1xi64>) -> tensor<10x2xi64>
 // CHECK-NEXT:    %3 = "stablehlo.gather"(%arg2, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf64>, tensor<10x2xi64>) -> tensor<10xf64>
 // CHECK-NEXT:    return %arg0, %arg1, %arg2, %3 : tensor<10xi64>, tensor<10xi64>, tensor<10x10xf64>, tensor<10xf64>
 // CHECK-NEXT:  }
