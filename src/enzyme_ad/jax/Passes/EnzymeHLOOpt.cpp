@@ -3788,8 +3788,6 @@ struct BroadcastToReshape final
     if (op.getType() == op.getOperand().getType())
       rewriter.replaceOp(op, op.getOperand());
     else {
-      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
-                                                        op.getOperand());
       auto NT = op.getType();
       stablehlo::ReshapeOp reshaped = nullptr;
       for (auto u : op.getOperand().getUsers()) {
