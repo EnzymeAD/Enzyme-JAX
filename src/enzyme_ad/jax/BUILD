@@ -201,6 +201,9 @@ cc_library(
     name = "RaisingTransformOps",
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
+    copts = [
+        "-fbracket-depth=768",
+    ],
     deps = [
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
@@ -223,6 +226,9 @@ cc_library(
     srcs = [
         "TransformOps/GenerateApplyPatterns.cpp",
         "TransformOps/TransformOps.cpp",
+    ],
+    copts = [
+        "-fbracket-depth=768",
     ],
     hdrs = ["TransformOps/TransformOps.h"],
     deps = [
