@@ -58,7 +58,7 @@ void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
 void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
-void addReshapeTranspose(RewritePatternSet &patterns, bool onlySingleUser,
-                         MLIRContext &context, PatternBenefit benefit);
+void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
+                     MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
