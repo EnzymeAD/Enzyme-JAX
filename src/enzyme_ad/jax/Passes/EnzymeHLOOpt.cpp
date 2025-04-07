@@ -3777,13 +3777,13 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
             break;
           cur = cur->getNextNode();
         }
+        if (seenReshape && !seenUser) {
+          return std::make_pair(true, true);
+        }
+        if (!seenReshape && seenUser) {
+          return std::make_pair(true, false);
+        }
       }
-    if (seenReshape && !seenUser) {
-      return std::make_pair(true, true);
-    }
-    if (!seenReshape && seenUser) {
-      return std::make_pair(true, false);
-    }
     {
       bool seenUser = false;
       Operation *cur = reshaped->getNextNode();
