@@ -3785,8 +3785,11 @@ struct BroadcastToReshape final
     }
 
     // replace with reshape
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
-                                                      op.getOperand());
+    if (op.getType() == op.getOperand().getType())
+      rewriter.replaceOp(op, op.getOperand());
+    else
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                        op.getOperand());
     return success();
   }
 };
