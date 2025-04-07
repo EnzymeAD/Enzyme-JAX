@@ -321,7 +321,14 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
     if (fromShape[i] == 1) {
       if (checkRemoved) {
         if (start[startidx] != *checkRemoved) {
-          return false;
+          if (i > 0 && j > 0 && fromShape[i - 1] == fromShape[j - 1] &&
+              fromShape[i - 1] == 1 && start[startidx - 1] == *checkRemoved) {
+            i--;
+            j--;
+            startidx--;
+          } else {
+            return false;
+          }
         }
       }
       start.erase(start.begin() + startidx);
