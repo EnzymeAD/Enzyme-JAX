@@ -7522,7 +7522,7 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getType() == op.getOperand.getType()) {
+    if (op.getType() == op.getOperand().getType()) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
