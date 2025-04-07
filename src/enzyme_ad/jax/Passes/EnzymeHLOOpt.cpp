@@ -7510,7 +7510,7 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       auto NT = RankedTensorType::get(
           op.getType().getShape(),
           cast<RankedTensorType>(v.getType()).getElementType());
-      Value reshaped = nullptr;
+      stablehlo::ReshapeOp reshaped = nullptr;
       for (auto u : v.getUsers()) {
         auto re = dyn_cast<stablehlo::ReshapeOp>(u);
         if (!re)
@@ -7521,12 +7521,16 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         break;
       }
       if (!reshaped) {
-        reshaped = rewriter.create<stablehlo::ReshapeOp>(
-            op.getLoc(),
-            RankedTensorType::get(
-                op.getType().getShape(),
-                cast<RankedTensorType>(v.getType()).getElementType()),
-            v);
+        reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
+      } else {
+        if (reshaped->getBlock() == op->getBlock()) {
+          if (op->isBeforeInBlock(reshaped)) {
+            rewriter.modifyOpInPlace(reshaped,
+                                     [&]() { reshaped->moveBefore(op); });
+          }
+        } else {
+          reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
+        }
       }
       ops.push_back(reshaped);
     }
