@@ -7819,14 +7819,12 @@ struct DUSSliceSimplify final
       return rewriter.notifyMatchFailure(dusOp, "No slice users found");
 
     if (llvm::all_of(ignoredStart,
-                     [](int64_t ignored) { return ignored == 0; }))
-      return rewriter.notifyMatchFailure(dusOp, "No ignored start indices");
-
-    if (llvm::all_of(llvm::zip(ignoredEnd, resShape), [](auto p) {
+                     [](int64_t ignored) { return ignored == 0; }) &&
+        llvm::all_of(llvm::zip(ignoredEnd, resShape), [](auto p) {
           auto &[i, s] = p;
           return i == s;
         }))
-      return rewriter.notifyMatchFailure(dusOp, "No ignored end indices");
+      return rewriter.notifyMatchFailure(dusOp, "No ignored regions");
 
     assert(llvm::all_of(llvm::zip(ignoredStart, ignoredEnd), [](auto p) {
       auto &[s, e] = p;
