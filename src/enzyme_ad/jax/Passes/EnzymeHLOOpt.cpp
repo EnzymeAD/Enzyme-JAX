@@ -13749,6 +13749,45 @@ struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
   }
 };
 
+struct ReshapeSelect : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    auto selectOp = reshapeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
+    if (!selectOp)
+      return failure();
+
+    if (!selectOp->hasOneUse())
+      return failure();
+
+    Value pred = selectOp.getPred();
+    bool scalar_pred =
+        dyn_cast<RankedTensorType>(pred.getType()).getRank() == 0;
+
+    Value newPred;
+    if (!scalar_pred) {
+      newPred = rewriter.create<stablehlo::ReshapeOp>(
+          reshapeOp.getLoc(),
+          RankedTensorType::get(
+              reshapeOp.getType().getShape(),
+              pred.getType().cast<RankedTensorType>().getElementType()),
+          pred);
+    } else {
+      newPred = pred;
+    }
+
+    auto onTrueReshaped = rewriter.create<stablehlo::ReshapeOp>(
+        reshapeOp.getLoc(), reshapeOp.getType(), selectOp.getOnTrue());
+    auto onFalseReshaped = rewriter.create<stablehlo::ReshapeOp>(
+        reshapeOp.getLoc(), reshapeOp.getType(), selectOp.getOnFalse());
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        reshapeOp, newPred, onTrueReshaped, onFalseReshaped);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -14062,7 +14101,7 @@ struct EnzymeHLOOptPass
       // add reshape push up cases here
       patterns.add<ReshapeElementwise, ReshapeSlice>(true, context);
       patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
-                   ReshapeReduceWindow>(context);
+                   ReshapeReduceWindow, ReshapeSelect>(context);
     }
 
     if (passses & (2048 * 128)) {
