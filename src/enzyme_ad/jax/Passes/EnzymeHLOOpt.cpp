@@ -7507,12 +7507,28 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
-      ops.push_back(rewriter.create<stablehlo::ReshapeOp>(
-          op.getLoc(),
-          RankedTensorType::get(
-              op.getType().getShape(),
-              cast<RankedTensorType>(v.getType()).getElementType()),
-          v));
+      auto NT = RankedTensorType::get(
+          op.getType().getShape(),
+          cast<RankedTensorType>(v.getType()).getElementType());
+      Value reshaped = nullptr;
+      for (auto u : v.getUsers()) {
+        auto re = dyn_cast<stablehlo::ReshapeOp>(u);
+        if (!re)
+          continue;
+        if (re.getType() != NT)
+          continue;
+        reshaped = re;
+        break;
+      }
+      if (!reshaped) {
+        reshaped = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(),
+            RankedTensorType::get(
+                op.getType().getShape(),
+                cast<RankedTensorType>(v.getType()).getElementType()),
+            v);
+      }
+      ops.push_back(reshaped);
     }
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
