@@ -13883,14 +13883,14 @@ struct EnzymeHLOOptPass
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, XorSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
-             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
-             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
+             OrSimplify, XorSimplify, NegateSimplify, MulSimplify, DivSimplify,
+             RemSimplify, PowSimplify, SqrtSimplify, CosSimplify, SinSimplify,
+             NoopSlice, NoopReverse, SliceSlice, PadSimplify,
+             ShiftRightLogicalSimplify, NegativePadToSlice, TanhSimplify,
+             ExpSimplify, SliceSimplify, ConvertSimplify, TransposeSimplify,
+             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
+             ReduceToReshape, BroadcastToReshape, GatherSimplify,
+             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
              TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
