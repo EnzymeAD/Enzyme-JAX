@@ -97,6 +97,15 @@ void ApplyTransposeElementwisePatterns::populatePatterns(
   addTransposeElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReshapeElementwisePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReshapeElementwise(patterns, getParameter(), *getContext(),
+                        PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReshapeSlicePatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReshapeSlice(patterns, getParameter(), *getContext(),
+                  PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplySumToConvPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSumToConv(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(0)));

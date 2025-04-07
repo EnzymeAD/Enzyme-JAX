@@ -1182,15 +1182,34 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeDUS"];
 }
 
-def ApplyReshapeSlicePatterns : EnzymeHLOPatternOp<
+def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_slice"> {
-  let patterns = ["ReshapeSlice"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
-def ReshapeElementwisePatterns : EnzymeHLOPatternOp<
-  "reshape_elementwise"
-> {
-  let patterns = ["ReshapeElementwise"];
+def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
+    "reshape_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def ReshapeOfConcatPatterns : EnzymeHLOPatternOp<

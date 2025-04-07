@@ -457,7 +457,13 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+  bool onlySingleUser;
+
+  ReshapeSlice(bool onlySingleUser, MLIRContext *context,
+               PatternBenefit benefit = 1,
+               ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        onlySingleUser(onlySingleUser) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -466,7 +472,7 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!slice)
       return failure();
 
-    if (!llvm::hasSingleElement(slice->getUsers()))
+    if (onlySingleUser && !llvm::hasSingleElement(slice->getUsers()))
       return failure();
 
     SmallVector<int64_t> startIndices(slice.getStartIndices().begin(),
@@ -7427,7 +7433,13 @@ struct ReshapeReduceWindow final
 };
 
 struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+  bool onlySingleUser;
+
+  ReshapeElementwise(bool onlySingleUser, MLIRContext *context,
+                     PatternBenefit benefit = 1,
+                     ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        onlySingleUser(onlySingleUser) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -7435,7 +7447,7 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!elem)
       return failure();
 
-    if (!llvm::hasSingleElement(elem->getUsers()))
+    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
       return failure();
 
     if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
@@ -13827,6 +13839,19 @@ void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
   patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
 }
 
+void mlir::transform::addReshapeElementwise(RewritePatternSet &patterns,
+                                            bool onlySingleUser,
+                                            MLIRContext &context,
+                                            PatternBenefit benefit) {
+  patterns.insert<ReshapeElementwise>(onlySingleUser, &context, benefit);
+}
+
+void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
+                                      bool onlySingleUser, MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<ReshapeSlice>(onlySingleUser, &context, benefit);
+}
+
 namespace {
 
 struct EnzymeHLOOptPass
@@ -13993,9 +14018,9 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeOfConcatToConcatOfReshape,
-                   ReshapeDUS, ReshapeSlice, ReshapePad, ReshapeReduceWindow>(
-          context);
+      patterns.add<ReshapeElementwise, ReshapeSlice>(true, context);
+      patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
+                   ReshapeReduceWindow>(context);
     }
 
     if (passses & (2048 * 128)) {
