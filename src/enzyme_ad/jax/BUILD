@@ -13,7 +13,7 @@ licenses(["notice"])
 
 config_setting(
     name = "is_clang_build",
-    define_values = {"using_clang": "false"},
+    define_values = {"using_clang": "true"},
 )
 
 package(
