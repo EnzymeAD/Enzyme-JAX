@@ -1,4 +1,5 @@
 #include "mhlo/IR/hlo_ops.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -22,11 +23,26 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
 
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op, PatternRewriter &rewriter) const override {
+    return failure();
+  }
+};
 struct ShardPointToPointPass
     : public enzyme::impl::ShardPointToPointBase<ShardPointToPointPass> {
   using Base::Base;
   void runOnOperation() override {
-    // do nothing for now
+    auto context = getOperation()->getContext();
+    RewritePatternSet patterns(context);
+
+    patterns.add<SliceConcatSimplify>(context);
+
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                            config))) {
+      signalPassFailure();
+    }
   }
 };
