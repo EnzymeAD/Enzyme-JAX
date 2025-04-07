@@ -22,6 +22,10 @@ class PatternRewriter;
 class AffineMap;
 class DominanceInfo;
 
+namespace arith {
+class ArithDialect;
+}
+
 namespace enzyme {
 
 void populateAffineCFGPatterns(RewritePatternSet &rpl);
