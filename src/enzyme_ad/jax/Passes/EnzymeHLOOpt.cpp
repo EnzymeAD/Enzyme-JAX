@@ -3772,6 +3772,7 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
         }
         if (seenReshape || seenUser)
           break;
+	cur = cur->getNextNode();
       }
       if (seenReshape && !seenUser) {
         return std::make_pair(true, true);
@@ -3788,6 +3789,7 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
         seenUser = true;
         return std::make_pair(true, true);
       }
+      cur = cur->getNextNode();
     }
     if (!cur) {
       std::make_pair(true, false);
@@ -3801,6 +3803,7 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
         seenReshape = true;
         return std::make_pair(true, false);
       }
+      cur = cur->getNextNode();
     }
     if (!cur) {
       std::make_pair(true, true);
