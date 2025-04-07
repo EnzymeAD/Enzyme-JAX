@@ -3769,14 +3769,14 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
           // time if (cur->isAncestor(reshaped))
           if (cur == reshaped)
             seenReshape = true;
+          // if (cur->isAncestor(op))
+          if (cur == op) {
+            seenUser = true;
+          }
+          if (seenReshape || seenUser)
+            break;
+          cur = cur->getNextNode();
         }
-        // if (cur->isAncestor(op))
-        if (cur == op) {
-          seenUser = true;
-        }
-        if (seenReshape || seenUser)
-          break;
-        cur = cur->getNextNode();
       }
     if (seenReshape && !seenUser) {
       return std::make_pair(true, true);
