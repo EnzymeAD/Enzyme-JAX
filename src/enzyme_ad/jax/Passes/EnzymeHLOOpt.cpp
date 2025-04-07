@@ -3759,56 +3759,60 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
     if (op->getBlock()->isOpOrderValid()) {
       return std::make_pair(true, reshaped->isBeforeInBlock(op));
     }
-  }
-  if (v)
-    if (auto pred = v.getDefiningOp()) {
-      bool seenReshape = false;
-      bool seenUser = false;
-      Operation *cur = pred->getNextNode();
-      for (int i = 0; cur && i < limit; i++) {
-        if (cur->isAncestor(reshaped)) {
-          seenReshape = true;
+    if (v)
+      if (auto pred = v.getDefiningOp()) {
+        bool seenReshape = false;
+        bool seenUser = false;
+        Operation *cur = pred->getNextNode();
+        for (int i = 0; cur && i < limit; i++) {
+          // TODO we could make this an isancestor query, but of course compile
+          // time if (cur->isAncestor(reshaped))
+          if (cur == reshaped)
+            seenReshape = true;
         }
-        if (cur->isAncestor(op)) {
+        // if (cur->isAncestor(op))
+        if (cur == op) {
           seenUser = true;
         }
         if (seenReshape || seenUser)
           break;
         cur = cur->getNextNode();
       }
-      if (seenReshape && !seenUser) {
-        return std::make_pair(true, true);
+    if (seenReshape && !seenUser) {
+      return std::make_pair(true, true);
+    }
+    if (!seenReshape && seenUser) {
+      return std::make_pair(true, false);
+    }
+    {
+      bool seenUser = false;
+      Operation *cur = reshaped->getNextNode();
+      for (int i = 0; cur && i < limit; i++) {
+        // if (cur->isAncestor(op))
+        if (cur == op) {
+          seenUser = true;
+          return std::make_pair(true, true);
+        }
+        cur = cur->getNextNode();
       }
-      if (!seenReshape && seenUser) {
-        return std::make_pair(true, false);
+      if (!cur) {
+        std::make_pair(true, false);
       }
     }
-  {
-    bool seenUser = false;
-    Operation *cur = reshaped->getNextNode();
-    for (int i = 0; cur && i < limit; i++) {
-      if (cur->isAncestor(op)) {
-        seenUser = true;
-        return std::make_pair(true, true);
+    {
+      bool seenReshape = false;
+      Operation *cur = op->getNextNode();
+      for (int i = 0; cur && i < limit; i++) {
+        // if (cur->isAncestor(reshaped))
+        if (cur == reshaped) {
+          seenReshape = true;
+          return std::make_pair(true, false);
+        }
+        cur = cur->getNextNode();
       }
-      cur = cur->getNextNode();
-    }
-    if (!cur) {
-      std::make_pair(true, false);
-    }
-  }
-  {
-    bool seenReshape = false;
-    Operation *cur = op->getNextNode();
-    for (int i = 0; cur && i < limit; i++) {
-      if (cur->isAncestor(reshaped)) {
-        seenReshape = true;
-        return std::make_pair(true, false);
+      if (!cur) {
+        std::make_pair(true, true);
       }
-      cur = cur->getNextNode();
-    }
-    if (!cur) {
-      std::make_pair(true, true);
     }
   }
   return std::make_pair(false, false);
