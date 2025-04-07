@@ -3529,6 +3529,15 @@ struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
   }
 };
 
+struct AbsConstProp final : OpRewritePattern<mlir::stablehlo::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    return unaryConstProp<mlir::stablehlo::absOp>(op, rewriter);
+  }
+};
+
 struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -13850,8 +13859,8 @@ struct EnzymeHLOOptPass
                  SliceReshapePad, DotReshapeDot, ConcatConstProp,
                  DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
                  LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, SliceConcat, SliceIf,
                  SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
