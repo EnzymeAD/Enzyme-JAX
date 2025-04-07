@@ -3753,7 +3753,7 @@ std::pair<bool, bool> fastDoesADominateB(Operation *reshaped, Operation *op,
   assert(op);
   size_t limit = 200;
   if (reshaped->getBlock() == op->getBlock()) {
-     
+
     // TODO we could do the following, if size wasn't O(N) =/
     // op->getBlock()->getOperations().size() <= limit) {
     if (op->getBlock()->isOpOrderValid()) {
