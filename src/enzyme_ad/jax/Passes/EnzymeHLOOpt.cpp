@@ -7644,11 +7644,11 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         } else {
           // llvm::errs() << " non block reshape reshape " << reshaped << " of
           // arg " << v << "\n";
-        if (auto rop = v.getDefiningOp()) {
-          rewriter.setInsertionPointAfter(rop);
-        } else if (auto ba = dyn_cast<BlockArgument>(v)) {
-          rewriter.setInsertionPointToStart(ba.getOwner());
-        }
+          if (auto rop = v.getDefiningOp()) {
+            rewriter.setInsertionPointAfter(rop);
+          } else if (auto ba = dyn_cast<BlockArgument>(v)) {
+            rewriter.setInsertionPointToStart(ba.getOwner());
+          }
           reshaped = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), NT, v);
         }
       }
