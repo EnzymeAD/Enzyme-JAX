@@ -71,4 +71,15 @@ module {
     return %140 : tensor<268x2060xf64>
   }
 
+  // CHECK: func.func @reshape_slice_remove_first(%arg0: tensor<1x2048x2048xf64>) -> tensor<1x2032xf64> {
+  // CHECK-NEXT:   %0 = stablehlo.reshape %arg0 : (tensor<1x2048x2048xf64>) -> tensor<2048x2048xf64>
+  // CHECK-NEXT:   %1 = stablehlo.slice %0 [8:9, 8:2040] : (tensor<2048x2048xf64>) -> tensor<1x2032xf64>
+  // CHECK-NEXT:   return %1 : tensor<1x2032xf64>
+  // CHECK-NEXT: }
+  func.func @reshape_slice_remove_first(%arg0: tensor<1x2048x2048xf64>) -> tensor<1x2032xf64> {
+    %0 = stablehlo.slice %arg0 [0:1, 8:9, 8:2040] : (tensor<1x2048x2048xf64>) -> tensor<1x1x2032xf64>
+    %86 = stablehlo.reshape %0 : (tensor<1x1x2032xf64>) -> tensor<1x2032xf64>
+    return %86 : tensor<1x2032xf64>
+  }
+
 }
