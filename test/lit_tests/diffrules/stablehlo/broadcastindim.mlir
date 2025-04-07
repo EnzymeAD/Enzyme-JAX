@@ -18,6 +18,7 @@ func.func @main(%arg2: tensor<10xf32>) -> (tensor<10x3xf32>) {
 // REVERSE-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<10xf32>
 // REVERSE-NEXT:    %0 = arith.addf %arg1, %cst_0 : tensor<10x3xf32>
 // REVERSE-NEXT:    %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<10x3xf32>, tensor<f32>) -> tensor<10xf32>
-// REVERSE-NEXT:    %2 = arith.addf %1, %cst_1 : tensor<10xf32>
-// REVERSE-NEXT:    return %2 : tensor<10xf32>
+// REVERSE-NEXT:    %2 = stablehlo.transpose %1, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
+// REVERSE-NEXT:    %3 = arith.addf %2, %cst_1 : tensor<10xf32>
+// REVERSE-NEXT:    return %3 : tensor<10xf32>
 // REVERSE-NEXT:  }
