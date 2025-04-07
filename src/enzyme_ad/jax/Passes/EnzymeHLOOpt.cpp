@@ -4328,7 +4328,7 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
 };
 
 struct XorSimplify : public OpRewritePattern<mlir::stablehlo::XorOp> {
-  using OpRewritePattern<mlir::stablehlo::OrOp>::OpRewritePattern;
+  using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::XorOp op,
                                 PatternRewriter &rewriter) const final {
