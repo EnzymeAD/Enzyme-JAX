@@ -335,6 +335,10 @@ def ApplyReshapePadPatterns : EnzymeHLOPatternOp<
     "reshape_pad"> {
   let patterns = ["ReshapePad"];
 }
+def ApplyReshapeSelectPatterns : EnzymeHLOPatternOp<
+    "reshape_select"> {
+  let patterns = ["ReshapeSelect"];
+}
 def ApplyTransposeConvertPatterns : EnzymeHLOPatternOp<
     "transpose_convert"> {
   let patterns = ["TransposeConvert"];
