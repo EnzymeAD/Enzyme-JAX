@@ -4297,7 +4297,7 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::OrOp op,
                                 PatternRewriter &rewriter) const final {
 
-    // true | x -> x
+    // true | x -> true
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_One())) {
         rewriter.replaceOp(op, v);
@@ -4322,6 +4322,48 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
             [](const APInt &a, const APInt &b) -> std::optional<APInt> {
               APInt res2(a);
               res2 |= b;
+              return res2;
+            })) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), res.cast<ElementsAttr>());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct XorSimplify : public OpRewritePattern<mlir::stablehlo::XorOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::XorOp op,
+                                PatternRewriter &rewriter) const final {
+
+    // false ^ x -> x
+    for (int i = 0; i < 2; i++) {
+      if (matchPattern(op.getOperand(i), m_Zero())) {
+        rewriter.replaceOp(op, op.getOperand(1 - i));
+        return success();
+      }
+    }
+
+    // true ^ x -> not x
+    for (auto v : op.getOperands()) {
+      if (matchPattern(v, m_One())) {
+        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, v);
+        return success();
+      }
+    }
+
+    SmallVector<Attribute> constants(op->getNumOperands(), Attribute());
+    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
+      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    if (auto res = constFoldBinaryOpConditional<IntegerAttr,
+                                                IntegerAttr::ValueType, void>(
+            constants,
+            [](const APInt &a, const APInt &b) -> std::optional<APInt> {
+              APInt res2(a);
+              res2 ^= b;
               return res2;
             })) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -13866,14 +13908,14 @@ struct EnzymeHLOOptPass
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, NegateSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, SqrtSimplify, CosSimplify, SinSimplify, NoopSlice,
-             NoopReverse, SliceSlice, PadSimplify, ShiftRightLogicalSimplify,
-             NegativePadToSlice, TanhSimplify, ExpSimplify, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
+             OrSimplify, XorSimplify, NegateSimplify, MulSimplify, DivSimplify,
+             RemSimplify, PowSimplify, SqrtSimplify, CosSimplify, SinSimplify,
+             NoopSlice, NoopReverse, SliceSlice, PadSimplify,
+             ShiftRightLogicalSimplify, NegativePadToSlice, TanhSimplify,
+             ExpSimplify, SliceSimplify, ConvertSimplify, TransposeSimplify,
+             DotGeneralSimplify, DynamicSliceToStatic, DynamicUpdateSliceElim,
+             ReduceToReshape, BroadcastToReshape, GatherSimplify,
+             ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
              TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
