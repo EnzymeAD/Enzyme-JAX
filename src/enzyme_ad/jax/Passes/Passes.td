@@ -519,6 +519,14 @@ def AffineCFG : Pass<"affine-cfg"> {
   ];
 }
 
+def ShardPointToPoint : Pass<"shard-point-to-point"> {
+  let summary = "Annotate shards to ensure point to point communication";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",  
+    "mhlo::MhloDialect", 
+  ];
+}
+
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
