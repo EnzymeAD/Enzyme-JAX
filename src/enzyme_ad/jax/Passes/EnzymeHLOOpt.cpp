@@ -7802,11 +7802,8 @@ struct DUSSliceSimplify final
               return oldIgnoreStart;
             });
         ignoredEnd = llvm::map_to_vector(
-            llvm::zip(slice.getStartIndices(),
-                      slice.getResult().getType().getShape(), ignoredEnd),
-            [&](auto p) {
-              auto &[start, sliceSize, oldIgnoreEnd] = p;
-              int64_t thisIgnoreEnd = start + sliceSize;
+            llvm::zip(slice.getLimitIndices(), ignoredEnd), [&](auto p) {
+              auto &[thisIgnoreEnd, oldIgnoreEnd] = p;
               if (thisIgnoreEnd > oldIgnoreEnd)
                 return thisIgnoreEnd;
               return oldIgnoreEnd;
@@ -7878,11 +7875,25 @@ struct DUSSliceSimplify final
         llvm::zip(ignoredStart, dusStartIndices), [&](auto p) -> Value {
           auto &[ignored, dusStart] = p;
           int64_t start = 0;
-          if (ignored > dusStart)
-            start = ignored - dusStart;
+          if (ignored < dusStart)
+            start = dusStart - ignored;
 
           return rewriter.create<stablehlo::ConstantOp>(
               loc, itype, makeAttr(itype, start).cast<ElementsAttr>());
+        });
+
+    LLVM_DEBUG(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
+                 newDusIndices,
+                 preSliceOperand.getType().cast<RankedTensorType>().getShape(),
+                 preSliceUpdate.getType()
+                     .cast<RankedTensorType>()
+                     .getShape())) {
+          APInt start;
+          assert(matchPattern(idx, m_ConstantInt(&start)));
+          int64_t vali = start.getSExtValue();
+          assert(operandSize >= vali + updateSize);
         });
 
     auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
