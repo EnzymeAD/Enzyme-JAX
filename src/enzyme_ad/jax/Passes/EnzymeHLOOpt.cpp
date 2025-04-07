@@ -460,8 +460,8 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   bool onlySingleUser;
 
   ReshapeSlice(bool onlySingleUser, MLIRContext *context,
-                       PatternBenefit benefit = 1,
-                       ArrayRef<StringRef> generatedNames = {})
+               PatternBenefit benefit = 1,
+               ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
@@ -7436,8 +7436,8 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   bool onlySingleUser;
 
   ReshapeElementwise(bool onlySingleUser, MLIRContext *context,
-                       PatternBenefit benefit = 1,
-                       ArrayRef<StringRef> generatedNames = {})
+                     PatternBenefit benefit = 1,
+                     ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
@@ -13840,16 +13840,15 @@ void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addReshapeElementwise(RewritePatternSet &patterns,
-                                              bool onlySingleUser,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
+                                            bool onlySingleUser,
+                                            MLIRContext &context,
+                                            PatternBenefit benefit) {
   patterns.insert<ReshapeElementwise>(onlySingleUser, &context, benefit);
 }
 
 void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
-                                              bool onlySingleUser,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
+                                      bool onlySingleUser, MLIRContext &context,
+                                      PatternBenefit benefit) {
   patterns.insert<ReshapeSlice>(onlySingleUser, &context, benefit);
 }
 
@@ -14019,11 +14018,9 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeSlice>(true, 
-          context);
-      patterns.add<ReshapeOfConcatToConcatOfReshape,
-                   ReshapeDUS, ReshapePad, ReshapeReduceWindow>(
-          context);
+      patterns.add<ReshapeElementwise, ReshapeSlice>(true, context);
+      patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
+                   ReshapeReduceWindow>(context);
     }
 
     if (passses & (2048 * 128)) {
