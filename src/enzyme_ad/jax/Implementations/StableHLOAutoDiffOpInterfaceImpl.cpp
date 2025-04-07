@@ -682,7 +682,6 @@ public:
     llvm::SmallVector<int64_t> sorted_bcastDims(bcastDims.begin(),
                                                 bcastDims.end());
     llvm::sort(sorted_bcastDims);
-
     llvm::SmallVector<int64_t, 1> permutation;
     permutation.resize(bcastDims.size());
     for (auto i = 0; i < bcastDims.size(); ++i) {
@@ -690,10 +689,9 @@ public:
       permutation[i] = std::distance(sorted_bcastDims.begin(), permutedIdx);
     }
 
-    // transpose back to original dims (rank == bcastDims.size() according to
-    // spec)
-    if (res.getType() != resTy)
-      res = builder.create<TransposeOp>(op.getLoc(), resTy, res, permutation);
+    // Always transpose back to original dims
+    // The spec guarantees rank == bcastDims.size()
+    res = builder.create<TransposeOp>(op.getLoc(), resTy, res, permutation);
 
     gutils->addToDiffe(op.getOperand(), res, builder);
     return success();
