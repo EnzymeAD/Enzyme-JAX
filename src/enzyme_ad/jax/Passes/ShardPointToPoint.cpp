@@ -1,11 +1,10 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
@@ -26,7 +25,24 @@ using namespace mlir::enzyme;
 struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() <= 1) {
+      return failure();
+    }
+
+    SmallVector<stablehlo::SliceOp> sliceOps;
+    for (Value operand : op.getOperands()) {
+      auto sliceOp = operand.getDefiningOp<stablehlo::SliceOp>();
+      if (!sliceOp)
+        return failure();
+
+      if (!sliceOp->hasOneUse())
+        return failure();
+
+      sliceOps.push_back(sliceOp);
+    }
+
     return failure();
   }
 };
