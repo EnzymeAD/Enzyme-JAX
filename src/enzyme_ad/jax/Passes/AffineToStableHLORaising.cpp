@@ -1723,7 +1723,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           op->getLoc(), T, inputTen, startIndices, limitIndices, strides);
     }
 
-    newVal = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), newVal,
+    if (reverseDims.size())
+      newVal = builder.create<stablehlo::ReverseOp>(inputTen.getLoc(), newVal,
                                                   reverseDims);
 
     SmallVector<AffineExpr> dynExprs;
@@ -1922,7 +1923,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (!update)
       return failure();
 
-    update = builder.create<stablehlo::ReverseOp>(storeOp.getLoc(), update,
+    if (reverseDims.size())
+      update = builder.create<stablehlo::ReverseOp>(storeOp.getLoc(), update,
                                                   reverseDims);
 
     auto newOperand = builder.create<stablehlo::DynamicUpdateSliceOp>(
