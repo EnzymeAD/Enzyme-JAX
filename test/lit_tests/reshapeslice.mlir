@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reshape_slice" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reshape_slice(1)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module {
   // Test case where reshape adds a unit dimension at the beginning.

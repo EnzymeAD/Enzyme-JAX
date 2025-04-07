@@ -1183,7 +1183,7 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
 }
 
 def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
-    "transpose_elementwise"> {
+    "reshape_slice"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -1198,7 +1198,7 @@ def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
 }
 
 def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
-    "transpose_elementwise"> {
+    "reshape_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
