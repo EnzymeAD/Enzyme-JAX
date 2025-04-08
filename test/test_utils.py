@@ -270,7 +270,6 @@ def setup_backends():
     if backends_initialized:
         return
     import jax
-    
     AllBackends.append("cpu")
     backend = jax.default_backend()
     CurBackends.append(backend)
