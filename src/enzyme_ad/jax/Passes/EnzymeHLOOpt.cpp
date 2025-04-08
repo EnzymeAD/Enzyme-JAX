@@ -11165,6 +11165,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
       // outside the window
 
       SmallVector<Value> todo = {argOperand, condOperand};
+      bool selfYield = false;
       while (!todo.empty()) {
         auto cur = todo.pop_back_val();
         for (auto &u : cur.getUses()) {
@@ -11218,6 +11219,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
               legal = false;
               break;
             }
+            selfYield = true;
             continue;
           }
 
@@ -11228,6 +11230,8 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
           break;
       }
       if (!legal)
+        continue;
+      if (!selfYield)
         continue;
 
       bool seenSlice = false;
