@@ -1192,6 +1192,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
           continue;
         }
         updatedIV = arg;
+        break;
       } else {
         rewriter.notifyMatchFailure(whileOp, "Step not add");
         continue;
