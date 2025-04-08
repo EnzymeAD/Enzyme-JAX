@@ -276,7 +276,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
         concat.getLoc(), arg, inner_starts3, inner_limits3, inner_strides);
 
     SmallVector<int64_t> source_target_ids2(2 * nx);
-    for (int i = 0; i < 2 * nx; i+=2) {
+    for (int i = 0; i < 2 * nx; i += 2) {
       int idx = i / 2;
       source_target_ids2[i] = idx * ny;
       source_target_ids2[i + 1] = (idx + 1) * ny - 1;
@@ -302,7 +302,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
     auto source_target_pairs_ty3 = RankedTensorType::get(
         {(int64_t)(nx), (int64_t)2}, rewriter.getI64Type());
     SmallVector<int64_t> source_target_ids3(2 * nx);
-    for (int i = 0; i < 2 * nx; i+=2) {
+    for (int i = 0; i < 2 * nx; i += 2) {
       int idx = i / 2;
       source_target_ids3[i] = (idx + 1) * ny - 1;
       source_target_ids3[i + 1] = idx * ny;
