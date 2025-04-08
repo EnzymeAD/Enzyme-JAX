@@ -1,7 +1,8 @@
 def fix_paths():
     import os
-    import platform 
-    # skip CUDA setup for MacOS 
+    import platform
+
+    # skip CUDA setup for MacOS
     if platform.system() == "Darwin":
         return
 
@@ -270,6 +271,7 @@ def setup_backends():
     if backends_initialized:
         return
     import jax
+
     AllBackends.append("cpu")
     backend = jax.default_backend()
     CurBackends.append(backend)
