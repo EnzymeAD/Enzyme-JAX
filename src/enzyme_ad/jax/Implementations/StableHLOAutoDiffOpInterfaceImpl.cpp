@@ -26,6 +26,8 @@
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include <cstdint>
+#include <iterator>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -676,8 +678,20 @@ public:
 
     Value res = red->getResult(0);
     Type resTy = gutils->getShadowType(op.getOperand().getType());
-    if (res.getType() != resTy)
-      res = builder.create<ReshapeOp>(op.getLoc(), resTy, res);
+
+    llvm::SmallVector<int64_t> sorted_bcastDims(bcastDims.begin(),
+                                                bcastDims.end());
+    llvm::sort(sorted_bcastDims);
+    llvm::SmallVector<int64_t, 1> permutation;
+    permutation.resize(bcastDims.size());
+    for (auto i = 0; i < bcastDims.size(); ++i) {
+      auto permutedIdx = llvm::find(sorted_bcastDims, bcastDims[i]);
+      permutation[i] = std::distance(sorted_bcastDims.begin(), permutedIdx);
+    }
+
+    // Always transpose back to original dims
+    // The spec guarantees rank == bcastDims.size()
+    res = builder.create<TransposeOp>(op.getLoc(), resTy, res, permutation);
 
     gutils->addToDiffe(op.getOperand(), res, builder);
     return success();
