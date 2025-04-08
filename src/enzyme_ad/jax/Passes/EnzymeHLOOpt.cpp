@@ -750,6 +750,188 @@ struct DUSConcat final
   }
 };
 
+struct ConcatConcatToDUS final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer.getOperands().size() < 2)
+      return failure();
+    SmallVector<stablehlo::ConcatenateOp> inners;
+
+    for (auto v : outer.getOperands()) {
+      auto concatOp = v.getDefiningOp<stablehlo::ConcatenateOp>();
+      if (!concatOp)
+        return failure();
+      if (concatOp.getDimension() == outer.getDimension())
+        return failure();
+      if (concatOp.getOperands().size() < 2)
+        return failure();
+      if (inners.size()) {
+        if (inners[0].getOperands().size() != concatOp.getOperands().size()) {
+          return failure();
+        }
+        if (inners[0].getDimension() != concatOp.getDimension()) {
+          return failure();
+        }
+      }
+      inners.push_back(concatOp);
+    }
+
+    stablehlo::SliceOp lhs = nullptr;
+    if (auto lhsSlice =
+            inners[0].getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      size_t nextStart = lhsSlice.getLimitIndices()[outer.getDimension()];
+      for (int i = 1; i < inners.size(); i++) {
+        auto slice2 =
+            inners[i].getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+        if (!slice2) {
+          legal = false;
+          break;
+        }
+        if (slice2.getOperand() != lhsSlice.getOperand()) {
+          legal = false;
+          break;
+        }
+        for (int j = 0; j < lhsSlice.getType().getShape().size(); j++) {
+          if (j == outer.getDimension()) {
+            if (slice2.getStartIndices()[j] != nextStart) {
+              legal = false;
+              break;
+            }
+          } else {
+            if (slice2.getStartIndices()[j] != lhsSlice.getStartIndices()[j]) {
+              legal = false;
+              break;
+            }
+            if (slice2.getLimitIndices()[j] != lhsSlice.getLimitIndices()[j]) {
+              legal = false;
+              break;
+            }
+            if (slice2.getStrides()[j] != 1 || lhsSlice.getStrides()[j] != 1) {
+              legal = false;
+              break;
+            }
+          }
+        }
+        nextStart = slice2.getLimitIndices()[outer.getDimension()];
+      }
+      if (legal) {
+        lhs = lhsSlice;
+      }
+    }
+
+    stablehlo::SliceOp rhs = nullptr;
+    if (auto rhsSlice = inners[0]
+                            .getOperands()
+                            .back()
+                            .getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      size_t nextStart = rhsSlice.getLimitIndices()[outer.getDimension()];
+      for (int i = 1; i < inners.size(); i++) {
+        auto slice2 =
+            inners[i].getOperands().back().getDefiningOp<stablehlo::SliceOp>();
+        if (!slice2) {
+          legal = false;
+          break;
+        }
+        if (slice2.getOperand() != rhsSlice.getOperand()) {
+          legal = false;
+          break;
+        }
+        for (int j = 0; j < rhsSlice.getType().getShape().size(); j++) {
+          if (j == outer.getDimension()) {
+            if (slice2.getStartIndices()[j] != nextStart) {
+              legal = false;
+              break;
+            }
+          } else {
+            if (slice2.getStartIndices()[j] != rhsSlice.getStartIndices()[j]) {
+              legal = false;
+              break;
+            }
+            if (slice2.getLimitIndices()[j] != rhsSlice.getLimitIndices()[j]) {
+              legal = false;
+              break;
+            }
+            if (slice2.getStrides()[j] != 1 || rhsSlice.getStrides()[j] != 1) {
+              legal = false;
+              break;
+            }
+          }
+        }
+        nextStart = slice2.getLimitIndices()[outer.getDimension()];
+      }
+      if (legal) {
+        rhs = rhsSlice;
+      }
+    }
+
+    if (rhs && lhs && rhs.getOperand() == lhs.getOperand() &&
+        rhs.getLimitIndices()[inners[0].getDimension()] -
+                lhs.getStartIndices()[inners[0].getDimension()] ==
+            outer.getType().getShape()[inners[0].getDimension()]) {
+      bool legal = true;
+      for (int j = 0; j < lhs.getType().getShape().size(); j++) {
+        if (j != inners[0].getDimension()) {
+          if (lhs.getStartIndices()[j] != rhs.getStartIndices()[j]) {
+            legal = false;
+            break;
+          }
+          if (lhs.getLimitIndices()[j] != rhs.getLimitIndices()[j]) {
+            legal = false;
+            break;
+          }
+        }
+      }
+      if (legal) {
+        SmallVector<Value> newInner;
+        for (auto concat : inners) {
+          SmallVector<Value> innerOps;
+          for (int i = 1; i < concat.getOperands().size() - 1; i++) {
+            innerOps.push_back(concat.getOperands()[i]);
+          }
+          newInner.push_back(rewriter.create<stablehlo::ConcatenateOp>(
+              concat.getLoc(), innerOps, concat.getDimension()));
+        }
+        auto newOuter = rewriter.create<stablehlo::ConcatenateOp>(
+            outer.getLoc(), newInner, outer.getDimension());
+        auto newSlice = rewriter.create<stablehlo::SliceOp>(
+            outer.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
+            inners.back()
+                .getOperands()
+                .back()
+                .getDefiningOp<stablehlo::SliceOp>()
+                .getLimitIndices(),
+            lhs.getStrides());
+        auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
+        SmallVector<Value> starts(
+            lhs.getType().getShape().size(),
+            rewriter.create<stablehlo::ConstantOp>(
+                outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+        starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
+            outer.getLoc(),
+            makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
+                .cast<ElementsAttr>());
+        rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+            outer, newSlice, newOuter, starts);
+        return success();
+      }
+    }
+
+    if (lhs) {
+      llvm::errs() << "TODO: implement LHS side concat optimization\n";
+    }
+
+    if (rhs) {
+      llvm::errs() << "TODO: implement RHS side concat optimization\n";
+    }
+    return failure();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14180,7 +14362,7 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
                    ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat>(context);
+                   SliceDUSToConcat, ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
     }
 
