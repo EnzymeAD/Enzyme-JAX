@@ -78,22 +78,6 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       }
     }
 
-    /*
-    %26 = stablehlo.slice %arg11 [8:520, 1:1023, 2034:2040] {mhlo.sharding =
-    "{devices=[1,1,2]<=[2]}"} : (tensor<528x1024x2048xf64>) ->
-    tensor<512x1022x6xf64> loc(#loc1191) %27 = stablehlo.slice %arg11 [8:520,
-    1:1023, 8:2040] {mhlo.sharding = "{devices=[1,1,2]<=[2]}"} :
-    (tensor<528x1024x2048xf64>) -> tensor<512x1022x2032xf64> loc(#loc1191) %23 =
-    stablehlo.slice %arg11 [8:520, 1:1023, 8:16] {mhlo.sharding =
-    "{devices=[1,1,2]<=[2]}"} : (tensor<528x1024x2048xf64>) ->
-    tensor<512x1022x8xf64> loc(#loc1190) %36 = stablehlo.concatenate %26, %27,
-    %23, dim = 2 {mhlo.sharding = "{devices=[1,1,2]<=[2]}"} :
-    (tensor<512x1022x6xf64>, tensor<512x1022x2032xf64>, tensor<512x1022x8xf64>)
-    -> tensor<512x1022x2046xf64> loc(#loc1262
-    */
-
-    // LHS = 6
-    // RHS = 8 in above
     int lhsSize = ops[0].getType().getShape()[concat.getDimension()];
     int rhsSize = ops[2].getType().getShape()[concat.getDimension()];
     if (ops[2].getStartIndices()[concat.getDimension()] !=
@@ -166,6 +150,13 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
     auto N3 = ops[2].getType().getShape()[concat.getDimension()];
     auto T = N1 + N2 + N3;
 
+    if (N2 != N3) {
+      // TODO: lift this condition. The challenge here would be in the absence
+      //       of this condition, we need to consider bi-directional
+      //       communication
+      return failure();
+    }
+
     if (ndevices.size() != 3 || ndevices[0] != 1) {
       return failure();
     }
@@ -179,6 +170,12 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       nx = ndevices[1];
     }
 
+    if (ny % 2 != 0) {
+      // TODO: Lift this condition. For the center most blocks, we will have 2
+      //       comms from the left and right
+      return failure();
+    }
+
     auto devices_along_dim = ndevices[concat.getDimension()];
 
     auto zero = rewriter.create<stablehlo::ConstantOp>(
@@ -189,7 +186,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
         rewriter.create<stablehlo::ConstantOp>(
             concat.getLoc(), partition_id.getType(),
             makeAttr(partition_id.getType(), ny).cast<ElementsAttr>()));
-    leftSide = rewriter.create<stablehlo::CompareOp>(
+    Value isLeftSide = rewriter.create<stablehlo::CompareOp>(
         concat.getLoc(), leftSide, zero, stablehlo::ComparisonDirection::EQ);
 
     // partition_id == (ny -1) (2ny - 1) ...
@@ -203,66 +200,170 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
         rewriter.create<stablehlo::ConstantOp>(
             concat.getLoc(), partition_id.getType(),
             makeAttr(partition_id.getType(), ny).cast<ElementsAttr>()));
-    rightSide = rewriter.create<stablehlo::CompareOp>(
+    Value isRightSide = rewriter.create<stablehlo::CompareOp>(
         concat.getLoc(), rightSide, zero, stablehlo::ComparisonDirection::EQ);
 
-    auto notLeft = rewriter.create<stablehlo::NotOp>(concat.getLoc(), leftSide);
-    auto notRight =
-        rewriter.create<stablehlo::NotOp>(concat.getLoc(), rightSide);
+    auto isNotLeftSide =
+        rewriter.create<stablehlo::NotOp>(concat.getLoc(), isLeftSide);
+    auto isNotRightSide =
+        rewriter.create<stablehlo::NotOp>(concat.getLoc(), isRightSide);
     Type ifTypes[] = {RankedTensorType::get(localRetShape,
                                             concat.getType().getElementType())};
     auto if1 = rewriter.create<stablehlo::IfOp>(
         concat.getLoc(), ifTypes,
-        rewriter.create<stablehlo::AndOp>(concat.getLoc(), notLeft, notRight));
+        rewriter.create<stablehlo::AndOp>(concat.getLoc(), isNotLeftSide,
+                                          isNotRightSide));
     rewriter.create<sdy::ReturnOp>(concat.getLoc(), if1->getResults());
 
     rewriter.createBlock(&if1.getTrueBranch(), if1.getTrueBranch().begin());
 
-    // if ..... !leftSide  && !rightSide
-    SmallVector<int64_t> inner_starts(concat.getType().getShape().size(), 0);
-    SmallVector<int64_t> inner_limits =
-        llvm::to_vector(cast<RankedTensorType>(arg.getType()).getShape());
     SmallVector<int64_t> inner_strides(concat.getType().getShape().size(), 1);
-    inner_starts[concat.getDimension()] = T1 / ny; // (T2 - T1) / ny;
-    auto local_data_for_comm = rewriter.create<stablehlo::SliceOp>(
-        concat.getLoc(), arg, inner_starts, inner_limits, inner_strides);
 
-    // SmallVector<int64_t> source_ids((ny - 1) * nx);
-    // SmallVector<int64_t> target_ids((ny - 1) * nx);
-    // send_idx = 0;
-    // for (int i = 0; i < (ny - 1) * nx; i++) {
-    //   source_ids[i] = send_idx;
-    //   target_ids[i] = send_idx + 1;
-    // }
+    // if ..... !leftSide  && !rightSide
+    Value ny_2 = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), partition_id.getType(),
+        makeAttr(partition_id.getType(), ny / 2).cast<ElementsAttr>());
 
-    // for simplicity send for all pairs
-    SmallVector<int64_t> source_target_ids(2 * ny * nx);
-    for (int i = 0; i < ny * nx; i++) {
-      source_target_ids[i] = i;
-      source_target_ids[i + nx * ny] = i + 1;
+    Value isLeftBlock = rewriter.create<stablehlo::CompareOp>(
+        concat.getLoc(), leftSide, ny_2, stablehlo::ComparisonDirection::LT);
+
+    int64_t commSize = N2 - 2 * N2 / ny;
+    auto if3 =
+        rewriter.create<stablehlo::IfOp>(concat.getLoc(), ifTypes, isLeftBlock);
+
+    SmallVector<int64_t> source_target_ids(2 * (ny - 2) * nx);
+    for (int i = 0; i < nx; i++) {
+      for (int j = 0; j < (ny - 2); j++) {
+        int idx = i * (ny - 2) + j;
+        int partition_idx = i * ny + j;
+        if (j + 1 < (ny / 2)) {
+          source_target_ids[2 * idx] = partition_idx;
+          source_target_ids[2 * idx + 1] = partition_idx + 1;
+        } else {
+          source_target_ids[2 * idx] = partition_idx + 2;
+          source_target_ids[2 * idx + 1] = partition_idx + 1;
+        }
+      }
+    }
+    auto source_target_pairs_ty = RankedTensorType::get(
+        {(int64_t)((ny - 2) * nx), (int64_t)2}, rewriter.getI64Type());
+
+    auto zeroTensorType =
+        RankedTensorType::get({}, rewriter.getIntegerType(64));
+    Value zeroConst = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), zeroTensorType,
+        DenseIntElementsAttr::get(zeroTensorType, {0}));
+
+    Value alpha = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), partition_id.getType(),
+        makeAttr(partition_id.getType(), (N2 + N3) / ny).cast<ElementsAttr>());
+    auto onePId = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), partition_id.getType(),
+        makeAttr(partition_id.getType(), 1).cast<ElementsAttr>());
+
+    // Case I: for the left part of the comm
+    {
+      rewriter.createBlock(&if3.getTrueBranch(), if3.getTrueBranch().begin());
+
+      SmallVector<int64_t> inner_starts_from_left(
+          concat.getType().getShape().size(), 0);
+      SmallVector<int64_t> inner_limits_from_left =
+          llvm::to_vector(cast<RankedTensorType>(arg.getType()).getShape());
+      inner_starts_from_left[concat.getDimension()] =
+          inner_limits_from_left[concat.getDimension()] - commSize;
+
+      auto leftSlice = rewriter.create<stablehlo::SliceOp>(
+          concat.getLoc(), arg, inner_starts_from_left, inner_limits_from_left,
+          inner_strides);
+
+      auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
+          concat.getLoc(), leftSlice,
+          DenseIntElementsAttr::get(source_target_pairs_ty, source_target_ids),
+          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+                                            /*type*/ 0));
+
+      Value concat_args_inner[] = {leftSlice, arg};
+      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          concat.getLoc(), concat_args_inner, concat.getDimension());
+
+      SmallVector<Value> dynamicSliceStartSlices;
+      for (int i = 0; i < concat.getType().getShape().size(); i++) {
+        if (i == concat.getDimension()) {
+          auto diffIdx = rewriter.create<stablehlo::MulOp>(
+              concat.getLoc(),
+              rewriter.create<stablehlo::SubtractOp>(concat.getLoc(),
+                                                     partition_id, onePId),
+              alpha);
+          dynamicSliceStartSlices.push_back(
+              rewriter.create<stablehlo::ConvertOp>(concat.getLoc(),
+                                                    zeroTensorType, diffIdx));
+        } else {
+          dynamicSliceStartSlices.push_back(zeroConst);
+        }
+      }
+
+      auto slicedPart = rewriter.create<stablehlo::DynamicSliceOp>(
+          concat.getLoc(), innerConcat, dynamicSliceStartSlices, localRetShape);
+
+      rewriter.create<stablehlo::ReturnOp>(concat.getLoc(),
+                                           slicedPart->getResults());
     }
 
-    auto source_target_pairs_ty = RankedTensorType::get(
-        {(int64_t)(nx * ny), (int64_t)2}, rewriter.getI64Type());
+    // Case II: for the right part of the comm
+    {
+      rewriter.createBlock(&if3.getFalseBranch(), if3.getFalseBranch().begin());
 
-    auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
-        concat.getLoc(), local_data_for_comm->getResult(0),
-        DenseIntElementsAttr::get(source_target_pairs_ty, source_target_ids),
-        stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
-                                          /*type*/ 0));
+      SmallVector<int64_t> inner_starts_from_right(
+          concat.getType().getShape().size(), 0);
+      SmallVector<int64_t> inner_limits_from_right =
+          llvm::to_vector(cast<RankedTensorType>(arg.getType()).getShape());
+      inner_limits_from_right[concat.getDimension()] = commSize;
 
-    SmallVector<int64_t> inner_starts2(concat.getType().getShape().size(), 0);
-    SmallVector<int64_t> inner_limits2 =
-        llvm::to_vector(cast<RankedTensorType>(arg.getType()).getShape());
-    inner_limits2[concat.getDimension()] = (T2 - T1) / ny;
-    auto already_available_slice = rewriter.create<stablehlo::SliceOp>(
-        concat.getLoc(), arg, inner_starts2, inner_limits2, inner_strides);
+      auto rightSlice = rewriter.create<stablehlo::SliceOp>(
+          concat.getLoc(), arg, inner_starts_from_right,
+          inner_limits_from_right, inner_strides);
 
-    Value concat_args[] = {cperm, already_available_slice}; // fix api
-    auto ifneither = rewriter.create<stablehlo::ConcatenateOp>(
-        concat.getLoc(), concat_args, concat.getDimension());
-    rewriter.create<stablehlo::ReturnOp>(concat.getLoc(),
-                                         ifneither->getResults());
+      auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
+          concat.getLoc(), rightSlice,
+          DenseIntElementsAttr::get(source_target_pairs_ty, source_target_ids),
+          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+                                            /*type*/ 0));
+
+      Value concat_args_inner[] = {arg, rightSlice};
+      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          concat.getLoc(), concat_args_inner, concat.getDimension());
+
+      SmallVector<Value> dynamicSliceStartSlices;
+      for (int i = 0; i < concat.getType().getShape().size(); i++) {
+        if (i == concat.getDimension()) {
+          auto diffIdx = rewriter.create<stablehlo::MulOp>(
+              concat.getLoc(),
+              rewriter.create<stablehlo::AddOp>(concat.getLoc(), partition_id,
+                                                onePId),
+              alpha);
+          auto startIdx = rewriter.create<stablehlo::SubtractOp>(
+              concat.getLoc(),
+              rewriter.create<stablehlo::ConstantOp>(
+                  concat.getLoc(), partition_id.getType(),
+                  makeAttr(partition_id.getType(), N2).cast<ElementsAttr>()),
+              diffIdx);
+          dynamicSliceStartSlices.push_back(
+              rewriter.create<stablehlo::ConvertOp>(concat.getLoc(),
+                                                    zeroTensorType, startIdx));
+        } else {
+          dynamicSliceStartSlices.push_back(zeroConst);
+        }
+      }
+
+      auto slicedPart = rewriter.create<stablehlo::DynamicSliceOp>(
+          concat.getLoc(), innerConcat, dynamicSliceStartSlices, localRetShape);
+
+      rewriter.create<stablehlo::ReturnOp>(concat.getLoc(),
+                                           slicedPart->getResults());
+    }
+
+    rewriter.setInsertionPointAfter(if3);
+    rewriter.create<stablehlo::ReturnOp>(concat.getLoc(), if3->getResults());
 
     // else
 
@@ -315,7 +416,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
                                           /*type*/ 0));
 
     auto if2 =
-        rewriter.create<stablehlo::IfOp>(concat.getLoc(), ifTypes, leftSide);
+        rewriter.create<stablehlo::IfOp>(concat.getLoc(), ifTypes, isLeftSide);
     rewriter.create<stablehlo::ReturnOp>(concat.getLoc(), if2->getResults());
 
     // if lhsSide
@@ -356,9 +457,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
                                            final_result->getResults());
     }
 
-    llvm::errs() << "manual: " << manual << "\n";
     rewriter.replaceOp(concat, manual);
-
     return success();
   }
 };
