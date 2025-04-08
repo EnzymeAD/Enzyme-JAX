@@ -519,11 +519,11 @@ def AffineCFG : Pass<"affine-cfg"> {
   ];
 }
 
-def ShardPointToPoint : Pass<"shard-point-to-point"> {
-  let summary = "Annotate shards to ensure point to point communication";
+def OptimizeCommunication : Pass<"optimize-communication"> {
+  let summary = "Optimize communication";
   let dependentDialects = [
     "stablehlo::StablehloDialect",  
-    "sdy::ShardyDialect",
+    "sdy::SdyDialect",
   ];
 }
 

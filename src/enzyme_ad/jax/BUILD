@@ -556,6 +556,7 @@ cc_library(
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
         "@xla//xla/mlir_hlo",
     ],
 )
