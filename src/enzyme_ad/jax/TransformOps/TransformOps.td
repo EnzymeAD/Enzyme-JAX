@@ -1268,6 +1268,11 @@ def SliceDUSToConcat : EnzymeHLOPatternOp<
   let patterns = ["SliceDUSToConcat"];
 }
 
+def ConcatConcatToDUS : EnzymeHLOPatternOp<
+    "concat_concat_to_dus"> {
+  let patterns = ["ConcatConcatToDUS"];
+}
+
 def WhileInductionReduction : EnzymeHLOPatternOp<
     "while_induction_reduction"> {
   let patterns = ["WhileInductionReduction"];
