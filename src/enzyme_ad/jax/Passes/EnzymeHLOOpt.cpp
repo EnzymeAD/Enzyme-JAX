@@ -14357,6 +14357,7 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
       if (!isa<stablehlo::SliceOp, stablehlo::ConcatenateOp, stablehlo::PadOp,
                stablehlo::TransposeOp, stablehlo::ReshapeOp,
                stablehlo::DynamicUpdateSliceOp, enzymexla::RotateOp,
+               enzymexla::ExtendOp,
                enzymexla::WrapOp>(cur))
         continue;
       bool allWithin = true;

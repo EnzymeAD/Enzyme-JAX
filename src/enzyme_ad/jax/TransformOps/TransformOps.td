@@ -1458,6 +1458,11 @@ def GroupCommsWrap : EnzymeHLOPatternOp<
   let patterns = ["GroupComms<enzymexla::WrapOp>"];
 }
 
+def GroupCommsExtend : EnzymeHLOPatternOp<
+    "group_comms_extend"> {
+  let patterns = ["GroupComms<enzymexla::ExtendOp>"];
+}
+
 def GroupCommsTranspose : EnzymeHLOPatternOp<
     "group_comms_transpose"> {
   let patterns = ["GroupComms<stablehlo::TransposeOp>"];
