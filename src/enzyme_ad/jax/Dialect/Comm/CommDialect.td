@@ -3,7 +3,8 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/Traits.td"
-include "mlir/Interfaces/ControlFlowInterfaces.td"  
+include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def CommDialect : Dialect {
   let name = "comm";
@@ -140,7 +141,9 @@ def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait, SingleBlock,
 
 def CommSend: CommOp<"send"> {
   let summary = "An op to fulfill (part of) a messages input.";
-  let arguments = (ins MessageTokenType:$token, AnyType:$data);
+  // TODO When we want to make send asynchronous remove the read from the token
+  let arguments = (ins Arg<MessageTokenType, "channel token", [MemWriteAt<1, FullEffect>, MemReadAt<2, FullEffect>]>:$token,
+                    Arg<AnyType, "message data", [MemReadAt<0, FullEffect>]>:$data);
   let results = (outs );
   let assemblyFormat = [{
     attr-dict $token $data `:` type($data)
@@ -153,7 +156,8 @@ def CommSend: CommOp<"send"> {
 
 def CommRecv: CommOp<"recv"> {
   let summary = "An op that blocks and returns the messages output";
-  let arguments = (ins MessageTokenType:$token);
+  // Need to encode write back to the token because the sender may be waiting.
+  let arguments = (ins Arg<MessageTokenType, "channel token", [MemReadAt<0, FullEffect>, MemWriteAt<2>]>:$token);
   let results = (outs AnyType:$data);
   let assemblyFormat = [{
     attr-dict $token `:` type($data)
