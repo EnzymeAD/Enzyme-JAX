@@ -2840,7 +2840,7 @@ struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 };
 
 bool canMergeWrapsAlongAxis(int dimension, enzymexla::WrapOp wrap,
-                           enzymexla::WrapOp otherWrap) {
+                            enzymexla::WrapOp otherWrap) {
   if (wrap.getDimension() != otherWrap.getDimension())
     return false;
 
@@ -2880,7 +2880,8 @@ struct ConcatWrap final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
           auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(
               op.getLoc(), padops, op.getDimension());
           wrap = rewriter.create<enzymexla::WrapOp>(
-              wrap->getLoc(), subConcat, wrap.getLhs(), wrap.getRhs(), wrap.getDimension());
+              wrap->getLoc(), subConcat, wrap.getLhs(), wrap.getRhs(),
+              wrap.getDimension());
           i++;
         } else
           break;
