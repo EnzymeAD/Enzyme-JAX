@@ -15106,26 +15106,6 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
             newSliceLimits[targetExtendDim] = newBaseExtendResultType.getDimSize(targetExtendDim);
             newSliceStrides[targetExtendDim] = 1;
 
-            oldExtendOp.dump();
-            oldSliceOp.dump();
-            llvm::outs() << oldExtendOp.getLoc() << "\n";
-            llvm::outs() << newBaseExtendResult << "\n";
-            llvm::outs() << "[";
-            for (auto s : newSliceStarts) {
-                llvm::outs() << s << ", ";
-            }
-            llvm::outs() << "]\n";
-            llvm::outs() << "[";
-            for (auto l : newSliceLimits) {
-                llvm::outs() << l << ", ";
-            }
-            llvm::outs() << "]\n";
-            // llvm::outs() << newSliceStarts << "\n";
-            // llvm::outs() << newSliceLimits << "\n"
-
-
-            llvm::outs() << "creating newSlice\n";
-
             auto newSlice = rewriter.create<stablehlo::SliceOp>(
                 oldExtendOp.getLoc(),
                 oldExtendOp.getResult().getType(), // Use original extend op's result type
@@ -15134,8 +15114,6 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
                 newSliceLimits,
                 newSliceStrides);
             rewriter.replaceAllOpUsesWith(oldExtendOp, newSlice.getResult());
-
-            // rewriter.replaceOp(oldExtendOp, newSlice.getResult());
         }
     }
 
