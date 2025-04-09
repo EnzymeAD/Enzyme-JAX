@@ -20,6 +20,11 @@ module {
           comm.branch [1] enter {
             %step = stablehlo.constant dense<1> : tensor<i32>
             comm.send %msg2 %step : tensor<i32>
+          } loop {
+          } reenter {
+            %step2 = stablehlo.constant dense<1> : tensor<i32>
+          } exit {
+            %step2 = stablehlo.constant dense<1> : tensor<i32>
           }
           comm.branch [4] enter {
             %start = stablehlo.constant dense<0> : tensor<i32>
