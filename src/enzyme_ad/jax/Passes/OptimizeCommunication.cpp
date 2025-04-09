@@ -593,77 +593,111 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       return failure();
     }
 
-    SmallVector<int64_t> inputShape = llvm::to_vector(rotateShape);
+    SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
 
-    // TODO: resolve with padding
-    if (inputShape[rotate.getDimension()] % ny != 0) {
-      return failure();
+    int32_t amount = rotate.getAmount();
+    int32_t rightPadding = 0;
+    Value inputArg = rotate.getOperand();
+    if (outputShape[rotate.getDimension()] % ny != 0) {
+      int32_t extra = ((outputShape[rotate.getDimension()] / ny) + 1) * ny;
+      rightPadding = extra - outputShape[rotate.getDimension()];
+      amount += rightPadding;
+      outputShape[rotate.getDimension()] = extra;
+
+      SmallVector<int64_t> padLow(ndims, 0);
+      SmallVector<int64_t> padHigh(ndims, 0);
+      padHigh[rotate.getDimension()] = rightPadding;
+      localShape[rotate.getDimension()] = extra / ny;
+      SmallVector<int64_t> padInner(ndims, 0);
+
+      inputArg = rewriter.create<stablehlo::PadOp>(
+          rotate.getLoc(), rotate.getOperand(),
+          rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
+                                                 rewriter.getZeroAttr(elType)),
+          padLow, padHigh, padInner);
     }
 
+    SmallVector<int64_t> innerStrides(ndims, 1);
     mlir::Type inTyps[1]{RankedTensorType::get(localShape, elType)};
     mlir::Location inLocs[] = {rotate.getLoc()};
 
-    Value manualOps[] = {rotate.getOperand()};
-    Type manualTypes[] = {RankedTensorType::get(rotateShape, elType)};
+    Value manualOps[] = {inputArg};
+    Type manualTypes[] = {RankedTensorType::get(outputShape, elType)};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         rotate.getLoc(), manualTypes, manualOps, inShardings, outShardings,
         manualAxes);
 
-    auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
-                                    inTyps, inLocs);
-    auto innerArg = blk->getArgument(0);
-    auto partitionId =
-        rewriter.create<stablehlo::PartitionIdOp>(rotate.getLoc());
+    {
+      auto blk = rewriter.createBlock(&manual.getBody(),
+                                      manual.getBody().begin(), inTyps, inLocs);
+      auto innerArg = blk->getArgument(0);
+      auto partitionId =
+          rewriter.create<stablehlo::PartitionIdOp>(rotate.getLoc());
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        rotate.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          rotate.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
 
-    SmallVector<int64_t> innerStrides(ndims, 1);
-    SmallVector<int64_t> innerStarts(ndims, 0);
-    SmallVector<int64_t> innerLimits =
-        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
-    innerLimits[rotate.getDimension()] = rotate.getAmount();
-    auto commSlice = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), innerArg, innerStarts, innerLimits, innerStrides);
+      SmallVector<int64_t> innerStarts(ndims, 0);
+      SmallVector<int64_t> innerLimits = llvm::to_vector(
+          cast<RankedTensorType>(innerArg.getType()).getShape());
+      innerLimits[rotate.getDimension()] = amount;
+      auto commSlice = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), innerArg, innerStarts, innerLimits, innerStrides);
 
-    SmallVector<int64_t> sourceTargetIdxs(2 * ny * nx);
-    for (int i = 0; i < nx; i++) {
-      for (int j = 0; j < ny; j++) {
-        int idx = i * ny + j;
-        if (j == 0) {
-          sourceTargetIdxs[2 * idx] = idx;
-          sourceTargetIdxs[2 * idx + 1] = idx + (ny - 1);
-        } else {
-          sourceTargetIdxs[2 * idx] = idx;
-          sourceTargetIdxs[2 * idx + 1] = idx - 1;
+      SmallVector<int64_t> sourceTargetIdxs(2 * ny * nx);
+      for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+          int idx = i * ny + j;
+          if (j == 0) {
+            sourceTargetIdxs[2 * idx] = idx;
+            sourceTargetIdxs[2 * idx + 1] = idx + (ny - 1);
+          } else {
+            sourceTargetIdxs[2 * idx] = idx;
+            sourceTargetIdxs[2 * idx + 1] = idx - 1;
+          }
         }
       }
+
+      auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
+          rotate.getLoc(), commSlice,
+          DenseIntElementsAttr::get(
+              RankedTensorType::get({(int64_t)(ny * nx), (int64_t)2},
+                                    rewriter.getI64Type()),
+              sourceTargetIdxs),
+          stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ 0,
+                                            /*type*/ 0));
+
+      SmallVector<int64_t> innerStartsPresent(ndims, 0);
+      SmallVector<int64_t> innerLimitsPresent = llvm::to_vector(
+          cast<RankedTensorType>(innerArg.getType()).getShape());
+      innerStartsPresent[rotate.getDimension()] = amount;
+      auto remSlice = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
+          innerStrides);
+
+      Value concatArgs[] = {remSlice, commResult};
+      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          rotate.getLoc(), concatArgs, rotate.getDimension());
+
+      rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                     innerConcat->getResults());
     }
 
-    auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
-        rotate.getLoc(), commSlice,
-        DenseIntElementsAttr::get(
-            RankedTensorType::get({(int64_t)(ny * nx), (int64_t)2},
-                                  rewriter.getI64Type()),
-            sourceTargetIdxs),
-        stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ 0,
-                                          /*type*/ 0));
+    if (rightPadding != 0) {
+      rewriter.setInsertionPointAfter(manual);
 
-    SmallVector<int64_t> innerStartsPresent(ndims, 0);
-    SmallVector<int64_t> innerLimitsPresent =
-        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
-    innerStartsPresent[rotate.getDimension()] = rotate.getAmount();
-    auto remSlice = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
-        innerStrides);
+      SmallVector<int64_t> innerStarts(ndims, 0);
+      SmallVector<int64_t> innerLimits = llvm::to_vector(outputShape);
+      innerLimits[rotate.getDimension()] -= rightPadding;
 
-    Value concatArgs[] = {remSlice, commResult};
-    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        rotate.getLoc(), concatArgs, rotate.getDimension());
+      auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
+          innerStrides);
+      rewriter.replaceOp(rotate, sliceRemovePadding);
+    } else {
+      rewriter.replaceOp(rotate, manual);
+    }
 
-    rewriter.create<sdy::ReturnOp>(rotate.getLoc(), innerConcat->getResults());
-
-    rewriter.replaceOp(rotate, manual);
     return success();
   }
 };
