@@ -158,6 +158,22 @@ def WrapOp: EnzymeXLA_Op<
   let results = (outs HLO_Tensor:$result);
 }
 
+def ExtendedOp: EnzymeXLA_Op<
+      "extended",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Extended operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$lhs,
+    I64Attr:$rhs,
+    I64Attr:$dimension
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
 def CommRegionOp : EnzymeXLA_Op<"comm_region", [
     DeclareOpInterfaceMethods<RegionBranchOpInterface>,
     RecursiveMemoryEffects, RecursivelySpeculatable]> {

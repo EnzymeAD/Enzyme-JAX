@@ -690,6 +690,18 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
+    "cse_wrap"> {
+  let patterns = ["CSE<enzymexla::WrapOp>"];
+}
+def ApplyCSERotatePatterns : EnzymeHLOPatternOp<
+    "cse_rotate"> {
+  let patterns = ["CSE<enzymexla::RotateOp>"];
+}
+def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
+    "cse_extend"> {
+  let patterns = ["CSE<enzymexla::ExtendedOp>"];
+}
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {

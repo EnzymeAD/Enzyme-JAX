@@ -14229,18 +14229,14 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
       if (!sl1) continue;
       if (sl0.getOperand() != sl1.getOperand()) continue;
       bool legal = true;
-      // sl0[A:end], sl1[0:A]
-      for (int j=0; j<sl0.getType().getShape().size(); i++) {
+      // sl0[A:end], sl1[start:A]
+      for (int j=0; j<sl0.getType().getShape().size(); j++) {
         if (j == concat.getDimension()) {
           if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
             legal = false;
             break;
           }
           if (sl0.getStartIndices()[j] != sl1.getLimitIndices()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl1.getStartIndices()[j] != 0) {
             legal = false;
             break;
           }
@@ -14327,7 +14323,7 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
       }
       bool legal = true;
       // sl0[B-lhs:B], mid[A:B] sl1[A:A+rhs]
-      for (int j=0; j<sl0.getType().getShape().size(); i++) {
+      for (int j=0; j<sl0.getType().getShape().size(); j++) {
         if (j == concat.getDimension()) {
           if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1 || midStrides[j] != 1) {
             legal = false;
@@ -14681,7 +14677,7 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>>(
+                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>, CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>, CSE<enzymexla::ExtendedOp>>(
           context, PatternBenefit(65000));
     }
 
