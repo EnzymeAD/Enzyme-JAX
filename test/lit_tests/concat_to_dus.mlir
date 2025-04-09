@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=concat_to_onedim_dus"  --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module {
   func.func @main(%5301 : tensor<4x8x80xf64>, %6569 : tensor<1x8x80xf64>) -> tensor<4x8x80xf64> {
