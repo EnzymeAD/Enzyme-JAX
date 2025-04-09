@@ -1498,6 +1498,11 @@ def RecognizeExtend : EnzymeHLOPatternOp<
   let patterns = ["RecognizeExtend"];
 }
 
+def SliceExtend : EnzymeHLOPatternOp<
+  "slice_extend"> {
+  let patterns = ["SliceExtend"];
+}
+
 def LowerExtend : EnzymeHLOPatternOp<
     "lower_extend"> {
   let patterns = ["LowerExtend"];

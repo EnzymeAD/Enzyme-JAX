@@ -15015,6 +15015,103 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   return false;
 }
 
+// Pattern:
+//   %slice = stablehlo.slice %operand [...]
+//   %extend = enzymexla.extend %slice, dim=D, lhs=L, rhs=R
+// Constraint:
+//   - %slice has only %extend as its user.
+//   - The slice operation does not modify dimension D (i.e., it takes the
+//     full extent of dimension D).
+// Rewrite to:
+//   %new_extend = enzymexla.extend %operand, dim=D, lhs=L, rhs=R // Type
+//   adjusted %new_slice = stablehlo.slice %new_extend [...] // Indices adjusted
+//   for lhs padding
+struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extendOp,
+                                PatternRewriter &rewriter) const override {
+    Value extendOperand = extendOp.getOperand();
+    auto sliceOp = extendOperand.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!sliceOp) {
+      return rewriter.notifyMatchFailure(extendOp, "Operand is not a SliceOp");
+    }
+
+    if (!sliceOp->hasOneUse()) {
+      return rewriter.notifyMatchFailure(extendOp,
+                                         "SliceOp has multiple users");
+    }
+
+    auto sliceOperandType =
+        dyn_cast<RankedTensorType>(sliceOp.getOperand().getType());
+    auto sliceResultType = dyn_cast<RankedTensorType>(sliceOp.getType());
+    auto extendResultType = dyn_cast<RankedTensorType>(extendOp.getType());
+
+    if (!sliceOperandType || !sliceResultType || !extendResultType ||
+        !sliceOperandType.hasStaticShape() ||
+        !sliceResultType.hasStaticShape() ||
+        !extendResultType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(
+          extendOp, "Requires static shapes for involved tensors");
+    }
+
+    int64_t extendDim = extendOp.getDimension();
+    int64_t extendLhs = extendOp.getLhs();
+    int64_t extendRhs = extendOp.getRhs();
+
+    // Check if the slice operation affects the extended dimension.
+    if (sliceOp.getStartIndices()[extendDim] != 0 ||
+        sliceOp.getLimitIndices()[extendDim] !=
+            sliceOperandType.getShape()[extendDim] ||
+        sliceOp.getStrides()[extendDim] != 1) {
+      return rewriter.notifyMatchFailure(
+          extendOp, "SliceOp modifies the dimension being extended");
+    }
+
+    // --- Constraints met, proceed with rewrite ---
+
+    Location loc = extendOp.getLoc();
+
+    // Create the new ExtendOp operating on the original slice's operand
+    SmallVector<int64_t> newExtendShape =
+        llvm::to_vector(sliceOperandType.getShape());
+    newExtendShape[extendDim] += (extendLhs + extendRhs);
+    auto newExtendType = RankedTensorType::get(
+        newExtendShape, sliceOperandType.getElementType());
+
+    auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
+        loc, newExtendType, sliceOp.getOperand(), extendDim, extendLhs,
+        extendRhs);
+
+    // Create the new SliceOp operating on the result of the new ExtendOp
+    SmallVector<int64_t> newSliceStarts =
+        llvm::to_vector(sliceOp.getStartIndices());
+    SmallVector<int64_t> newSliceLimits =
+        llvm::to_vector(sliceOp.getLimitIndices());
+    SmallVector<int64_t> newSliceStrides =
+        llvm::to_vector(sliceOp.getStrides());
+
+    RankedTensorType newExtendResultType =
+        newExtendOp.getResult().getType().cast<RankedTensorType>();
+    newSliceStarts[extendDim] = 0; // Start from the beginning of the padded dim
+    newSliceLimits[extendDim] = newExtendResultType.getDimSize(
+        extendDim); // Go to the end of the padded dim
+    newSliceStrides[extendDim] =
+        1; // Stride must be 1 for this dim to maintain contiguity assumption
+
+    // The result type of the new slice should match the original extend result
+    // type
+    auto newSliceOp = rewriter.create<stablehlo::SliceOp>(
+        loc, extendResultType, newExtendOp.getResult(), newSliceStarts,
+        newSliceLimits, newSliceStrides);
+
+    rewriter.replaceOp(extendOp, newSliceOp.getResult());
+
+    return success();
+  }
+};
+
 struct ConcatConcatAxisSwap final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -15246,6 +15343,8 @@ struct EnzymeHLOOptPass
 
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
+
+    patterns.add<SliceExtend>(context); // Add the new SliceExtend pattern
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
