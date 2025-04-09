@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %2
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{passses=548863})" %s | FileCheck %s --check-prefix=ROTATE
 
 module @"reactant_loop!" {
