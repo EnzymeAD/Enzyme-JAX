@@ -2,6 +2,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
@@ -24,6 +26,11 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::sdy;
+
+using Index = SmallVector<int64_t, 6>;
+using Pair = std::pair<int64_t, int64_t>;
+using PairVec = SmallVector<Pair, 64>;
 
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
@@ -35,7 +42,165 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
-using namespace mlir::sdy;
+SmallVector<int64_t, 6>
+computeMeshStrides(const SmallVector<int64_t, 6> &shape) {
+  int rank = shape.size();
+  SmallVector<int64_t, 6> strides(rank);
+  strides[rank - 1] = 1;
+  for (int i = rank - 2; i >= 0; --i)
+    strides[i] = strides[i + 1] * shape[i + 1];
+  return strides;
+}
+
+int64_t getNumDevicesAlongDimension(const sdy::TensorShardingAttr &shardingAttr,
+                                    int dimension, Operation *op) {
+  TensorShardingAttr op_shardings[] = {shardingAttr};
+
+  auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
+  int64_t numDevices = 1;
+  for (auto meshAxis : shardingAttr.getDimShardings()[dimension].getAxes()) {
+    numDevices *= meshAttr.getAxisSize(meshAxis.getName());
+  }
+  return numDevices;
+}
+
+SmallVector<int64_t, 16>
+generateShiftPairs(const sdy::TensorShardingAttr &shardingAttr, int dimension,
+                   Operation *op, bool leftToRight) {
+  TensorShardingAttr op_shardings[] = {shardingAttr};
+
+  auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
+
+  SmallVector<sdy::MeshAxisAttr> meshAxisAttrs =
+      llvm::to_vector(meshAttr.getAxes());
+  SmallVector<StringRef> meshAxisNames;
+  SmallVector<int64_t, 6> meshShape;
+  for (const auto &axis : meshAxisAttrs) {
+    meshAxisNames.push_back(axis.getName());
+    meshShape.push_back(axis.getSize());
+  }
+
+  SmallVector<int64_t> nDevices;
+  for (auto dimSharding : shardingAttr.getDimShardings()) {
+    int64_t totalSize = 1;
+    for (auto axis : dimSharding.getAxes()) {
+      totalSize *= meshAttr.getAxisSize(axis.getName());
+    }
+    nDevices.push_back(totalSize);
+  }
+
+  SmallVector<int64_t, 6> strides = computeMeshStrides(meshShape);
+
+  auto meshAxes = shardingAttr.getDimShardings()[dimension].getAxes();
+  assert(meshAxes.size() == 1); // TODO: support multiple mesh axes
+  DenseMap<StringRef, int64_t> meshAxisToIndex;
+  for (size_t i = 0; i < meshAxisNames.size(); ++i)
+    meshAxisToIndex[meshAxisNames[i]] = i;
+  int64_t axisIndex = meshAxisToIndex[meshAxes[0].getName()];
+
+  SmallVector<int64_t, 16> flatPairs;
+  for (int64_t srcId = 0; srcId < meshAttr.getTotalSize(); ++srcId) {
+    SmallVector<int64_t, 6> idx(meshShape.size());
+    int64_t tmp = srcId;
+    for (size_t i = 0; i < meshShape.size(); ++i) {
+      idx[i] = tmp / strides[i];
+      tmp %= strides[i];
+    }
+
+    // Left shift along axisIndex
+    int64_t dstCoord = (idx[axisIndex] + 1) % meshShape[axisIndex];
+    int64_t dstId = 0;
+    for (size_t i = 0; i < meshShape.size(); ++i) {
+      int64_t coord = (i == axisIndex) ? dstCoord : idx[i];
+      dstId += coord * strides[i];
+    }
+
+    if (leftToRight) {
+      flatPairs.emplace_back(dstId);
+      flatPairs.emplace_back(srcId);
+    } else {
+      flatPairs.emplace_back(srcId);
+      flatPairs.emplace_back(dstId);
+    }
+  }
+
+  return flatPairs;
+}
+
+void updateManualComputationAxesShape(TensorShardingAttr shardingAttr,
+                                      PatternRewriter &rewriter, Operation *op,
+                                      SmallVector<StringAttr> &manualAxes,
+                                      SmallVector<int64_t> &localShape,
+                                      int64_t dimension) {
+  TensorShardingAttr op_shardings[] = {shardingAttr};
+
+  auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
+
+  for (auto meshAxis : meshAttr.getAxes()) {
+    manualAxes.push_back(rewriter.getStringAttr(meshAxis.getName()));
+  }
+
+  auto dimShardings = shardingAttr.getDimShardings();
+  SmallVector<int32_t> ndevices;
+  for (auto dimSharding : dimShardings) {
+    int32_t total_size = 1;
+    for (auto axis : dimSharding.getAxes()) {
+      total_size *= meshAttr.getAxisSize(axis.getName());
+    }
+    ndevices.push_back(total_size);
+  }
+
+  for (int i = 0; i < localShape.size(); i++) {
+    localShape[i] /= ndevices[i];
+  }
+}
+
+std::tuple<SmallVector<int32_t>, SmallVector<int32_t>>
+shardingHelper(TensorShardingAttr shardingAttr, PatternRewriter &rewriter,
+               Operation *op, SmallVector<StringAttr> &manual_axes,
+               SmallVector<int64_t> &localShape, int64_t dimension) {
+  TensorShardingAttr op_shardings[] = {shardingAttr};
+
+  auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
+
+  for (auto meshAxis : meshAttr.getAxes()) {
+    manual_axes.push_back(rewriter.getStringAttr(meshAxis.getName()));
+  }
+
+  auto dim_shardings = shardingAttr.getDimShardings();
+  SmallVector<int32_t> ndevices;
+  for (auto dim_sharding : dim_shardings) {
+    int32_t total_size = 1;
+    for (auto axis : dim_sharding.getAxes()) {
+      total_size *= meshAttr.getAxisSize(axis.getName());
+    }
+    ndevices.push_back(total_size);
+  }
+
+  if (ndevices.size() != 3 || ndevices[0] != 1) {
+    SmallVector<int32_t> devices = {ndevices[0], -1, -1};
+    return std::make_tuple(devices, ndevices);
+  }
+
+  int64_t nx, ny;
+  if (dimension == 1) {
+    ny = ndevices[1];
+    nx = ndevices[2];
+  } else {
+    ny = ndevices[2];
+    nx = ndevices[1];
+  }
+
+  assert(ndevices.size() == localShape.size());
+  assert(localShape.size() == ndevices.size());
+  for (int i = 0; i < localShape.size(); i++) {
+    localShape[i] /= ndevices[i];
+  }
+
+  SmallVector<int32_t> devices = {ndevices[0], static_cast<int32_t>(nx),
+                                  static_cast<int32_t>(ny)};
+  return std::make_tuple(devices, ndevices);
+}
 
 struct PeriodicConcatSimplify
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
@@ -55,8 +220,7 @@ struct PeriodicConcatSimplify
     if (!leftSliceOp->hasOneUse())
       return failure();
 
-    // TODO: relax the slice op condition
-    auto midOp = allOperands[1]; // .getDefiningOp<stablehlo::SliceOp>();
+    auto midOp = allOperands[1];
     if (!midOp.hasOneUse())
       return failure();
 
@@ -136,52 +300,20 @@ struct PeriodicConcatSimplify
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings_in);
     TensorShardingPerValueAttr out_shardings =
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings);
+
     SmallVector<StringAttr> manual_axes;
-
-    auto meshAttr =
-        mlir::sdy::getCommonMesh(op_shardings, op_shardings, concat);
-
-    for (auto meshAxis : meshAttr.getAxes()) {
-      manual_axes.push_back(rewriter.getStringAttr(meshAxis.getName()));
-    }
-
-    auto dim_shardings = op_shardings[0].getDimShardings();
-    SmallVector<int32_t> ndevices;
-    for (auto dim_sharding : dim_shardings) {
-      int32_t total_size = 1;
-      for (auto axis : dim_sharding.getAxes()) {
-        total_size *= meshAttr.getAxisSize(axis.getName());
-      }
-      ndevices.push_back(total_size);
-    }
-
-    // TODO: easy to lift the != 1 condition, but we don't need it rn, and any
-    //       operation along that dim is super cheap
-    if (ndevices.size() != 3 || ndevices[0] != 1) {
-      return failure();
-    }
-
-    int64_t nx, ny;
-    if (concat.getDimension() == 1) {
-      ny = ndevices[1];
-      nx = ndevices[2];
-    } else {
-      ny = ndevices[2];
-      nx = ndevices[1];
-    }
-
-    if (ny % 2 != 0) {
-      // TODO: Lift this condition. For the center most blocks, we will have 2
-      //       comms from the left and right
-      return failure();
-    }
-
     SmallVector<int64_t> localShape =
         llvm::to_vector(cast<RankedTensorType>(midOp.getType()).getShape());
-    assert(ndevices.size() == localShape.size());
-    assert(localShape.size() == ndevices.size());
-    for (int i = 0; i < localShape.size(); i++) {
-      localShape[i] /= ndevices[i];
+
+    auto [devices, ndevices] =
+        shardingHelper(concatSharding, rewriter, concat, manual_axes,
+                       localShape, concat.getDimension());
+
+    int32_t nx = devices[1];
+    int32_t ny = devices[2];
+
+    if (devices[0] != 1 || ny % 2 != 0) {
+      return failure();
     }
 
     int left_padding = 0;
@@ -248,8 +380,6 @@ struct PeriodicConcatSimplify
     auto midOpInnerArg = blk->getArgument(1);
     auto partition_id =
         rewriter.create<stablehlo::PartitionIdOp>(concat.getLoc());
-
-    auto devices_along_dim = ndevices[concat.getDimension()];
 
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), rewriter.getZeroAttr(partition_id.getType()));
@@ -346,7 +476,7 @@ struct PeriodicConcatSimplify
       auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
           concat.getLoc(), leftSlice,
           DenseIntElementsAttr::get(source_target_pairs_ty, source_target_ids),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 1,
                                             /*type*/ 0));
 
       Value concat_args_inner[] = {leftSlice, midOpInnerArg};
@@ -391,7 +521,7 @@ struct PeriodicConcatSimplify
       auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
           concat.getLoc(), rightSlice,
           DenseIntElementsAttr::get(source_target_pairs_ty, source_target_ids),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 1,
                                             /*type*/ 0));
 
       Value concat_args_inner[] = {midOpInnerArg, rightSlice};
@@ -452,7 +582,7 @@ struct PeriodicConcatSimplify
     auto result_1 = rewriter.create<stablehlo::CollectivePermuteOp>(
         concat.getLoc(), end_slice,
         DenseIntElementsAttr::get(source_target_pairs_ty2, source_target_ids2),
-        stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+        stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 1,
                                           /*type*/ 0));
 
     SmallVector<int64_t> inner_starts4(concat.getType().getShape().size(), 0);
@@ -476,7 +606,7 @@ struct PeriodicConcatSimplify
     auto result_2 = rewriter.create<stablehlo::CollectivePermuteOp>(
         concat.getLoc(), start_slice,
         DenseIntElementsAttr::get(source_target_pairs_ty3, source_target_ids3),
-        stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 0,
+        stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 1,
                                           /*type*/ 0));
 
     auto if2 =
@@ -549,6 +679,135 @@ struct PeriodicConcatSimplify
   }
 };
 
+struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    int32_t ndims = rotate.getType().getRank();
+    auto elType = rotate.getType().getElementType();
+    auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
+
+    auto rotateSharding = mlir::sdy::getSharding(rotate);
+
+    TensorShardingAttr opShardings[] = {rotateSharding};
+    TensorShardingPerValueAttr inShardings =
+        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+    TensorShardingPerValueAttr outShardings =
+        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+
+    SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> localShape = llvm::to_vector(rotateShape);
+
+    updateManualComputationAxesShape(rotateSharding, rewriter, rotate,
+                                     manualAxes, localShape,
+                                     rotate.getDimension());
+
+    int64_t numDevicesAlongDimension = getNumDevicesAlongDimension(
+        rotateSharding, rotate.getDimension(), rotate);
+
+    SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
+
+    int32_t amount = rotate.getAmount();
+    int32_t rightPadding = 0;
+    Value inputArg = rotate.getOperand();
+    if (outputShape[rotate.getDimension()] % numDevicesAlongDimension != 0) {
+      int32_t extra =
+          ((outputShape[rotate.getDimension()] / numDevicesAlongDimension) +
+           1) *
+          numDevicesAlongDimension;
+      rightPadding = extra - outputShape[rotate.getDimension()];
+      amount += rightPadding;
+      outputShape[rotate.getDimension()] = extra;
+
+      SmallVector<int64_t> padLow(ndims, 0);
+      SmallVector<int64_t> padHigh(ndims, 0);
+      padHigh[rotate.getDimension()] = rightPadding;
+      localShape[rotate.getDimension()] = extra / numDevicesAlongDimension;
+      SmallVector<int64_t> padInner(ndims, 0);
+
+      inputArg = rewriter.create<stablehlo::PadOp>(
+          rotate.getLoc(), rotate.getOperand(),
+          rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
+                                                 rewriter.getZeroAttr(elType)),
+          padLow, padHigh, padInner);
+    }
+
+    SmallVector<int64_t> innerStrides(ndims, 1);
+    mlir::Type inTyps[1]{RankedTensorType::get(localShape, elType)};
+    mlir::Location inLocs[] = {rotate.getLoc()};
+
+    Value manualOps[] = {inputArg};
+    Type manualTypes[] = {RankedTensorType::get(outputShape, elType)};
+    auto manual = rewriter.create<sdy::ManualComputationOp>(
+        rotate.getLoc(), manualTypes, manualOps, inShardings, outShardings,
+        manualAxes);
+
+    {
+      auto blk = rewriter.createBlock(&manual.getBody(),
+                                      manual.getBody().begin(), inTyps, inLocs);
+      auto innerArg = blk->getArgument(0);
+      auto partitionId =
+          rewriter.create<stablehlo::PartitionIdOp>(rotate.getLoc());
+
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          rotate.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+
+      SmallVector<int64_t> innerStarts(ndims, 0);
+      SmallVector<int64_t> innerLimits = llvm::to_vector(
+          cast<RankedTensorType>(innerArg.getType()).getShape());
+      innerLimits[rotate.getDimension()] = amount;
+      auto commSlice = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), innerArg, innerStarts, innerLimits, innerStrides);
+
+      auto sourceTargetIdxs = generateShiftPairs(
+          rotateSharding, rotate.getDimension(), rotate, true);
+
+      auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
+          rotate.getLoc(), commSlice,
+          DenseIntElementsAttr::get(
+              RankedTensorType::get(
+                  {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
+                  rewriter.getI64Type()),
+              sourceTargetIdxs),
+          stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ 1,
+                                            /*type*/ 0));
+
+      SmallVector<int64_t> innerStartsPresent(ndims, 0);
+      SmallVector<int64_t> innerLimitsPresent = llvm::to_vector(
+          cast<RankedTensorType>(innerArg.getType()).getShape());
+      innerStartsPresent[rotate.getDimension()] = amount;
+      auto remSlice = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
+          innerStrides);
+
+      Value concatArgs[] = {remSlice, commResult};
+      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          rotate.getLoc(), concatArgs, rotate.getDimension());
+
+      rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                     innerConcat->getResults());
+    }
+
+    if (rightPadding != 0) {
+      rewriter.setInsertionPointAfter(manual);
+
+      SmallVector<int64_t> innerStarts(ndims, 0);
+      SmallVector<int64_t> innerLimits = llvm::to_vector(outputShape);
+      innerLimits[rotate.getDimension()] -= rightPadding;
+
+      auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
+          rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
+          innerStrides);
+      rewriter.replaceOp(rotate, sliceRemovePadding);
+    } else {
+      rewriter.replaceOp(rotate, manual);
+    }
+
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -558,7 +817,7 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<PeriodicConcatSimplify>(context);
+    patterns.add<PeriodicConcatSimplify, RotateCommOptimize>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
