@@ -14858,8 +14858,9 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
         if (toConcat.size() == 1) {
           rewriter.replaceOp(concat, toConcat[0]);
         } else {
-          auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-              concat, toConcat, concat.getDimension());
+          auto newConcat =
+              rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+                  concat, toConcat, concat.getDimension());
           if (auto shard = sdy::getShardingPerValue(concat)) {
             sdy::setShardings(newConcat, shard);
           }
@@ -14942,8 +14943,8 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
       sdy::setShardings(sl1, shard);
     }
     Value args[] = {sl0, wrap.getOperand(), sl1};
-    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(wrap, args,
-                                                          wrap.getDimension());
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        wrap, args, wrap.getDimension());
     if (auto shard = sdy::getShardingPerValue(wrap)) {
       sdy::setShardings(newConcat, shard);
     }
@@ -15002,8 +15003,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
         if (toConcat.size() == 1)
           rewriter.replaceOp(concat, extend);
         else {
-          auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(concat,
-                                                                toConcat, dim);
+          auto newConcat =
+              rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+                  concat, toConcat, dim);
           if (auto shard = sdy::getShardingPerValue(concat)) {
             sdy::setShardings(newConcat, shard);
           }
@@ -15102,7 +15104,7 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
     SmallVector<int64_t> lhsLimits(operand.getType().getShape());
     lhsLimits[extend.getDimension()] = extend.getLhs();
     auto lhs = rewriter.create<stablehlo::SliceOp>(loc, operand, lhsStarts,
-                                                   lhsLimits, strides);    
+                                                   lhsLimits, strides);
     if (auto shard = sdy::getShardingPerValue(extend)) {
       sdy::setShardings(lhs, shard);
     }
