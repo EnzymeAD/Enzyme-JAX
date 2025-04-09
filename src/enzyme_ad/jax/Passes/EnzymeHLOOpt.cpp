@@ -21,6 +21,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -14135,6 +14137,303 @@ struct ReshapeSelect : public OpRewritePattern<stablehlo::ReshapeOp> {
   }
 };
 
+template <typename T> struct GroupComms : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T end,
+                                PatternRewriter &rewriter) const override {
+    if (end->template getParentOfType<enzymexla::CommRegionOp>())
+      return failure();
+    SetVector<Operation *> done;
+    done.insert(end);
+    SmallVector<Operation *> todo = {end};
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (cur != end && done.contains(cur))
+        continue;
+      if (!isa<stablehlo::SliceOp, stablehlo::ConcatenateOp, stablehlo::PadOp,
+               stablehlo::TransposeOp, stablehlo::ReshapeOp,
+               stablehlo::DynamicUpdateSliceOp, enzymexla::RotateOp,
+               enzymexla::WrapOp>(cur))
+        continue;
+      bool allWithin = true;
+      if (cur != end)
+        for (auto res : cur->getResults()) {
+          for (auto u : res.getUsers()) {
+            if (!done.contains(u)) {
+              allWithin = false;
+              break;
+            }
+          }
+        }
+      if (!allWithin)
+        continue;
+      done.insert(cur);
+      for (auto op : cur->getOperands()) {
+        if (auto v = op.getDefiningOp()) {
+          todo.push_back(v);
+        }
+      }
+    }
+
+    done = mlir::topologicalSort(done);
+
+    auto newOp = rewriter.create<enzymexla::CommRegionOp>(
+        end.getLoc(), end.getResult().getType());
+    auto blk = rewriter.createBlock(&newOp.getBody(), newOp.getBody().begin());
+    IRMapping map;
+    for (auto op : done) {
+      rewriter.clone(*op, map);
+    }
+    rewriter.create<stablehlo::ReturnOp>(end.getLoc(),
+                                         map.lookup(end.getResult()));
+    for (auto op : llvm::reverse(done)) {
+      if (op == end) {
+        rewriter.replaceOp(op, newOp);
+      } else {
+        rewriter.eraseOp(op);
+      }
+    }
+    return success();
+  }
+};
+
+struct LowerCommRegion : public OpRewritePattern<enzymexla::CommRegionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::CommRegionOp end,
+                                PatternRewriter &rewriter) const override {
+    IRMapping map;
+    for (auto &op : end.getBody().front()) {
+      if (isa<stablehlo::ReturnOp>(op)) {
+        SmallVector<Value> operands;
+        for (auto v : op.getOperands())
+          operands.push_back(map.lookup(v));
+        rewriter.replaceOp(end, operands);
+        return success();
+      } else {
+        rewriter.clone(op, map);
+      }
+    }
+    return failure();
+  }
+};
+
+struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat.getOperands().size() < 2)
+      return failure();
+    for (int i = 1; i < concat.getOperands().size(); i++) {
+      auto sl0 =
+          concat.getOperands()[i - 1].getDefiningOp<stablehlo::SliceOp>();
+      if (!sl0)
+        continue;
+      auto sl1 = concat.getOperands()[i].getDefiningOp<stablehlo::SliceOp>();
+      if (!sl1)
+        continue;
+      if (sl0.getOperand() != sl1.getOperand())
+        continue;
+      bool legal = true;
+      // sl0[A:end], sl1[start:A]
+      for (int j = 0; j < sl0.getType().getShape().size(); j++) {
+        if (j == concat.getDimension()) {
+          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStartIndices()[j] != sl1.getLimitIndices()[j]) {
+            legal = false;
+            break;
+          }
+        } else {
+          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+            legal = false;
+            break;
+          }
+        }
+      }
+      if (!legal)
+        continue;
+      auto starts = llvm::to_vector(sl1.getStartIndices());
+      auto limits = llvm::to_vector(sl0.getLimitIndices());
+      auto outerSlice = rewriter.create<stablehlo::SliceOp>(
+          sl0.getLoc(), sl0.getOperand(), starts, limits, sl0.getStrides());
+      auto rotate = rewriter.create<enzymexla::RotateOp>(
+          sl1.getLoc(), outerSlice,
+          sl1.getType().getShape()[concat.getDimension()],
+          concat.getDimension());
+      SmallVector<Value> toConcat;
+      for (int j = 0; j < i - 1; j++)
+        toConcat.push_back(concat.getOperands()[j]);
+      toConcat.push_back(rotate);
+      for (int j = i + 1; j < concat.getOperands().size(); j++)
+        toConcat.push_back(concat.getOperands()[j]);
+      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+          concat, toConcat, concat.getDimension());
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    // sl0[A:end], sl1[0:A]
+    SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
+    SmallVector<int64_t> sl0_starts(rotate.getType().getShape().size(), 0);
+    SmallVector<int64_t> sl0_ends(rotate.getType().getShape());
+    SmallVector<int64_t> sl1_starts(rotate.getType().getShape().size(), 0);
+    SmallVector<int64_t> sl1_ends(rotate.getType().getShape());
+    sl0_starts[rotate.getDimension()] = rotate.getAmount();
+    sl1_ends[rotate.getDimension()] = rotate.getAmount();
+    auto sl0 = rewriter.create<stablehlo::SliceOp>(
+        rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
+    auto sl1 = rewriter.create<stablehlo::SliceOp>(
+        rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
+    Value args[] = {sl0, sl1};
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        rotate, args, rotate.getDimension());
+    return success();
+  }
+};
+
+struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat.getOperands().size() < 2)
+      return failure();
+    for (int i = 2; i < concat.getOperands().size(); i++) {
+      auto sl0 =
+          concat.getOperands()[i - 2].getDefiningOp<stablehlo::SliceOp>();
+      if (!sl0)
+        continue;
+      auto mid = concat.getOperands()[i - 1];
+      auto midT = cast<RankedTensorType>(mid.getType());
+      auto sl1 = concat.getOperands()[i].getDefiningOp<stablehlo::SliceOp>();
+      if (!sl1)
+        continue;
+      if (sl0.getOperand() != sl1.getOperand())
+        continue;
+
+      SmallVector<int64_t> midStarts(midT.getShape().size(), 0);
+      SmallVector<int64_t> midLimits = llvm::to_vector(midT.getShape());
+      SmallVector<int64_t> midStrides(midT.getShape().size(), 1);
+      if (sl0.getOperand() != mid) {
+        auto slM = mid.getDefiningOp<stablehlo::SliceOp>();
+        if (!slM)
+          continue;
+        if (slM.getOperand() != sl0.getOperand())
+          continue;
+        midStarts = llvm::to_vector(slM.getStartIndices());
+        midLimits = llvm::to_vector(slM.getLimitIndices());
+        midStrides = llvm::to_vector(slM.getStrides());
+      }
+      bool legal = true;
+      // sl0[B-lhs:B], mid[A:B] sl1[A:A+rhs]
+      for (int j = 0; j < sl0.getType().getShape().size(); j++) {
+        if (j == concat.getDimension()) {
+          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1 ||
+              midStrides[j] != 1) {
+            legal = false;
+            break;
+          }
+          if (sl0.getLimitIndices()[j] != midLimits[j]) {
+            legal = false;
+            break;
+          }
+          if (midStarts[j] != sl1.getStartIndices()[j]) {
+            legal = false;
+            break;
+          }
+        } else {
+          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getLimitIndices()[j] != midLimits[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStartIndices()[j] != midStarts[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+            legal = false;
+            break;
+          }
+          if (sl0.getStrides()[j] != midStrides[j]) {
+            legal = false;
+            break;
+          }
+        }
+      }
+      if (!legal)
+        continue;
+      auto wrap = rewriter.create<enzymexla::WrapOp>(
+          sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
+          sl1.getType().getShape()[concat.getDimension()],
+          concat.getDimension());
+      SmallVector<Value> toConcat;
+      for (int j = 0; j < i - 2; j++)
+        toConcat.push_back(concat.getOperands()[j]);
+      toConcat.push_back(wrap);
+      for (int j = i + 1; j < concat.getOperands().size(); j++)
+        toConcat.push_back(concat.getOperands()[j]);
+      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+          concat, toConcat, concat.getDimension());
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    // sl0[end-lhs:end], mid, sl1[0:rhs]
+    auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
+    SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
+    SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
+    SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
+    sl0_starts[wrap.getDimension()] =
+        wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
+    sl1_ends[wrap.getDimension()] = wrap.getRhs();
+    auto sl0 = rewriter.create<stablehlo::SliceOp>(
+        wrap.getLoc(), wrap.getOperand(), sl0_starts, sl0_ends, strides);
+    auto sl1 = rewriter.create<stablehlo::SliceOp>(
+        wrap.getLoc(), wrap.getOperand(), sl1_starts, sl1_ends, strides);
+    Value args[] = {sl0, wrap.getOperand(), sl1};
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(wrap, args,
+                                                          wrap.getDimension());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -14411,8 +14710,9 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>>(
-          context, PatternBenefit(65000));
+                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
+                   CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
+                   CSE<enzymexla::ExtendedOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)

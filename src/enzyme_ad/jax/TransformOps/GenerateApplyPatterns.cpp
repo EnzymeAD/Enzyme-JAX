@@ -12,6 +12,8 @@
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
 using namespace mlir;
@@ -174,6 +176,7 @@ public:
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<transform::TransformDialect>();
+    registry.insert<enzymexla::EnzymeXLADialect>();
   }
 
   void runOnOperation() override {
