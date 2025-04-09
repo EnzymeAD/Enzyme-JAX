@@ -2,6 +2,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
@@ -37,6 +39,52 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
 
 using namespace mlir::sdy;
 
+std::tuple<SmallVector<int32_t>, SmallVector<int32_t>>
+shardingHelper(TensorShardingAttr shardingAttr, PatternRewriter &rewriter,
+               Operation *op, SmallVector<StringAttr> &manual_axes,
+               SmallVector<int64_t> &localShape, int64_t dimension) {
+  TensorShardingAttr op_shardings[] = {shardingAttr};
+
+  auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
+
+  for (auto meshAxis : meshAttr.getAxes()) {
+    manual_axes.push_back(rewriter.getStringAttr(meshAxis.getName()));
+  }
+
+  auto dim_shardings = shardingAttr.getDimShardings();
+  SmallVector<int32_t> ndevices;
+  for (auto dim_sharding : dim_shardings) {
+    int32_t total_size = 1;
+    for (auto axis : dim_sharding.getAxes()) {
+      total_size *= meshAttr.getAxisSize(axis.getName());
+    }
+    ndevices.push_back(total_size);
+  }
+
+  if (ndevices.size() != 3 || ndevices[0] != 1) {
+    SmallVector<int32_t> devices = {ndevices[0], -1, -1};
+    return std::make_tuple(devices, ndevices);
+  }
+
+  int64_t nx, ny;
+  if (dimension == 1) {
+    ny = ndevices[1];
+    nx = ndevices[2];
+  } else {
+    ny = ndevices[2];
+    nx = ndevices[1];
+  }
+
+  assert(ndevices.size() == localShape.size());
+  assert(localShape.size() == ndevices.size());
+  for (int i = 0; i < localShape.size(); i++) {
+    localShape[i] /= ndevices[i];
+  }
+
+  SmallVector<int32_t> devices = {ndevices[0], nx, ny};
+  return std::make_tuple(devices, ndevices);
+}
+
 struct PeriodicConcatSimplify
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -55,8 +103,7 @@ struct PeriodicConcatSimplify
     if (!leftSliceOp->hasOneUse())
       return failure();
 
-    // TODO: relax the slice op condition
-    auto midOp = allOperands[1]; // .getDefiningOp<stablehlo::SliceOp>();
+    auto midOp = allOperands[1];
     if (!midOp.hasOneUse())
       return failure();
 
@@ -136,52 +183,20 @@ struct PeriodicConcatSimplify
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings_in);
     TensorShardingPerValueAttr out_shardings =
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings);
+
     SmallVector<StringAttr> manual_axes;
-
-    auto meshAttr =
-        mlir::sdy::getCommonMesh(op_shardings, op_shardings, concat);
-
-    for (auto meshAxis : meshAttr.getAxes()) {
-      manual_axes.push_back(rewriter.getStringAttr(meshAxis.getName()));
-    }
-
-    auto dim_shardings = op_shardings[0].getDimShardings();
-    SmallVector<int32_t> ndevices;
-    for (auto dim_sharding : dim_shardings) {
-      int32_t total_size = 1;
-      for (auto axis : dim_sharding.getAxes()) {
-        total_size *= meshAttr.getAxisSize(axis.getName());
-      }
-      ndevices.push_back(total_size);
-    }
-
-    // TODO: easy to lift the != 1 condition, but we don't need it rn, and any
-    //       operation along that dim is super cheap
-    if (ndevices.size() != 3 || ndevices[0] != 1) {
-      return failure();
-    }
-
-    int64_t nx, ny;
-    if (concat.getDimension() == 1) {
-      ny = ndevices[1];
-      nx = ndevices[2];
-    } else {
-      ny = ndevices[2];
-      nx = ndevices[1];
-    }
-
-    if (ny % 2 != 0) {
-      // TODO: Lift this condition. For the center most blocks, we will have 2
-      //       comms from the left and right
-      return failure();
-    }
-
     SmallVector<int64_t> localShape =
         llvm::to_vector(cast<RankedTensorType>(midOp.getType()).getShape());
-    assert(ndevices.size() == localShape.size());
-    assert(localShape.size() == ndevices.size());
-    for (int i = 0; i < localShape.size(); i++) {
-      localShape[i] /= ndevices[i];
+
+    auto [devices, ndevices] =
+        shardingHelper(concatSharding, rewriter, concat, manual_axes,
+                       localShape, concat.getDimension());
+
+    int32_t nx = devices[1];
+    int32_t ny = devices[2];
+
+    if (devices[0] != 1 || ny % 2 != 0) {
+      return failure();
     }
 
     int left_padding = 0;
@@ -549,6 +564,51 @@ struct PeriodicConcatSimplify
   }
 };
 
+struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    // auto rotateSharding = mlir::sdy::getSharding(rotate);
+    // SmallVector<StringAttr> manual_axes;
+
+    // auto meshAttr =
+    //     mlir::sdy::getCommonMesh(op_shardings, op_shardings, concat);
+
+    // for (auto meshAxis : meshAttr.getAxes()) {
+    //   manual_axes.push_back(rewriter.getStringAttr(meshAxis.getName()));
+    // }
+
+    // auto dim_shardings = rotateSharding.getDimShardings();
+    // SmallVector<int32_t> ndevices;
+    // for (auto dim_sharding : dim_shardings) {
+    //   int32_t total_size = 1;
+    //   for (auto axis : dim_sharding.getAxes()) {
+    //     total_size *= meshAttr.getAxisSize(axis.getName());
+    //   }
+    //   ndevices.push_back(total_size);
+    // }
+
+    // // TODO: easy to lift the != 1 condition, but we don't need it rn, and
+    // any
+    // //       operation along that dim is super cheap
+    // if (ndevices.size() != 3 || ndevices[0] != 1) {
+    //   return failure();
+    // }
+
+    // int64_t nx, ny;
+    // if (concat.getDimension() == 1) {
+    //   ny = ndevices[1];
+    //   nx = ndevices[2];
+    // } else {
+    //   ny = ndevices[2];
+    //   nx = ndevices[1];
+    // }
+
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -558,7 +618,7 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<PeriodicConcatSimplify>(context);
+    patterns.add<PeriodicConcatSimplify, RotateCommOptimize>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
