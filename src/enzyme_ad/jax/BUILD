@@ -547,6 +547,8 @@ cc_library(
         "@llvm-project//mlir:TranslateLib",
         "@llvm-project//mlir:UBDialect",
         "@llvm-project//mlir:UBToLLVM",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:VectorToLLVM",
         "@llvm-project//mlir:VectorToSCF",
