@@ -14303,6 +14303,50 @@ struct LowerCommRegion : public OpRewritePattern<enzymexla::CommRegionOp> {
   }
 };
 
+bool isRotateLike(int dimension, Value lhs, Value rhs,
+                  stablehlo::SliceOp *sl0P = nullptr,
+                  stablehlo::SliceOp *sl1P = nullptr) {
+  auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
+  if (!sl0)
+    return false;
+  auto sl1 = rhs.getDefiningOp<stablehlo::SliceOp>();
+  if (!sl1)
+    return false;
+  if (sl0.getOperand() != sl1.getOperand())
+    return false;
+
+  if (sl0P)
+    *sl0P = sl0;
+  if (sl1P)
+    *sl1P = sl1;
+
+  if (sl0.getOperand() != sl1.getOperand())
+    return false;
+
+  // sl0[A:end], sl1[start:A]
+  for (int j = 0; j < sl0.getType().getShape().size(); j++) {
+    if (j == dimension) {
+      if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
+        return false;
+      }
+      if (sl0.getStartIndices()[j] != sl1.getLimitIndices()[j]) {
+        return false;
+      }
+    } else {
+      if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+        return false;
+      }
+      if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+        return false;
+      }
+      if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14311,43 +14355,9 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
     if (concat.getOperands().size() < 2)
       return failure();
     for (int i = 1; i < concat.getOperands().size(); i++) {
-      auto sl0 =
-          concat.getOperands()[i - 1].getDefiningOp<stablehlo::SliceOp>();
-      if (!sl0)
-        continue;
-      auto sl1 = concat.getOperands()[i].getDefiningOp<stablehlo::SliceOp>();
-      if (!sl1)
-        continue;
-      if (sl0.getOperand() != sl1.getOperand())
-        continue;
-      bool legal = true;
-      // sl0[A:end], sl1[start:A]
-      for (int j = 0; j < sl0.getType().getShape().size(); j++) {
-        if (j == concat.getDimension()) {
-          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStartIndices()[j] != sl1.getLimitIndices()[j]) {
-            legal = false;
-            break;
-          }
-        } else {
-          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
-            legal = false;
-            break;
-          }
-        }
-      }
-      if (!legal)
+      stablehlo::SliceOp sl0, sl1;
+      if (!isRotateLike(concat.getDimension(), concat.getOperands()[i - 1],
+                        concat.getOperands()[i], &sl0, &sl1))
         continue;
       auto starts = llvm::to_vector(sl1.getStartIndices());
       auto limits = llvm::to_vector(sl0.getLimitIndices());
@@ -14408,8 +14418,10 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
   if (sl0.getOperand() != sl1.getOperand())
     return false;
 
-  *sl0P = sl0;
-  *sl1P = sl1;
+  if (sl0P)
+    *sl0P = sl0;
+  if (sl1P)
+    *sl1P = sl1;
 
   SmallVector<int64_t> midStarts(midT.getShape().size(), 0);
   SmallVector<int64_t> midLimits = llvm::to_vector(midT.getShape());
@@ -14517,6 +14529,122 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
     Value args[] = {sl0, wrap.getOperand(), sl1};
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(wrap, args,
                                                           wrap.getDimension());
+    return success();
+  }
+};
+
+bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
+  assert(vals.size());
+
+  for (int i = 0; i < vals.size(); i++) {
+    if (auto concat = vals[i].getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (concat.getDimension() == dimension)
+        return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
+    auto sl0 = vals[i - 1].getDefiningOp<stablehlo::SliceOp>();
+    auto sl1 = vals[i].getDefiningOp<stablehlo::SliceOp>();
+    if (sl0 && sl1 && canMergeSlicesAlongAxis(dimension, sl0, sl1)) {
+      return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
+    auto pad0 = vals[i - 1].getDefiningOp<stablehlo::PadOp>();
+    auto pad1 = vals[i].getDefiningOp<stablehlo::PadOp>();
+    if (pad0 && pad1 && canMergePadsAlongAxis(dimension, pad0, pad1)) {
+      return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
+    if (isRotateLike(dimension, vals[i - 1], vals[i])) {
+      return true;
+    }
+  }
+
+  for (int i = 2; i < vals.size(); i++) {
+    if (isWrapLike(dimension, vals[i - 2], vals[i - 1], vals[i])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+struct ConcatConcatAxisSwap final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer.getOperands().size() < 2)
+      return failure();
+
+    SmallVector<stablehlo::ConcatenateOp> inners;
+
+    // Get a full square of concat of compatible dimensions for axis swap
+    for (auto v : outer.getOperands()) {
+      auto concatOp = v.getDefiningOp<stablehlo::ConcatenateOp>();
+      if (!concatOp)
+        return failure();
+      if (concatOp.getDimension() == outer.getDimension())
+        return failure();
+      if (concatOp.getOperands().size() < 2)
+        return failure();
+      if (inners.size()) {
+        if (inners[0].getOperands().size() != concatOp.getOperands().size()) {
+          return failure();
+        }
+        if (inners[0].getDimension() != concatOp.getDimension()) {
+          return failure();
+        }
+        for (int i = 0; i < inners[0].getOperands().size(); i++) {
+          if (cast<RankedTensorType>(concatOp.getOperands()[i].getType())
+                  .getShape()[concatOp.getDimension()] !=
+              cast<RankedTensorType>(inners[0].getOperands()[i].getType())
+                  .getShape()[concatOp.getDimension()])
+            return failure();
+        }
+      }
+      inners.push_back(concatOp);
+    }
+
+    // Check that we don't have a current axis fuse opportunity, and wait for
+    // those fusions
+    for (auto inner : inners) {
+      if (isAxisFusible(inner.getDimension(),
+                        llvm::to_vector(inner.getOperands()))) {
+        return failure();
+      }
+    }
+
+    bool anyFusible = false;
+    for (int i = 0; i < inners[0].getOperands().size(); i++) {
+      SmallVector<Value> newOperands;
+      for (int j = 0; j < outer.getOperands().size(); j++) {
+        newOperands.push_back(inners[j].getOperands()[i]);
+      }
+      if (isAxisFusible(outer.getDimension(), newOperands)) {
+        anyFusible = true;
+        break;
+      }
+    }
+
+    SmallVector<Value> newOuters;
+
+    for (int i = 0; i < inners[0].getOperands().size(); i++) {
+      SmallVector<Value> newOperands;
+      for (int j = 0; j < outer.getOperands().size(); j++) {
+        newOperands.push_back(inners[j].getOperands()[i]);
+      }
+      newOuters.push_back(rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOperands, outer.getDimension()));
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        outer, newOuters, inners[0].getDimension());
     return success();
   }
 };
@@ -14693,20 +14821,20 @@ struct EnzymeHLOOptPass
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns
-        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-             SliceElementwise, SliceReshapeElementwise, SlicePad,
-             SliceReshapePad, DotReshapeDot, ConcatConstProp,
-             DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-             LogConstProp, LogPlusConstProp, ChloInfConstProp, GammaConstProp,
-             AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-             ConcatPushBinop<stablehlo::AddOp>,
-             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-             ReduceConcat, ConcatSlice, ConcatMultiPad, SliceConcat, SliceIf,
-             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-             BinBroadcastSplat<stablehlo::SubtractOp>,
-             BinBroadcastSplat<stablehlo::DivOp>,
-             BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+                 SliceElementwise, SliceReshapeElementwise, SlicePad,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
+                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
+                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
+                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+                 ReduceConcat, ConcatSlice, ConcatMultiPad,
+                 ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
+                 BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
@@ -14842,6 +14970,14 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 128)) {
       // Conflicts with ConcatPad
       patterns.add<ConstPadConcatToConcat>(context);
+    }
+
+    if (passses & (2048 * 256)) {
+      patterns.add<RecognizeRotate, RecognizeWrap>(context);
+    }
+
+    if (passses & (2048 * 512)) {
+      patterns.add<LowerRotate, LowerWrap>(context);
     }
 
     if (all_finite)
