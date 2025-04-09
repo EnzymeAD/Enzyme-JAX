@@ -163,18 +163,19 @@ tryFindReshapeDimMapping(stablehlo::ReshapeOp op) {
 class StaticSlice {
 private:
   using VecTy = SmallVector<int64_t>;
+  using TensorValue = TypedValue<RankedTensorType>;
   VecTy starts;
   VecTy limits;
   VecTy inputShape;
   VecTy outputShape;
   VecTy strides;
   unsigned rank;
-  TypedValue<RankedTensorType> input, output;
+  TensorValue input, output;
   RankedTensorType inputTy, outputTy;
 
 public:
-  TypedValue<RankedTensorType> getOutput() { return output; }
-  TypedValue<RankedTensorType> getInput() { return input; }
+  TensorValue getOutput() { return output; }
+  TensorValue getInput() { return input; }
   int64_t getBeginOffset(unsigned dim) { return starts[dim]; }
   int64_t getEndOffset(unsigned dim) { return inputShape[dim] - limits[dim]; }
 
@@ -233,10 +234,24 @@ public:
                                 unsigned dim) {
     if (a.rank != b.rank)
       return false;
-    if (a.input != a.input)
+    if (a.input != b.input)
       return false;
 
     return a.starts[dim] == b.starts[dim] && a.limits[dim] == b.limits[dim];
+  }
+
+  static bool isPrefixInDim(const StaticSlice &a, const StaticSlice &b,
+                            unsigned dim) {
+    if (!isEquivalentExceptDim(a, b, dim))
+      return false;
+    return a.starts[dim] == b.starts[dim] && a.limits[dim] <= b.limits[dim];
+  }
+
+  static bool isSuffixInDim(const StaticSlice &a, const StaticSlice &b,
+                            unsigned dim) {
+    if (!isEquivalentExceptDim(a, b, dim))
+      return false;
+    return a.starts[dim] >= b.starts[dim] && a.limits[dim] == b.limits[dim];
   }
 
   static bool isEquivalentExceptDim(const StaticSlice &a, const StaticSlice &b,
@@ -269,7 +284,7 @@ public:
       res.starts = VecTy(rank, 0);
       res.limits = VecTy(ty.getShape());
       res.strides = VecTy(rank, 1);
-      res.input = res.input;
+      res.input = res.output;
     }
     res.inputShape = VecTy(res.inputTy.getShape());
     res.outputShape = VecTy(res.outputTy.getShape());
@@ -8270,7 +8285,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -14651,45 +14667,28 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
-bool isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs, Location loc,
-                  RewriterBase &rewriter, StaticSlice *lhsSS = nullptr,
-                  StaticSlice *midSS = nullptr, StaticSlice *rhsSS = nullptr) {
+LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
+                           Location loc, RewriterBase &rewriter,
+                           StaticSlice *lhsSS = nullptr,
+                           StaticSlice *midSS = nullptr,
+                           StaticSlice *rhsSS = nullptr) {
   auto lhs = StaticSlice::get(_lhs);
   auto mid = StaticSlice::get(_mid);
   auto rhs = StaticSlice::get(_rhs);
 
-  if (!lhs || !mid || !rhs) {
-    rewriter.notifyMatchFailure(loc, "lhs or mid or rhs not slice");
-    return false;
-  }
+  if (!lhs || !mid || !rhs)
+    return rewriter.notifyMatchFailure(loc, "lhs or mid or rhs not slice");
 
-  if (!mid->isFullInDim(dim)) {
-    rewriter.notifyMatchFailure(loc, "Mid not full in dim");
-    return false;
-  }
-  if (!lhs->isFromStartInDim(dim)) {
-    rewriter.notifyMatchFailure(loc, "LHS not from start");
-    return false;
-  }
-  if (!rhs->isToEndInDim(dim)) {
-    rewriter.notifyMatchFailure(loc, "RHS not to end");
-    return false;
-  }
-  if (!StaticSlice::isEquivalentExceptDim(*lhs, *mid, dim) ||
-      !StaticSlice::isEquivalentExceptDim(*rhs, *mid, dim)) {
-    rewriter.notifyMatchFailure(loc, "Inequivalent in rest of dims");
-    return false;
-  }
+  if (!StaticSlice::isPrefixInDim(*lhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
+  if (!StaticSlice::isSuffixInDim(*rhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
   if (!rhs->isStrideOneAtDim(dim) || !mid->isStrideOneAtDim(dim) ||
-      !lhs->isStrideOneAtDim(dim)) {
-    rewriter.notifyMatchFailure(loc, "Not stride one");
-    return false;
-  }
-  if (rhs->getInput() != mid->getInput() ||
-      lhs->getInput() != mid->getInput()) {
-    rewriter.notifyMatchFailure(loc, "lhs mid or rhs not on the same input");
-    return false;
-  }
+      !lhs->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "Not stride one");
+  if (rhs->getInput() != mid->getInput() || lhs->getInput() != mid->getInput())
+    return rewriter.notifyMatchFailure(loc,
+                                       "lhs mid or rhs not on the same input");
 
   if (lhsSS)
     *lhsSS = *lhs;
@@ -14698,7 +14697,7 @@ bool isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs, Location loc,
   if (midSS)
     *midSS = *mid;
 
-  return true;
+  return success();
 }
 
 struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
@@ -14708,32 +14707,93 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
                                 PatternRewriter &rewriter) const override {
     unsigned dim = concat.getDimension();
     for (unsigned i = 2; i < concat.getNumOperands(); i++) {
+      auto finish = [&](Value extend) {
+        SmallVector<Value> toConcat;
+        for (unsigned j = 0; j < i - 2; j++)
+          toConcat.push_back(concat.getOperand(j));
+        toConcat.push_back(extend);
+        for (unsigned j = i + 1; j < concat.getNumOperands(); j++)
+          toConcat.push_back(concat.getOperand(j));
+
+        if (toConcat.size() == 1)
+          rewriter.replaceOp(concat, extend);
+        else
+          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(concat,
+                                                                toConcat, dim);
+      };
+      Value lhsv = concat.getOperand(i - 2);
+      Value midv = concat.getOperand(i - 1);
+      Value rhsv = concat.getOperand(i - 0);
+
       StaticSlice lhs;
       StaticSlice mid;
       StaticSlice rhs;
-      if (!isExtendLike(dim, concat.getOperand(i - 2), concat.getOperand(i - 1),
-                        concat.getOperand(i - 0), concat.getLoc(), rewriter),
-          &lhs, &mid, &rhs)
+
+      if (succeeded(isExtendLike(dim, lhsv, midv, rhsv, concat.getLoc(),
+                                 rewriter, &lhs, &mid, &rhs))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim),
+            rhs.getOutputShape(dim), dim);
+        finish(extend);
+        return success();
+      }
+
+      std::optional<unsigned> removedDim = std::nullopt;
+      auto peelReshape = [&](Value v) -> Value {
+        if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+          auto inShape = reshape.getOperand().getType().getShape();
+          auto outShape = reshape.getResult().getType().getShape();
+          if (inShape.size() != outShape.size() + 1)
+            return nullptr;
+
+          for (unsigned inI = 0, outI = 0;
+               inI < inShape.size(), outI < outShape.size();) {
+            if (inShape[inI] == outShape[outI]) {
+              inI++;
+              outI++;
+            } else if (inShape[inI] == 1) {
+              if (removedDim == inI) {
+                inI++;
+              } else if (!removedDim) {
+                removedDim = inI;
+                inI++;
+              }
+            } else {
+              return nullptr;
+            }
+          }
+          return reshape.getOperand();
+        }
+        return nullptr;
+      };
+      lhsv = peelReshape(lhsv);
+      midv = peelReshape(midv);
+      rhsv = peelReshape(rhsv);
+      if (!lhsv || !midv || !rhsv || !removedDim) {
+        rewriter.notifyMatchFailure(concat, "Illegal reshapes");
         continue;
+      }
+      unsigned reshapedDim = dim;
+      if (reshapedDim >= *removedDim)
+        reshapedDim++;
 
-      auto extend = rewriter.create<enzymexla::ExtendOp>(
-          concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim),
-          rhs.getOutputShape(dim), dim);
-
-      SmallVector<Value> toConcat;
-      for (unsigned j = 0; j < i - 2; j++)
-        toConcat.push_back(concat.getOperand(j));
-      toConcat.push_back(extend);
-      for (unsigned j = i + 1; j < concat.getNumOperands(); j++)
-        toConcat.push_back(concat.getOperand(j));
-
-      if (toConcat.size() == 1)
-        rewriter.replaceOp(concat, extend);
-      else
-        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(concat, toConcat,
-                                                              dim);
-
-      return success();
+      if (succeeded(isExtendLike(reshapedDim, lhsv, midv, rhsv, concat.getLoc(),
+                                 rewriter, &lhs, &mid, &rhs))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(reshapedDim),
+            rhs.getOutputShape(reshapedDim), reshapedDim);
+        auto shape = llvm::to_vector(extend.getResult().getType().getShape());
+        assert(shape[*removedDim] == 1);
+        shape.erase(std::next(shape.begin(), *removedDim),
+                    std::next(shape.begin(), *removedDim + 1));
+        auto reshape = rewriter.create<stablehlo::ReshapeOp>(
+            concat.getLoc(),
+            RankedTensorType::get(
+                shape, concat.getResult().getType().getElementType()),
+            extend);
+        finish(reshape);
+        return success();
+      }
     }
     return rewriter.notifyMatchFailure(concat, "Could not find extend pattern");
   }
@@ -14805,8 +14865,8 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
 
   auto rewriter = IRRewriter(vals[0].getContext());
   for (int i = 2; i < vals.size(); i++) {
-    if (isExtendLike(dimension, vals[i - 2], vals[i - 1], vals[i],
-                     vals[i].getLoc(), rewriter)) {
+    if (succeeded(isExtendLike(dimension, vals[i - 2], vals[i - 1], vals[i],
+                               vals[i].getLoc(), rewriter))) {
       return true;
     }
   }
