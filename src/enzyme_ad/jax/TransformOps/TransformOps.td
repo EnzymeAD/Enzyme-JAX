@@ -1455,3 +1455,23 @@ def LowerCommRegion : EnzymeHLOPatternOp<
     "lower_comm_region"> {
   let patterns = ["LowerCommRegion"];
 }
+
+def RecognizeRotate : EnzymeHLOPatternOp<
+    "recognize_rotate"> {
+  let patterns = ["RecognizeRotate"];
+}
+
+def LowerRotate : EnzymeHLOPatternOp<
+    "lower_rotate"> {
+  let patterns = ["LowerRotate"];
+}
+
+def RecognizeWrap : EnzymeHLOPatternOp<
+    "recognize_wrap"> {
+  let patterns = ["RecognizeWrap"];
+}
+
+def LowerWrap : EnzymeHLOPatternOp<
+    "lower_wrap"> {
+  let patterns = ["LowerWrap"];
+}
