@@ -10,7 +10,6 @@ func.func @extend_operations(%arg0: tensor<1x24x96xf64>, %arg1: tensor<1x8x80xf6
   return %3, %4, %5 : tensor<1x10x80xf64>, tensor<1x10x8xf64>, tensor<1x10x8xf64>
 }
 
-
 // CHECK:      func.func @extend_operations(%arg0: tensor<1x24x96xf64>, %arg1: tensor<1x8x80xf64>) -> (tensor<1x10x80xf64>, tensor<1x10x8xf64>, tensor<1x10x8xf64>) {
 // CHECK-NEXT:   %0 = "enzymexla.extend"(%arg1) <{dimension = 1 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x8x80xf64>) -> tensor<1x10x80xf64>
 // CHECK-NEXT:   %1 = stablehlo.slice %0 [0:1, 0:10, 72:80] : (tensor<1x10x80xf64>) -> tensor<1x10x8xf64>

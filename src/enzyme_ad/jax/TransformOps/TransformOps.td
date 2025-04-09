@@ -1522,3 +1522,8 @@ def ConcatConcatAxisSwap : EnzymeHLOPatternOp<
     "concat_concat_axis_swap"> {
   let patterns = ["ConcatConcatAxisSwap"];
 }
+
+def RotatePad : EnzymeHLOPatternOp<
+    "RotatePad"> {
+  let patterns = ["RotatePad"];
+}
