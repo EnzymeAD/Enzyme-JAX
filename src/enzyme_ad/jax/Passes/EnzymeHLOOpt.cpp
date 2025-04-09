@@ -8285,8 +8285,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -14882,8 +14881,9 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
 //   - The slice operation does not modify dimension D (i.e., it takes the
 //     full extent of dimension D).
 // Rewrite to:
-//   %new_extend = enzymexla.extend %operand, dim=D, lhs=L, rhs=R // Type adjusted
-//   %new_slice = stablehlo.slice %new_extend [...] // Indices adjusted for lhs padding
+//   %new_extend = enzymexla.extend %operand, dim=D, lhs=L, rhs=R // Type
+//   adjusted %new_slice = stablehlo.slice %new_extend [...] // Indices adjusted
+//   for lhs padding
 struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14897,7 +14897,8 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
     }
 
     if (!sliceOp->hasOneUse()) {
-      return rewriter.notifyMatchFailure(extendOp, "SliceOp has multiple users");
+      return rewriter.notifyMatchFailure(extendOp,
+                                         "SliceOp has multiple users");
     }
 
     auto sliceOperandType =
@@ -14949,13 +14950,16 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
     SmallVector<int64_t> newSliceStrides =
         llvm::to_vector(sliceOp.getStrides());
 
-    RankedTensorType newExtendResultType = newExtendOp.getResult().getType().cast<RankedTensorType>();
+    RankedTensorType newExtendResultType =
+        newExtendOp.getResult().getType().cast<RankedTensorType>();
     newSliceStarts[extendDim] = 0; // Start from the beginning of the padded dim
-    newSliceLimits[extendDim] = newExtendResultType.getDimSize(extendDim); // Go to the end of the padded dim
-    newSliceStrides[extendDim] = 1; // Stride must be 1 for this dim to maintain contiguity assumption
+    newSliceLimits[extendDim] = newExtendResultType.getDimSize(
+        extendDim); // Go to the end of the padded dim
+    newSliceStrides[extendDim] =
+        1; // Stride must be 1 for this dim to maintain contiguity assumption
 
-
-    // The result type of the new slice should match the original extend result type
+    // The result type of the new slice should match the original extend result
+    // type
     auto newSliceOp = rewriter.create<stablehlo::SliceOp>(
         loc, extendResultType, newExtendOp.getResult(), newSliceStarts,
         newSliceLimits, newSliceStrides);
@@ -14965,7 +14969,6 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
     return success();
   }
 };
-
 
 struct ConcatConcatAxisSwap final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
