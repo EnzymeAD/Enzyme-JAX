@@ -3018,15 +3018,23 @@ struct RotatePad final : OpRewritePattern<enzymexla::RotateOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto pad = rotate.getOperand().getDefiningOp<stablehlo::PadOp>();
-    if (!pad) return failure();
+    if (!pad)
+      return failure();
 
-    if (pad.getEdgePaddingLow()[rotate.getDimension()] != 0) return failure();
-    if (pad.getEdgePaddingHigh()[rotate.getDimension()] != 0) return failure();
-    if (pad.getInteriorPadding()[rotate.getDimension()] != 0) return failure();
+    if (pad.getEdgePaddingLow()[rotate.getDimension()] != 0)
+      return failure();
+    if (pad.getEdgePaddingHigh()[rotate.getDimension()] != 0)
+      return failure();
+    if (pad.getInteriorPadding()[rotate.getDimension()] != 0)
+      return failure();
 
-    auto newRotate = rewriter.create<enzymexla::RotateOp>(rotate.getLoc(), pad.getOperand(), rotate.getAmount(), rotate.getDimension());
+    auto newRotate = rewriter.create<enzymexla::RotateOp>(
+        rotate.getLoc(), pad.getOperand(), rotate.getAmount(),
+        rotate.getDimension());
 
-    auto newPad = rewriter.create<stablehlo::PadOp>(pad.getLoc(), newRotate, pad.getPaddingValue(), pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(), pad.getInteriorPadding());
+    auto newPad = rewriter.create<stablehlo::PadOp>(
+        pad.getLoc(), newRotate, pad.getPaddingValue(), pad.getEdgePaddingLow(),
+        pad.getEdgePaddingHigh(), pad.getInteriorPadding());
 
     rewriter.replaceOp(rotate, newPad);
     return success();
