@@ -321,12 +321,6 @@ struct PeriodicConcatSimplify
     auto source_target_pairs_ty = RankedTensorType::get(
         {(int64_t)((ny - 2) * nx), (int64_t)2}, rewriter.getI64Type());
 
-    auto zeroTensorType =
-        RankedTensorType::get({}, rewriter.getIntegerType(64));
-    Value zeroConst = rewriter.create<stablehlo::ConstantOp>(
-        concat.getLoc(), zeroTensorType,
-        DenseIntElementsAttr::get(zeroTensorType, {0}));
-
     Value alpha = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), partition_id.getType(),
         makeAttr(partition_id.getType(), 2 * N / ny).cast<ElementsAttr>());
@@ -367,11 +361,9 @@ struct PeriodicConcatSimplify
               rewriter.create<stablehlo::SubtractOp>(concat.getLoc(),
                                                      partition_id, onePId),
               alpha);
-          dynamicSliceStartSlices.push_back(
-              rewriter.create<stablehlo::ConvertOp>(concat.getLoc(),
-                                                    zeroTensorType, diffIdx));
+          dynamicSliceStartSlices.push_back(diffIdx);
         } else {
-          dynamicSliceStartSlices.push_back(zeroConst);
+          dynamicSliceStartSlices.push_back(zero);
         }
       }
 
@@ -420,11 +412,9 @@ struct PeriodicConcatSimplify
                   concat.getLoc(), partition_id.getType(),
                   makeAttr(partition_id.getType(), N).cast<ElementsAttr>()),
               diffIdx);
-          dynamicSliceStartSlices.push_back(
-              rewriter.create<stablehlo::ConvertOp>(concat.getLoc(),
-                                                    zeroTensorType, startIdx));
+          dynamicSliceStartSlices.push_back(startIdx);
         } else {
-          dynamicSliceStartSlices.push_back(zeroConst);
+          dynamicSliceStartSlices.push_back(zero);
         }
       }
 
