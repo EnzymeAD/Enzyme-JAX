@@ -14689,7 +14689,7 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
         outerSlice = rewriter.create<stablehlo::SliceOp>(
             sl0.getLoc(), sl0.getOperand(), starts, limits, sl0.getStrides());
         if (auto shard = sdy::getShardingPerValue(sl0)) {
-          sdy::setShardings(outerSlice, shard);
+          sdy::setShardings(outerSlice.getDefiningOp(), shard);
         }
       }
       auto rotate = rewriter.create<enzymexla::RotateOp>(
