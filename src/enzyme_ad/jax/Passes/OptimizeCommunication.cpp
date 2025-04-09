@@ -78,8 +78,6 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       }
     }
 
-    int lhsSize = ops[0].getType().getShape()[concat.getDimension()];
-    int rhsSize = ops[2].getType().getShape()[concat.getDimension()];
     if (ops[2].getStartIndices()[concat.getDimension()] !=
         ops[1].getStartIndices()[concat.getDimension()])
       return failure();
@@ -140,24 +138,37 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       localShape[i] /= ndevices[i];
     }
 
-    int extra_padding = 0; // positive => left padded; negative => right padded
+    int left_padding = 0;
+    int right_padding = 0;
     auto N1 = ops[1].getType().getShape()[concat.getDimension()];
     auto N2 = ops[0].getType().getShape()[concat.getDimension()];
     auto N3 = ops[2].getType().getShape()[concat.getDimension()];
     auto N = N2;
     if (N2 != N3) {
-      extra_padding = N3 - N2;
       if (N2 > N3) {
+        right_padding = N2 - N3;
         N = N2;
       } else {
+        left_padding = N3 - N2;
         N = N3;
       }
     }
     auto T = N1 + 2 * N;
 
-    // TODO: lift this condition with padding
-    if (T % ny != 0)
-      return failure();
+    if (T % ny != 0) {
+      int extra = ((T / ny) + 1) * ny - T;
+
+      if (extra % 2 == 0) {
+        left_padding += extra / 2;
+        right_padding += extra / 2;
+        N += extra / 2;
+        T += extra;
+      } else {
+        // TODO: handle this if we ever need it. basically we find the nearest
+        //       multiple of 2 & ny that is larger than T
+        return failure();
+      }
+    }
 
     SmallVector<int64_t> localRetShape =
         llvm::to_vector(concat.getType().getShape());
@@ -385,7 +396,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
     SmallVector<int64_t> inner_starts3(concat.getType().getShape().size(), 0);
     SmallVector<int64_t> inner_limits3 =
         llvm::to_vector(cast<RankedTensorType>(arg.getType()).getShape());
-    inner_limits3[concat.getDimension()] = rhsSize;
+    inner_limits3[concat.getDimension()] = N;
     auto end_slice = rewriter.create<stablehlo::SliceOp>(
         concat.getLoc(), arg, inner_starts3, inner_limits3, inner_strides);
 
@@ -470,16 +481,20 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
     }
 
     rewriter.setInsertionPointAfter(manual);
-    if (extra_padding != 0) {
+    if (left_padding != 0 || right_padding != 0) {
       SmallVector<int64_t> sliceStartIndices(concat.getType().getShape().size(),
                                              0);
       SmallVector<int64_t> sliceLimits = llvm::to_vector(
           cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
-      if (extra_padding > 0) {
-        sliceStartIndices[concat.getDimension()] = extra_padding;
-      } else {
-        sliceLimits[concat.getDimension()] -= extra_padding;
+
+      if (left_padding > 0) {
+        sliceStartIndices[concat.getDimension()] = left_padding;
       }
+      
+      if (right_padding > 0) {
+        sliceLimits[concat.getDimension()] -= right_padding;
+      }
+
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
           concat, manual->getResults()[0], sliceStartIndices, sliceLimits,
           inner_strides);
