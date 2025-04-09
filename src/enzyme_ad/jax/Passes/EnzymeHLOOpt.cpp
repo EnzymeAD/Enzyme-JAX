@@ -1068,6 +1068,88 @@ struct ConcatConcatToDUS final
   }
 };
 
+struct ConcatToOneDimDUS final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer.getOperands().size() < 2)
+      return failure();
+    SmallVector<stablehlo::ConcatenateOp> inners;
+
+    stablehlo::SliceOp lhs = nullptr;
+    if (auto lhsSlice =
+            outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = lhsSlice.getOperand().getType() == outer.getType();
+      for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
+        if (lhsSlice.getStartIndices()[i] != 0) {
+          legal = false;
+          break;
+        }
+        if (lhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+      }
+      if (legal)
+        lhs = lhsSlice;
+    }
+
+    stablehlo::SliceOp rhs = nullptr;
+    if (auto rhsSlice =
+            outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = rhsSlice.getOperand().getType() == outer.getType();
+      for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
+        if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+          legal = false;
+          break;
+        }
+        if (rhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+      }
+      if (legal)
+        rhs = rhsSlice;
+    }
+
+    if (!lhs && !rhs) {
+      return failure();
+    }
+    if (lhs && rhs && outer.getOperands().size() == 2) {
+      return failure();
+    }
+
+    SmallVector<Value> newOps;
+    int start = lhs ? 1 : 0;
+    int end = outer.getOperands().size() - (rhs ? 1 : 0);
+    for (int i = start; i < end; i++) {
+      newOps.push_back(outer.getOperands()[i]);
+    }
+    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        outer.getLoc(), newOps, outer.getDimension());
+
+    auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
+    Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
+    SmallVector<Value> starts(
+        outer.getType().getShape().size(),
+        rewriter.create<stablehlo::ConstantOp>(
+            outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+
+    if (lhs) {
+      starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
+          outer.getLoc(), iTy,
+          makeAttr(iTy, lhs.getStartIndices()[outer.getDimension()])
+              .cast<ElementsAttr>());
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        outer, operand, innerConcat, starts);
+    return success();
+  }
+};
+
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -15561,6 +15643,10 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 512)) {
       patterns.add<LowerRotate, LowerWrap, LowerExtend>(context);
+    }
+
+    if (passses & (2048 * 1024)) {
+      patterns.add<ConcatToOneDimDUS>(context);
     }
 
     if (all_finite)

@@ -551,6 +551,7 @@ cc_library(
         "@llvm-project//mlir:VectorToLLVM",
         "@llvm-project//mlir:VectorToSCF",
         "@llvm-project//mlir:ViewLikeInterface",
+        "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:reference_ops",
         "@stablehlo//:stablehlo_ops",
