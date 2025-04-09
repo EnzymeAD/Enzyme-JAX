@@ -2555,6 +2555,34 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
   return success();
 }
 
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice) {
+  if (otherSlice.getOperand() != slice.getOperand())
+    return false;
+
+  bool canMerge = true;
+
+  // Check that both slices are contiguous only in dim
+  ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
+                    otherSliceStarts = otherSlice.getStartIndices(),
+                    sliceLimits = slice.getLimitIndices(),
+                    otherSliceLimits = otherSlice.getLimitIndices(),
+                    sliceStrides = slice.getStrides(),
+                    otherSliceStrides = otherSlice.getStrides();
+
+  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
+    if (d == dimension) {
+      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    } else {
+      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
+                  sliceLimits[d] == otherSliceLimits[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    }
+  }
+  return canMerge;
+}
+
 struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2577,40 +2605,96 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
       while (i + 1 < e &&
              (otherSlice =
                   op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>())) {
-        if (otherSlice.getOperand() != slice.getOperand())
-          break;
-
-        bool canMerge = true;
-
-        // Check that both slices are contiguous only in dim
-        ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
-                          otherSliceStarts = otherSlice.getStartIndices(),
-                          sliceLimits = slice.getLimitIndices(),
-                          otherSliceLimits = otherSlice.getLimitIndices(),
-                          sliceStrides = slice.getStrides(),
-                          otherSliceStrides = otherSlice.getStrides();
-
-        for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
-          if (d == dim) {
-            canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
-                        sliceStrides[d] == otherSliceStrides[d];
-          } else {
-            canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
-                        sliceLimits[d] == otherSliceLimits[d] &&
-                        sliceStrides[d] == otherSliceStrides[d];
-          }
-        }
-
-        if (canMerge) {
+        if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
           slice = rewriter.create<stablehlo::SliceOp>(
-              slice->getLoc(), slice.getOperand(), sliceStarts,
-              otherSliceLimits, sliceStrides);
+              slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
+              otherSlice.getLimitIndices(), slice.getStrides());
           i++;
         } else
           break;
       }
 
       newOperands.push_back(slice.getResult());
+    }
+
+    if (newOperands.size() == op->getNumOperands())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
+bool canMergePadsAlongAxis(int dimension, stablehlo::PadOp pad,
+                           stablehlo::PadOp otherPad) {
+  if (otherPad.getPaddingValue() != pad.getPaddingValue())
+    return false;
+
+  for (int d = 0, ndims = pad.getType().getShape().size(); d < ndims; ++d) {
+    if (d == dimension) {
+      if (pad.getInteriorPadding()[d] != 0) {
+        return false;
+      }
+      if (otherPad.getInteriorPadding()[d] != 0) {
+        return false;
+      }
+      if (pad.getEdgePaddingHigh()[d] != 0) {
+        return false;
+      }
+      if (otherPad.getEdgePaddingLow()[d] != 0) {
+        return false;
+      }
+    } else {
+      if (pad.getInteriorPadding()[d] != otherPad.getInteriorPadding()[d]) {
+        return false;
+      }
+      if (pad.getEdgePaddingHigh()[d] != otherPad.getEdgePaddingHigh()[d]) {
+        return false;
+      }
+      if (pad.getEdgePaddingLow()[d] != otherPad.getEdgePaddingLow()[d]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto pad = operand.getDefiningOp<stablehlo::PadOp>();
+
+      if (!pad) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      stablehlo::PadOp otherPadOp;
+      while (i + 1 < e &&
+             (otherPadOp =
+                  op->getOperand(i + 1).getDefiningOp<stablehlo::PadOp>())) {
+        if (canMergePadsAlongAxis(op.getDimension(), pad, otherPadOp)) {
+          Value padops[] = {pad.getOperand(), otherPadOp.getOperand()};
+          auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), padops, op.getDimension());
+          pad = rewriter.create<stablehlo::PadOp>(
+              pad->getLoc(), subConcat, pad.getPaddingValue(),
+              pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+              pad.getInteriorPadding());
+          i++;
+        } else
+          break;
+      }
+
+      newOperands.push_back(pad.getResult());
     }
 
     if (newOperands.size() == op->getNumOperands())
@@ -14311,6 +14395,73 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
+                stablehlo::SliceOp *sl0P = nullptr,
+                stablehlo::SliceOp *sl1P = nullptr) {
+  auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
+  if (!sl0)
+    return false;
+  auto midT = cast<RankedTensorType>(mid.getType());
+  auto sl1 = rhs.getDefiningOp<stablehlo::SliceOp>();
+  if (!sl1)
+    return false;
+  if (sl0.getOperand() != sl1.getOperand())
+    return false;
+
+  *sl0P = sl0;
+  *sl1P = sl1;
+
+  SmallVector<int64_t> midStarts(midT.getShape().size(), 0);
+  SmallVector<int64_t> midLimits = llvm::to_vector(midT.getShape());
+  SmallVector<int64_t> midStrides(midT.getShape().size(), 1);
+  if (sl0.getOperand() != mid) {
+    auto slM = mid.getDefiningOp<stablehlo::SliceOp>();
+    if (!slM)
+      return false;
+    if (slM.getOperand() != sl0.getOperand())
+      return false;
+    midStarts = llvm::to_vector(slM.getStartIndices());
+    midLimits = llvm::to_vector(slM.getLimitIndices());
+    midStrides = llvm::to_vector(slM.getStrides());
+  }
+
+  // sl0[B-lhs:B], mid[A:B] sl1[A:A+rhs]
+  for (int j = 0; j < sl0.getType().getShape().size(); j++) {
+    if (j == dim) {
+      if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1 ||
+          midStrides[j] != 1) {
+        return false;
+      }
+      if (sl0.getLimitIndices()[j] != midLimits[j]) {
+        return false;
+      }
+      if (midStarts[j] != sl1.getStartIndices()[j]) {
+        return false;
+      }
+    } else {
+      if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+        return false;
+      }
+      if (sl0.getLimitIndices()[j] != midLimits[j]) {
+        return false;
+      }
+      if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+        return false;
+      }
+      if (sl0.getStartIndices()[j] != midStarts[j]) {
+        return false;
+      }
+      if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+        return false;
+      }
+      if (sl0.getStrides()[j] != midStrides[j]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14319,77 +14470,13 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
     if (concat.getOperands().size() < 2)
       return failure();
     for (int i = 2; i < concat.getOperands().size(); i++) {
-      auto sl0 =
-          concat.getOperands()[i - 2].getDefiningOp<stablehlo::SliceOp>();
-      if (!sl0)
-        continue;
+      stablehlo::SliceOp sl0;
       auto mid = concat.getOperands()[i - 1];
-      auto midT = cast<RankedTensorType>(mid.getType());
-      auto sl1 = concat.getOperands()[i].getDefiningOp<stablehlo::SliceOp>();
-      if (!sl1)
+      stablehlo::SliceOp sl1;
+      if (!isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid,
+                      concat.getOperands()[i], &sl0, &sl1)) {
         continue;
-      if (sl0.getOperand() != sl1.getOperand())
-        continue;
-
-      SmallVector<int64_t> midStarts(midT.getShape().size(), 0);
-      SmallVector<int64_t> midLimits = llvm::to_vector(midT.getShape());
-      SmallVector<int64_t> midStrides(midT.getShape().size(), 1);
-      if (sl0.getOperand() != mid) {
-        auto slM = mid.getDefiningOp<stablehlo::SliceOp>();
-        if (!slM)
-          continue;
-        if (slM.getOperand() != sl0.getOperand())
-          continue;
-        midStarts = llvm::to_vector(slM.getStartIndices());
-        midLimits = llvm::to_vector(slM.getLimitIndices());
-        midStrides = llvm::to_vector(slM.getStrides());
       }
-      bool legal = true;
-      // sl0[B-lhs:B], mid[A:B] sl1[A:A+rhs]
-      for (int j = 0; j < sl0.getType().getShape().size(); j++) {
-        if (j == concat.getDimension()) {
-          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1 ||
-              midStrides[j] != 1) {
-            legal = false;
-            break;
-          }
-          if (sl0.getLimitIndices()[j] != midLimits[j]) {
-            legal = false;
-            break;
-          }
-          if (midStarts[j] != sl1.getStartIndices()[j]) {
-            legal = false;
-            break;
-          }
-        } else {
-          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getLimitIndices()[j] != midLimits[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStartIndices()[j] != midStarts[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
-            legal = false;
-            break;
-          }
-          if (sl0.getStrides()[j] != midStrides[j]) {
-            legal = false;
-            break;
-          }
-        }
-      }
-      if (!legal)
-        continue;
       auto wrap = rewriter.create<enzymexla::WrapOp>(
           sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
           sl1.getType().getShape()[concat.getDimension()],
@@ -14606,19 +14693,20 @@ struct EnzymeHLOOptPass
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, SliceConcat, SliceIf,
-                 SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns
+        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+             SliceElementwise, SliceReshapeElementwise, SlicePad,
+             SliceReshapePad, DotReshapeDot, ConcatConstProp,
+             DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
+             LogConstProp, LogPlusConstProp, ChloInfConstProp, GammaConstProp,
+             AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+             ConcatPushBinop<stablehlo::AddOp>,
+             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+             ReduceConcat, ConcatSlice, ConcatMultiPad, SliceConcat, SliceIf,
+             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+             BinBroadcastSplat<stablehlo::SubtractOp>,
+             BinBroadcastSplat<stablehlo::DivOp>,
+             BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,

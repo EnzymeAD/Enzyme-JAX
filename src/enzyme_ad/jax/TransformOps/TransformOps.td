@@ -1487,3 +1487,8 @@ def LowerWrap : EnzymeHLOPatternOp<
     "lower_wrap"> {
   let patterns = ["LowerWrap"];
 }
+
+def ConcatMultiPad : EnzymeHLOPatternOp<
+    "concat_multipad"> {
+  let patterns = ["ConcatMultiPad"];
+}
