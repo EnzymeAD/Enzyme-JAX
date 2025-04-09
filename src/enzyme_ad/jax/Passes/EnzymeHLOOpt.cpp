@@ -14303,7 +14303,9 @@ struct LowerCommRegion : public OpRewritePattern<enzymexla::CommRegionOp> {
   }
 };
 
-bool isRotateLike(int dimension, Value lhs, Value rhs, stablehlo::SliceOp* sl0P = nullptr, stablehlo::SliceOp* sl1P = nullptr) {
+bool isRotateLike(int dimension, Value lhs, Value rhs,
+                  stablehlo::SliceOp *sl0P = nullptr,
+                  stablehlo::SliceOp *sl1P = nullptr) {
   auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
   if (!sl0)
     return false;
@@ -14354,7 +14356,8 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
       return failure();
     for (int i = 1; i < concat.getOperands().size(); i++) {
       stablehlo::SliceOp sl0, sl1;
-      if (!isRotateLike(concat.getDimension(), concat.getOperands()[i-1], concat.getOperands()[i], &sl0, &sl1))
+      if (!isRotateLike(concat.getDimension(), concat.getOperands()[i - 1],
+                        concat.getOperands()[i], &sl0, &sl1))
         continue;
       auto starts = llvm::to_vector(sl1.getStartIndices());
       auto limits = llvm::to_vector(sl0.getLimitIndices());
@@ -14532,38 +14535,38 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
 
 bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   assert(vals.size());
-  
-  for (int i=0; i<vals.size(); i++) {
+
+  for (int i = 0; i < vals.size(); i++) {
     if (auto concat = vals[i].getDefiningOp<stablehlo::ConcatenateOp>()) {
       if (concat.getDimension() == dimension)
         return true;
     }
   }
-  
-  for (int i=1; i<vals.size(); i++) {
-    auto sl0 = vals[i-1].getDefiningOp<stablehlo::SliceOp>();
+
+  for (int i = 1; i < vals.size(); i++) {
+    auto sl0 = vals[i - 1].getDefiningOp<stablehlo::SliceOp>();
     auto sl1 = vals[i].getDefiningOp<stablehlo::SliceOp>();
     if (sl0 && sl1 && canMergeSlicesAlongAxis(dimension, sl0, sl1)) {
       return true;
     }
   }
 
-  for (int i=1; i<vals.size(); i++) {
-    auto pad0 = vals[i-1].getDefiningOp<stablehlo::PadOp>();
+  for (int i = 1; i < vals.size(); i++) {
+    auto pad0 = vals[i - 1].getDefiningOp<stablehlo::PadOp>();
     auto pad1 = vals[i].getDefiningOp<stablehlo::PadOp>();
     if (pad0 && pad1 && canMergePadsAlongAxis(dimension, pad0, pad1)) {
       return true;
     }
   }
 
-  for (int i=1; i<vals.size(); i++) {
-    if (isRotateLike(dimension, vals[i-1], vals[i])) {
+  for (int i = 1; i < vals.size(); i++) {
+    if (isRotateLike(dimension, vals[i - 1], vals[i])) {
       return true;
     }
   }
 
-  for (int i=2; i<vals.size(); i++) {
-    if (isWrapLike(dimension, vals[i-2], vals[i-1], vals[i])) {
+  for (int i = 2; i < vals.size(); i++) {
+    if (isWrapLike(dimension, vals[i - 2], vals[i - 1], vals[i])) {
       return true;
     }
   }
@@ -14598,27 +14601,30 @@ struct ConcatConcatAxisSwap final
         if (inners[0].getDimension() != concatOp.getDimension()) {
           return failure();
         }
-        for (int i=0; i<inners[0].getOperands().size(); i++) {
-          if (cast<RankedTensorType>(concatOp.getOperands()[i].getType()).getShape()[concatOp.getDimension()] !=
-              cast<RankedTensorType>(inners[0].getOperands()[i].getType()).getShape()[concatOp.getDimension()]
-            )
+        for (int i = 0; i < inners[0].getOperands().size(); i++) {
+          if (cast<RankedTensorType>(concatOp.getOperands()[i].getType())
+                  .getShape()[concatOp.getDimension()] !=
+              cast<RankedTensorType>(inners[0].getOperands()[i].getType())
+                  .getShape()[concatOp.getDimension()])
             return failure();
         }
       }
       inners.push_back(concatOp);
     }
 
-    // Check that we don't have a current axis fuse opportunity, and wait for those fusions
+    // Check that we don't have a current axis fuse opportunity, and wait for
+    // those fusions
     for (auto inner : inners) {
-      if (isAxisFusible(inner.getDimension(), llvm::to_vector(inner.getOperands()))) {
+      if (isAxisFusible(inner.getDimension(),
+                        llvm::to_vector(inner.getOperands()))) {
         return failure();
       }
     }
 
     bool anyFusible = false;
-    for (int i=0; i<inners[0].getOperands().size(); i++) {
+    for (int i = 0; i < inners[0].getOperands().size(); i++) {
       SmallVector<Value> newOperands;
-      for (int j=0; j<outer.getOperands().size(); j++) {
+      for (int j = 0; j < outer.getOperands().size(); j++) {
         newOperands.push_back(inners[j].getOperands()[i]);
       }
       if (isAxisFusible(outer.getDimension(), newOperands)) {
@@ -14629,14 +14635,16 @@ struct ConcatConcatAxisSwap final
 
     SmallVector<Value> newOuters;
 
-    for (int i=0; i<inners[0].getOperands().size(); i++) {
+    for (int i = 0; i < inners[0].getOperands().size(); i++) {
       SmallVector<Value> newOperands;
-      for (int j=0; j<outer.getOperands().size(); j++) {
+      for (int j = 0; j < outer.getOperands().size(); j++) {
         newOperands.push_back(inners[j].getOperands()[i]);
       }
-      newOuters.push_back(rewriter.create<stablehlo::ConcatenateOp>(outer.getLoc(), newOperands, outer.getDimension()));
+      newOuters.push_back(rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOperands, outer.getDimension()));
     }
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(outer, newOuters, inners[0].getDimension());
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        outer, newOuters, inners[0].getDimension());
     return success();
   }
 };
@@ -14813,20 +14821,20 @@ struct EnzymeHLOOptPass
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns
-        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-             SliceElementwise, SliceReshapeElementwise, SlicePad,
-             SliceReshapePad, DotReshapeDot, ConcatConstProp,
-             DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-             LogConstProp, LogPlusConstProp, ChloInfConstProp, GammaConstProp,
-             AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-             ConcatPushBinop<stablehlo::AddOp>,
-             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-             ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-             BinBroadcastSplat<stablehlo::SubtractOp>,
-             BinBroadcastSplat<stablehlo::DivOp>,
-             BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+                 SliceElementwise, SliceReshapeElementwise, SlicePad,
+                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
+                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
+                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
+                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
+                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+                 ReduceConcat, ConcatSlice, ConcatMultiPad,
+                 ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
+                 BinBroadcastSplat<stablehlo::AddOp>,
+                 BinBroadcastSplat<stablehlo::SubtractOp>,
+                 BinBroadcastSplat<stablehlo::DivOp>,
+                 BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
