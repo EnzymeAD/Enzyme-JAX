@@ -1079,7 +1079,8 @@ struct ConcatToOneDimDUS final
     SmallVector<stablehlo::ConcatenateOp> inners;
 
     stablehlo::SliceOp lhs = nullptr;
-    if (auto lhsSlice = outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
+    if (auto lhsSlice =
+            outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
       bool legal = lhsSlice.getOperand().getType() == outer.getType();
       for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
         if (lhsSlice.getStartIndices()[i] != 0) {
@@ -1096,7 +1097,8 @@ struct ConcatToOneDimDUS final
     }
 
     stablehlo::SliceOp rhs = nullptr;
-    if (auto rhsSlice = outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
+    if (auto rhsSlice =
+            outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
       bool legal = rhsSlice.getOperand().getType() == outer.getType();
       for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
         if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
@@ -1122,28 +1124,31 @@ struct ConcatToOneDimDUS final
     SmallVector<Value> newOps;
     int start = lhs ? 1 : 0;
     int end = outer.getOperands().size() - (rhs ? 1 : 0);
-    for (int i=start; i<end; i++) {
+    for (int i = start; i < end; i++) {
       newOps.push_back(outer.getOperands()[i]);
     }
-    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(outer.getLoc(), newOps, outer.getDimension());
+    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        outer.getLoc(), newOps, outer.getDimension());
 
     auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
     Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
     SmallVector<Value> starts(
-            outer.getType().getShape().size(),
-            rewriter.create<stablehlo::ConstantOp>(
-                outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+        outer.getType().getShape().size(),
+        rewriter.create<stablehlo::ConstantOp>(
+            outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
 
     if (lhs) {
       starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
-                outer.getLoc(), iTy, makeAttr(iTy, lhs.getStartIndices()[outer.getDimension()]).cast<ElementsAttr>());
+          outer.getLoc(), iTy,
+          makeAttr(iTy, lhs.getStartIndices()[outer.getDimension()])
+              .cast<ElementsAttr>());
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(outer, operand, innerConcat, starts);
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        outer, operand, innerConcat, starts);
     return success();
   }
 };
-
 
 struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
