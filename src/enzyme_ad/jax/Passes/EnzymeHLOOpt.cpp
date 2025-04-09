@@ -15014,17 +15014,6 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   return false;
 }
 
-// Pattern:
-//   %slice = stablehlo.slice %operand [...]
-//   %extend = enzymexla.extend %slice, dim=D, lhs=L, rhs=R
-// Constraint:
-//   - %slice has only %extend as its user.
-//   - The slice operation does not modify dimension D (i.e., it takes the
-//     full extent of dimension D).
-// Rewrite to:
-//   %new_extend = enzymexla.extend %operand, dim=D, lhs=L, rhs=R // Type
-//   adjusted %new_slice = stablehlo.slice %new_extend [...] // Indices adjusted
-//   for lhs padding
 struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
   using OpRewritePattern::OpRewritePattern;
 
