@@ -2839,6 +2839,65 @@ struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
+bool canMergeWrapsAlongAxis(int dimension, enzymexla::WrapOp wrap,
+                            enzymexla::WrapOp otherWrap) {
+  if (wrap.getDimension() != otherWrap.getDimension())
+    return false;
+
+  if (wrap.getLhs() != otherWrap.getLhs())
+    return false;
+
+  if (wrap.getRhs() != otherWrap.getRhs())
+    return false;
+
+  return true;
+}
+
+struct ConcatWrap final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto wrap = operand.getDefiningOp<enzymexla::WrapOp>();
+
+      if (!wrap) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      enzymexla::WrapOp otherWrap;
+      while (i + 1 < e &&
+             (otherWrap =
+                  op->getOperand(i + 1).getDefiningOp<enzymexla::WrapOp>())) {
+        if (canMergeWrapsAlongAxis(op.getDimension(), wrap, otherWrap)) {
+          Value padops[] = {wrap.getOperand(), otherWrap.getOperand()};
+          auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), padops, op.getDimension());
+          wrap = rewriter.create<enzymexla::WrapOp>(
+              wrap->getLoc(), subConcat, wrap.getLhs(), wrap.getRhs(),
+              wrap.getDimension());
+          i++;
+        } else
+          break;
+      }
+
+      newOperands.push_back(wrap.getResult());
+    }
+
+    if (newOperands.size() == op->getNumOperands())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14896,6 +14955,14 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   }
 
   for (int i = 1; i < vals.size(); i++) {
+    auto sl0 = vals[i - 1].getDefiningOp<enzymexla::WrapOp>();
+    auto sl1 = vals[i].getDefiningOp<enzymexla::WrapOp>();
+    if (sl0 && sl1 && canMergeWrapsAlongAxis(dimension, sl0, sl1)) {
+      return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
     if (isRotateLike(dimension, vals[i - 1], vals[i])) {
       return true;
     }
@@ -15173,7 +15240,7 @@ struct EnzymeHLOOptPass
                  GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
                  PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad,
+                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
                  ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
