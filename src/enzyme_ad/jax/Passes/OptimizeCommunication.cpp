@@ -55,10 +55,8 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       return failure();
 
     // TODO: relax the slice op condition
-    auto midOp = allOperands[1].getDefiningOp<stablehlo::SliceOp>();
-    if (!midOp)
-      return failure();
-    if (!midOp->hasOneUse())
+    auto midOp = allOperands[1]; // .getDefiningOp<stablehlo::SliceOp>();
+    if (!midOp.hasOneUse())
       return failure();
 
     auto rightSliceOp = allOperands[2].getDefiningOp<stablehlo::SliceOp>();
@@ -71,19 +69,32 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       return failure();
 
     Value superSliceOp;
-    if (leftSliceOp.getOperand() != midOp.getOperand()) {
-      // We need to compute the global slice
+
+    auto midSliceOp = midOp.getDefiningOp<stablehlo::SliceOp>();
+    if (!midSliceOp) {
       superSliceOp = rewriter.create<stablehlo::SliceOp>(
           concat.getLoc(), leftSliceOp.getOperand(),
           rightSliceOp.getStartIndices(), leftSliceOp.getLimitIndices(),
           leftSliceOp.getStrides());
-
-      if (cast<RankedTensorType>(superSliceOp.getType()).getShape() !=
-          cast<RankedTensorType>(midOp.getType()).getShape()) {
-        return failure();
-      }
     } else {
-      superSliceOp = midOp;
+      if ((leftSliceOp.getOperand() != midSliceOp.getOperand()) ||
+          (rightSliceOp.getStartIndices()[concat.getDimension()] !=
+           midSliceOp.getStartIndices()[concat.getDimension()]) ||
+          (leftSliceOp.getLimitIndices()[concat.getDimension()] !=
+           midSliceOp.getLimitIndices()[concat.getDimension()])) {
+        // We need to compute the global slice
+        superSliceOp = rewriter.create<stablehlo::SliceOp>(
+            concat.getLoc(), leftSliceOp.getOperand(),
+            rightSliceOp.getStartIndices(), leftSliceOp.getLimitIndices(),
+            leftSliceOp.getStrides());
+
+        if (cast<RankedTensorType>(superSliceOp.getType()).getShape() !=
+            cast<RankedTensorType>(midSliceOp.getType()).getShape()) {
+          return failure();
+        }
+      } else {
+        superSliceOp = midSliceOp;
+      }
     }
 
     for (int i = 0; i < concat.getType().getShape().size(); i++) {
@@ -104,14 +115,6 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
         return failure();
       }
     }
-
-    if (rightSliceOp.getStartIndices()[concat.getDimension()] !=
-        midOp.getStartIndices()[concat.getDimension()])
-      return failure();
-
-    if (leftSliceOp.getLimitIndices()[concat.getDimension()] !=
-        midOp.getLimitIndices()[concat.getDimension()])
-      return failure();
 
     TensorShardingAttr op_shardings[] = {mlir::sdy::getSharding(concat)};
     TensorShardingAttr op_shardings_in[] = {mlir::sdy::getSharding(concat),
@@ -161,7 +164,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
     }
 
     SmallVector<int64_t> localShape =
-        llvm::to_vector(midOp.getType().getShape());
+        llvm::to_vector(cast<RankedTensorType>(midOp.getType()).getShape());
     assert(ndevices.size() == localShape.size());
     assert(localShape.size() == ndevices.size());
     for (int i = 0; i < localShape.size(); i++) {
@@ -170,7 +173,8 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
     int left_padding = 0;
     int right_padding = 0;
-    auto N1 = midOp.getType().getShape()[concat.getDimension()];
+    auto N1 = cast<RankedTensorType>(midOp.getType())
+                  .getShape()[concat.getDimension()];
     auto N2 = leftSliceOp.getType().getShape()[concat.getDimension()];
     auto N3 = rightSliceOp.getType().getShape()[concat.getDimension()];
     auto N = N2;
