@@ -490,7 +490,7 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       if (left_padding > 0) {
         sliceStartIndices[concat.getDimension()] = left_padding;
       }
-      
+
       if (right_padding > 0) {
         sliceLimits[concat.getDimension()] -= right_padding;
       }
