@@ -15214,11 +15214,11 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap>(context);
+      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend>(context);
     }
 
     if (passses & (2048 * 512)) {
-      patterns.add<LowerRotate, LowerWrap>(context);
+      patterns.add<LowerRotate, LowerWrap, LowerExtend>(context);
     }
 
     if (all_finite)
