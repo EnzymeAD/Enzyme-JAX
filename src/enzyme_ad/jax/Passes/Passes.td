@@ -70,7 +70,7 @@ def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
   let dependentDialects =
-      ["stablehlo::StablehloDialect", "tensor::TensorDialect"];
+      ["stablehlo::StablehloDialect", "tensor::TensorDialect", "enzymexla::EnzymeXLADialect"];
   let options = [
     Option<
         /*C++ variable name=*/"all_finite",

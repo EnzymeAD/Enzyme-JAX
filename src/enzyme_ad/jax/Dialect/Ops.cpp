@@ -932,3 +932,61 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   }
   return nullptr;
 }
+
+LogicalResult WrapOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  WrapOpAdaptor adaptor(operands, attributes, properties, regions);
+  if (adaptor.getLhs() < 0)
+    return failure();
+  if (adaptor.getRhs() < 0)
+    return failure();
+  if (adaptor.getDimension() < 0)
+    return failure();
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimension() >= RT.getShape().size())
+    return failure();
+
+  SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
+  if (resShape[adaptor.getDimension()] != -1)
+    resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+LogicalResult ExtendedOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  ExtendedOpAdaptor adaptor(operands, attributes, properties, regions);
+  if (adaptor.getLhs() < 0)
+    return failure();
+  if (adaptor.getRhs() < 0)
+    return failure();
+  if (adaptor.getDimension() < 0)
+    return failure();
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimension() >= RT.getShape().size())
+    return failure();
+
+  SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
+  if (resShape[adaptor.getDimension()] != -1)
+    resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+void CommRegionOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the ExecuteRegionOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getResults()));
+}

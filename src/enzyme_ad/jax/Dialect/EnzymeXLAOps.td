@@ -24,6 +24,8 @@ include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+include "stablehlo/dialect/Base.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
@@ -129,6 +131,59 @@ def AffineScopeOp : EnzymeXLA_Op<"scope", [
     Results<(outs Variadic<AnyType>:$results)> {
   let summary = "Inline affine scope";
   let regions = (region SizedRegion<1>:$region);
+}
+
+def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    SI32Attr:$amount,
+    SI32Attr:$dimension
+  );
+  let results = (outs HLO_Tensor:$result);
+}
+
+def WrapOp: EnzymeXLA_Op<
+      "wrap",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Wrap operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$lhs,
+    I64Attr:$rhs,
+    I64Attr:$dimension
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
+def ExtendedOp: EnzymeXLA_Op<
+      "extended",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Extended operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$lhs,
+    I64Attr:$rhs,
+    I64Attr:$dimension
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
+def CommRegionOp : EnzymeXLA_Op<"comm_region", [
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+    RecursiveMemoryEffects, RecursivelySpeculatable]> {
+  let summary = "container op for grouping communication";
+
+  let results = (outs Variadic<AnyType>);
+
+  let regions = (region
+    SizedRegion<1>:$body /*while_i3*/
+  );
 }
 
 #endif // ENZYMEXLA_OPS
