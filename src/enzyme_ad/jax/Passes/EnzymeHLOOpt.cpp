@@ -3011,6 +3011,36 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   }
 };
 
+struct RotatePad final : OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+
+    auto pad = rotate.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (pad.getEdgePaddingLow()[rotate.getDimension()] != 0)
+      return failure();
+    if (pad.getEdgePaddingHigh()[rotate.getDimension()] != 0)
+      return failure();
+    if (pad.getInteriorPadding()[rotate.getDimension()] != 0)
+      return failure();
+
+    auto newRotate = rewriter.create<enzymexla::RotateOp>(
+        rotate.getLoc(), pad.getOperand(), rotate.getAmount(),
+        rotate.getDimension());
+
+    auto newPad = rewriter.create<stablehlo::PadOp>(
+        pad.getLoc(), newRotate, pad.getPaddingValue(), pad.getEdgePaddingLow(),
+        pad.getEdgePaddingHigh(), pad.getInteriorPadding());
+
+    rewriter.replaceOp(rotate, newPad);
+    return success();
+  }
+};
+
 struct ShiftRightLogicalSimplify final
     : OpRewritePattern<mlir::stablehlo::ShiftRightLogicalOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -15245,7 +15275,7 @@ struct EnzymeHLOOptPass
                  BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+                 BinBroadcastSplat<stablehlo::MulOp>, RotatePad>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
