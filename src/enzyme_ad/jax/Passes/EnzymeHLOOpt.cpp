@@ -2839,6 +2839,65 @@ struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
+bool canMergeWrapsAlongAxis(int dimension, enzymexla::WrapOp wrap,
+                            enzymexla::WrapOp otherWrap) {
+  if (wrap.getDimension() != otherWrap.getDimension())
+    return false;
+
+  if (wrap.getLhs() != otherWrap.getLhs())
+    return false;
+
+  if (wrap.getRhs() != otherWrap.getRhs())
+    return false;
+
+  return true;
+}
+
+struct ConcatWrap final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto wrap = operand.getDefiningOp<enzymexla::WrapOp>();
+
+      if (!wrap) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      enzymexla::WrapOp otherWrap;
+      while (i + 1 < e &&
+             (otherWrap =
+                  op->getOperand(i + 1).getDefiningOp<enzymexla::WrapOp>())) {
+        if (canMergeWrapsAlongAxis(op.getDimension(), wrap, otherWrap)) {
+          Value padops[] = {wrap.getOperand(), otherWrap.getOperand()};
+          auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), padops, op.getDimension());
+          wrap = rewriter.create<enzymexla::WrapOp>(
+              wrap->getLoc(), subConcat, wrap.getLhs(), wrap.getRhs(),
+              wrap.getDimension());
+          i++;
+        } else
+          break;
+      }
+
+      newOperands.push_back(wrap.getResult());
+    }
+
+    if (newOperands.size() == op->getNumOperands())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14607,6 +14666,19 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
   return true;
 }
 
+bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
+  auto prevT = cast<RankedTensorType>(op.getOperand().getType());
+  if (prevT.getShape().size() != op.getType().getShape().size() + 1)
+    return false;
+  if (prevT.getShape()[0] != 1)
+    return false;
+  for (int i = 1; i < prevT.getShape().size(); i++) {
+    if (prevT.getShape()[i] != op.getType().getShape()[i - 1])
+      return false;
+  }
+  return true;
+}
+
 struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -14618,23 +14690,54 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
       stablehlo::SliceOp sl0;
       auto mid = concat.getOperands()[i - 1];
       stablehlo::SliceOp sl1;
-      if (!isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid,
-                      concat.getOperands()[i], &sl0, &sl1)) {
-        continue;
+      if (isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid,
+                     concat.getOperands()[i], &sl0, &sl1)) {
+        auto wrap = rewriter.create<enzymexla::WrapOp>(
+            sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
+            sl1.getType().getShape()[concat.getDimension()],
+            concat.getDimension());
+        SmallVector<Value> toConcat;
+        for (int j = 0; j < i - 2; j++)
+          toConcat.push_back(concat.getOperands()[j]);
+        toConcat.push_back(wrap);
+        for (int j = i + 1; j < concat.getOperands().size(); j++)
+          toConcat.push_back(concat.getOperands()[j]);
+        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+            concat, toConcat, concat.getDimension());
+        return success();
       }
-      auto wrap = rewriter.create<enzymexla::WrapOp>(
-          sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
-          sl1.getType().getShape()[concat.getDimension()],
-          concat.getDimension());
-      SmallVector<Value> toConcat;
-      for (int j = 0; j < i - 2; j++)
-        toConcat.push_back(concat.getOperands()[j]);
-      toConcat.push_back(wrap);
-      for (int j = i + 1; j < concat.getOperands().size(); j++)
-        toConcat.push_back(concat.getOperands()[j]);
-      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-          concat, toConcat, concat.getDimension());
-      return success();
+      auto rs0 =
+          concat.getOperands()[i - 2].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rsmid =
+          concat.getOperands()[i - 1].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rs1 = concat.getOperands()[i].getDefiningOp<stablehlo::ReshapeOp>();
+      if (rs0 && rsmid && rs1 && isOuterReducingReshape(rs0) &&
+          isOuterReducingReshape(rsmid) && isOuterReducingReshape(rs1)) {
+        if (isWrapLike(concat.getDimension() + 1, rs0.getOperand(),
+                       rsmid.getOperand(), rs1.getOperand(), &sl0, &sl1)) {
+          auto wrap = rewriter.create<enzymexla::WrapOp>(
+              sl0.getLoc(), rsmid.getOperand(),
+              sl0.getType().getShape()[concat.getDimension() + 1],
+              sl1.getType().getShape()[concat.getDimension() + 1],
+              concat.getDimension() + 1);
+          SmallVector<Value> toConcat;
+          for (int j = 0; j < i - 2; j++)
+            toConcat.push_back(concat.getOperands()[j]);
+          SmallVector<int64_t> newShape =
+              llvm::to_vector(wrap.getType().getShape());
+          assert(newShape[0] == 1);
+          newShape.erase(newShape.begin());
+          toConcat.push_back(rewriter.create<stablehlo::ReshapeOp>(
+              concat.getLoc(),
+              RankedTensorType::get(newShape, wrap.getType().getElementType()),
+              wrap));
+          for (int j = i + 1; j < concat.getOperands().size(); j++)
+            toConcat.push_back(concat.getOperands()[j]);
+          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+              concat, toConcat, concat.getDimension());
+          return success();
+        }
+      }
     }
     return failure();
   }
@@ -14846,6 +14949,14 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
     auto pad0 = vals[i - 1].getDefiningOp<stablehlo::PadOp>();
     auto pad1 = vals[i].getDefiningOp<stablehlo::PadOp>();
     if (pad0 && pad1 && canMergePadsAlongAxis(dimension, pad0, pad1)) {
+      return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
+    auto sl0 = vals[i - 1].getDefiningOp<enzymexla::WrapOp>();
+    auto sl1 = vals[i].getDefiningOp<enzymexla::WrapOp>();
+    if (sl0 && sl1 && canMergeWrapsAlongAxis(dimension, sl0, sl1)) {
       return true;
     }
   }
@@ -15227,7 +15338,7 @@ struct EnzymeHLOOptPass
                  GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
                  PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad,
+                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
                  ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
                  BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
