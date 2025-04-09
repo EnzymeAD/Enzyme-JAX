@@ -1127,8 +1127,10 @@ struct ConcatToOneDimDUS final
     for (int i = start; i < end; i++) {
       newOps.push_back(outer.getOperands()[i]);
     }
-    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        outer.getLoc(), newOps, outer.getDimension());
+    Value innerConcat = newOps.size() == 1
+                            ? newOps[0]
+                            : rewriter.create<stablehlo::ConcatenateOp>(
+                                  outer.getLoc(), newOps, outer.getDimension());
 
     auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
     Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
@@ -8456,8 +8458,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
