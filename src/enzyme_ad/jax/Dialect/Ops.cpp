@@ -933,11 +933,10 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
-
 LogicalResult WrapOp::inferReturnTypes(
-    MLIRContext* /*context*/, std::optional<Location> location,
+    MLIRContext * /*context*/, std::optional<Location> location,
     ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type>& inferredReturnTypes) {
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
   WrapOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -952,15 +951,15 @@ LogicalResult WrapOp::inferReturnTypes(
   SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
   if (resShape[adaptor.getDimension()] != -1)
     resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
-  inferredReturnTypes.push_back(RankedTensorType::get(
-      resShape, RT.getElementType()));
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
   return success();
 }
 
 LogicalResult ExtendedOp::inferReturnTypes(
-    MLIRContext* /*context*/, std::optional<Location> location,
+    MLIRContext * /*context*/, std::optional<Location> location,
     ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type>& inferredReturnTypes) {
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
   ExtendedOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -975,8 +974,8 @@ LogicalResult ExtendedOp::inferReturnTypes(
   SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
   if (resShape[adaptor.getDimension()] != -1)
     resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
-  inferredReturnTypes.push_back(RankedTensorType::get(
-      resShape, RT.getElementType()));
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
   return success();
 }
 
