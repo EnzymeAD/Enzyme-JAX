@@ -81,7 +81,8 @@ shardingHelper(TensorShardingAttr shardingAttr, PatternRewriter &rewriter,
     localShape[i] /= ndevices[i];
   }
 
-  SmallVector<int32_t> devices = {ndevices[0], nx, ny};
+  SmallVector<int32_t> devices = {ndevices[0], static_cast<int32_t>(nx),
+                                  static_cast<int32_t>(ny)};
   return std::make_tuple(devices, ndevices);
 }
 
@@ -661,8 +662,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
           rotate.getLoc(), commSlice,
           DenseIntElementsAttr::get(
-              RankedTensorType::get({(int64_t)(ny * nx), (int64_t)2},
-                                    rewriter.getI64Type()),
+              RankedTensorType::get(
+                  {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
+                  rewriter.getI64Type()),
               sourceTargetIdxs),
           stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ 0,
                                             /*type*/ 0));
