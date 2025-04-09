@@ -158,11 +158,11 @@ def WrapOp: EnzymeXLA_Op<
   let results = (outs HLO_Tensor:$result);
 }
 
-def ExtendedOp: EnzymeXLA_Op<
-      "extended",
+def ExtendOp: EnzymeXLA_Op<
+      "extend",
       [Pure, SameOperandsAndResultElementType,
        DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-  let summary = "Extended operation";
+  let summary = "Extend operation";
 
   let arguments = (ins
     HLO_Tensor:$operand,

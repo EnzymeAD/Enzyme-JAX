@@ -36,6 +36,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <iterator>
+#include <numeric>
 #define DEBUG_TYPE "enzymehloopt"
 
 namespace mlir {
@@ -14649,6 +14650,218 @@ struct ConcatConcatAxisSwap final
   }
 };
 
+class StaticSlice {
+private:
+  using VecTy = SmallVector<int64_t>;
+  VecTy starts;
+  VecTy limits;
+  VecTy inputShape;
+  VecTy outputShape;
+  VecTy strides;
+  unsigned rank;
+  TypedValue<RankedTensorType> input, output;
+  RankedTensorType inputTy, outputTy;
+
+public:
+  TypedValue<RankedTensorType> getOutput() { return output; }
+  TypedValue<RankedTensorType> getInput() { return input; }
+  int64_t getBeginOffset(unsigned dim) { return starts[dim]; }
+  int64_t getEndOffset(unsigned dim) { return inputShape[dim] - limits[dim]; }
+
+  bool getOutputShape(unsigned dim) const {
+    assert(dim < rank);
+    return outputShape[dim];
+  }
+
+  bool isFullInDim(unsigned dim) const {
+    assert(dim < rank);
+    return starts[dim] == 0 && limits[dim] == inputShape[dim];
+  }
+
+  bool isSliceInDim(unsigned dim) const {
+    assert(dim < rank);
+    return starts[dim] != 0 || limits[dim] != inputShape[dim];
+  }
+
+  bool isFromStartInDim(unsigned dim) const {
+    assert(dim < rank);
+    return starts[dim] == 0;
+  }
+
+  bool isToEndInDim(unsigned dim) const {
+    assert(dim < rank);
+    return limits[dim] == inputShape[dim];
+  }
+
+  std::optional<unsigned> isOneDimSlice() const {
+    std::optional<unsigned> found = std::nullopt;
+    for (unsigned i = 0; i < rank; i++) {
+      if (isSliceInDim(i)) {
+        if (!found)
+          found = i;
+        else
+          return std::nullopt;
+      }
+    }
+    return found;
+  }
+
+  bool isFullSlice() const {
+    for (unsigned i = 0; i < rank; i++)
+      if (isSliceInDim(i))
+        return false;
+    return true;
+  }
+
+  bool isStrideOneAtDim(unsigned dim) const { return strides[dim] == 1; }
+
+  bool isStrideOne() const {
+    return llvm::all_of(strides, [](int64_t stride) { return stride == 1; });
+  }
+
+  static bool isEquivalentInDim(const StaticSlice &a, const StaticSlice &b,
+                                unsigned dim) {
+    if (a.rank != b.rank)
+      return false;
+    if (a.input != a.input)
+      return false;
+
+    return a.starts[dim] == b.starts[dim] && a.limits[dim] == b.limits[dim];
+  }
+
+  static bool isEquivalentExceptDim(const StaticSlice &a, const StaticSlice &b,
+                                    unsigned dim) {
+    return llvm::all_of(llvm::seq(a.rank), [&](unsigned i) {
+      return dim == i || isEquivalentInDim(a, b, i);
+    });
+  }
+
+  static std::optional<StaticSlice> get(Value v) {
+    StaticSlice res;
+    RankedTensorType ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty)
+      return std::nullopt;
+
+    unsigned rank = ty.getRank();
+    res.rank = rank;
+    res.output = cast<TypedValue<RankedTensorType>>(v);
+    res.outputTy = ty;
+
+    Operation *op = v.getDefiningOp();
+    if (stablehlo::SliceOp slice = dyn_cast<stablehlo::SliceOp>(op)) {
+      res.inputTy = slice.getOperand().getType();
+      res.starts = VecTy(slice.getStartIndices());
+      res.limits = VecTy(slice.getLimitIndices());
+      res.strides = VecTy(slice.getStrides());
+      res.input = slice.getOperand();
+    } else {
+      res.inputTy = ty;
+      res.starts = VecTy(rank, 0);
+      res.limits = VecTy(ty.getShape());
+      res.strides = VecTy(rank, 1);
+      res.input = res.input;
+    }
+    res.inputShape = VecTy(res.inputTy.getShape());
+    res.outputShape = VecTy(res.outputTy.getShape());
+
+    return res;
+  }
+};
+
+struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    unsigned dim = concat.getDimension();
+    for (unsigned i = 2; i < concat.getNumOperands(); i++) {
+      auto lhs = StaticSlice::get(concat.getOperand(i - 2));
+      auto mid = StaticSlice::get(concat.getOperand(i - 1));
+      auto rhs = StaticSlice::get(concat.getOperand(i - 0));
+
+      if (!lhs || !mid || !rhs) {
+        rewriter.notifyMatchFailure(concat, "lhs or mid or rhs not slice");
+        continue;
+      }
+
+      if (!mid->isFullInDim(dim)) {
+        rewriter.notifyMatchFailure(concat, "Mid not full in dim");
+        continue;
+      }
+      if (!lhs->isFromStartInDim(dim)) {
+        rewriter.notifyMatchFailure(concat, "LHS not from start");
+        continue;
+      }
+      if (!rhs->isToEndInDim(dim)) {
+        rewriter.notifyMatchFailure(concat, "RHS not to end");
+        continue;
+      }
+      if (!StaticSlice::isEquivalentExceptDim(*lhs, *mid, dim) ||
+          !StaticSlice::isEquivalentExceptDim(*rhs, *mid, dim)) {
+        rewriter.notifyMatchFailure(concat, "Inequivalent in rest of dims");
+        continue;
+      }
+      if (!rhs->isStrideOneAtDim(dim) || !mid->isStrideOneAtDim(dim) ||
+          !lhs->isStrideOneAtDim(dim)) {
+        rewriter.notifyMatchFailure(concat, "Not stride one");
+        continue;
+      }
+      if (rhs->getInput() != mid->getInput() ||
+          lhs->getInput() != mid->getInput()) {
+        rewriter.notifyMatchFailure(concat,
+                                    "lhs mid or rhs not on the same input");
+        continue;
+      }
+
+      auto extend = rewriter.create<enzymexla::ExtendOp>(
+          concat.getLoc(), mid->getOutput(), lhs->getOutputShape(dim),
+          rhs->getOutputShape(dim), dim);
+
+      SmallVector<Value> toConcat;
+      for (unsigned j = 0; j < i - 2; j++)
+        toConcat.push_back(concat.getOperand(j));
+      toConcat.push_back(extend);
+      for (unsigned j = i + 1; j < concat.getNumOperands(); j++)
+        toConcat.push_back(concat.getOperand(j));
+
+      if (toConcat.size() == 1)
+        rewriter.replaceOp(concat, extend);
+      else
+        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(concat, toConcat,
+                                                              dim);
+
+      return success();
+    }
+    return rewriter.notifyMatchFailure(concat, "Could not find extend pattern");
+  }
+};
+
+struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    auto loc = extend.getLoc();
+    auto operand = extend.getOperand();
+    SmallVector<int64_t> strides(operand.getType().getRank(), 1);
+    SmallVector<int64_t> lhsStarts(operand.getType().getRank(), 0);
+    SmallVector<int64_t> lhsLimits(operand.getType().getShape());
+    lhsLimits[extend.getDimension()] = extend.getLhs();
+    auto lhs = rewriter.create<stablehlo::SliceOp>(loc, operand, lhsStarts,
+                                                   lhsLimits, strides);
+    SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
+    SmallVector<int64_t> rhsLimits(operand.getType().getShape());
+    rhsStarts[extend.getDimension()] =
+        rhsLimits[extend.getDimension()] - extend.getRhs();
+    auto rhs = rewriter.create<stablehlo::SliceOp>(loc, operand, rhsStarts,
+                                                   rhsLimits, strides);
+    Value args[] = {lhs, extend.getOperand(), rhs};
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        extend, args, extend.getDimension());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -14928,7 +15141,7 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendedOp>>(context, PatternBenefit(65000));
+                   CSE<enzymexla::ExtendOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)
