@@ -956,11 +956,11 @@ LogicalResult WrapOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult ExtendedOp::inferReturnTypes(
+LogicalResult ExtendOp::inferReturnTypes(
     MLIRContext * /*context*/, std::optional<Location> location,
     ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
     RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
-  ExtendedOpAdaptor adaptor(operands, attributes, properties, regions);
+  ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
   if (adaptor.getRhs() < 0)
