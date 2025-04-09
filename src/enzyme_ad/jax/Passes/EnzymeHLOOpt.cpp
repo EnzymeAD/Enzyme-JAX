@@ -21,6 +21,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
@@ -8458,7 +8459,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -14667,20 +14669,53 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
         continue;
       auto starts = llvm::to_vector(sl1.getStartIndices());
       auto limits = llvm::to_vector(sl0.getLimitIndices());
-      auto outerSlice = rewriter.create<stablehlo::SliceOp>(
-          sl0.getLoc(), sl0.getOperand(), starts, limits, sl0.getStrides());
+      Value outerSlice = sl0.getOperand();
+
+      bool needsSlice = false;
+      for (int j = 0; j < sl0.getType().getShape().size(); i++) {
+        if (starts[j] != 0) {
+          needsSlice = true;
+          break;
+        }
+        if (limits[j] !=
+            cast<RankedTensorType>(sl0.getOperand().getType()).getShape()[j]) {
+          needsSlice = true;
+          break;
+        }
+        if (sl0.getStrides()[j] != 1) {
+          needsSlice = true;
+          break;
+        }
+      }
+      if (needsSlice) {
+        outerSlice = rewriter.create<stablehlo::SliceOp>(
+            sl0.getLoc(), sl0.getOperand(), starts, limits, sl0.getStrides());
+        if (auto shard = sdy::getShardingPerValue(sl0)) {
+          sdy::setShardings(outerSlice.getDefiningOp(), shard);
+        }
+      }
       auto rotate = rewriter.create<enzymexla::RotateOp>(
           sl1.getLoc(), outerSlice,
           sl1.getType().getShape()[concat.getDimension()],
           concat.getDimension());
+      if (auto shard = sdy::getShardingPerValue(concat)) {
+        sdy::setShardings(rotate, shard);
+      }
       SmallVector<Value> toConcat;
       for (int j = 0; j < i - 1; j++)
         toConcat.push_back(concat.getOperands()[j]);
       toConcat.push_back(rotate);
       for (int j = i + 1; j < concat.getOperands().size(); j++)
         toConcat.push_back(concat.getOperands()[j]);
-      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-          concat, toConcat, concat.getDimension());
+      if (toConcat.size() == 1) {
+        rewriter.replaceOp(concat, toConcat[0]);
+      } else {
+        auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+            concat, toConcat, concat.getDimension());
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(newConcat, shard);
+        }
+      }
       return success();
     }
     return failure();
