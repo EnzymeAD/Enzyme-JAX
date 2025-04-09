@@ -519,6 +519,14 @@ def AffineCFG : Pass<"affine-cfg"> {
   ];
 }
 
+def OptimizeCommunication : Pass<"optimize-communication"> {
+  let summary = "Optimize communication";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",  
+    "sdy::SdyDialect",
+  ];
+}
+
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
