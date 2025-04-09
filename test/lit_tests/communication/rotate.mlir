@@ -12,3 +12,32 @@ func.func @main2(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh
     %1 = "enzymexla.rotate"(%0) <{amount = 2 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x8x82xf64>) -> tensor<4x8x82xf64>
     return %1 : tensor<4x8x82xf64>
 }
+
+// CHECK: module {
+// CHECK-NEXT:   sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
+// CHECK-NEXT:   func.func @main1(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<4x8x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// CHECK-NEXT:     %0 = stablehlo.slice %arg0 [8:12, 8:16, 8:88] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x96xf64>) -> tensor<4x8x80xf64>
+// CHECK-NEXT:     %1 = sdy.manual_computation(%0) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "x", "y"} (%arg1: tensor<4x2x20xf64>) {
+// CHECK-NEXT:       %2 = stablehlo.slice %arg1 [0:4, 0:2, 0:2] : (tensor<4x2x20xf64>) -> tensor<4x2x2xf64>
+// CHECK-NEXT{LITERAL}:       %3 = "stablehlo.collective_permute"(%2) <{channel_handle = #stablehlo.channel_handle<handle = 0, type = 0>, source_target_pairs = dense<[[0, 3], [1, 0], [2, 1], [3, 2], [4, 7], [5, 4], [6, 5], [7, 6], [8, 11], [9, 8], [10, 9], [11, 10], [12, 15], [13, 12], [14, 13], [15, 14]]> : tensor<16x2xi64>}> : (tensor<4x2x2xf64>) -> tensor<4x2x2xf64>
+// CHECK-NEXT:       %4 = stablehlo.slice %arg1 [0:4, 0:2, 2:20] : (tensor<4x2x20xf64>) -> tensor<4x2x18xf64>
+// CHECK-NEXT:       %5 = stablehlo.concatenate %4, %3, dim = 2 : (tensor<4x2x18xf64>, tensor<4x2x2xf64>) -> tensor<4x2x20xf64>
+// CHECK-NEXT:       sdy.return %5 : tensor<4x2x20xf64>
+// CHECK-NEXT:     } : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+// CHECK-NEXT:     return %1 : tensor<4x8x80xf64>
+// CHECK-NEXT:   }
+// CHECK-NEXT:   func.func @main2(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<4x8x82xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.slice %arg0 [8:12, 8:16, 8:90] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x96xf64>) -> tensor<4x8x82xf64>
+// CHECK-NEXT:     %1 = stablehlo.pad %0, %cst, low = [0, 0, 0], high = [0, 0, 2], interior = [0, 0, 0] : (tensor<4x8x82xf64>, tensor<f64>) -> tensor<4x8x84xf64>
+// CHECK-NEXT:     %2 = sdy.manual_computation(%1) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "x", "y"} (%arg1: tensor<4x2x21xf64>) {
+// CHECK-NEXT:       %4 = stablehlo.slice %arg1 [0:4, 0:2, 0:4] : (tensor<4x2x21xf64>) -> tensor<4x2x4xf64>
+// CHECK-NEXT{LITERAL}:       %5 = "stablehlo.collective_permute"(%4) <{channel_handle = #stablehlo.channel_handle<handle = 0, type = 0>, source_target_pairs = dense<[[0, 3], [1, 0], [2, 1], [3, 2], [4, 7], [5, 4], [6, 5], [7, 6], [8, 11], [9, 8], [10, 9], [11, 10], [12, 15], [13, 12], [14, 13], [15, 14]]> : tensor<16x2xi64>}> : (tensor<4x2x4xf64>) -> tensor<4x2x4xf64>
+// CHECK-NEXT:       %6 = stablehlo.slice %arg1 [0:4, 0:2, 4:21] : (tensor<4x2x21xf64>) -> tensor<4x2x17xf64>
+// CHECK-NEXT:       %7 = stablehlo.concatenate %6, %5, dim = 2 : (tensor<4x2x17xf64>, tensor<4x2x4xf64>) -> tensor<4x2x21xf64>
+// CHECK-NEXT:       sdy.return %7 : tensor<4x2x21xf64>
+// CHECK-NEXT:     } : (tensor<4x8x84xf64>) -> tensor<4x8x84xf64>
+// CHECK-NEXT:     %3 = stablehlo.slice %2 [0:4, 0:8, 0:82] : (tensor<4x8x84xf64>) -> tensor<4x8x82xf64>
+// CHECK-NEXT:     return %3 : tensor<4x8x82xf64>
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
