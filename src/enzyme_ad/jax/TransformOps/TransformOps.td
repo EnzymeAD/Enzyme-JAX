@@ -700,7 +700,7 @@ def ApplyCSERotatePatterns : EnzymeHLOPatternOp<
 }
 def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
     "cse_extend"> {
-  let patterns = ["CSE<enzymexla::ExtendedOp>"];
+  let patterns = ["CSE<enzymexla::ExtendOp>"];
 }
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
@@ -1486,6 +1486,16 @@ def RecognizeWrap : EnzymeHLOPatternOp<
 def LowerWrap : EnzymeHLOPatternOp<
     "lower_wrap"> {
   let patterns = ["LowerWrap"];
+}
+
+def RecognizeExtend : EnzymeHLOPatternOp<
+    "recognize_extend"> {
+  let patterns = ["RecognizeExtend"];
+}
+
+def LowerExtend : EnzymeHLOPatternOp<
+    "lower_extend"> {
+  let patterns = ["LowerExtend"];
 }
 
 def ConcatMultiPad : EnzymeHLOPatternOp<
