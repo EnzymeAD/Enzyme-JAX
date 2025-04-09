@@ -18,7 +18,6 @@ module @"reactant_loop!" {
 // CHECK-NEXT:    stablehlo.return %2 : tensor<1x8x96xf64>
 // CHECK-NEXT:  }
 
-// TODO
 module {
   func.func @main(%in: tensor<20x24x80xf64>) -> (tensor<10x82xf64>) {
       %a = stablehlo.slice %in [11:12, 7:17, 79:80] : (tensor<20x24x80xf64>) -> tensor<1x10x1xf64>
@@ -31,3 +30,11 @@ module {
       func.return %res : tensor<10x82xf64>
     }
 }
+
+// CHECK:    func.func @main(%arg0: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
+// CHECK-NEXT:      %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// CHECK-NEXT:      %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
+// CHECK-NEXT:      %2 = stablehlo.reshape %1 : (tensor<1x10x82xf64>) -> tensor<10x82xf64>
+// CHECK-NEXT:      %3 = stablehlo.concatenate %2, dim = 1 : (tensor<10x82xf64>) -> tensor<10x82xf64>
+// CHECK-NEXT:      return %3 : tensor<10x82xf64>
+// CHECK-NEXT:    }
