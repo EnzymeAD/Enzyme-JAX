@@ -2555,7 +2555,8 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
   return success();
 }
 
-bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice, stablehlo::SliceOp otherSlice) {
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice) {
   if (otherSlice.getOperand() != slice.getOperand())
     return false;
 
@@ -2624,7 +2625,8 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
-bool canMergePadsAlongAxis(int dimension, stablehlo::PadOp pad, stablehlo::PadOp otherPad) {
+bool canMergePadsAlongAxis(int dimension, stablehlo::PadOp pad,
+                           stablehlo::PadOp otherPad) {
   if (otherPad.getPaddingValue() != pad.getPaddingValue())
     return false;
 
@@ -2680,11 +2682,13 @@ struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
              (otherPadOp =
                   op->getOperand(i + 1).getDefiningOp<stablehlo::PadOp>())) {
         if (canMergePadsAlongAxis(op.getDimension(), pad, otherPadOp)) {
-          Value padops[] = { pad.getOperand(), otherPadOp.getOperand() };
-          auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(op.getLoc(), padops, op.getDimension());
+          Value padops[] = {pad.getOperand(), otherPadOp.getOperand()};
+          auto subConcat = rewriter.create<stablehlo::ConcatenateOp>(
+              op.getLoc(), padops, op.getDimension());
           pad = rewriter.create<stablehlo::PadOp>(
-              pad->getLoc(), subConcat, pad.getPaddingValue(), pad.getEdgePaddingLow(),
-              pad.getEdgePaddingHigh(), pad.getInteriorPadding());
+              pad->getLoc(), subConcat, pad.getPaddingValue(),
+              pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+              pad.getInteriorPadding());
           i++;
         } else
           break;
@@ -14391,7 +14395,9 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
-bool isWrapLike(int dim, Value lhs, Value mid, Value rhs, stablehlo::SliceOp* sl0P = nullptr, stablehlo::SliceOp* sl1P = nullptr) {
+bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
+                stablehlo::SliceOp *sl0P = nullptr,
+                stablehlo::SliceOp *sl1P = nullptr) {
   auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
   if (!sl0)
     return false;
@@ -14467,7 +14473,8 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
       stablehlo::SliceOp sl0;
       auto mid = concat.getOperands()[i - 1];
       stablehlo::SliceOp sl1;
-      if (!isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid, concat.getOperands()[i], &sl0, &sl1)) {
+      if (!isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid,
+                      concat.getOperands()[i], &sl0, &sl1)) {
         continue;
       }
       auto wrap = rewriter.create<enzymexla::WrapOp>(
@@ -14686,19 +14693,20 @@ struct EnzymeHLOOptPass
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad, SliceConcat, SliceIf,
-                 SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>>(context);
+    patterns
+        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+             SliceElementwise, SliceReshapeElementwise, SlicePad,
+             SliceReshapePad, DotReshapeDot, ConcatConstProp,
+             DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
+             LogConstProp, LogPlusConstProp, ChloInfConstProp, GammaConstProp,
+             AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+             ConcatPushBinop<stablehlo::AddOp>,
+             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+             ReduceConcat, ConcatSlice, ConcatMultiPad, SliceConcat, SliceIf,
+             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+             BinBroadcastSplat<stablehlo::SubtractOp>,
+             BinBroadcastSplat<stablehlo::DivOp>,
+             BinBroadcastSplat<stablehlo::MulOp>>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
