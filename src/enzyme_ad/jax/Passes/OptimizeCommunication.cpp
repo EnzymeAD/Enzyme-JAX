@@ -37,7 +37,8 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
 
 using namespace mlir::sdy;
 
-struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
+struct PeriodicConcatSimplify
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
@@ -116,9 +117,21 @@ struct SliceConcatSimplify : public OpRewritePattern<stablehlo::ConcatenateOp> {
       }
     }
 
-    TensorShardingAttr op_shardings[] = {mlir::sdy::getSharding(concat)};
-    TensorShardingAttr op_shardings_in[] = {mlir::sdy::getSharding(concat),
-                                            mlir::sdy::getSharding(concat)};
+    auto leftSliceSharding = mlir::sdy::getSharding(leftSliceOp);
+    auto rightSliceSharding = mlir::sdy::getSharding(rightSliceOp);
+    if (leftSliceSharding != rightSliceSharding) {
+      return failure();
+    }
+
+    auto midOpSharding = mlir::sdy::getSharding(midOp);
+    if (leftSliceSharding != midOpSharding) {
+      return failure();
+    }
+
+    auto concatSharding = mlir::sdy::getSharding(concat);
+
+    TensorShardingAttr op_shardings[] = {concatSharding};
+    TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr in_shardings =
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings_in);
     TensorShardingPerValueAttr out_shardings =
@@ -550,11 +563,12 @@ struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
   using Base::Base;
+
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SliceConcatSimplify>(context);
+    patterns.add<PeriodicConcatSimplify>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
