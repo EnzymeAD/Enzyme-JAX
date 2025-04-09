@@ -8270,8 +8270,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -14357,8 +14356,7 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
       if (!isa<stablehlo::SliceOp, stablehlo::ConcatenateOp, stablehlo::PadOp,
                stablehlo::TransposeOp, stablehlo::ReshapeOp,
                stablehlo::DynamicUpdateSliceOp, enzymexla::RotateOp,
-               enzymexla::ExtendOp,
-               enzymexla::WrapOp>(cur))
+               enzymexla::ExtendOp, enzymexla::WrapOp>(cur))
         continue;
       bool allWithin = true;
       if (cur != end)
