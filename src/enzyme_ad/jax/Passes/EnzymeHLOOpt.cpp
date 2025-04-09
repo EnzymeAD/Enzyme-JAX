@@ -8285,7 +8285,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
