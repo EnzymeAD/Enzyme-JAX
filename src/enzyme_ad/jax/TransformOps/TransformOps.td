@@ -1415,3 +1415,43 @@ def ApplyPadDotGeneralPatterns : EnzymeHLOParameterizedPatternOp<
     }
   }];
 }
+
+def GroupCommsConcat : EnzymeHLOPatternOp<
+    "group_comms_concat"> {
+  let patterns = ["GroupComms<stablehlo::ConcatenateOp>"];
+}
+
+def GroupCommsDUS : EnzymeHLOPatternOp<
+    "group_comms_dus"> {
+  let patterns = ["GroupComms<stablehlo::DynamicUpdateSliceOp>"];
+}
+
+def GroupCommsSlice : EnzymeHLOPatternOp<
+    "group_comms_slice"> {
+  let patterns = ["GroupComms<stablehlo::SliceOp>"];
+}
+
+def GroupCommsReshape : EnzymeHLOPatternOp<
+    "group_comms_reshape"> {
+  let patterns = ["GroupComms<stablehlo::ReshapeOp>"];
+}
+
+def GroupCommsRotate : EnzymeHLOPatternOp<
+    "group_comms_rotate"> {
+  let patterns = ["GroupComms<enzymexla::RotateOp>"];
+}
+
+def GroupCommsWrap : EnzymeHLOPatternOp<
+    "group_comms_wrap"> {
+  let patterns = ["GroupComms<enzymexla::WrapOp>"];
+}
+
+def GroupCommsTranspose : EnzymeHLOPatternOp<
+    "group_comms_transpose"> {
+  let patterns = ["GroupComms<stablehlo::TransposeOp>"];
+}
+
+def LowerCommRegion : EnzymeHLOPatternOp<
+    "lower_comm_region"> {
+  let patterns = ["LowerCommRegion"];
+}

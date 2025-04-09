@@ -31,6 +31,8 @@
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <iterator>
@@ -14132,6 +14134,82 @@ struct ReshapeSelect : public OpRewritePattern<stablehlo::ReshapeOp> {
     rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
         reshapeOp, newPred, onTrueReshaped, onFalseReshaped);
     return success();
+  }
+};
+
+
+template<typename T>
+struct GroupComms : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T end,
+                                PatternRewriter &rewriter) const override {
+    SetVector<Operation*> done;
+    done.insert(end);
+    SmallVector<Operation*> todo = { end };
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (cur != end && done.contains(cur)) continue;
+      if (!isa<stablehlo::SliceOp, stablehlo::TransposeOp, stablehlo::ReshapeOp, stablehlo::DynamicUpdateSliceOp,enzymexla::RotateOp, enzymexla::WrapOp>(cur))
+        continue;
+      bool allWithin = true;
+      for (auto res : cur->getResults()) {
+        for (auto u : res.getUsers()) {
+          if (!done.contains(u)) {
+            allWithin = false;
+            break;
+          }
+        }
+      }
+      if (!allWithin)
+        continue;
+      done.insert(cur);
+      for (auto op : cur->getOperands()) {
+        if (auto v = op.getDefiningOp()) {
+          todo.push_back(v);
+        }
+      }
+    }
+    
+    done = mlir::topologicalSort(done);
+
+    auto newOp = rewriter.create<enzymexla::CommRegionOp>(end.getLoc(), end.getResult().getType());
+    auto blk = rewriter.createBlock(&newOp.getBody(), newOp.getBody().begin());
+    IRMapping map;
+    for (auto op : done) {
+      rewriter.clone(*op, map);
+    }
+    rewriter.create<stablehlo::ReturnOp>(end.getLoc(), map.lookup(end.getResult()));
+    for (auto op : llvm::reverse(done)) {
+      if (op == end) {
+        rewriter.replaceOp(op, newOp);
+      } else {
+        rewriter.eraseOp(op);
+      }
+    }
+    return success();
+  }
+};
+
+
+struct LowerCommRegion : public OpRewritePattern<enzymexla::CommRegionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::CommRegionOp end,
+                                PatternRewriter &rewriter) const override {
+    IRMapping map;
+    for (auto &op : end.getBody().front()) {
+      if (isa<stablehlo::ReturnOp>(op)) {
+        SmallVector<Value> operands;
+        for (auto v : op.getOperands())
+          operands.push_back(map.lookup(v));
+        rewriter.replaceOp(end, operands);
+        return success();
+      } else {
+        rewriter.clone(op, map);
+      }
+    }
+    return failure();
   }
 };
 
