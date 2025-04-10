@@ -15289,8 +15289,8 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
         newBaseExtendShape, baseOperandType.getElementType());
 
     auto newBaseExtendOp = rewriter.create<enzymexla::ExtendOp>(
-        loc, newBaseExtendType, baseOperand, targetExtendDim, targetLhs,
-        targetRhs);
+        loc, newBaseExtendType, baseOperand, targetLhs, targetRhs,
+        targetExtendDim);
     Value newBaseExtendResult = newBaseExtendOp.getResult();
     RankedTensorType newBaseExtendResultType =
         newBaseExtendResult.getType().cast<RankedTensorType>();
