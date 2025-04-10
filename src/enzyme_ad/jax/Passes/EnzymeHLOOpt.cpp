@@ -180,7 +180,7 @@ public:
   int64_t getBeginOffset(unsigned dim) { return starts[dim]; }
   int64_t getEndOffset(unsigned dim) { return inputShape[dim] - limits[dim]; }
 
-  bool getOutputShape(unsigned dim) const {
+  int64_t getOutputShape(unsigned dim) const {
     assert(dim < rank);
     return outputShape[dim];
   }
@@ -14971,6 +14971,12 @@ LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
 
   if (!StaticSlice::isPrefixInDim(*lhs, *mid, dim))
     return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
+  if (lhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
+  if (rhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
   if (!StaticSlice::isSuffixInDim(*rhs, *mid, dim))
     return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
   if (!rhs->isStrideOneAtDim(dim) || !mid->isStrideOneAtDim(dim) ||
