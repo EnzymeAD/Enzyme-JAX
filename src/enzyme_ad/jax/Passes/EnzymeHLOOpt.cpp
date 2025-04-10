@@ -15503,7 +15503,7 @@ struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
     auto newBaseRotateType = baseOperandType;
 
     auto newBaseRotateOp = rewriter.create<enzymexla::RotateOp>(
-        loc, newBaseRotateType, baseOperand, targetRotateDim, targetAmount);
+        loc, newBaseRotateType, baseOperand, targetAmount, targetRotateDim);
     Value newBaseRotateResult = newBaseRotateOp.getResult();
     RankedTensorType newBaseRotateResultType = newBaseRotateType;
 
