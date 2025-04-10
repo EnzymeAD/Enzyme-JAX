@@ -273,8 +273,7 @@ public:
     res.output = cast<TypedValue<RankedTensorType>>(v);
     res.outputTy = ty;
 
-    Operation *op = v.getDefiningOp();
-    if (stablehlo::SliceOp slice = dyn_cast<stablehlo::SliceOp>(op)) {
+    if (stablehlo::SliceOp slice = v.getDefiningOp<stablehlo::SliceOp>()) {
       res.inputTy = slice.getOperand().getType();
       res.starts = VecTy(slice.getStartIndices());
       res.limits = VecTy(slice.getLimitIndices());
