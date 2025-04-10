@@ -285,7 +285,8 @@ struct PeriodicConcatSimplify
     }
 
     auto leftSliceSharding = mlir::sdy::getSharding(leftSliceOp);
-    if (!leftSliceSharding) return failure();
+    if (!leftSliceSharding)
+      return failure();
     auto rightSliceSharding = mlir::sdy::getSharding(rightSliceOp);
     if (leftSliceSharding != rightSliceSharding) {
       return failure();
@@ -297,7 +298,8 @@ struct PeriodicConcatSimplify
     }
 
     auto concatSharding = mlir::sdy::getSharding(concat);
-    if (!concatSharding) return failure();
+    if (!concatSharding)
+      return failure();
 
     TensorShardingAttr op_shardings[] = {concatSharding};
     TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
@@ -688,7 +690,8 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
 
     auto rotateSharding = mlir::sdy::getSharding(rotate);
-    if (!rotateSharding) return failure();
+    if (!rotateSharding)
+      return failure();
 
     TensorShardingAttr opShardings[] = {rotateSharding};
     TensorShardingPerValueAttr inShardings =
