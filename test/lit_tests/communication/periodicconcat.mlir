@@ -13,12 +13,12 @@ func.func @main1(%arg0: tensor<528x1024x2048xf64> {sdy.sharding = #sdy.sharding<
 // CHECK: sdy.manual_computation
 // CHECK: "stablehlo.if"
 // CHECK: "stablehlo.if"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [12, 8], [13, 9], [14, 10], [15, 11]]> : tensor<8x2xi64>}> : (tensor<512x255x4xf64>) -> tensor<512x255x4xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [12, 8], [13, 9], [14, 10], [15, 11]]> : tensor<8x2xi64>}> : (tensor<512x255x4xf64>) -> tensor<512x255x4xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %14 = "stablehlo.collective_permute"(%13) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 12], [1, 13], [2, 14], [3, 15]]> : tensor<4x2xi64>}> : (tensor<512x255x8xf64>) -> tensor<512x255x8xf64>
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[12, 0], [13, 1], [14, 2], [15, 3]]> : tensor<4x2xi64>}> : (tensor<512x255x8xf64>) -> tensor<512x255x8xf64>
 // CHECK: "stablehlo.if"
 // CHECK: stablehlo.slice
 // CHECK: stablehlo.concatenate
@@ -41,12 +41,12 @@ func.func @main2(%arg0: tensor<528x1024x2048xf64> {sdy.sharding = #sdy.sharding<
 // CHECK: sdy.manual_computation
 // CHECK: "stablehlo.if"
 // CHECK: "stablehlo.if"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [4, 8], [5, 9], [6, 10], [7, 11], [8, 12], [9, 13], [10, 14], [11, 15], [20, 16], [21, 17], [22, 18], [23, 19], [24, 20], [25, 21], [26, 22], [27, 23], [28, 24], [29, 25], [30, 26], [31, 27]]> : tensor<24x2xi64>}> : (tensor<512x255x12xf64>) -> tensor<512x255x12xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [4, 8], [5, 9], [6, 10], [7, 11], [8, 12], [9, 13], [10, 14], [11, 15], [20, 16], [21, 17], [22, 18], [23, 19], [24, 20], [25, 21], [26, 22], [27, 23], [28, 24], [29, 25], [30, 26], [31, 27]]> : tensor<24x2xi64>}> : (tensor<512x255x12xf64>) -> tensor<512x255x12xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %14 = "stablehlo.collective_permute"(%13) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 28], [1, 29], [2, 30], [3, 31]]> : tensor<4x2xi64>}> : (tensor<512x255x16xf64>) -> tensor<512x255x16xf64>
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[28, 0], [29, 1], [30, 2], [31, 3]]> : tensor<4x2xi64>}> : (tensor<512x255x16xf64>) -> tensor<512x255x16xf64>
 // CHECK: "stablehlo.if"
 // CHECK: stablehlo.slice
 // CHECK: stablehlo.concatenate
@@ -68,12 +68,12 @@ func.func @main3(%arg0: tensor<528x1024x2048xf64> {sdy.sharding = #sdy.sharding<
 // CHECK: sdy.manual_computation
 // CHECK: "stablehlo.if"
 // CHECK: "stablehlo.if"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [4, 8], [5, 9], [6, 10], [7, 11], [8, 12], [9, 13], [10, 14], [11, 15], [20, 16], [21, 17], [22, 18], [23, 19], [24, 20], [25, 21], [26, 22], [27, 23], [28, 24], [29, 25], [30, 26], [31, 27]]> : tensor<24x2xi64>}> : (tensor<512x255x12xf64>) -> tensor<512x255x12xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [4, 8], [5, 9], [6, 10], [7, 11], [8, 12], [9, 13], [10, 14], [11, 15], [20, 16], [21, 17], [22, 18], [23, 19], [24, 20], [25, 21], [26, 22], [27, 23], [28, 24], [29, 25], [30, 26], [31, 27]]> : tensor<24x2xi64>}> : (tensor<512x255x12xf64>) -> tensor<512x255x12xf64>
 // CHECK: }, {
-// CHECK: "stablehlo.collective_permute"
-// CHECK: "stablehlo.collective_permute"
+// CHECK{LITERAL}: %14 = "stablehlo.collective_permute"(%13) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 28], [1, 29], [2, 30], [3, 31]]> : tensor<4x2xi64>}> : (tensor<512x255x16xf64>) -> tensor<512x255x16xf64>
+// CHECK{LITERAL}: %16 = "stablehlo.collective_permute"(%15) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[28, 0], [29, 1], [30, 2], [31, 3]]> : tensor<4x2xi64>}> : (tensor<512x255x16xf64>) -> tensor<512x255x16xf64>
 // CHECK: "stablehlo.if"
 // CHECK: stablehlo.slice
 // CHECK: stablehlo.concatenate
