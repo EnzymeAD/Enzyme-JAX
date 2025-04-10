@@ -773,8 +773,9 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return failure();
     }
 
-    auto [leftPadding, rightPadding, N, T] = getWrapExtendConfiguration(
-      wrapOperandShape[wrapDimension], lhsValue, rhsValue, numDevicesAlongDimension);
+    auto [leftPadding, rightPadding, N, T] =
+        getWrapExtendConfiguration(wrapOperandShape[wrapDimension], lhsValue,
+                                   rhsValue, numDevicesAlongDimension);
 
     llvm::errs() << "Left Padding: " << leftPadding << "\n";
     llvm::errs() << "Right Padding: " << rightPadding << "\n";
@@ -1018,7 +1019,8 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize>(context);
+    patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize>(
+        context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
