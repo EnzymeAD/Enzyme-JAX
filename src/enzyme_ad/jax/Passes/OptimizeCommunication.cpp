@@ -1310,7 +1310,31 @@ struct ConcatTwoOperandsCommOptimize
     concatLeft = !commLeft;
 
     TensorShardingAttr opShardings[] = {concatSharding};
-    TensorShardingAttr opShardingsIn[] = {concatSharding, concatSharding};
+
+    auto meshAttr = mlir::sdy::getCommonMesh(opShardings, opShardings, concat);
+    if (!meshAttr)
+      return failure();
+    SmallVector<sdy::AxisRefAttr> replicatedAxes;
+    SmallVector<sdy::DimensionShardingAttr> dimShardings;
+    auto origDimShardings = concatSharding.getDimShardings();
+    for (int i = 0; i < ndims; i++) {
+      auto origDimSharding = origDimShardings[i];
+      if (i == concatDimension) {
+        for (auto axis : origDimSharding.getAxes()) {
+          replicatedAxes.push_back(axis);
+        }
+        llvm::ArrayRef<sdy::AxisRefAttr> axes;
+        dimShardings.push_back(
+            sdy::DimensionShardingAttr::get(concat.getContext(), axes, true));
+        continue;
+      }
+      dimShardings.push_back(origDimSharding);
+    }
+    auto replicatedDimSharding = sdy::TensorShardingAttr::get(
+        concat.getContext(), meshAttr, dimShardings, replicatedAxes);
+
+    TensorShardingAttr opShardingsIn[] = {concatSharding,
+                                          replicatedDimSharding};
     TensorShardingPerValueAttr inShardings =
         TensorShardingPerValueAttr::get(concat.getContext(), opShardingsIn);
     TensorShardingPerValueAttr outShardings =
@@ -1323,66 +1347,44 @@ struct ConcatTwoOperandsCommOptimize
                                      manualAxes, tmpConcatShape,
                                      concatDimension);
 
-    // int64_t leftPadding = 0;
-    // int64_t rightPadding = 0;
     Value extendOperand;
     Value mainOperand;
-    // SmallVector<int64_t> padInner(ndims, 0);
     if (concatLeft) {
-      // if (leftOperandSize % numDevicesAlongDimension != 0) {
-      //   leftPadding = leftOperandSize % numDevicesAlongDimension;
-
-      //   SmallVector<int64_t> padLow(ndims, 0);
-      //   SmallVector<int64_t> padHigh(ndims, 0);
-      //   padLow[concatDimension] = leftPadding;
-
-      //   extendOperand = rewriter.create<stablehlo::PadOp>(
-      //       concat.getLoc(), leftOperand,
-      //       rewriter.create<stablehlo::ConstantOp>(
-      //           concat.getLoc(), rewriter.getZeroAttr(elemType),
-      //           makeAttr(elemType, leftPadding).cast<ElementsAttr>()),
-      //       padLow, padHigh, padInner);
-      // } else {
       extendOperand = leftOperand;
       mainOperand = rightOperand;
-      // }
     } else {
-      // if (rightOperandSize % numDevicesAlongDimension != 0) {
-      //   rightPadding = rightOperandSize % numDevicesAlongDimension;
-
-      //   SmallVector<int64_t> padLow(ndims, 0);
-      //   SmallVector<int64_t> padHigh(ndims, 0);
-      //   padHigh[concatDimension] = rightPadding;
-
-      //   extendOperand = rewriter.create<stablehlo::PadOp>(
-      //       concat.getLoc(), rightOperand,
-      //       rewriter.create<stablehlo::ConstantOp>(
-      //           concat.getLoc(), rewriter.getZeroAttr(elemType),
-      //           makeAttr(elemType, rightPadding).cast<ElementsAttr>()),
-      //       padLow, padHigh, padInner);
-      // } else {
       extendOperand = rightOperand;
       mainOperand = leftOperand;
-      // }
     }
 
+    // TODO: this is an all-to-all. can we avoid this? technically this is an
+    // extremely small tensor
+    auto reshardedExtendOp = rewriter.create<sdy::ReshardOp>(
+        concat.getLoc(), extendOperand, replicatedDimSharding);
+
+    llvm::errs() << reshardedExtendOp << "\n";
+    llvm::errs() << extendOperand << "\n";
+
     SmallVector<int64_t> localExtendShape = llvm::to_vector(
-        cast<RankedTensorType>(extendOperand.getType()).getShape());
+        cast<RankedTensorType>(reshardedExtendOp.getType()).getShape());
     SmallVector<int64_t> mainOperandShape = llvm::to_vector(
         cast<RankedTensorType>(mainOperand.getType()).getShape());
 
     for (int i = 0; i < ndims; i++) {
-      localExtendShape[i] =
-          div_ceil(localExtendShape[i], numDevicesAlongDimension);
+      if (i != concatDimension) {
+        localExtendShape[i] =
+            div_ceil(localExtendShape[i], numDevicesAlongDimension);
+      }
       mainOperandShape[i] =
           div_ceil(mainOperandShape[i], numDevicesAlongDimension);
     }
 
     mlir::Type inTys[2]{RankedTensorType::get(localExtendShape, elemType),
                         RankedTensorType::get(mainOperandShape, elemType)};
-    mlir::Location inLocs[] = {extendOperand.getLoc(), mainOperand.getLoc()};
+    mlir::Location inLocs[] = {reshardedExtendOp.getLoc(),
+                               mainOperand.getLoc()};
 
-    Value manualOps[] = {extendOperand, mainOperand};
+    Value manualOps[] = {reshardedExtendOp, mainOperand};
     Type manualTypes[] = {RankedTensorType::get(localExtendShape, elemType),
                           RankedTensorType::get(mainOperandShape, elemType)};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
@@ -1391,8 +1393,7 @@ struct ConcatTwoOperandsCommOptimize
 
     auto localRetShape = llvm::to_vector(concatShape);
     for (int i = 0; i < ndims; i++) {
-      localRetShape[i] =
-          div_ceil(localRetShape[i], numDevicesAlongDimension);
+      localRetShape[i] = div_ceil(localRetShape[i], numDevicesAlongDimension);
     }
 
     {
@@ -1415,6 +1416,11 @@ struct ConcatTwoOperandsCommOptimize
       } else {
       }
     }
+
+    rewriter.replaceOp(concat, manual);
+
+    llvm::errs() << "after replace\n";
+    llvm::errs() << manual << "\n";
 
     return success();
   }
