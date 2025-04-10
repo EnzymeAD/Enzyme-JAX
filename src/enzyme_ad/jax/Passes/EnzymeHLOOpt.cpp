@@ -15289,9 +15289,10 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
         newBaseExtendShape, baseOperandType.getElementType());
 
     if (auto subOp = baseOperand.getDefiningOp())
-	 rewriter.setInsertionPointAfter(subOp);
+      rewriter.setInsertionPointAfter(subOp);
     else
-	 rewriter.setInsertionPointToStart(cast<BlockArgument>(baseOperand).getOwner());
+      rewriter.setInsertionPointToStart(
+          cast<BlockArgument>(baseOperand).getOwner());
 
     auto newBaseExtendOp = rewriter.create<enzymexla::ExtendOp>(
         loc, newBaseExtendType, baseOperand, targetExtendDim, targetLhs,
