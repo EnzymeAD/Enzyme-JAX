@@ -197,7 +197,6 @@ void updateManualComputationAxesShape(TensorShardingAttr shardingAttr,
     manualAxes.push_back(rewriter.getStringAttr(meshAxis.getName()));
   }
 
-  auto dimShardings = shardingAttr.getDimShardings();
   auto ndevices = getShardingDevices(shardingAttr, dimension, op);
 
   for (int i = 0; i < localShape.size(); i++) {
@@ -675,11 +674,15 @@ struct PeriodicConcatSimplify
     if (!leftSliceSharding)
       return failure();
     auto rightSliceSharding = mlir::sdy::getSharding(rightSliceOp);
+    if (!rightSliceSharding)
+      return failure();
     if (leftSliceSharding != rightSliceSharding) {
       return failure();
     }
 
     auto midOpSharding = mlir::sdy::getSharding(midOp);
+    if (!midOpSharding)
+      return failure();
     if (leftSliceSharding != midOpSharding) {
       return failure();
     }
@@ -824,6 +827,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto rhsValue = wrap.getRhs();
 
     auto wrapSharding = mlir::sdy::getSharding(wrap);
+    if (!wrapSharding)
+      return failure();
 
     TensorShardingAttr opShardings[] = {wrapSharding};
     TensorShardingPerValueAttr inShardings =
@@ -955,6 +960,8 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     auto rhsValue = extend.getRhs();
 
     auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
 
     TensorShardingAttr opShardings[] = {extendSharding};
     TensorShardingPerValueAttr inShardings =
@@ -1081,6 +1088,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     int32_t ndims = rotate.getType().getRank();
     auto elType = rotate.getType().getElementType();
     auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
+    auto rotateDimension = rotate.getDimension();
 
     auto rotateSharding = mlir::sdy::getSharding(rotate);
     if (!rotateSharding)
@@ -1096,11 +1104,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     SmallVector<int64_t> localShape = llvm::to_vector(rotateShape);
 
     updateManualComputationAxesShape(rotateSharding, rewriter, rotate,
-                                     manualAxes, localShape,
-                                     rotate.getDimension());
+                                     manualAxes, localShape, rotateDimension);
 
-    int64_t numDevicesAlongDimension = getNumDevicesAlongDimension(
-        rotateSharding, rotate.getDimension(), rotate);
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
 
     SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
 
@@ -1122,17 +1129,16 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           "Rotation dimension is not divisible by the number of devices");
       // TODO
       int32_t extra =
-          ((outputShape[rotate.getDimension()] / numDevicesAlongDimension) +
-           1) *
+          ((outputShape[rotateDimension] / numDevicesAlongDimension) + 1) *
           numDevicesAlongDimension;
-      rightPadding = extra - outputShape[rotate.getDimension()];
+      rightPadding = extra - outputShape[rotateDimension];
       amount += rightPadding;
-      outputShape[rotate.getDimension()] = extra;
+      outputShape[rotateDimension] = extra;
 
       SmallVector<int64_t> padLow(ndims, 0);
       SmallVector<int64_t> padHigh(ndims, 0);
-      padHigh[rotate.getDimension()] = rightPadding;
-      localShape[rotate.getDimension()] = extra / numDevicesAlongDimension;
+      padHigh[rotateDimension] = rightPadding;
+      localShape[rotateDimension] = extra / numDevicesAlongDimension;
       SmallVector<int64_t> padInner(ndims, 0);
 
       inputArg = rewriter.create<stablehlo::PadOp>(
@@ -1210,7 +1216,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         concatArgs = {commResult, remSlice};
 
       auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-          rotate.getLoc(), concatArgs, rotate.getDimension());
+          rotate.getLoc(), concatArgs, rotateDimension);
 
       rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
                                      innerConcat->getResults());
@@ -1221,7 +1227,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
       SmallVector<int64_t> innerStarts(ndims, 0);
       SmallVector<int64_t> innerLimits = llvm::to_vector(outputShape);
-      innerLimits[rotate.getDimension()] -= rightPadding;
+      innerLimits[rotateDimension] -= rightPadding;
 
       auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
           rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
@@ -1229,6 +1235,123 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       rewriter.replaceOp(rotate, sliceRemovePadding);
     } else {
       rewriter.replaceOp(rotate, manual);
+    }
+
+    return success();
+  }
+};
+
+// TODO: check mesh attr and ensure only applied to iota tile
+// we match if exactly one of the operands is small enough that it can be fit
+// into a single shard
+struct ConcatTwoOperandsCommOptimize
+    : public OpRewritePattern<enzymexla::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat.getNumOperands() != 2) {
+      return failure();
+    }
+
+    auto elemType = concat.getType().getElementType();
+    auto ndims = concat.getType().getRank();
+    auto concatShape = concat.getType().getShape();
+    auto concatDimension = concat.getDimension();
+
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+
+    auto ndevices = getShardingDevices(concatSharding, concatDimension, concat);
+    int64_t numDevicesAlongDimension = ndevices[concatDimension];
+
+    auto allOperands = llvm::to_vector(concat.getOperands());
+    auto leftOperand = allOperands[0];
+    auto rightOperand = allOperands[1];
+
+    auto leftOperandSharding = mlir::sdy::getSharding(leftOperand);
+    if (!leftOperandSharding)
+      return failure();
+    auto rightOperandSharding = mlir::sdy::getSharding(rightOperand);
+    if (!rightOperandSharding)
+      return failure();
+
+    if (leftOperandSharding != rightOperandSharding ||
+        leftOperandSharding != concatSharding) {
+      return failure();
+    }
+
+    auto leftOperandSize = cast<RankedTensorType>(leftOperand.getType())
+                               .getShape()[concatDimension];
+    auto rightOperandSize = cast<RankedTensorType>(rightOperand.getType())
+                                .getShape()[concatDimension];
+
+    int64_t fullSize = concatShape[concatDimension];
+    int64_t shardSize = fullSize / numDevicesAlongDimension;
+    bool commLeft;
+    bool concatLeft; // opposite of commLeft but makes code more readable
+    if (leftOperandSize < shardSize) {
+      if (rightOperandSize < shardSize)
+        return failure();
+      commLeft = false; // move slices to the right
+    } else if (rightOperandSize < shardSize) {
+      commLeft = true; // move slices to the left
+    } else {
+      return failure();
+    }
+    concatLeft = !commLeft;
+
+    TensorShardingAttr opShardings[] = {concatSharding};
+    TensorShardingPerValueAttr inShardings =
+        TensorShardingPerValueAttr::get(concat.getContext(), opShardings);
+    TensorShardingPerValueAttr outShardings =
+        TensorShardingPerValueAttr::get(concat.getContext(), opShardings);
+
+    SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> localShape = llvm::to_vector(concatShape);
+
+    updateManualComputationAxesShape(concatSharding, rewriter, concat,
+                                     manualAxes, localShape, concatDimension);
+
+    int64_t leftPadding = 0;
+    int64_t rightPadding = 0;
+    Value extendOperand;
+    SmallVector<int64_t> padInner(ndims, 0);
+    if (concatLeft) {
+      if (leftOperandSize % numDevicesAlongDimension != 0) {
+        leftPadding = leftOperandSize % numDevicesAlongDimension;
+
+        SmallVector<int64_t> padLow(ndims, 0);
+        SmallVector<int64_t> padHigh(ndims, 0);
+        padLow[concatDimension] = leftPadding;
+
+        extendOperand = rewriter.create<stablehlo::PadOp>(
+            concat.getLoc(), leftOperand,
+            rewriter.create<stablehlo::ConstantOp>(
+                concat.getLoc(), rewriter.getZeroAttr(elemType),
+                makeAttr(elemType, leftPadding).cast<ElementsAttr>()),
+            padLow, padHigh, padInner);
+      } else {
+        extendOperand = leftOperand;
+      }
+    } else {
+      if (rightOperandSize % numDevicesAlongDimension != 0) {
+        rightPadding = rightOperandSize % numDevicesAlongDimension;
+
+        SmallVector<int64_t> padLow(ndims, 0);
+        SmallVector<int64_t> padHigh(ndims, 0);
+        padHigh[concatDimension] = rightPadding;
+
+        extendOperand = rewriter.create<stablehlo::PadOp>(
+            concat.getLoc(), rightOperand,
+            rewriter.create<stablehlo::ConstantOp>(
+                concat.getLoc(), rewriter.getZeroAttr(elemType),
+                makeAttr(elemType, rightPadding).cast<ElementsAttr>()),
+            padLow, padHigh, padInner);
+      } else {
+        extendOperand = rightOperand;
+      }
     }
 
     return success();
@@ -1245,7 +1368,7 @@ struct OptimizeCommunicationPass
     RewritePatternSet patterns(context);
 
     patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
-                 ExtendCommOptimize>(context);
+                 ExtendCommOptimize, ConcatTwoOperandsCommOptimize>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
