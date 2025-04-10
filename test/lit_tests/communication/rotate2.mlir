@@ -7,3 +7,5 @@ module {
     return %0 : tensor<12x1024xi64>
   }                     
 } 
+
+// CHECK: "enzymexla.rotate"
