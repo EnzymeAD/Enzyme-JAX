@@ -15288,6 +15288,11 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
     auto newBaseExtendType = RankedTensorType::get(
         newBaseExtendShape, baseOperandType.getElementType());
 
+    if (auto subOp = baseOperand.getDefiningOp())
+	 rewriter.setInsertionPointAfter(subOp);
+    else
+	 rewriter.setInsertionPointToStart(cast<BlockArgument>(baseOperand).getOwner());
+
     auto newBaseExtendOp = rewriter.create<enzymexla::ExtendOp>(
         loc, newBaseExtendType, baseOperand, targetExtendDim, targetLhs,
         targetRhs);
