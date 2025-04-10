@@ -475,6 +475,44 @@ getChecksForBoundaries(PatternRewriter &rewriter, Operation *op,
           isNotRightSide, leftSide,    rightSide};
 }
 
+std::tuple<int, int, int, int>
+getWrapExtendConfiguration(int N1, int N2, int N3,
+                           int numDevicesAlongDimension) {
+  int leftPadding = 0;
+  int rightPadding = 0;
+  int N = N2;
+
+  if (N2 != N3) {
+    if (N2 > N3) {
+      rightPadding = N2 - N3;
+      N = N2;
+    } else {
+      leftPadding = N3 - N2;
+      N = N3;
+    }
+  }
+
+  auto T = N1 + 2 * N;
+
+  if (T % numDevicesAlongDimension != 0) {
+    int extra =
+        ((T / numDevicesAlongDimension) + 1) * numDevicesAlongDimension - T;
+
+    if (extra % 2 == 0) {
+      leftPadding += extra / 2;
+      rightPadding += extra / 2;
+      N += extra / 2;
+      T += extra;
+    } else {
+      // TODO: handle this if we ever need it. basically we find the nearest
+      //       multiple of 2 & numDevicesAlongDimension that is larger than T
+      return {-1, -1, -1, -1};
+    }
+  }
+
+  return {leftPadding, rightPadding, N, T};
+}
+
 // TODO: check mesh attr and ensure only applied to iota tile
 // concat(slice2, op, slice1)
 struct PeriodicConcatSimplify
@@ -595,37 +633,13 @@ struct PeriodicConcatSimplify
       return failure();
     }
 
-    int left_padding = 0;
-    int right_padding = 0;
-    auto N1 = cast<RankedTensorType>(midOp.getType()).getShape()[concatDim];
-    auto N2 = leftSliceOp.getType().getShape()[concatDim];
-    auto N3 = rightSliceOp.getType().getShape()[concatDim];
-    auto N = N2;
-    if (N2 != N3) {
-      if (N2 > N3) {
-        right_padding = N2 - N3;
-        N = N2;
-      } else {
-        left_padding = N3 - N2;
-        N = N3;
-      }
-    }
-    auto T = N1 + 2 * N;
+    auto [leftPadding, rightPadding, N, T] = getWrapExtendConfiguration(
+        cast<RankedTensorType>(midOp.getType()).getShape()[concatDim],
+        leftSliceOp.getType().getShape()[concatDim],
+        rightSliceOp.getType().getShape()[concatDim], numDevicesAlongDimension);
 
-    if (T % numDevicesAlongDimension != 0) {
-      int extra =
-          ((T / numDevicesAlongDimension) + 1) * numDevicesAlongDimension - T;
-
-      if (extra % 2 == 0) {
-        left_padding += extra / 2;
-        right_padding += extra / 2;
-        N += extra / 2;
-        T += extra;
-      } else {
-        // TODO: handle this if we ever need it. basically we find the nearest
-        //       multiple of 2 & numDevicesAlongDimension that is larger than T
-        return failure();
-      }
+    if (leftPadding == -1 || rightPadding == -1 || N == -1 || T == -1) {
+      return failure();
     }
 
     SmallVector<int64_t> localRetShape = llvm::to_vector(concatShape);
@@ -694,17 +708,17 @@ struct PeriodicConcatSimplify
     rewriter.setInsertionPointAfter(if1);
     rewriter.create<sdy::ReturnOp>(concat.getLoc(), if1->getResults());
 
-    if (left_padding != 0 || right_padding != 0) {
+    if (leftPadding != 0 || rightPadding != 0) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
       SmallVector<int64_t> sliceLimits = llvm::to_vector(
           cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
 
-      if (left_padding > 0) {
-        sliceStartIndices[concatDim] = left_padding;
+      if (leftPadding > 0) {
+        sliceStartIndices[concatDim] = leftPadding;
       }
 
-      if (right_padding > 0) {
-        sliceLimits[concatDim] -= right_padding;
+      if (rightPadding > 0) {
+        sliceLimits[concatDim] -= rightPadding;
       }
 
       rewriter.setInsertionPointAfter(manual);
