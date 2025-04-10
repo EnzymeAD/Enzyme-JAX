@@ -15395,7 +15395,8 @@ struct ConcatConcatAxisSwap final
       }
     }
 
-    if (!anyFusible) return failure();
+    if (!anyFusible)
+      return failure();
 
     SmallVector<Value> newOuters;
 
