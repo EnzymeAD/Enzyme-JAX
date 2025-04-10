@@ -14665,14 +14665,15 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
     for (int i = 1; i < concat.getOperands().size(); i++) {
       stablehlo::SliceOp sl0, sl1;
       if (!isRotateLike(concat.getDimension(), concat.getOperands()[i - 1],
-                        concat.getOperands()[i], &sl0, &sl1))
+                        concat.getOperands()[i], &sl0, &sl1)) {
         continue;
+      }
       auto starts = llvm::to_vector(sl1.getStartIndices());
       auto limits = llvm::to_vector(sl0.getLimitIndices());
       Value outerSlice = sl0.getOperand();
 
       bool needsSlice = false;
-      for (int j = 0; j < sl0.getType().getShape().size(); i++) {
+      for (int j = 0; j < sl0.getType().getShape().size(); j++) {
         if (starts[j] != 0) {
           needsSlice = true;
           break;
@@ -14710,9 +14711,10 @@ struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
       if (toConcat.size() == 1) {
         rewriter.replaceOp(concat, toConcat[0]);
       } else {
+        auto shard = sdy::getShardingPerValue(concat);
         auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
             concat, toConcat, concat.getDimension());
-        if (auto shard = sdy::getShardingPerValue(concat)) {
+        if (shard) {
           sdy::setShardings(newConcat, shard);
         }
       }
@@ -14845,14 +14847,26 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
             sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
             sl1.getType().getShape()[concat.getDimension()],
             concat.getDimension());
+        if (auto shard = sdy::getShardingPerValue(sl0)) {
+          sdy::setShardings(wrap, shard);
+        }
         SmallVector<Value> toConcat;
         for (int j = 0; j < i - 2; j++)
           toConcat.push_back(concat.getOperands()[j]);
         toConcat.push_back(wrap);
         for (int j = i + 1; j < concat.getOperands().size(); j++)
           toConcat.push_back(concat.getOperands()[j]);
-        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-            concat, toConcat, concat.getDimension());
+        if (toConcat.size() == 1) {
+          rewriter.replaceOp(concat, toConcat[0]);
+        } else {
+          auto shard = sdy::getShardingPerValue(concat);
+          auto newConcat =
+              rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+                  concat, toConcat, concat.getDimension());
+          if (shard) {
+            sdy::setShardings(newConcat, shard);
+          }
+        }
         return success();
       }
       auto rs0 =
@@ -14869,6 +14883,9 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
               sl0.getType().getShape()[concat.getDimension() + 1],
               sl1.getType().getShape()[concat.getDimension() + 1],
               concat.getDimension() + 1);
+          if (auto shard = sdy::getShardingPerValue(sl0)) {
+            sdy::setShardings(wrap, shard);
+          }
           SmallVector<Value> toConcat;
           for (int j = 0; j < i - 2; j++)
             toConcat.push_back(concat.getOperands()[j]);
@@ -14876,14 +14893,26 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
               llvm::to_vector(wrap.getType().getShape());
           assert(newShape[0] == 1);
           newShape.erase(newShape.begin());
-          toConcat.push_back(rewriter.create<stablehlo::ReshapeOp>(
+          auto reshape = rewriter.create<stablehlo::ReshapeOp>(
               concat.getLoc(),
               RankedTensorType::get(newShape, wrap.getType().getElementType()),
-              wrap));
+              wrap);
+          if (auto shard = sdy::getShardingPerValue(rs0)) {
+            sdy::setShardings(reshape, shard);
+          }
+          toConcat.push_back(reshape);
           for (int j = i + 1; j < concat.getOperands().size(); j++)
             toConcat.push_back(concat.getOperands()[j]);
-          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-              concat, toConcat, concat.getDimension());
+          if (toConcat.size() == 1) {
+            rewriter.replaceOp(concat, toConcat[0]);
+          } else {
+            auto shard = sdy::getShardingPerValue(rs0);
+            rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+                concat, toConcat, concat.getDimension());
+            if (shard) {
+              sdy::setShardings(reshape, shard);
+            }
+          }
           return success();
         }
       }
@@ -14907,13 +14936,23 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
     sl0_starts[wrap.getDimension()] =
         wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
     sl1_ends[wrap.getDimension()] = wrap.getRhs();
+    auto shard = sdy::getShardingPerValue(wrap);
     auto sl0 = rewriter.create<stablehlo::SliceOp>(
         wrap.getLoc(), wrap.getOperand(), sl0_starts, sl0_ends, strides);
+    if (shard) {
+      sdy::setShardings(sl0, shard);
+    }
     auto sl1 = rewriter.create<stablehlo::SliceOp>(
         wrap.getLoc(), wrap.getOperand(), sl1_starts, sl1_ends, strides);
+    if (shard) {
+      sdy::setShardings(sl1, shard);
+    }
     Value args[] = {sl0, wrap.getOperand(), sl1};
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(wrap, args,
-                                                          wrap.getDimension());
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        wrap, args, wrap.getDimension());
+    if (shard) {
+      sdy::setShardings(newConcat, shard);
+    }
     return success();
   }
 };
@@ -14968,9 +15007,15 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
         if (toConcat.size() == 1)
           rewriter.replaceOp(concat, extend);
-        else
-          rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(concat,
-                                                                toConcat, dim);
+        else {
+          auto shard = sdy::getShardingPerValue(concat);
+          auto newConcat =
+              rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+                  concat, toConcat, dim);
+          if (shard) {
+            sdy::setShardings(newConcat, shard);
+          }
+        }
       };
       Value lhsv = concat.getOperand(i - 2);
       Value midv = concat.getOperand(i - 1);
@@ -14985,6 +15030,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
         auto extend = rewriter.create<enzymexla::ExtendOp>(
             concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim),
             rhs.getOutputShape(dim), dim);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(extend, shard);
+        }
         finish(extend);
         return success();
       }
@@ -15063,15 +15111,25 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
     lhsLimits[extend.getDimension()] = extend.getLhs();
     auto lhs = rewriter.create<stablehlo::SliceOp>(loc, operand, lhsStarts,
                                                    lhsLimits, strides);
+    auto shard = sdy::getShardingPerValue(extend);
+    if (shard) {
+      sdy::setShardings(lhs, shard);
+    }
     SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
     SmallVector<int64_t> rhsLimits(operand.getType().getShape());
     rhsStarts[extend.getDimension()] =
         rhsLimits[extend.getDimension()] - extend.getRhs();
     auto rhs = rewriter.create<stablehlo::SliceOp>(loc, operand, rhsStarts,
                                                    rhsLimits, strides);
+    if (shard) {
+      sdy::setShardings(rhs, shard);
+    }
     Value args[] = {lhs, extend.getOperand(), rhs};
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         extend, args, extend.getDimension());
+    if (shard) {
+      sdy::setShardings(newConcat, shard);
+    }
     return success();
   }
 };
