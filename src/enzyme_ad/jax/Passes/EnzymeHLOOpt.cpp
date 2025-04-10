@@ -15429,8 +15429,7 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
         newBaseWrapShape, baseOperandType.getElementType());
 
     auto newBaseWrapOp = rewriter.create<enzymexla::WrapOp>(
-        loc, newBaseWrapType, baseOperand, targetLhs, targetRhs,
-        targetWrapDim);
+        loc, newBaseWrapType, baseOperand, targetLhs, targetRhs, targetWrapDim);
     Value newBaseWrapResult = newBaseWrapOp.getResult();
     RankedTensorType newBaseWrapResultType =
         newBaseWrapResult.getType().cast<RankedTensorType>();
@@ -15441,8 +15440,7 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
 
       if (!oldSliceOp) {
         // Direct Wrap - Replace directly
-        if (oldWrapOp.getResult().getType() ==
-            newBaseWrapResult.getType()) {
+        if (oldWrapOp.getResult().getType() == newBaseWrapResult.getType()) {
           rewriter.replaceOp(oldWrapOp, newBaseWrapResult);
         } else {
           auto castOp = rewriter.create<tensor::CastOp>(
@@ -15466,8 +15464,7 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
             oldWrapOp.getLoc(),
             oldWrapOp.getResult()
                 .getType(), // Use original wrap op's result type
-            newBaseWrapResult, newSliceStarts, newSliceLimits,
-            newSliceStrides);
+            newBaseWrapResult, newSliceStarts, newSliceLimits, newSliceStrides);
         rewriter.replaceAllOpUsesWith(oldWrapOp, newSlice.getResult());
       }
     }
