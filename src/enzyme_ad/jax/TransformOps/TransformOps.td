@@ -1503,6 +1503,11 @@ def SliceExtend : EnzymeHLOPatternOp<
   let patterns = ["SliceExtend"];
 }
 
+def SliceRotate : EnzymeHLOPatternOp<
+  "slice_rotate"> {
+  let patterns = ["SliceRotate"];
+}
+
 def LowerExtend : EnzymeHLOPatternOp<
     "lower_extend"> {
   let patterns = ["LowerExtend"];
