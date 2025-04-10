@@ -15025,7 +15025,7 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
             concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim),
             rhs.getOutputShape(dim), dim);
         if (auto shard = sdy::getShardingPerValue(concat)) {
-          sdy::setShardings(newConcat, shard);
+          sdy::setShardings(extend, shard);
         }
         finish(extend);
         return success();
