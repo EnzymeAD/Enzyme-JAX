@@ -739,6 +739,145 @@ struct PeriodicConcatSimplify
 };
 
 // TODO: check mesh attr and ensure only applied to iota tile
+struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    auto elemType = wrap.getType().getElementType();
+    auto ndims = wrap.getType().getRank();
+    auto wrapOperandShape = wrap.getOperand().getType().getShape();
+    auto wrapShape = wrap.getType().getShape();
+    auto wrapDimension = wrap.getDimension();
+    auto lhsValue = wrap.getLhs();
+    auto rhsValue = wrap.getRhs();
+
+    auto wrapSharding = mlir::sdy::getSharding(wrap);
+
+    TensorShardingAttr opShardings[] = {wrapSharding};
+    TensorShardingPerValueAttr inShardings =
+        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+    TensorShardingPerValueAttr outShardings =
+        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+
+    SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> localShape = llvm::to_vector(wrapOperandShape);
+
+    updateManualComputationAxesShape(wrapSharding, rewriter, wrap, manualAxes,
+                                     localShape, wrapDimension);
+
+    auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
+    int64_t numDevicesAlongDimension = ndevices[wrapDimension];
+
+    if (numDevicesAlongDimension % 2 != 0) {
+      return failure();
+    }
+
+    auto [leftPadding, rightPadding, N, T] = getWrapExtendConfiguration(
+      wrapOperandShape[wrapDimension], lhsValue, rhsValue, numDevicesAlongDimension);
+
+    llvm::errs() << "Left Padding: " << leftPadding << "\n";
+    llvm::errs() << "Right Padding: " << rightPadding << "\n";
+    llvm::errs() << "N: " << N << "\n";
+    llvm::errs() << "T: " << T << "\n";
+
+    if (leftPadding == -1 || rightPadding == -1 || N == -1 || T == -1) {
+      return failure();
+    }
+
+    SmallVector<int64_t> localRetShape = llvm::to_vector(wrapShape);
+    SmallVector<int64_t> manualOpRetShape = llvm::to_vector(wrapShape);
+    for (int i = 0; i < localRetShape.size(); i++) {
+      if (i == wrapDimension) {
+        localRetShape[i] = T / ndevices[i];
+        continue;
+      }
+      localRetShape[i] /= ndevices[i];
+    }
+    manualOpRetShape[wrapDimension] = T;
+
+    mlir::Type inTys[1]{RankedTensorType::get(localShape, elemType)};
+    mlir::Location inLocs[] = {wrap.getLoc()};
+
+    Value manualOps[] = {wrap.getOperand()};
+    Type manualTypes[] = {RankedTensorType::get(manualOpRetShape, elemType)};
+    auto manual = rewriter.create<sdy::ManualComputationOp>(
+        wrap.getLoc(), manualTypes, manualOps, inShardings, outShardings,
+        manualAxes);
+
+    auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
+                                    inTys, inLocs);
+    auto innerArg = blk->getArgument(0);
+
+    auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(wrap.getLoc());
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+
+    auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
+          rightSide] = getChecksForBoundaries(rewriter, wrap, partitionId,
+                                              numDevicesAlongDimension, zero);
+
+    Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+    auto ifCond = rewriter.create<stablehlo::IfOp>(
+        wrap.getLoc(), ifTypes,
+        rewriter.create<stablehlo::AndOp>(wrap.getLoc(), isNotLeftSide,
+                                          isNotRightSide));
+
+    {
+      rewriter.createBlock(&ifCond.getTrueBranch(),
+                           ifCond.getTrueBranch().begin());
+
+      generateCommPatternForNonEdges(
+          rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
+          wrapDimension, N, numDevicesAlongDimension, ndims,
+          N - 2 * N / numDevicesAlongDimension, localRetShape, leftSide);
+    }
+
+    {
+      rewriter.createBlock(&ifCond.getFalseBranch(),
+                           ifCond.getFalseBranch().begin());
+
+      wrapCommPatternForEdges(rewriter, wrap, partitionId, zero, innerArg,
+                              innerArg, wrapSharding, wrapDimension, N,
+                              numDevicesAlongDimension, ndims, T, localRetShape,
+                              isLeftSide);
+    }
+
+    llvm::errs() << "Condition: " << ifCond << "\n";
+    llvm::errs() << "Left Padding: " << leftPadding << "\n";
+    llvm::errs() << "Right Padding: " << rightPadding << "\n";
+
+    rewriter.setInsertionPointAfter(ifCond);
+    rewriter.create<sdy::ReturnOp>(wrap.getLoc(), ifCond->getResults());
+
+    if (leftPadding != 0 || rightPadding != 0) {
+      SmallVector<int64_t> sliceStartIndices(ndims, 0);
+      SmallVector<int64_t> sliceLimits = llvm::to_vector(
+          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
+      SmallVector<int64_t> innerStrides(ndims, 1);
+
+      if (leftPadding > 0) {
+        sliceStartIndices[wrapDimension] = leftPadding;
+      }
+
+      if (rightPadding > 0) {
+        sliceLimits[wrapDimension] -= rightPadding;
+      }
+
+      rewriter.setInsertionPointAfter(manual);
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          wrap, manual->getResults()[0], sliceStartIndices, sliceLimits,
+          innerStrides);
+    } else {
+      rewriter.replaceOp(wrap, manual);
+    }
+
+    return success();
+  }
+};
+
+// TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -879,7 +1018,7 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<PeriodicConcatSimplify, RotateCommOptimize>(context);
+    patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
