@@ -15395,6 +15395,9 @@ struct ConcatConcatAxisSwap final
       }
     }
 
+    if (!anyFusible)
+      return failure();
+
     SmallVector<Value> newOuters;
 
     for (int i = 0; i < inners[0].getOperands().size(); i++) {
