@@ -68,3 +68,17 @@ module {
 // CHECK:           }
 // CHECK:         }
 
+
+func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
+  %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
+  %1 = stablehlo.convert %0 : tensor<2xi1>
+  %2 = stablehlo.concatenate %1, %1, %1, dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
+  return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
+}
+
+// CHECK:  func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
+// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
+// CHECK-NEXT:    %1 = stablehlo.convert %0 : tensor<2xi1>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %1, %1, dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
+// CHECK-NEXT:    return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
+// CHECK-NEXT:  }
