@@ -439,6 +439,77 @@ void wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   return;
 }
 
+void extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
+                               stablehlo::PartitionIdOp partitionId,
+                               stablehlo::ConstantOp zero, Value innerArg,
+                               TensorShardingAttr opSharding, int concatDim,
+                               int N, int numDevicesAlongDimension, int ndims,
+                               int T, SmallVector<int64_t> localRetShape,
+                               Value isLeftSide) {
+  auto elemType = innerArg.getType().cast<RankedTensorType>().getElementType();
+
+  SmallVector<int64_t> innerStrides(ndims, 1);
+
+  Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+  auto ifCondInner =
+      rewriter.create<stablehlo::IfOp>(op->getLoc(), ifTypes, isLeftSide);
+  rewriter.create<stablehlo::ReturnOp>(op->getLoc(), ifCondInner->getResults());
+
+  {
+    rewriter.createBlock(&ifCondInner.getTrueBranch(),
+                         ifCondInner.getTrueBranch().begin());
+
+    SmallVector<int64_t> innerStarts1(ndims, 0);
+    SmallVector<int64_t> innerLimits1 =
+        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
+    innerLimits1[concatDim] = N;
+    auto startSlice = rewriter.create<stablehlo::SliceOp>(
+        op->getLoc(), innerArg, innerStarts1, innerLimits1, innerStrides);
+
+    SmallVector<int64_t> innerStarts3(ndims, 0);
+    SmallVector<int64_t> innerLimits3 =
+        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
+    innerLimits3[concatDim] = (T / numDevicesAlongDimension) - N;
+
+    auto lhsRightSlice = rewriter.create<stablehlo::SliceOp>(
+        op->getLoc(), innerArg, innerStarts3, innerLimits3, innerStrides);
+
+    Value concatArgs[] = {startSlice, lhsRightSlice};
+    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
+        op->getLoc(), concatArgs, concatDim);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
+                                         finalResult->getResults());
+  }
+
+  {
+    rewriter.createBlock(&ifCondInner.getFalseBranch(),
+                         ifCondInner.getFalseBranch().begin());
+
+    SmallVector<int64_t> innerStarts2(ndims, 0);
+    SmallVector<int64_t> innerLimits2 =
+        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
+    innerStarts2[concatDim] = innerLimits2[concatDim] - N;
+    auto endSlice = rewriter.create<stablehlo::SliceOp>(
+        op->getLoc(), innerArg, innerStarts2, innerLimits2, innerStrides);
+
+    SmallVector<int64_t> innerStarts4(ndims, 0);
+    SmallVector<int64_t> innerLimits4 =
+        llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
+    innerStarts4[concatDim] = N - (2 * N / numDevicesAlongDimension);
+
+    auto rhsLeftSlice = rewriter.create<stablehlo::SliceOp>(
+        op->getLoc(), innerArg, innerStarts4, innerLimits4, innerStrides);
+
+    Value concatArgs[] = {rhsLeftSlice, endSlice};
+    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
+        op->getLoc(), concatArgs, concatDim);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
+                                         finalResult->getResults());
+  }
+
+  return;
+}
+
 std::tuple<Value, Value, Value, Value, Value, Value>
 getChecksForBoundaries(PatternRewriter &rewriter, Operation *op,
                        stablehlo::PartitionIdOp partitionId,
@@ -777,11 +848,6 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         getWrapExtendConfiguration(wrapOperandShape[wrapDimension], lhsValue,
                                    rhsValue, numDevicesAlongDimension);
 
-    llvm::errs() << "Left Padding: " << leftPadding << "\n";
-    llvm::errs() << "Right Padding: " << rightPadding << "\n";
-    llvm::errs() << "N: " << N << "\n";
-    llvm::errs() << "T: " << T << "\n";
-
     if (leftPadding == -1 || rightPadding == -1 || N == -1 || T == -1) {
       return failure();
     }
@@ -845,10 +911,6 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
                               isLeftSide);
     }
 
-    llvm::errs() << "Condition: " << ifCond << "\n";
-    llvm::errs() << "Left Padding: " << leftPadding << "\n";
-    llvm::errs() << "Right Padding: " << rightPadding << "\n";
-
     rewriter.setInsertionPointAfter(ifCond);
     rewriter.create<sdy::ReturnOp>(wrap.getLoc(), ifCond->getResults());
 
@@ -872,6 +934,138 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
           innerStrides);
     } else {
       rewriter.replaceOp(wrap, manual);
+    }
+
+    return success();
+  }
+};
+
+// TODO: check mesh attr and ensure only applied to iota tile
+struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    auto elemType = extend.getType().getElementType();
+    auto ndims = extend.getType().getRank();
+    auto extendOperandShape = extend.getOperand().getType().getShape();
+    auto extendShape = extend.getType().getShape();
+    auto extendDimension = extend.getDimension();
+    auto lhsValue = extend.getLhs();
+    auto rhsValue = extend.getRhs();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+
+    TensorShardingAttr opShardings[] = {extendSharding};
+    TensorShardingPerValueAttr inShardings =
+        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+    TensorShardingPerValueAttr outShardings =
+        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+
+    SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> localShape = llvm::to_vector(extendOperandShape);
+
+    updateManualComputationAxesShape(extendSharding, rewriter, extend,
+                                     manualAxes, localShape, extendDimension);
+
+    auto ndevices = getShardingDevices(extendSharding, extendDimension, extend);
+    int64_t numDevicesAlongDimension = ndevices[extendDimension];
+
+    if (numDevicesAlongDimension % 2 != 0) {
+      return failure();
+    }
+
+    auto [leftPadding, rightPadding, N, T] = getWrapExtendConfiguration(
+        extendOperandShape[extendDimension], rhsValue, lhsValue,
+        numDevicesAlongDimension);
+
+    if (leftPadding == -1 || rightPadding == -1 || N == -1 || T == -1) {
+      return failure();
+    }
+
+    SmallVector<int64_t> localRetShape = llvm::to_vector(extendShape);
+    SmallVector<int64_t> manualOpRetShape = llvm::to_vector(extendShape);
+    for (int i = 0; i < localRetShape.size(); i++) {
+      if (i == extendDimension) {
+        localRetShape[i] = T / ndevices[i];
+        continue;
+      }
+      localRetShape[i] /= ndevices[i];
+    }
+    manualOpRetShape[extendDimension] = T;
+
+    mlir::Type inTys[1]{RankedTensorType::get(localShape, elemType)};
+    mlir::Location inLocs[] = {extend.getLoc()};
+
+    Value manualOps[] = {extend.getOperand()};
+    Type manualTypes[] = {RankedTensorType::get(manualOpRetShape, elemType)};
+    auto manual = rewriter.create<sdy::ManualComputationOp>(
+        extend.getLoc(), manualTypes, manualOps, inShardings, outShardings,
+        manualAxes);
+
+    auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
+                                    inTys, inLocs);
+    auto innerArg = blk->getArgument(0);
+
+    auto partitionId =
+        rewriter.create<stablehlo::PartitionIdOp>(extend.getLoc());
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        extend.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+
+    auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
+          rightSide] = getChecksForBoundaries(rewriter, extend, partitionId,
+                                              numDevicesAlongDimension, zero);
+
+    Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+    auto ifCond = rewriter.create<stablehlo::IfOp>(
+        extend.getLoc(), ifTypes,
+        rewriter.create<stablehlo::AndOp>(extend.getLoc(), isNotLeftSide,
+                                          isNotRightSide));
+
+    {
+      rewriter.createBlock(&ifCond.getTrueBranch(),
+                           ifCond.getTrueBranch().begin());
+
+      generateCommPatternForNonEdges(
+          rewriter, extend, partitionId, zero, innerArg, innerArg,
+          extendSharding, extendDimension, N, numDevicesAlongDimension, ndims,
+          N - 2 * N / numDevicesAlongDimension, localRetShape, leftSide);
+    }
+
+    {
+      rewriter.createBlock(&ifCond.getFalseBranch(),
+                           ifCond.getFalseBranch().begin());
+
+      extendCommPatternForEdges(rewriter, extend, partitionId, zero, innerArg,
+                                extendSharding, extendDimension, N,
+                                numDevicesAlongDimension, ndims, T,
+                                localRetShape, isLeftSide);
+    }
+
+    rewriter.setInsertionPointAfter(ifCond);
+    rewriter.create<sdy::ReturnOp>(extend.getLoc(), ifCond->getResults());
+
+    if (leftPadding != 0 || rightPadding != 0) {
+      SmallVector<int64_t> sliceStartIndices(ndims, 0);
+      SmallVector<int64_t> sliceLimits = llvm::to_vector(
+          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
+      SmallVector<int64_t> innerStrides(ndims, 1);
+
+      if (leftPadding > 0) {
+        sliceStartIndices[extendDimension] = leftPadding;
+      }
+
+      if (rightPadding > 0) {
+        sliceLimits[extendDimension] -= rightPadding;
+      }
+
+      rewriter.setInsertionPointAfter(manual);
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          extend, manual->getResults()[0], sliceStartIndices, sliceLimits,
+          innerStrides);
+    } else {
+      rewriter.replaceOp(extend, manual);
     }
 
     return success();
@@ -1019,8 +1213,8 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize>(
-        context);
+    patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
+                 ExtendCommOptimize>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
