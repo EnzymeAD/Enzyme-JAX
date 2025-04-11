@@ -319,8 +319,8 @@ void generateCommPatternForNonEdges(
   // itself The second node will get the last [SS / numDevicesAlongDimension -
   // (RS / numDevicesAlongDimension - left)] elems from the leftmost node,
   //.   and keep the first RS / numDevicesAlongDimension - [SS /
-  //numDevicesAlongDimension - (RS / numDevicesAlongDimension - left)] elems
-  //from itself .                       = left -
+  // numDevicesAlongDimension - (RS / numDevicesAlongDimension - left)] elems
+  // from itself .                       = left -
 
   // Case I: for the left part of the comm
   {
