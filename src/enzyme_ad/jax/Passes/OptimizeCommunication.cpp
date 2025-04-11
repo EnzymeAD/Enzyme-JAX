@@ -937,7 +937,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return failure();
     }
 
-    if (paddedBoundarySize > wrapOperandShape[wrapDimension] / numDevicesAlongDimension)
+    if (paddedBoundarySize >
+        wrapOperandShape[wrapDimension] / numDevicesAlongDimension)
       return rewriter.notifyMatchFailure(
           wrap, "Amount of shift extends past a shard boundary.");
 
@@ -1084,8 +1085,8 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       return failure();
     }
 
-    if (paddedBoundarySize > extendOperandShape[extendDimension] /
-                                        numDevicesAlongDimension)
+    if (paddedBoundarySize >
+        extendOperandShape[extendDimension] / numDevicesAlongDimension)
       return rewriter.notifyMatchFailure(
           extend, "Amount of shift extends past a shard boundary.");
 
@@ -1984,7 +1985,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
             mayContainOperandData = rewriter.create<stablehlo::OrOp>(
                 loc, mayContainOperandData, rightSides[i]);
           else
-            mayContainOperandData = leftSides[i];
+            mayContainOperandData = rightSides[i];
         }
       }
 
