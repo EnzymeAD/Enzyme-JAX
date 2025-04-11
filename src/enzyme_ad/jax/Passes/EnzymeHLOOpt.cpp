@@ -14956,6 +14956,59 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern<enzymexla::ExtendOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
+                                PatternRewriter &rewriter) const override {
+    DenseElementsAttr cstAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
+      return failure();
+
+    if (!cstAttr.isSplat())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        op, SplatElementsAttr::get(op.getType(),
+                                   cstAttr.getSplatValue<Attribute>()));
+
+    return success();
+  }
+};
+
+template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsExtend = lhs.template getDefiningOp<enzymexla::ExtendOp>();
+    auto rhsExtend = rhs.template getDefiningOp<enzymexla::ExtendOp>();
+
+    if (!lhsExtend || !rhsExtend)
+      return failure();
+
+    if (lhsExtend.getLhs() != rhsExtend.getLhs() ||
+        lhsExtend.getRhs() != rhsExtend.getRhs() ||
+        lhsExtend.getDimension() != rhsExtend.getDimension())
+      return failure();
+
+    if (!llvm::hasSingleElement(lhs.getUsers()) ||
+        !llvm::hasSingleElement(rhs.getUsers()))
+      return failure();
+
+    auto elementWise = rewriter.create<Op>(op.getLoc(), lhsExtend.getOperand(),
+                                           rhsExtend.getOperand());
+    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
+        op, elementWise, lhsExtend.getLhs(), lhsExtend.getRhs(),
+        lhsExtend.getDimension());
+
+    return success();
+  }
+};
+
 LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            Location loc, RewriterBase &rewriter,
                            StaticSlice *lhsSS = nullptr,

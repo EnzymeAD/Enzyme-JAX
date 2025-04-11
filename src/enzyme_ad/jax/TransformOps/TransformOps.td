@@ -1498,6 +1498,19 @@ def RecognizeExtend : EnzymeHLOPatternOp<
   let patterns = ["RecognizeExtend"];
 }
 
+def ExtendSplat : EnzymeHLOPatternOp<
+  "extend_splat"> {
+  let patterns = ["ExtendSplat"];
+}
+
+def ExtendElementwise : EnzymeHLOPatternOp<
+  "extend_elementwise"> {
+  let patterns = ["ExtendElementwise<stablehlo::AddOp>",
+                  "ExtendElementwise<stablehlo::SubtractOp>",
+                  "ExtendElementwise<stablehlo::MulOp>",
+                  "ExtendElementwise<stablehlo::DivOp>"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
