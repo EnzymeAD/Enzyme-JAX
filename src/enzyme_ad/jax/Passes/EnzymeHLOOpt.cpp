@@ -14956,6 +14956,73 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern<enzymexla::ExtendOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
+                                PatternRewriter &rewriter) const override {
+    DenseElementsAttr cstAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
+      return failure();
+
+    if (!cstAttr.isSplat())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        op, SplatElementsAttr::get(op.getType(),
+                                   cstAttr.getSplatValue<Attribute>()));
+
+    return success();
+  }
+};
+
+template <typename Op, typename EnzymeOp>
+LogicalResult commOpElementWise(Op op, PatternRewriter &rewriter) {
+  auto lhs = op.getLhs();
+  auto rhs = op.getRhs();
+
+  auto lhsExtend = lhs.template getDefiningOp<EnzymeOp>();
+  auto rhsExtend = rhs.template getDefiningOp<EnzymeOp>();
+
+  if (!lhsExtend || !rhsExtend)
+    return failure();
+
+  if (lhsExtend.getLhs() != rhsExtend.getLhs() ||
+      lhsExtend.getRhs() != rhsExtend.getRhs() ||
+      lhsExtend.getDimension() != rhsExtend.getDimension())
+    return failure();
+
+  if (!llvm::hasSingleElement(lhs.getUsers()) ||
+      !llvm::hasSingleElement(rhs.getUsers()))
+    return failure();
+
+  auto elementWise = rewriter.create<Op>(op.getLoc(), lhsExtend.getOperand(),
+                                         rhsExtend.getOperand());
+  rewriter.replaceOpWithNewOp<EnzymeOp>(op, elementWise, lhsExtend.getLhs(),
+                                        lhsExtend.getRhs(),
+                                        lhsExtend.getDimension());
+
+  return success();
+};
+
+template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    return commOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
+  }
+};
+
+template <typename Op> struct WrapElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    return commOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
+  }
+};
+
 LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            Location loc, RewriterBase &rewriter,
                            StaticSlice *lhsSS = nullptr,
