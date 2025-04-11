@@ -1983,10 +1983,6 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       }
 
       SmallVector<Value> multiDimIdxs;
-      if (shardedDims.size() != 1) {
-        llvm::errs() << " TODO, figure out row vs col vs etc order of parition "
-                        "id, picked one for now\n";
-      }
       {
         Value cur = partitionId;
         for (int i = 0; i < localResultType.getShape().size(); i++) {
