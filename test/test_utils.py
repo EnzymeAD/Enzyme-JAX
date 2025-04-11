@@ -1,5 +1,10 @@
 def fix_paths():
     import os
+    import platform
+
+    # skip CUDA setup for MacOS
+    if platform.system() == "Darwin":
+        return
 
     for nm in [
         "NV_LIBCUBLAS_VERSION",
