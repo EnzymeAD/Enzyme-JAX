@@ -15502,6 +15502,12 @@ struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
 
     auto newBaseRotateType = baseOperandType;
 
+    if (auto subOp = baseOperand.getDefiningOp())
+      rewriter.setInsertionPointAfter(subOp);
+    else
+      rewriter.setInsertionPointToStart(
+          cast<BlockArgument>(baseOperand).getOwner());
+
     auto newBaseRotateOp = rewriter.create<enzymexla::RotateOp>(
         loc, newBaseRotateType, baseOperand, targetAmount, targetRotateDim);
     Value newBaseRotateResult = newBaseRotateOp.getResult();
