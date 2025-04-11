@@ -1133,7 +1133,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       amount = outputShape[rotate.getDimension()] - amount;
     assert(amount <= outputShape[rotate.getDimension()] / 2);
 
-    if (amount >= outputShape[rotate.getDimension()] / numDevicesAlongDimension)
+    bool onlyComm = amount == (outputShape[rotate.getDimension()] /
+                               numDevicesAlongDimension);
+    if (amount > outputShape[rotate.getDimension()] / numDevicesAlongDimension)
       return rewriter.notifyMatchFailure(
           rotate, "Amount of shift extends past a shard boundary.");
 
@@ -1222,21 +1224,27 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         innerLimitsPresent[rotate.getDimension()] =
             innerLimitsPresent[rotate.getDimension()] - amount;
       }
-      auto remSlice = rewriter.create<stablehlo::SliceOp>(
-          rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
-          innerStrides);
 
-      std::array<Value, 2> concatArgs;
-      if (leftToRight)
-        concatArgs = {remSlice, commResult};
-      else
-        concatArgs = {commResult, remSlice};
+      if (onlyComm) {
+        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                       commResult->getResults());
+      } else {
+        auto remSlice = rewriter.create<stablehlo::SliceOp>(
+            rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
+            innerStrides);
 
-      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-          rotate.getLoc(), concatArgs, rotate.getDimension());
+        std::array<Value, 2> concatArgs;
+        if (leftToRight)
+          concatArgs = {remSlice, commResult};
+        else
+          concatArgs = {commResult, remSlice};
 
-      rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
-                                     innerConcat->getResults());
+        auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+            rotate.getLoc(), concatArgs, rotate.getDimension());
+
+        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                       innerConcat->getResults());
+      }
     }
 
     if (rightPadding != 0) {
