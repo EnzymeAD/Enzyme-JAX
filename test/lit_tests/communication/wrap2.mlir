@@ -14,18 +14,22 @@ func.func @wrap(%7175 : tensor<3x10x80xf64> {sdy.sharding = #sdy.sharding<@mesh,
 // CHECK-NEXT:      %1 = stablehlo.partition_id : tensor<ui32>
 // CHECK-NEXT:      %2 = stablehlo.remainder %1, %c : tensor<ui32>
 // CHECK-NEXT:      %3 = stablehlo.compare  EQ, %2, %c_0 : (tensor<ui32>, tensor<ui32>) -> tensor<i1>
-// CHECK-NEXT:      %4 = stablehlo.slice %arg1 [0:3, 0:10, 0:1] : (tensor<3x10x40xf64>) -> tensor<3x10x1xf64>
-// CHECK-NEXT{LITERAL}:      %5 = "stablehlo.collective_permute"(%4) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 1]]> : tensor<1x2xi64>}> : (tensor<3x10x1xf64>) -> tensor<3x10x1xf64>
-// CHECK-NEXT:      %6 = stablehlo.slice %arg1 [0:3, 0:10, 39:40] : (tensor<3x10x40xf64>) -> tensor<3x10x1xf64>
-// CHECK-NEXT{LITERAL}:      %7 = "stablehlo.collective_permute"(%6) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[1, 0]]> : tensor<1x2xi64>}> : (tensor<3x10x1xf64>) -> tensor<3x10x1xf64>
-// CHECK-NEXT:      %8 = "stablehlo.if"(%3) ({
-// CHECK-NEXT:        %9 = stablehlo.concatenate %5, %arg1, dim = 2 : (tensor<3x10x1xf64>, tensor<3x10x40xf64>) -> tensor<3x10x41xf64>
-// CHECK-NEXT:        stablehlo.return %9 : tensor<3x10x41xf64>
+// CHECK-NEXT:      %4 = "stablehlo.if"(%3) ({
+// CHECK-NEXT:        %7 = stablehlo.slice %arg1 [0:3, 0:10, 0:1] : (tensor<3x10x40xf64>) -> tensor<3x10x1xf64>
+// CHECK-NEXT:        stablehlo.return %7 : tensor<3x10x1xf64>
 // CHECK-NEXT:      }, {
-// CHECK-NEXT:        %9 = stablehlo.concatenate %arg1, %7, dim = 2 : (tensor<3x10x40xf64>, tensor<3x10x1xf64>) -> tensor<3x10x41xf64>
-// CHECK-NEXT:        stablehlo.return %9 : tensor<3x10x41xf64>
+// CHECK-NEXT:        %7 = stablehlo.slice %arg1 [0:3, 0:10, 39:40] : (tensor<3x10x40xf64>) -> tensor<3x10x1xf64>
+// CHECK-NEXT:        stablehlo.return %7 : tensor<3x10x1xf64>
+// CHECK-NEXT:      }) : (tensor<i1>) -> tensor<3x10x1xf64>
+// CHECK-NEXT{LITERAL}:      %5 = "stablehlo.collective_permute"(%4) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 1], [1, 0]]> : tensor<2x2xi64>}> : (tensor<3x10x1xf64>) -> tensor<3x10x1xf64>
+// CHECK-NEXT:      %6 = "stablehlo.if"(%3) ({
+// CHECK-NEXT:        %7 = stablehlo.concatenate %5, %arg1, dim = 2 : (tensor<3x10x1xf64>, tensor<3x10x40xf64>) -> tensor<3x10x41xf64>
+// CHECK-NEXT:        stablehlo.return %7 : tensor<3x10x41xf64>
+// CHECK-NEXT:      }, {
+// CHECK-NEXT:        %7 = stablehlo.concatenate %arg1, %5, dim = 2 : (tensor<3x10x40xf64>, tensor<3x10x1xf64>) -> tensor<3x10x41xf64>
+// CHECK-NEXT:        stablehlo.return %7 : tensor<3x10x41xf64>
 // CHECK-NEXT:      }) : (tensor<i1>) -> tensor<3x10x41xf64>
-// CHECK-NEXT:      sdy.return %8 : tensor<3x10x41xf64>
+// CHECK-NEXT:      sdy.return %6 : tensor<3x10x41xf64>
 // CHECK-NEXT:    } : (tensor<3x10x80xf64>) -> tensor<3x10x82xf64>
 // CHECK-NEXT:    stablehlo.return %0 : tensor<3x10x82xf64>
 // CHECK-NEXT:  }
