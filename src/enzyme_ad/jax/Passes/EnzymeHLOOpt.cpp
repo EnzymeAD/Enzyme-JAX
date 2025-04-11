@@ -14857,6 +14857,8 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
                                 PatternRewriter &rewriter) const override {
     if (end->template getParentOfType<enzymexla::CommRegionOp>())
       return failure();
+    if (end->template getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     SetVector<Operation *> done;
     done.insert(end);
     SmallVector<Operation *> todo = {end};
