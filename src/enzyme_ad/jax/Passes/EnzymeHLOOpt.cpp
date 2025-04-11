@@ -15427,6 +15427,11 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
     newBaseWrapShape[targetWrapDim] += (targetLhs + targetRhs);
     auto newBaseWrapType = RankedTensorType::get(
         newBaseWrapShape, baseOperandType.getElementType());
+ 
+    if (auto subOp = baseOperand.getDefiningOp())
+      rewriter.setInsertionPointAfter(subOp);
+    else
+      rewriter.setInsertionPointToStart(cast<BlockArgument>(baseOperand).getOwner());
 
     auto newBaseWrapOp = rewriter.create<enzymexla::WrapOp>(
         loc, newBaseWrapType, baseOperand, targetLhs, targetRhs, targetWrapDim);
