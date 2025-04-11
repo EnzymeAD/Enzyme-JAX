@@ -15485,6 +15485,165 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+// transpose(wrap) -> wrap(transpose)
+struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is a wrap operation
+    auto wrapOp = op.getOperand().getDefiningOp<enzymexla::WrapOp>();
+    if (!wrapOp)
+      return failure();
+
+    // Get wrap operation parameters
+    int64_t wrapDim = wrapOp.getDimension();
+    int64_t lhs = wrapOp.getLhs();
+    int64_t rhs = wrapOp.getRhs();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new wrap dimension will be the permuted dimension
+    int64_t newWrapDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == wrapDim) {
+        newWrapDim = i;
+        break;
+      }
+    }
+
+    if (newWrapDim == -1)
+      return failure();
+
+    // First transpose the wrap's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), wrapOp.getOperand(), op.getPermutation());
+
+    // Then create a new wrap operation on the transposed data
+    auto newWrapType = op.getType();
+    auto newWrapOp = rewriter.create<enzymexla::WrapOp>(
+        op.getLoc(), newWrapType, newTranspose.getResult(), lhs, rhs,
+        newWrapDim);
+
+    // Replace the original op with the new wrap operation
+    rewriter.replaceOp(op, newWrapOp);
+    return success();
+  }
+};
+
+// transpose(extend) -> extend(transpose)
+struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is an extend operation
+    auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!extendOp)
+      return failure();
+
+    // Get extend operation parameters
+    int64_t extendDim = extendOp.getDimension();
+    int64_t lhs = extendOp.getLhs();
+    int64_t rhs = extendOp.getRhs();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new extend dimension will be the permuted dimension
+    int64_t newExtendDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == extendDim) {
+        newExtendDim = i;
+        break;
+      }
+    }
+
+    if (newExtendDim == -1)
+      return failure();
+
+    // First transpose the extend's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), extendOp.getOperand(), op.getPermutation());
+
+    // Then create a new extend operation on the transposed data
+    auto newExtendType = op.getType();
+    auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
+        op.getLoc(), newTranspose.getResult(), lhs, rhs, newExtendDim);
+
+    // Replace the original op with the new extend operation
+    rewriter.replaceOp(op, newExtendOp);
+    return success();
+  }
+};
+
+// transpose(rotate) -> rotate(transpose)
+struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is a rotate operation
+    auto rotateOp = op.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!rotateOp)
+      return failure();
+
+    // Get rotate operation parameters
+    int64_t rotateDim = rotateOp.getDimension();
+    int64_t amount = rotateOp.getAmount();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new rotate dimension will be the permuted dimension
+    int64_t newRotateDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == rotateDim) {
+        newRotateDim = i;
+        break;
+      }
+    }
+
+    if (newRotateDim == -1)
+      return failure();
+
+    // First transpose the rotate's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), rotateOp.getOperand(), op.getPermutation());
+
+    // Then create a new rotate operation on the transposed data
+    auto newRotateType = op.getType();
+    auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
+        op.getLoc(), newTranspose.getResult(), amount, newRotateDim);
+
+    // Replace the original op with the new rotate operation
+    rewriter.replaceOp(op, newRotateOp);
+    return success();
+  }
+};
+
 struct ConcatConcatAxisSwap final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -15722,6 +15881,9 @@ struct EnzymeHLOOptPass
 
     patterns.add<SliceExtend>(context);
     patterns.add<SliceWrap>(context);
+    patterns.add<TransposeWrap>(context);
+    patterns.add<TransposeExtend>(context);
+    patterns.add<TransposeRotate>(context);
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
