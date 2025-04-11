@@ -1328,7 +1328,7 @@ struct ConcatToOneDimDUS final
     if (lhs) {
       starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
           outer.getLoc(), iTy,
-          makeAttr(iTy, lhs.getStartIndices()[outer.getDimension()])
+          makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
               .cast<ElementsAttr>());
     }
 
