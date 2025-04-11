@@ -15303,8 +15303,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
           if (inShape.size() != outShape.size() + 1)
             return nullptr;
 
-          for (unsigned inI = 0, outI = 0;
-               inI < inShape.size(), outI < outShape.size();) {
+          for (unsigned inI = 0, outI = 0; inI < inShape.size();) {
+            if (outI == outShape.size())
+              return nullptr;
             if (inShape[inI] == outShape[outI]) {
               inI++;
               outI++;
@@ -15314,6 +15315,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
               } else if (!removedDim) {
                 removedDim = inI;
                 inI++;
+              } else {
+                return nullptr;
               }
             } else {
               return nullptr;
