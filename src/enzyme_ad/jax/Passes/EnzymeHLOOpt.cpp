@@ -15342,6 +15342,149 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  struct CandidateInfo {
+    enzymexla::WrapOp wrapOp;
+    stablehlo::SliceOp sliceOp; // Null if it's a direct wrap user
+  };
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp triggerWrapOp,
+                                PatternRewriter &rewriter) const override {
+
+    Value triggerOperand = triggerWrapOp.getOperand();
+    auto triggerSliceOp = triggerOperand.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!triggerSliceOp) {
+      return failure();
+    }
+
+    Value baseOperand = triggerSliceOp.getOperand();
+
+    // --- Get Target Wrap Parameters ---
+    int64_t targetWrapDim = triggerWrapOp.getDimension();
+    int64_t targetLhs = triggerWrapOp.getLhs();
+    int64_t targetRhs = triggerWrapOp.getRhs();
+    Location loc = triggerWrapOp.getLoc();
+
+    // --- Check Validity of Trigger Slice ---
+    auto baseOperandType = dyn_cast<RankedTensorType>(baseOperand.getType());
+    if (!baseOperandType || !baseOperandType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(triggerWrapOp,
+                                         "Base operand requires static shape");
+    }
+    if (triggerSliceOp.getStartIndices()[targetWrapDim] != 0 ||
+        triggerSliceOp.getLimitIndices()[targetWrapDim] !=
+            baseOperandType.getShape()[targetWrapDim] ||
+        triggerSliceOp.getStrides()[targetWrapDim] != 1) {
+      return rewriter.notifyMatchFailure(
+          triggerWrapOp,
+          "Trigger SliceOp modifies the dimension being wrapped");
+    }
+
+    llvm::SmallVector<CandidateInfo> candidates;
+    candidates.push_back({triggerWrapOp, triggerSliceOp});
+
+    for (auto const &userOp : baseOperand.getUsers()) {
+      // Skip the slice that defines the trigger operand
+      if (userOp == triggerSliceOp.getOperation())
+        continue;
+
+      // Case 1: Direct Wrap
+      if (auto directWrap = dyn_cast<enzymexla::WrapOp>(userOp)) {
+        if (directWrap.getDimension() == targetWrapDim &&
+            directWrap.getLhs() == targetLhs &&
+            directWrap.getRhs() == targetRhs) {
+          candidates.push_back({directWrap, nullptr});
+        }
+      }
+      // Case 2: Wrap of Slice
+      else if (auto sliceUser = dyn_cast<stablehlo::SliceOp>(userOp)) {
+        if (!sliceUser->hasOneUse())
+          continue;
+        auto wrapOfSlice =
+            dyn_cast<enzymexla::WrapOp>(*sliceUser->user_begin());
+        if (!wrapOfSlice)
+          continue;
+
+        if (wrapOfSlice.getDimension() == targetWrapDim &&
+            wrapOfSlice.getLhs() == targetLhs &&
+            wrapOfSlice.getRhs() == targetRhs) {
+          // Check validity: sliceUser must not modify targetWrapDim
+          if (sliceUser.getStartIndices()[targetWrapDim] == 0 &&
+              sliceUser.getLimitIndices()[targetWrapDim] ==
+                  baseOperandType.getShape()[targetWrapDim] &&
+              sliceUser.getStrides()[targetWrapDim] == 1) {
+            candidates.push_back({wrapOfSlice, sliceUser});
+          }
+        }
+      }
+    }
+
+    if (candidates.size() <= 1) {
+      return rewriter.notifyMatchFailure(
+          triggerWrapOp,
+          "Rewrite condition not met (only found the trigger candidate)");
+    }
+
+    SmallVector<int64_t> newBaseWrapShape =
+        llvm::to_vector(baseOperandType.getShape());
+    newBaseWrapShape[targetWrapDim] += (targetLhs + targetRhs);
+    auto newBaseWrapType = RankedTensorType::get(
+        newBaseWrapShape, baseOperandType.getElementType());
+
+    if (auto subOp = baseOperand.getDefiningOp())
+      rewriter.setInsertionPointAfter(subOp);
+    else
+      rewriter.setInsertionPointToStart(
+          cast<BlockArgument>(baseOperand).getOwner());
+
+    auto newBaseWrapOp = rewriter.create<enzymexla::WrapOp>(
+        loc, newBaseWrapType, baseOperand, targetLhs, targetRhs, targetWrapDim);
+    Value newBaseWrapResult = newBaseWrapOp.getResult();
+    RankedTensorType newBaseWrapResultType =
+        newBaseWrapResult.getType().cast<RankedTensorType>();
+
+    for (const auto &candidate : candidates) {
+      enzymexla::WrapOp oldWrapOp = candidate.wrapOp;
+      stablehlo::SliceOp oldSliceOp = candidate.sliceOp; // Might be null
+
+      if (!oldSliceOp) {
+        // Direct Wrap - Replace directly
+        if (oldWrapOp.getResult().getType() == newBaseWrapResult.getType()) {
+          rewriter.replaceOp(oldWrapOp, newBaseWrapResult);
+        } else {
+          auto castOp = rewriter.create<tensor::CastOp>(
+              loc, oldWrapOp.getResult().getType(), newBaseWrapResult);
+          rewriter.replaceOp(oldWrapOp, castOp);
+        }
+      } else {
+        SmallVector<int64_t> newSliceStarts =
+            llvm::to_vector(oldSliceOp.getStartIndices());
+        SmallVector<int64_t> newSliceLimits =
+            llvm::to_vector(oldSliceOp.getLimitIndices());
+        SmallVector<int64_t> newSliceStrides =
+            llvm::to_vector(oldSliceOp.getStrides());
+
+        newSliceStarts[targetWrapDim] = 0;
+        newSliceLimits[targetWrapDim] =
+            newBaseWrapResultType.getDimSize(targetWrapDim);
+        newSliceStrides[targetWrapDim] = 1;
+
+        auto newSlice = rewriter.create<stablehlo::SliceOp>(
+            oldWrapOp.getLoc(),
+            oldWrapOp.getResult()
+                .getType(), // Use original wrap op's result type
+            newBaseWrapResult, newSliceStarts, newSliceLimits, newSliceStrides);
+        rewriter.replaceAllOpUsesWith(oldWrapOp, newSlice.getResult());
+      }
+    }
+
+    return success();
+  }
+};
+
 struct ConcatConcatAxisSwap final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -15577,7 +15720,8 @@ struct EnzymeHLOOptPass
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
 
-    patterns.add<SliceExtend>(context); // Add the new SliceExtend pattern
+    patterns.add<SliceExtend>(context);
+    patterns.add<SliceWrap>(context);
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
