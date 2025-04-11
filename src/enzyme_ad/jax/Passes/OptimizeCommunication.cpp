@@ -2267,8 +2267,8 @@ struct OptimizeCommunicationPass
 
     if (permute_like_raise > 0)
       patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
-                   ExtendCommOptimize, ConcatTwoOperandsCommOptimize>(context,
-                                       PatternBenefit(permute_like_raise));
+                   ExtendCommOptimize, ConcatTwoOperandsCommOptimize>(
+          context, PatternBenefit(permute_like_raise));
 
     if (pad_like_raise > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(pad_like_raise));
