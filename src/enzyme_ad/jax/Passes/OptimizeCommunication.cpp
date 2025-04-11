@@ -937,9 +937,9 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return failure();
     }
 
-    if (paddedBoundarySize >= numDevicesAlongDimension) {
-      return failure();
-    }
+    if (paddedBoundarySize > wrapOperandShape[wrapDimension] / numDevicesAlongDimension)
+      return rewriter.notifyMatchFailure(
+          wrap, "Amount of shift extends past a shard boundary.");
 
     SmallVector<int64_t> localRetShape = llvm::to_vector(wrapShape);
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(wrapShape);
@@ -1084,9 +1084,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       return failure();
     }
 
-    if (paddedBoundarySize >= numDevicesAlongDimension) {
-      return failure();
-    }
+    if (paddedBoundarySize > extendOperandShape[extendDimension] /
+                                        numDevicesAlongDimension)
+      return rewriter.notifyMatchFailure(
+          extend, "Amount of shift extends past a shard boundary.");
 
     SmallVector<int64_t> localRetShape = llvm::to_vector(extendShape);
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(extendShape);
