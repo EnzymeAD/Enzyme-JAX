@@ -1511,6 +1511,14 @@ def ExtendElementwise : EnzymeHLOPatternOp<
                   "ExtendElementwise<stablehlo::DivOp>"];
 }
 
+def WrapElementwise : EnzymeHLOPatternOp<
+  "wrap_elementwise"> {
+  let patterns = ["WrapElementwise<stablehlo::AddOp>",
+                  "WrapElementwise<stablehlo::SubtractOp>",
+                  "WrapElementwise<stablehlo::MulOp>",
+                  "WrapElementwise<stablehlo::DivOp>"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];

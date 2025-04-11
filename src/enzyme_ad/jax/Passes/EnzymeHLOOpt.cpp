@@ -8458,8 +8458,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -14976,36 +14975,50 @@ struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+template <typename Op, typename EnzymeOp>
+LogicalResult commOpElementWise(Op op, PatternRewriter &rewriter) {
+  auto lhs = op.getLhs();
+  auto rhs = op.getRhs();
+
+  auto lhsExtend = lhs.template getDefiningOp<EnzymeOp>();
+  auto rhsExtend = rhs.template getDefiningOp<EnzymeOp>();
+
+  if (!lhsExtend || !rhsExtend)
+    return failure();
+
+  if (lhsExtend.getLhs() != rhsExtend.getLhs() ||
+      lhsExtend.getRhs() != rhsExtend.getRhs() ||
+      lhsExtend.getDimension() != rhsExtend.getDimension())
+    return failure();
+
+  if (!llvm::hasSingleElement(lhs.getUsers()) ||
+      !llvm::hasSingleElement(rhs.getUsers()))
+    return failure();
+
+  auto elementWise = rewriter.create<Op>(op.getLoc(), lhsExtend.getOperand(),
+                                         rhsExtend.getOperand());
+  rewriter.replaceOpWithNewOp<EnzymeOp>(op, elementWise, lhsExtend.getLhs(),
+                                        lhsExtend.getRhs(),
+                                        lhsExtend.getDimension());
+
+  return success();
+};
+
 template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
+    return commOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
+  }
+};
 
-    auto lhsExtend = lhs.template getDefiningOp<enzymexla::ExtendOp>();
-    auto rhsExtend = rhs.template getDefiningOp<enzymexla::ExtendOp>();
+template <typename Op> struct WrapElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
 
-    if (!lhsExtend || !rhsExtend)
-      return failure();
-
-    if (lhsExtend.getLhs() != rhsExtend.getLhs() ||
-        lhsExtend.getRhs() != rhsExtend.getRhs() ||
-        lhsExtend.getDimension() != rhsExtend.getDimension())
-      return failure();
-
-    if (!llvm::hasSingleElement(lhs.getUsers()) ||
-        !llvm::hasSingleElement(rhs.getUsers()))
-      return failure();
-
-    auto elementWise = rewriter.create<Op>(op.getLoc(), lhsExtend.getOperand(),
-                                           rhsExtend.getOperand());
-    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
-        op, elementWise, lhsExtend.getLhs(), lhsExtend.getRhs(),
-        lhsExtend.getDimension());
-
-    return success();
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    return commOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
   }
 };
 
