@@ -1338,8 +1338,20 @@ struct ConcatTwoOperandsCommOptimize
       mainOperand = leftOperand;
     }
 
-    int64_t diff = cast<RankedTensorType>(extendOperand.getType())
-                       .getShape()[concatDimension] *
+    auto extra = concatShape[concatDimension] % numDevicesAlongDimension;
+    int64_t rightPadding = 0;
+    int64_t leftPadding = 0;
+    if (extra != 0) {
+      if (concatLeft) {
+        leftPadding = numDevicesAlongDimension - extra;
+      } else {
+        rightPadding = numDevicesAlongDimension - extra;
+      }
+    }
+
+    int64_t diff = (cast<RankedTensorType>(extendOperand.getType())
+                        .getShape()[concatDimension] +
+                    leftPadding + rightPadding) *
                    (numDevicesAlongDimension - 1);
 
     SmallVector<int64_t> padLow(ndims, 0);
@@ -1347,8 +1359,10 @@ struct ConcatTwoOperandsCommOptimize
     SmallVector<int64_t> padInner(ndims, 0);
     if (concatLeft) {
       padHigh[concatDimension] = diff;
+      padLow[concatDimension] = leftPadding;
     } else {
       padLow[concatDimension] = diff;
+      padHigh[concatDimension] = rightPadding;
     }
 
     auto reshardedExtendOp = rewriter.create<stablehlo::PadOp>(
@@ -1362,12 +1376,14 @@ struct ConcatTwoOperandsCommOptimize
         cast<RankedTensorType>(reshardedExtendOp.getType()).getShape());
     SmallVector<int64_t> mainOperandShape = llvm::to_vector(
         cast<RankedTensorType>(mainOperand.getType()).getShape());
-    SmallVector<int64_t> localRetShape = llvm::to_vector(concatShape);
+    SmallVector<int64_t> localRetShape(ndims, 0);
+    SmallVector<int64_t> manualOpRetShape = llvm::to_vector(concatShape);
+    manualOpRetShape[concatDimension] += leftPadding + rightPadding;
 
     for (int i = 0; i < ndims; i++) {
       localExtendShape[i] = div_ceil(localExtendShape[i], ndevices[i]);
       mainOperandShape[i] = div_ceil(mainOperandShape[i], ndevices[i]);
-      localRetShape[i] = div_ceil(localRetShape[i], ndevices[i]);
+      localRetShape[i] = div_ceil(manualOpRetShape[i], ndevices[i]);
     }
 
     mlir::Type inTys[2]{RankedTensorType::get(localExtendShape, elemType),
@@ -1376,7 +1392,7 @@ struct ConcatTwoOperandsCommOptimize
                                mainOperand.getLoc()};
 
     Value manualOps[] = {reshardedExtendOp, mainOperand};
-    Type manualTypes[] = {RankedTensorType::get(concatShape, elemType)};
+    Type manualTypes[] = {RankedTensorType::get(manualOpRetShape, elemType)};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         concat.getLoc(), manualTypes, manualOps, inShardings, outShardings,
         manualAxes);
@@ -1516,7 +1532,28 @@ struct ConcatTwoOperandsCommOptimize
       rewriter.create<sdy::ReturnOp>(concat.getLoc(), slicedPart->getResults());
     }
 
-    rewriter.replaceOp(concat, manual);
+    if (leftPadding != 0 || rightPadding != 0) {
+      SmallVector<int64_t> sliceStartIndices(ndims, 0);
+      SmallVector<int64_t> sliceLimits = llvm::to_vector(
+          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
+      SmallVector<int64_t> innerStrides(ndims, 1);
+      if (leftPadding > 0) {
+        sliceStartIndices[concatDimension] = leftPadding;
+      }
+      if (rightPadding > 0) {
+        sliceLimits[concatDimension] -= rightPadding;
+      }
+
+      rewriter.setInsertionPointAfter(manual);
+      auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
+          concat.getLoc(), manual->getResults()[0], sliceStartIndices,
+          sliceLimits, innerStrides);
+
+      rewriter.replaceOp(concat, sliceRemovePadding);
+    } else {
+      rewriter.replaceOp(concat, manual);
+    }
+
     return success();
   }
 };
