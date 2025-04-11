@@ -15129,6 +15129,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
               } else if (!removedDim) {
                 removedDim = inI;
                 inI++;
+              } else {
+                return nullptr;
               }
             } else {
               return nullptr;
