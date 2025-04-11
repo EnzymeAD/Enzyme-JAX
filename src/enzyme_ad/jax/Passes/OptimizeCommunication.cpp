@@ -1111,12 +1111,15 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     assert(amount <= outputShape[rotate.getDimension()] / 2);
 
     if (amount >= outputShape[rotate.getDimension()] / numDevicesAlongDimension)
-      return rewriter.notifyMatchFailure(rotate, "Amount of shift extends past a shard boundary.");
+      return rewriter.notifyMatchFailure(
+          rotate, "Amount of shift extends past a shard boundary.");
 
     int32_t rightPadding = 0;
     Value inputArg = rotate.getOperand();
     if (outputShape[rotate.getDimension()] % numDevicesAlongDimension != 0) {
-      return rewriter.notifyMatchFailure(rotate, "Rotation dimension is not divisible by the number of devices");
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "Rotation dimension is not divisible by the number of devices");
       // TODO
       int32_t extra =
           ((outputShape[rotate.getDimension()] / numDevicesAlongDimension) +
