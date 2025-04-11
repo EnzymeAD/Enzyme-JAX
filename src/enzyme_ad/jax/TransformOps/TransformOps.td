@@ -1498,6 +1498,27 @@ def RecognizeExtend : EnzymeHLOPatternOp<
   let patterns = ["RecognizeExtend"];
 }
 
+def ExtendSplat : EnzymeHLOPatternOp<
+  "extend_splat"> {
+  let patterns = ["ExtendSplat"];
+}
+
+def ExtendElementwise : EnzymeHLOPatternOp<
+  "extend_elementwise"> {
+  let patterns = ["ExtendElementwise<stablehlo::AddOp>",
+                  "ExtendElementwise<stablehlo::SubtractOp>",
+                  "ExtendElementwise<stablehlo::MulOp>",
+                  "ExtendElementwise<stablehlo::DivOp>"];
+}
+
+def WrapElementwise : EnzymeHLOPatternOp<
+  "wrap_elementwise"> {
+  let patterns = ["WrapElementwise<stablehlo::AddOp>",
+                  "WrapElementwise<stablehlo::SubtractOp>",
+                  "WrapElementwise<stablehlo::MulOp>",
+                  "WrapElementwise<stablehlo::DivOp>"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
@@ -1521,6 +1542,21 @@ def ReshapeExtend : EnzymeHLOPatternOp<
 def ReshapeRotate : EnzymeHLOPatternOp<
     "reshape_rotate"> {
   let patterns = ["ReshapeRotate"];
+}
+
+def TransposeWrap : EnzymeHLOPatternOp<
+    "transpose_wrap"> {
+  let patterns = ["TransposeWrap"];
+}
+
+def TransposeExtend : EnzymeHLOPatternOp<
+    "transpose_extend"> {
+  let patterns = ["TransposeExtend"];
+}
+
+def TransposeRotate : EnzymeHLOPatternOp<
+    "transpose_rotate"> {
+  let patterns = ["TransposeRotate"];
 }
 
 def LowerExtend : EnzymeHLOPatternOp<

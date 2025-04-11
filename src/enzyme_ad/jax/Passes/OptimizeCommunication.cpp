@@ -602,6 +602,18 @@ struct PeriodicConcatSimplify
     auto concatShape = concat.getType().getShape();
     auto concatDim = concat.getDimension();
 
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+    auto ndevices = getShardingDevices(concatSharding, concatDim, concat);
+    int64_t numDevicesAlongDimension = ndevices[concatDim];
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     auto allOperands = llvm::to_vector(concat.getOperands());
 
     auto leftSliceOp = allOperands[0].getDefiningOp<stablehlo::SliceOp>();
@@ -684,10 +696,6 @@ struct PeriodicConcatSimplify
       return failure();
     }
 
-    auto concatSharding = mlir::sdy::getSharding(concat);
-    if (!concatSharding)
-      return failure();
-
     TensorShardingAttr op_shardings[] = {concatSharding};
     TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr in_shardings =
@@ -701,9 +709,6 @@ struct PeriodicConcatSimplify
 
     updateManualComputationAxesShape(concatSharding, rewriter, concat,
                                      manual_axes, localShape, concatDim);
-
-    auto ndevices = getShardingDevices(concatSharding, concatDim, concat);
-    int64_t numDevicesAlongDimension = ndevices[concatDim];
 
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
@@ -840,6 +845,12 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
     int64_t numDevicesAlongDimension = ndevices[wrapDimension];
 
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
     }
@@ -970,6 +981,12 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     auto ndevices = getShardingDevices(extendSharding, extendDimension, extend);
     int64_t numDevicesAlongDimension = ndevices[extendDimension];
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
 
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
@@ -1102,6 +1119,12 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     int64_t numDevicesAlongDimension = getNumDevicesAlongDimension(
         rotateSharding, rotate.getDimension(), rotate);
 
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
 
     int32_t amount = rotate.getAmount();
@@ -1110,7 +1133,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       amount = outputShape[rotate.getDimension()] - amount;
     assert(amount <= outputShape[rotate.getDimension()] / 2);
 
-    if (amount >= outputShape[rotate.getDimension()] / numDevicesAlongDimension)
+    bool onlyComm = amount == (outputShape[rotate.getDimension()] /
+                               numDevicesAlongDimension);
+    if (amount > outputShape[rotate.getDimension()] / numDevicesAlongDimension)
       return rewriter.notifyMatchFailure(
           rotate, "Amount of shift extends past a shard boundary.");
 
@@ -1199,21 +1224,27 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         innerLimitsPresent[rotate.getDimension()] =
             innerLimitsPresent[rotate.getDimension()] - amount;
       }
-      auto remSlice = rewriter.create<stablehlo::SliceOp>(
-          rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
-          innerStrides);
 
-      std::array<Value, 2> concatArgs;
-      if (leftToRight)
-        concatArgs = {remSlice, commResult};
-      else
-        concatArgs = {commResult, remSlice};
+      if (onlyComm) {
+        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                       commResult->getResults());
+      } else {
+        auto remSlice = rewriter.create<stablehlo::SliceOp>(
+            rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
+            innerStrides);
 
-      auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-          rotate.getLoc(), concatArgs, rotate.getDimension());
+        std::array<Value, 2> concatArgs;
+        if (leftToRight)
+          concatArgs = {remSlice, commResult};
+        else
+          concatArgs = {commResult, remSlice};
 
-      rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
-                                     innerConcat->getResults());
+        auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
+            rotate.getLoc(), concatArgs, rotate.getDimension());
+
+        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
+                                       innerConcat->getResults());
+      }
     }
 
     if (rightPadding != 0) {
