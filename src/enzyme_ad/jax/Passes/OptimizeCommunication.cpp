@@ -602,6 +602,18 @@ struct PeriodicConcatSimplify
     auto concatShape = concat.getType().getShape();
     auto concatDim = concat.getDimension();
 
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+    auto ndevices = getShardingDevices(concatSharding, concatDim, concat);
+    int64_t numDevicesAlongDimension = ndevices[concatDim];
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     auto allOperands = llvm::to_vector(concat.getOperands());
 
     auto leftSliceOp = allOperands[0].getDefiningOp<stablehlo::SliceOp>();
@@ -684,10 +696,6 @@ struct PeriodicConcatSimplify
       return failure();
     }
 
-    auto concatSharding = mlir::sdy::getSharding(concat);
-    if (!concatSharding)
-      return failure();
-
     TensorShardingAttr op_shardings[] = {concatSharding};
     TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr in_shardings =
@@ -701,9 +709,6 @@ struct PeriodicConcatSimplify
 
     updateManualComputationAxesShape(concatSharding, rewriter, concat,
                                      manual_axes, localShape, concatDim);
-
-    auto ndevices = getShardingDevices(concatSharding, concatDim, concat);
-    int64_t numDevicesAlongDimension = ndevices[concatDim];
 
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
@@ -840,6 +845,12 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
     int64_t numDevicesAlongDimension = ndevices[wrapDimension];
 
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
     }
@@ -971,6 +982,12 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     auto ndevices = getShardingDevices(extendSharding, extendDimension, extend);
     int64_t numDevicesAlongDimension = ndevices[extendDimension];
 
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
     }
@@ -1101,6 +1118,12 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     int64_t numDevicesAlongDimension = getNumDevicesAlongDimension(
         rotateSharding, rotate.getDimension(), rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
 
     SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
 
