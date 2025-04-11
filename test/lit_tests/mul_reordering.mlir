@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=associative_common_mul_op_reordering" --transform-interpreter --enzyme-hlo-remove-transform
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=associative_common_mul_op_reordering" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
 module {
   func.func @main(%366: tensor<128x1008x1008xf64>, %367: tensor<128x1008x1008xf64>, %369: tensor<128x1008x1008xf64>) -> tensor<128x1008x1008xf64> {
