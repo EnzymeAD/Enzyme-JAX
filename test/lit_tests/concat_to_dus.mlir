@@ -10,6 +10,7 @@ module {
 
 // CHECK:  func.func @main(%arg0: tensor<4x8x80xf64>, %arg1: tensor<1x8x80xf64>) -> tensor<4x8x80xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.dynamic_update_slice %arg0, %arg1, %c, %c, %c : (tensor<4x8x80xf64>, tensor<1x8x80xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<4x8x80xf64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<3> : tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.dynamic_update_slice %arg0, %arg1, %c_0, %c, %c : (tensor<4x8x80xf64>, tensor<1x8x80xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<4x8x80xf64>
 // CHECK-NEXT:    return %0 : tensor<4x8x80xf64>
 // CHECK-NEXT:  }
