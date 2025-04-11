@@ -1084,7 +1084,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     auto rotateSharding = mlir::sdy::getSharding(rotate);
     if (!rotateSharding)
-      return failure();
+      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
 
     TensorShardingAttr opShardings[] = {rotateSharding};
     TensorShardingPerValueAttr inShardings =
@@ -1105,9 +1105,22 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     SmallVector<int64_t> outputShape = llvm::to_vector(rotateShape);
 
     int32_t amount = rotate.getAmount();
+    bool leftToRight = amount <= outputShape[rotate.getDimension()] / 2;
+    if (!leftToRight)
+      amount = outputShape[rotate.getDimension()] - amount;
+    assert(amount <= outputShape[rotate.getDimension()] / 2);
+
+    if (amount >= outputShape[rotate.getDimension()] / numDevicesAlongDimension)
+      return rewriter.notifyMatchFailure(
+          rotate, "Amount of shift extends past a shard boundary.");
+
     int32_t rightPadding = 0;
     Value inputArg = rotate.getOperand();
     if (outputShape[rotate.getDimension()] % numDevicesAlongDimension != 0) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "Rotation dimension is not divisible by the number of devices");
+      // TODO
       int32_t extra =
           ((outputShape[rotate.getDimension()] / numDevicesAlongDimension) +
            1) *
@@ -1127,6 +1140,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
                                                  rewriter.getZeroAttr(elType)),
           padLow, padHigh, padInner);
+    }
+    if (amount > localShape[rotate.getDimension()]) {
+      return rewriter.notifyMatchFailure(rotate, "No local tensor remaining!");
     }
 
     SmallVector<int64_t> innerStrides(ndims, 1);
@@ -1152,12 +1168,17 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       SmallVector<int64_t> innerStarts(ndims, 0);
       SmallVector<int64_t> innerLimits = llvm::to_vector(
           cast<RankedTensorType>(innerArg.getType()).getShape());
-      innerLimits[rotate.getDimension()] = amount;
+      if (leftToRight) {
+        innerLimits[rotate.getDimension()] = amount;
+      } else {
+        innerStarts[rotate.getDimension()] =
+            innerLimits[rotate.getDimension()] - amount;
+      }
       auto commSlice = rewriter.create<stablehlo::SliceOp>(
           rotate.getLoc(), innerArg, innerStarts, innerLimits, innerStrides);
 
       auto sourceTargetIdxs = generateShiftPairs(
-          rotateSharding, rotate.getDimension(), rotate, true, false);
+          rotateSharding, rotate.getDimension(), rotate, leftToRight, false);
 
       auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
           rotate.getLoc(), commSlice,
@@ -1172,12 +1193,22 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       SmallVector<int64_t> innerStartsPresent(ndims, 0);
       SmallVector<int64_t> innerLimitsPresent = llvm::to_vector(
           cast<RankedTensorType>(innerArg.getType()).getShape());
-      innerStartsPresent[rotate.getDimension()] = amount;
+      if (leftToRight) {
+        innerStartsPresent[rotate.getDimension()] = amount;
+      } else {
+        innerLimitsPresent[rotate.getDimension()] =
+            innerLimitsPresent[rotate.getDimension()] - amount;
+      }
       auto remSlice = rewriter.create<stablehlo::SliceOp>(
           rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
           innerStrides);
 
-      Value concatArgs[] = {remSlice, commResult};
+      std::array<Value, 2> concatArgs;
+      if (leftToRight)
+        concatArgs = {remSlice, commResult};
+      else
+        concatArgs = {commResult, remSlice};
+
       auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
           rotate.getLoc(), concatArgs, rotate.getDimension());
 

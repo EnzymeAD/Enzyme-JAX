@@ -134,6 +134,7 @@ def AffineScopeOp : EnzymeXLA_Op<"scope", [
 }
 
 def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
+  let summary = "Takes `amount` from the start of the tensor in `dimension` and appends it to the end";
   let arguments = (ins
     HLO_Tensor:$operand,
     SI32Attr:$amount,
