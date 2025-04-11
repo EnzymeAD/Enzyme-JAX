@@ -34,6 +34,7 @@ module {
       func.return %res : tensor<1x24x8xf64>
     }
 }
+
 // CHECK-LABEL:   module {
 // CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<1x8x80xf64>, %[[VAL_1:.*]]: tensor<1x24x96xf64>) -> tensor<1x24x8xf64> {
 // CHECK:             %[[VAL_2:.*]] = stablehlo.slice %[[VAL_1]] [0:1, 0:7, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
@@ -44,6 +45,7 @@ module {
 // CHECK:             return %[[VAL_6]] : tensor<1x24x8xf64>
 // CHECK:           }
 // CHECK:         }
+
 
 module {
   func.func @main(%in: tensor<20x24x80xf64>) -> (tensor<10x82xf64>) {
@@ -58,6 +60,7 @@ module {
       func.return %res : tensor<10x82xf64>
     }
 }
+
 
 // CHECK-LABEL:   module {
 // CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
@@ -76,9 +79,11 @@ func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6
   return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
 }
 
-// CHECK:  func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
-// CHECK-NEXT:    %1 = stablehlo.convert %0 : tensor<2xi1>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %1, %1, dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
-// CHECK-NEXT:    return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
-// CHECK-NEXT:  }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
+// CHECK:           %[[VAL_1:.*]] = stablehlo.transpose %[[VAL_0]], dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
+// CHECK:           %[[VAL_2:.*]] = stablehlo.convert %[[VAL_1]] : tensor<2xi1>
+// CHECK:           %[[VAL_3:.*]] = stablehlo.concatenate %[[VAL_2]], %[[VAL_2]], %[[VAL_2]], dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
+// CHECK:           return %[[VAL_3]], %[[VAL_0]] : tensor<6xi1>, tensor<2xi1>
+// CHECK:         }
+
