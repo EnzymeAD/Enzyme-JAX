@@ -1333,7 +1333,7 @@ struct ConcatToOneDimDUS final
     Value innerConcat = newOps[0];
     if (newOps.size() != 1) {
       auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
-                                  outer.getLoc(), newOps, outer.getDimension());
+          outer.getLoc(), newOps, outer.getDimension());
       innerConcat = nConcat;
       if (shard) {
         sdy::setShardings(nConcat, shard);
@@ -1363,7 +1363,6 @@ struct ConcatToOneDimDUS final
   }
 };
 
-
 struct ConcatToOneDimDUSSlice final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1392,7 +1391,8 @@ struct ConcatToOneDimDUSSlice final
         lhs = lhsSlice;
     }
 
-    if (!lhs) return failure();
+    if (!lhs)
+      return failure();
 
     stablehlo::SliceOp rhs = nullptr;
     if (auto rhsSlice =
@@ -1404,7 +1404,8 @@ struct ConcatToOneDimDUSSlice final
           break;
         }
         if (i == outer.getDimension()) {
-          if (lhs.getStartIndices()[i] + outer.getType().getShape()[i] != rhsSlice.getLimitIndices()[i]) {
+          if (lhs.getStartIndices()[i] + outer.getType().getShape()[i] !=
+              rhsSlice.getLimitIndices()[i]) {
             legal = false;
             break;
           }
@@ -1426,9 +1427,12 @@ struct ConcatToOneDimDUSSlice final
         rhs = rhsSlice;
     }
 
-    if (!rhs) return failure();
-    if (!hasSlice) return failure();
-    if (rhs.getOperand() != lhs.getOperand()) return failure();
+    if (!rhs)
+      return failure();
+    if (!hasSlice)
+      return failure();
+    if (rhs.getOperand() != lhs.getOperand())
+      return failure();
 
     auto shard = sdy::getShardingPerValue(outer);
 
@@ -1441,7 +1445,7 @@ struct ConcatToOneDimDUSSlice final
     Value innerConcat = newOps[0];
     if (newOps.size() != 1) {
       auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
-                                  outer.getLoc(), newOps, outer.getDimension());
+          outer.getLoc(), newOps, outer.getDimension());
       innerConcat = nConcat;
       if (shard) {
         sdy::setShardings(nConcat, shard);
@@ -1449,7 +1453,9 @@ struct ConcatToOneDimDUSSlice final
     }
 
     auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
-    auto operand = rewriter.create<stablehlo::SliceOp>(lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(), rhs.getLimitIndices(), lhs.getStrides());
+    auto operand = rewriter.create<stablehlo::SliceOp>(
+        lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
+        rhs.getLimitIndices(), lhs.getStrides());
     if (shard) {
       sdy::setShardings(operand, shard);
     }
