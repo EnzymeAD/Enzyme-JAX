@@ -15118,7 +15118,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
             return nullptr;
 
           for (unsigned inI = 0, outI = 0;
-               inI < inShape.size(), outI < outShape.size();) {
+               inI < inShape.size(); ) {
+	    if (outI == outShape.size()) return nullptr; 
             if (inShape[inI] == outShape[outI]) {
               inI++;
               outI++;
