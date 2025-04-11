@@ -56,10 +56,10 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
 // CHECK-NEXT:    %15 = stablehlo.reduce(%12 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<9x20x45xf64>, tensor<f64>) -> tensor<20x45xf64>
 // CHECK-NEXT:    %16 = stablehlo.reduce(%14 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<9x20x45xf64>, tensor<f64>) -> tensor<20x45xf64>
 // CHECK-NEXT:    %17 = arith.addf %5, %15 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
-// CHECK-NEXT:    %18 = arith.addf %8, %16 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
-// CHECK-NEXT:    %19 = stablehlo.reshape %18 : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
-// CHECK-NEXT:    %20 = stablehlo.dynamic_update_slice %arg1, %19, %c_0, %c, %c : (tensor<1x35x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x35x59xf64>
-// CHECK-NEXT:    %21 = stablehlo.reshape %17 : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
-// CHECK-NEXT:    %22 = stablehlo.dynamic_update_slice %arg0, %21, %c_0, %c, %c : (tensor<1x34x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x34x59xf64>
-// CHECK-NEXT:    return %22, %20, %arg2, %arg3, %arg4 : tensor<1x34x59xf64>, tensor<1x35x59xf64>, tensor<24xf64>, tensor<24x34x59xf64>, tensor<24x35x59xf64>
+// CHECK-NEXT:    %[[i21:.+]] = stablehlo.reshape %17 : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
+// CHECK-NEXT:    %[[i18:.+]] = arith.addf %8, %16 {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
+// CHECK-NEXT:    %[[i19:.+]] = stablehlo.reshape %[[i18]] : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
+// CHECK-NEXT:    %[[i20:.+]] = stablehlo.dynamic_update_slice %arg1, %[[i19]], %c_0, %c, %c : (tensor<1x35x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x35x59xf64>
+// CHECK-NEXT:    %22 = stablehlo.dynamic_update_slice %arg0, %[[i21]], %c_0, %c, %c : (tensor<1x34x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x34x59xf64>
+// CHECK-NEXT:    return %22, %[[i20]], %arg2, %arg3, %arg4 : tensor<1x34x59xf64>, tensor<1x35x59xf64>, tensor<24xf64>, tensor<24x34x59xf64>, tensor<24x35x59xf64>
 // CHECK-NEXT:  }

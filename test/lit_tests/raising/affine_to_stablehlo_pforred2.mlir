@@ -119,11 +119,10 @@ func.func private @"##call__Z29gpu__compute_barotropic_mode_16CompilerMetadataI1
 // CHECK-NEXT:    %50 = stablehlo.reduce(%44 init: %cst_4) applies stablehlo.add across dimensions = [2] : (tensor<96x192x19xf64>, tensor<f64>) -> tensor<96x192xf64>
 // CHECK-NEXT:    %51 = stablehlo.reduce(%49 init: %cst_4) applies stablehlo.add across dimensions = [2] : (tensor<96x192x19xf64>, tensor<f64>) -> tensor<96x192xf64>
 // CHECK-NEXT:    %52 = arith.addf %33, %50 {fastmathFlags = #llvm.fastmath<none>} : tensor<96x192xf64>
-// CHECK-NEXT:    %53 = arith.addf %37, %51 {fastmathFlags = #llvm.fastmath<none>} : tensor<96x192xf64>
-// CHECK-NEXT:    %54 = stablehlo.reshape %53 : (tensor<96x192xf64>) -> tensor<1x96x192xf64>
-// CHECK-NEXT:    %55 = stablehlo.dynamic_update_slice %arg1, %54, %c_3, %c_2, %c : (tensor<1x140x206xf64>, tensor<1x96x192xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x140x206xf64>
-// CHECK-NEXT:    %56 = stablehlo.reshape %52 : (tensor<96x192xf64>) -> tensor<1x96x192xf64>
-// CHECK-NEXT:    %57 = stablehlo.dynamic_update_slice %arg0, %56, %c_3, %c_2, %c : (tensor<1x140x206xf64>, tensor<1x96x192xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x140x206xf64>
-// CHECK-NEXT:    return %57, %55, %arg2, %arg3, %arg4, %arg5, %arg6 : tensor<1x140x206xf64>, tensor<1x140x206xf64>, tensor<35xf64>, tensor<34xf64>, tensor<1x110x206xf64>, tensor<34x110x206xf64>, tensor<34x110x206xf64>
+// CHECK-NEXT:    %53 = stablehlo.reshape %52 : (tensor<96x192xf64>) -> tensor<1x96x192xf64>
+// CHECK-NEXT:    %54 = arith.addf %37, %51 {fastmathFlags = #llvm.fastmath<none>} : tensor<96x192xf64>
+// CHECK-NEXT:    %55 = stablehlo.reshape %54 : (tensor<96x192xf64>) -> tensor<1x96x192xf64>
+// CHECK-NEXT:    %56 = stablehlo.dynamic_update_slice %arg1, %55, %c_3, %c_2, %c : (tensor<1x140x206xf64>, tensor<1x96x192xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x140x206xf64>
+// CHECK-NEXT:    %57 = stablehlo.dynamic_update_slice %arg0, %53, %c_3, %c_2, %c : (tensor<1x140x206xf64>, tensor<1x96x192xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x140x206xf64>
+// CHECK-NEXT:    return %57, %56, %arg2, %arg3, %arg4, %arg5, %arg6 : tensor<1x140x206xf64>, tensor<1x140x206xf64>, tensor<35xf64>, tensor<34xf64>, tensor<1x110x206xf64>, tensor<34x110x206xf64>, tensor<34x110x206xf64>
 // CHECK-NEXT:  }
-
