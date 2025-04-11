@@ -15504,7 +15504,7 @@ struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     int64_t wrapDim = wrapOp.getDimension();
     int64_t lhs = wrapOp.getLhs();
     int64_t rhs = wrapOp.getRhs();
-    
+
     // Get permutation array
     SmallVector<int64_t> permutation;
     for (auto val : op.getPermutation()) {
@@ -15530,8 +15530,8 @@ struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // Then create a new wrap operation on the transposed data
     auto newWrapType = op.getType();
     auto newWrapOp = rewriter.create<enzymexla::WrapOp>(
-        op.getLoc(), newWrapType, newTranspose.getResult(), 
-        lhs, rhs, newWrapDim);
+        op.getLoc(), newWrapType, newTranspose.getResult(), lhs, rhs,
+        newWrapDim);
 
     // Replace the original op with the new wrap operation
     rewriter.replaceOp(op, newWrapOp);
@@ -15558,7 +15558,7 @@ struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     int64_t extendDim = extendOp.getDimension();
     int64_t lhs = extendOp.getLhs();
     int64_t rhs = extendOp.getRhs();
-    
+
     // Get permutation array
     SmallVector<int64_t> permutation;
     for (auto val : op.getPermutation()) {
@@ -15584,8 +15584,7 @@ struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // Then create a new extend operation on the transposed data
     auto newExtendType = op.getType();
     auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
-        op.getLoc(), newTranspose.getResult(), 
-        lhs, rhs, newExtendDim);
+        op.getLoc(), newTranspose.getResult(), lhs, rhs, newExtendDim);
 
     // Replace the original op with the new extend operation
     rewriter.replaceOp(op, newExtendOp);
@@ -15611,7 +15610,7 @@ struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // Get rotate operation parameters
     int64_t rotateDim = rotateOp.getDimension();
     int64_t amount = rotateOp.getAmount();
-    
+
     // Get permutation array
     SmallVector<int64_t> permutation;
     for (auto val : op.getPermutation()) {
@@ -15637,8 +15636,7 @@ struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // Then create a new rotate operation on the transposed data
     auto newRotateType = op.getType();
     auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
-        op.getLoc(), newTranspose.getResult(), 
-        amount, newRotateDim);
+        op.getLoc(), newTranspose.getResult(), amount, newRotateDim);
 
     // Apply shardings if present in the original ops
     if (auto shard = sdy::getShardingPerValue(op)) {
