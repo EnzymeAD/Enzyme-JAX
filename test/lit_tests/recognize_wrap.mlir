@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s | FileCheck %s
 
 module @"reactant_loop!" {
 
@@ -11,12 +11,13 @@ module @"reactant_loop!" {
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<1x24x96xf64>) -> tensor<1x8x96xf64> {
-// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:1, 0:8, 8:88] : (tensor<1x24x96xf64>) -> tensor<1x8x80xf64>
-// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 8 : i64, rhs = 8 : i64}> : (tensor<1x8x80xf64>) -> tensor<1x8x96xf64>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %1, dim = 2 : (tensor<1x8x96xf64>) -> tensor<1x8x96xf64>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<1x8x96xf64>
-// CHECK-NEXT:  }
+// CHECK-LABEL:   module @"reactant_loop!" {
+// CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<1x24x96xf64>) -> tensor<1x8x96xf64> {
+// CHECK:             %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [0:1, 0:8, 8:88] : (tensor<1x24x96xf64>) -> tensor<1x8x80xf64>
+// CHECK:             %[[VAL_2:.*]] = "enzymexla.wrap"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 8 : i64, rhs = 8 : i64}> : (tensor<1x8x80xf64>) -> tensor<1x8x96xf64>
+// CHECK:             stablehlo.return %[[VAL_2]] : tensor<1x8x96xf64>
+// CHECK:           }
+// CHECK:         }
 
 module {
   func.func @main(%in: tensor<20x24x80xf64>) -> (tensor<10x82xf64>) {
@@ -31,10 +32,11 @@ module {
     }
 }
 
-// CHECK:    func.func @main(%arg0: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
-// CHECK-NEXT:      %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
-// CHECK-NEXT:      %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
-// CHECK-NEXT:      %2 = stablehlo.reshape %1 : (tensor<1x10x82xf64>) -> tensor<10x82xf64>
-// CHECK-NEXT:      %3 = stablehlo.concatenate %2, dim = 1 : (tensor<10x82xf64>) -> tensor<10x82xf64>
-// CHECK-NEXT:      return %3 : tensor<10x82xf64>
-// CHECK-NEXT:    }
+// CHECK-LABEL:   module {
+// CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
+// CHECK:             %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// CHECK:             %[[VAL_2:.*]] = "enzymexla.wrap"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
+// CHECK:             %[[VAL_3:.*]] = stablehlo.reshape %[[VAL_2]] : (tensor<1x10x82xf64>) -> tensor<10x82xf64>
+// CHECK:             return %[[VAL_3]] : tensor<10x82xf64>
+// CHECK:           }
+// CHECK:         }

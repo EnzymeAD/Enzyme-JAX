@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_dus;dynamic_slice_to_static;slice_of_dynamic_update" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_dus;dynamic_slice_to_static;slice_of_dynamic_update" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s | FileCheck %s
 
 module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg31: tensor<24x38x62xf32>, %arg2 : tensor<i64>, %og : tensor<24x38x62xf32>) -> (tensor<24x38x62xf32>) {

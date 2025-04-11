@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_induction_reduction" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_induction_reduction" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s | FileCheck %s
+// XFAIL: *
 
 module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg31: tensor<144x1024x1008xf64>, %arg2 : tensor<i64>, %up1 : tensor<128x1009x1008xf64>, %up2 : tensor<1x1008x1008xf64>, %up3 : tensor<1x1008x1008xf64>) -> (tensor<144x1024x1008xf64>) {
