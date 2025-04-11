@@ -42,11 +42,6 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
-int div_ceil(int a, int b) {
-  std::div_t d = std::div(a, b);
-  return d.quot + (d.rem != 0);
-}
-
 SmallVector<int64_t, 6>
 computeMeshStrides(const SmallVector<int64_t, 6> &shape) {
   int rank = shape.size();
@@ -1381,9 +1376,9 @@ struct ConcatTwoOperandsCommOptimize
     manualOpRetShape[concatDimension] += leftPadding + rightPadding;
 
     for (int i = 0; i < ndims; i++) {
-      localExtendShape[i] = div_ceil(localExtendShape[i], ndevices[i]);
-      mainOperandShape[i] = div_ceil(mainOperandShape[i], ndevices[i]);
-      localRetShape[i] = div_ceil(manualOpRetShape[i], ndevices[i]);
+      localExtendShape[i] = localExtendShape[i] / ndevices[i];
+      mainOperandShape[i] = mainOperandShape[i] / ndevices[i];
+      localRetShape[i] = manualOpRetShape[i] / ndevices[i];
     }
 
     mlir::Type inTys[2]{RankedTensorType::get(localExtendShape, elemType),
