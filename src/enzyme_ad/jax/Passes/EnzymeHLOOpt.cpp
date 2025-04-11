@@ -15638,11 +15638,6 @@ struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
         op.getLoc(), newTranspose.getResult(), amount, newRotateDim);
 
-    // Apply shardings if present in the original ops
-    if (auto shard = sdy::getShardingPerValue(op)) {
-      sdy::setShardings(newRotateOp, shard);
-    }
-
     // Replace the original op with the new rotate operation
     rewriter.replaceOp(op, newRotateOp);
     return success();
