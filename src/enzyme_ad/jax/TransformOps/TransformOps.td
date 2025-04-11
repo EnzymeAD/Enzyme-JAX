@@ -1508,6 +1508,21 @@ def SliceWrap : EnzymeHLOPatternOp<
   let patterns = ["SliceWrap"];
 }
 
+def ReshapeWrap : EnzymeHLOPatternOp<
+    "reshape_wrap"> {
+  let patterns = ["ReshapeWrap"];
+}
+
+def ReshapeExtend : EnzymeHLOPatternOp<
+    "reshape_extend"> {
+  let patterns = ["ReshapeExtend"];
+}
+
+def ReshapeRotate : EnzymeHLOPatternOp<
+    "reshape_rotate"> {
+  let patterns = ["ReshapeRotate"];
+}
+
 def LowerExtend : EnzymeHLOPatternOp<
     "lower_extend"> {
   let patterns = ["LowerExtend"];
