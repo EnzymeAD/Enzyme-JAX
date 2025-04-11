@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_induction_reduction" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_induction_reduction" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s | FileCheck %s
 
 module {
   func.func @"myloop!"(%arg0: tensor<6xf64>, %arg1: tensor<6xf64>, %arg2: tensor<6xf64>, %arg3: tensor<6xf64>, %arg4: tensor<6xf64>, %arg5: tensor<6xf64>, %arg6: tensor<6xf64>, %arg7: tensor<6xf64>, %arg8: tensor<6x6x7xf64>, %arg9: tensor<i64>) -> (tensor<i64>, tensor<i64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6xf64>, tensor<6x6x7xf64>) {

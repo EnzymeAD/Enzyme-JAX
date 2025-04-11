@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect %s | FileCheck %s
 
 module @"reactant_loop!" {
 
@@ -10,8 +10,9 @@ module @"reactant_loop!" {
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<1x8x80xf64>) -> tensor<1x8x96xf64> {
-// CHECK-NEXT:    %0 = "enzymexla.wrap"(%arg0) <{dimension = 2 : i64, lhs = 8 : i64, rhs = 8 : i64}> : (tensor<1x8x80xf64>) -> tensor<1x8x96xf64>
-// CHECK-NEXT:    %1 = stablehlo.concatenate %0, dim = 2 : (tensor<1x8x96xf64>) -> tensor<1x8x96xf64>
-// CHECK-NEXT:    stablehlo.return %1 : tensor<1x8x96xf64>
-// CHECK-NEXT:  }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<1x8x80xf64>) -> tensor<1x8x96xf64> {
+// CHECK:           %[[VAL_1:.*]] = "enzymexla.wrap"(%[[VAL_0]]) <{dimension = 2 : i64, lhs = 8 : i64, rhs = 8 : i64}> : (tensor<1x8x80xf64>) -> tensor<1x8x96xf64>
+// CHECK:           stablehlo.return %[[VAL_1]] : tensor<1x8x96xf64>
+// CHECK:         }
+

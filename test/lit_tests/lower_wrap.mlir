@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=lower_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect --enzyme-hlo-opt %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=lower_wrap" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect --enzyme-hlo-opt %s | FileCheck %s
 
 module @"reactant_loop!" {
   func.func @main(%arg0: tensor<1x24x96xf64>) -> tensor<1x8x96xf64> {

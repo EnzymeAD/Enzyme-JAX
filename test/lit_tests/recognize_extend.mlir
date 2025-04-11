@@ -1,6 +1,5 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_extend" --transform-interpreter --enzyme-hlo-remove-transform %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_extend" --transform-interpreter --enzyme-hlo-remove-transform %s --split-input-file | FileCheck %s
 
-module {
   func.func @main(%6595: tensor<20x24x80xf64>) -> (tensor<1x10x82xf64>) {
       %A = stablehlo.slice %6595 [11:12, 7:17, 0:1] : (tensor<20x24x80xf64>) -> tensor<1x10x1xf64>
       %B = stablehlo.slice %6595 [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
@@ -8,17 +7,15 @@ module {
       %RES = stablehlo.concatenate %A, %B, %C, dim = 2 : (tensor<1x10x1xf64>, tensor<1x10x80xf64>, tensor<1x10x1xf64>) -> tensor<1x10x82xf64>
       func.return %RES :  tensor<1x10x82xf64>
   }
-}
-
-// CHECK-LABEL:   module {
-// CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<20x24x80xf64>) -> tensor<1x10x82xf64> {
-// CHECK:             %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
-// CHECK:             %[[VAL_2:.*]] = "enzymexla.extend"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
-// CHECK:             return %[[VAL_2]] : tensor<1x10x82xf64>
-// CHECK:           }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> tensor<1x10x82xf64> {
+// CHECK:           %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// CHECK:           %[[VAL_2:.*]] = "enzymexla.extend"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
+// CHECK:           return %[[VAL_2]] : tensor<1x10x82xf64>
 // CHECK:         }
 
-module {
+// -----
+
   func.func @main(%in1: tensor<1x8x80xf64>, %in2: tensor<1x24x96xf64>) -> (tensor<1x24x8xf64>) {
 
       %a = stablehlo.slice %in2 [0:1, 0:7, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
@@ -33,19 +30,20 @@ module {
 
       func.return %res : tensor<1x24x8xf64>
     }
-}
-// CHECK-LABEL:   module {
-// CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<1x8x80xf64>, %[[VAL_1:.*]]: tensor<1x24x96xf64>) -> tensor<1x24x8xf64> {
-// CHECK:             %[[VAL_2:.*]] = stablehlo.slice %[[VAL_1]] [0:1, 0:7, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
-// CHECK:             %[[VAL_3:.*]] = stablehlo.slice %[[VAL_0]] [0:1, 0:8, 72:80] : (tensor<1x8x80xf64>) -> tensor<1x8x8xf64>
-// CHECK:             %[[VAL_4:.*]] = stablehlo.slice %[[VAL_1]] [0:1, 17:24, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
-// CHECK:             %[[VAL_5:.*]] = "enzymexla.extend"(%[[VAL_3]]) <{dimension = 1 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x8x8xf64>) -> tensor<1x10x8xf64>
-// CHECK:             %[[VAL_6:.*]] = stablehlo.concatenate %[[VAL_2]], %[[VAL_5]], %[[VAL_4]], dim = 1 : (tensor<1x7x8xf64>, tensor<1x10x8xf64>, tensor<1x7x8xf64>) -> tensor<1x24x8xf64>
-// CHECK:             return %[[VAL_6]] : tensor<1x24x8xf64>
-// CHECK:           }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<1x8x80xf64>,
+// CHECK-SAME:                    %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<1x24x96xf64>) -> tensor<1x24x8xf64> {
+// CHECK:           %[[VAL_2:.*]] = stablehlo.slice %[[VAL_1]] [0:1, 0:7, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
+// CHECK:           %[[VAL_3:.*]] = stablehlo.slice %[[VAL_0]] [0:1, 0:8, 72:80] : (tensor<1x8x80xf64>) -> tensor<1x8x8xf64>
+// CHECK:           %[[VAL_4:.*]] = stablehlo.slice %[[VAL_1]] [0:1, 17:24, 80:88] : (tensor<1x24x96xf64>) -> tensor<1x7x8xf64>
+// CHECK:           %[[VAL_5:.*]] = "enzymexla.extend"(%[[VAL_3]]) <{dimension = 1 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x8x8xf64>) -> tensor<1x10x8xf64>
+// CHECK:           %[[VAL_6:.*]] = stablehlo.concatenate %[[VAL_2]], %[[VAL_5]], %[[VAL_4]], dim = 1 : (tensor<1x7x8xf64>, tensor<1x10x8xf64>, tensor<1x7x8xf64>) -> tensor<1x24x8xf64>
+// CHECK:           return %[[VAL_6]] : tensor<1x24x8xf64>
 // CHECK:         }
 
-module {
+
+// -----
+
   func.func @main(%in: tensor<20x24x80xf64>) -> (tensor<10x82xf64>) {
       %a = stablehlo.slice %in [11:12, 7:17, 79:80] : (tensor<20x24x80xf64>) -> tensor<1x10x1xf64>
       %b = stablehlo.slice %in [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
@@ -57,17 +55,17 @@ module {
       // %res = stablehlo.concatenate %ar, %br, %cr, dim = 1 : (tensor<10x1xf64>, tensor<10x80xf64>, tensor<10x1xf64>) -> tensor<10x82xf64>
       func.return %res : tensor<10x82xf64>
     }
-}
 
-// CHECK-LABEL:   module {
-// CHECK:           func.func @main(%[[VAL_0:.*]]: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
-// CHECK:             %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
-// CHECK:             %[[VAL_2:.*]] = "enzymexla.extend"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
-// CHECK:             %[[VAL_3:.*]] = stablehlo.reshape %[[VAL_2]] : (tensor<1x10x82xf64>) -> tensor<10x82xf64>
-// CHECK:             return %[[VAL_3]] : tensor<10x82xf64>
-// CHECK:           }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> tensor<10x82xf64> {
+// CHECK:           %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [11:12, 7:17, 0:80] : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// CHECK:           %[[VAL_2:.*]] = "enzymexla.extend"(%[[VAL_1]]) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
+// CHECK:           %[[VAL_3:.*]] = stablehlo.reshape %[[VAL_2]] : (tensor<1x10x82xf64>) -> tensor<10x82xf64>
+// CHECK:           return %[[VAL_3]] : tensor<10x82xf64>
 // CHECK:         }
 
+
+// -----
 
 func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
   %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
@@ -75,10 +73,11 @@ func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6
   %2 = stablehlo.concatenate %1, %1, %1, dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
   return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
 }
+// CHECK-LABEL:   func.func @main(
+// CHECK-SAME:                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
+// CHECK:           %[[VAL_1:.*]] = stablehlo.transpose %[[VAL_0]], dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
+// CHECK:           %[[VAL_2:.*]] = stablehlo.convert %[[VAL_1]] : tensor<2xi1>
+// CHECK:           %[[VAL_3:.*]] = stablehlo.concatenate %[[VAL_2]], %[[VAL_2]], %[[VAL_2]], dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
+// CHECK:           return %[[VAL_3]], %[[VAL_0]] : tensor<6xi1>, tensor<2xi1>
+// CHECK:         }
 
-// CHECK:  func.func @main(%arg0: tensor<2xi1> {tf.aliasing_output = 1 : i32}) -> (tensor<6xi1>, tensor<2xi1>) {
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2xi1>
-// CHECK-NEXT:    %1 = stablehlo.convert %0 : tensor<2xi1>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %1, %1, dim = 0 : (tensor<2xi1>, tensor<2xi1>, tensor<2xi1>) -> tensor<6xi1>
-// CHECK-NEXT:    return %2, %arg0 : tensor<6xi1>, tensor<2xi1>
-// CHECK-NEXT:  }

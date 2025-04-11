@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dus_to_concat" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect --split-input-file %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dus_to_concat" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect --split-input-file %s | FileCheck %s
 
 // CHECK-LABEL:           func.func @dus_concat_test2
 // CHECK-SAME:                    (%[[VAL_0:.*]]: tensor<144x1024x1024xf64>, %[[VAL_1:.*]]: tensor<128x1008x1008xf64>) -> tensor<144x1024x1024xf64> {
