@@ -1303,202 +1303,483 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
 
+    // Cannot apply dus rewrite on existing manual computation.
+    if (dus->getParentOfType<sdy::ManualComputationOp>()) return failure();
+
     auto sharding = mlir::sdy::getSharding(dus);
     if (!sharding)
       return rewriter.notifyMatchFailure(dus, "No sharding found.");
 
-    if (sharding != mlir::sdy::getSharding(dus.getOperand())) {
+    /*
+    {
+      mlir::SplatElementsAttr splat;
+      matchPattern(dus.getOperand(), m_Constant(&splat));
+    if (sharding != mlir::sdy::getSharding(dus.getOperand()) && !splat) {
       return rewriter.notifyMatchFailure(dus, "DUS mismatch sharding"); 
     }
-
-    if (sharding != mlir::sdy::getSharding(dus.getUpdate())) {
-      return rewriter.notifyMatchFailure(dus, "DUS mismatch sharding"); 
     }
 
+    {
+      mlir::SplatElementsAttr splat;
+      matchPattern(dus.getUpdate(), m_Constant(&splat));
+      if (sharding != mlir::sdy::getSharding(dus.getUpdate()) && !splat) {
+
+        return rewriter.notifyMatchFailure(dus, "DUS mismatch sharding"); 
+      }
+    }
+    */
+
+    size_t ndims = dus.getType().getShape().size();
+    auto elementType = dus.getType().getElementType();
+    auto loc = dus.getLoc();
     SmallVector<int64_t> lowPads;
     SmallVector<int64_t> highPads;
-    SmallVector<int64_t> interior(dus.getType().getShape().size(), 0);
+    SmallVector<int64_t> interior(ndims, 0);
+    SmallVector<int64_t> updatedShardedDims;
+    SmallVector<int64_t> shardedDims;
     SmallVector<int64_t> updatedDims;
+
     SmallVector<StringAttr> manualAxes;
 
 
-    for (int i=0; i<dus.getType().getShape().size(); i++) {
-      llvm::APInt val;
-      if (!matchPattern(dus.getStartIndices()[i], m_ConstantInt(&val)))
-        return failure();
+    auto UT = cast<RankedTensorType>(dus.getUpdate().getType());
+
+    for (int i=0; i<ndims; i++) {
+      DenseIntElementsAttr curr;
+      APInt val;
+      if (auto cst = dus.getStartIndices()[i].getDefiningOp<sdy::ConstantOp>()) {
+        val = *cast<DenseIntElementsAttr>(cst.getValue()).begin();
+      } else if (matchPattern(dus.getStartIndices()[i], m_Constant(&curr))) {
+        val = (*curr.begin());
+      } else {
+        return rewriter.notifyMatchFailure(dus, "Non-constant DUS start index");
+      }
 
       if (val.isNegative())
-        return failure();
+        return rewriter.notifyMatchFailure(dus, "Negative DUS start index");
 
       auto v2 = val.getZExtValue();
-      if (v2 + cast<RankedTensorType>(dus.getOperand().getType()).getShape()[i] > dus.getType().getShape()[i]);
-        return failure();
-
-      lowPads.push_back(v2);
-      highPads.push_back(dus.getType().getShape()[i] - v2 - cast<RankedTensorType>(dus.getOperand().getType()).getShape()[i]);
-
+      if (v2 + UT.getShape()[i] > dus.getType().getShape()[i])
+        return rewriter.notifyMatchFailure(dus, "Too large DUS start index");
 
       auto meshAxes = sharding.getDimShardings()[i].getAxes();
       if (meshAxes.size() != 1) return failure();
       SmallVector<StringAttr> axis = {rewriter.getStringAttr(meshAxes[0].getName())};
       auto localType = getLocalType(dus.getType(), sharding, axis, dus);
 
-      // Make sure that the operand can only update the outer edge (aka the update doesn't spill into two shards)
-      if (localType.getShape()[i] < lowPads.back()) {
-        return failure();
-      }
-      if (localType.getShape()[i] < highPads.back()) {
-        return failure();
-      }
+      auto rightPad = dus.getType().getShape()[i] - v2 - UT.getShape()[i];
 
       bool updated = false;
-      if (val != 0 || val + cast<RankedTensorType>(dus.getOperand().getType()).getShape()[i] != dus.getType().getShape()[i]) {
+      if (UT.getShape()[i] != dus.getType().getShape()[i]) {
         updated = true;
       }
-      if (updated) {
-        // Don't support an update on a non-sharded axis.
-        if (localType.getShape()[i] == dus.getType().getShape()[i]) {
-          return failure();
-        }
-        updatedDims.push_back(i);
+
+      if (localType.getShape()[i] != dus.getType().getShape()[i]) {
+        shardedDims.push_back(i);
         manualAxes.push_back(axis[0]);
+      }
+
+      lowPads.push_back(v2);
+      highPads.push_back(rightPad);
+      if (updated) {
+        updatedDims.push_back(i);
+        if (localType.getShape()[i] != dus.getType().getShape()[i]) {
+          updatedShardedDims.push_back(i);
+        }
       }
     }
 
-    auto localType = getLocalType(dus.getType(), sharding, manualAxes, dus);
+    auto globalResultType = dus.getType();
+    auto localResultType = getLocalType(globalResultType, sharding, manualAxes, dus);
 
     if (updatedDims.size() == 0) {
       rewriter.replaceOp(dus, dus.getUpdate());
       return success();
     }
-
-    if (updatedDims.size() > 3) {
+    if (shardedDims.size() == 0) {
       return failure();
     }
 
-    auto PT = RankedTensorType::get({}, dus.getType().getElementType());
-    auto pad2 = rewriter.create<stablehlo::PadOp>(dus.getLoc(), dus.getUpdate(), rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), PT, rewriter.getZeroAttr(PT).cast<ElementsAttr>()), lowPads, highPads, interior);
-    sdy::setShardings(pad2, sdy::getShardingPerValue(dus));
+    auto PT = RankedTensorType::get({}, elementType);
 
-    TensorShardingAttr shardings[] = { sharding };
+    Value pad2 = nullptr;
+    SplatElementsAttr splat = nullptr;
 
-    mlir::Type inTyps[] = { pad2.getType(), dus.getType() };
-    mlir::Location inLocs[] = {dus.getLoc(), dus.getLoc()};
+    if (!matchPattern(dus.getUpdate(), m_Constant(&splat))) {
+      if (auto cst = dus.getUpdate().getDefiningOp<sdy::ConstantOp>()) {
+        if (auto sp = dyn_cast<SplatElementsAttr>(cst.getValue())) {
+          splat = sp;
+        }
+      }
+    }
+    if (!splat) {
+      auto padOp = rewriter.create<stablehlo::PadOp>(loc, dus.getUpdate(), rewriter.create<stablehlo::ConstantOp>(loc, PT, rewriter.getZeroAttr(PT).cast<ElementsAttr>()), lowPads, highPads, interior);
+      sdy::setShardings(padOp, sdy::getShardingPerValue(dus));
+      pad2 = padOp;
+    }
 
-    Value manualOps[] = {dus.getOperand(), pad2};
-    Type manualTypes[] = {dus.getType()};
+    RankedTensorType globalUnPaddedUpdateType = cast<RankedTensorType>(dus.getUpdate().getType());
+    RankedTensorType globalPaddedUpdateType = nullptr;
+    {
+      SmallVector<int64_t> padShape = llvm::to_vector(globalUnPaddedUpdateType.getShape());
+      for (int i=0; i<padShape.size(); i++) {
+        padShape[i] += lowPads[i] + highPads[i];
+      }
+      globalPaddedUpdateType = RankedTensorType::get(padShape, elementType);
+    }
+
+    auto localPaddedUpdateType = getLocalType(globalPaddedUpdateType, sharding, manualAxes, dus);
+
+    SmallVector<TensorShardingAttr> in_shardings_array = { mlir::sdy::getSharding(dus.getOperand()) };
+    if (pad2) in_shardings_array.push_back(mlir::sdy::getSharding(dus));
+
+    TensorShardingAttr out_shardings_array[] = { mlir::sdy::getSharding(dus) };
+
+    SmallVector<mlir::Type> inTyps = { localResultType } ;
+    if (pad2) inTyps.push_back(localPaddedUpdateType);
+
+    SmallVector<mlir::Location> inLocs(inTyps.size(), loc);
+
+    SmallVector <Value> manualOps = {dus.getOperand()};
+    if (pad2) manualOps.push_back(pad2);
+    Type manualTypes[] = {globalResultType};
 
     TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(dus.getContext(), shardings);
+        TensorShardingPerValueAttr::get(dus.getContext(), in_shardings_array);
+    TensorShardingPerValueAttr out_shardings =
+        TensorShardingPerValueAttr::get(dus.getContext(), out_shardings_array);
 
     auto manual = rewriter.create<sdy::ManualComputationOp>(
-        dus.getLoc(), manualTypes, manualOps, in_shardings, in_shardings,
+        loc, manualTypes, manualOps, in_shardings, out_shardings,
         manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
                                       manual.getBody().begin(), inTyps, inLocs);
 
-      auto innerUpdate = blk->getArgument(0);
-      auto innerOperand = blk->getArgument(1);
 
-      auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(dus.getLoc());
+      auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(loc);
+
+      DenseMap<std::pair<int64_t, Type>, Value> constantCache;
+      auto getOrCreateConstant = [&](int64_t v, Type TT = nullptr) -> Value {
+        if (!TT) TT = partitionId.getType();
+        auto key = std::make_pair(v, TT);
+        auto found = constantCache.find(key);
+        if (found != constantCache.end()) return found->second;
+        auto cst = rewriter.create<stablehlo::ConstantOp>(loc, TT, makeAttr(TT, v ).cast<ElementsAttr>() );
+        constantCache[key] = cst;
+        return cst;
+      };
+
+      auto innerOperand = blk->getArgument(0);
+      Value innerUpdate;
+      if (pad2) {
+        innerUpdate = blk->getArgument(1);
+      } else {
+        innerUpdate = rewriter.create<stablehlo::ConstantOp>(loc, localPaddedUpdateType, splat.resizeSplat(localPaddedUpdateType));
+      }
+
+      Value innerUpdateVal = innerUpdate;
+      if (updatedDims.size() != updatedShardedDims.size()) {
+        auto zero = getOrCreateConstant(0);
+        SmallVector<Value> newStarts(ndims, zero);
+        for (int i=0; i<ndims; i++) {
+          if (llvm::is_contained(updatedShardedDims, i)) continue;
+          newStarts[i] = getOrCreateConstant(lowPads[i]);
+        }
+        innerUpdateVal = rewriter.create<stablehlo::DynamicUpdateSliceOp>(loc, innerOperand, innerUpdate, newStarts);
+      }
 
       SmallVector<Value> multiDimIdxs;
-      if (updatedDims.size() != 1) {
+      if (shardedDims.size() != 1) {
         llvm::errs() << " TODO, figure out row vs col vs etc order of parition id, picked one for now\n";
       }
       {
         Value cur = partitionId;
-        for (int i=0; i<updatedDims.size()-1; i++) {
-          auto cst = rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), partitionId.getType(), makeAttr(partitionId.getType(), localType.getShape()[updatedDims[i]] ).cast<ElementsAttr>() );
-          multiDimIdxs.push_back(rewriter.create<stablehlo::RemOp>(dus.getLoc(), cur, cst));
-          cur = rewriter.create<stablehlo::DivOp>(dus.getLoc(), cur, cst);
+        for (int i=0; i<localResultType.getShape().size(); i++) {
+          auto globalSz = globalResultType.getShape()[i];
+          auto localSz = localResultType.getShape()[i];
+          if (globalSz == localSz) {
+            multiDimIdxs.push_back(getOrCreateConstant(0));
+            continue;
+          }
+          if (i == localResultType.getShape().size() - 1) {
+            multiDimIdxs.push_back(cur);
+          } else {
+            auto nDevices = globalSz / localSz;
+            auto cst = getOrCreateConstant(nDevices);
+            multiDimIdxs.push_back(rewriter.create<stablehlo::RemOp>(loc, cur, cst));
+            cur = rewriter.create<stablehlo::DivOp>(loc, cur, cst);
+          }
         }
-        multiDimIdxs.push_back(cur);
       }
 
       SmallVector<Value> leftSides;
       SmallVector<Value> rightSides;
-      for (auto &&[i, idx] : llvm::enumerate(updatedDims)) {
-        leftSides.push_back(
-          rewriter.create<stablehlo::CompareOp>(dus.getLoc(), multiDimIdxs[i],
 
-            rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), partitionId.getType(), makeAttr(partitionId.getType(), lowPads[i]).cast<ElementsAttr>()
-            ),
-            stablehlo::ComparisonDirection::EQ
-        ) );
-      }
-      for (auto &&[i, idx] : llvm::enumerate(updatedDims)) {
-        rightSides.push_back(
-          rewriter.create<stablehlo::CompareOp>(dus.getLoc(),
-            multiDimIdxs[i],
-              rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), partitionId.getType(), makeAttr(partitionId.getType(), dus.getType().getShape()[i]/ localType.getShape()[idx] - 1).cast<ElementsAttr>()
+      auto i1VTy = RankedTensorType::get({}, rewriter.getI1Type());
 
-              ),             stablehlo::ComparisonDirection::EQ
-
-              ) );
-      }
-
-      auto i1VTy = leftSides[0].getType();
-      auto falseV = rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), i1VTy, makeAttr(i1VTy, false).cast<ElementsAttr>());
-
-      Value onAnyBoundary = falseV;
-
-      for (int i=0; i<updatedDims.size(); i++) {
-        onAnyBoundary = rewriter.create<stablehlo::OrOp>(dus.getLoc(), onAnyBoundary, leftSides[i]);
-        onAnyBoundary = rewriter.create<stablehlo::OrOp>(dus.getLoc(), onAnyBoundary, rightSides[i]);
+      for (auto &&[i, idx] : llvm::enumerate(updatedShardedDims)) {
+        Value leftSide;
+        if (lowPads[idx] == 0) {
+          // No pad, we are never needing to check combining update/operand and can just use update
+          leftSide = nullptr;
+        } else if (lowPads[idx] % localResultType.getShape()[idx] == 0) {
+          // Evenly divisible pad, for example pad 20, inner 50, right 20, local shape is 10
+          // partition 0, and 1 would need the fused update (aka if idx < pad / lowerShape)
+          leftSide = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+              getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
+              stablehlo::ComparisonDirection::LT
+          );
+        } else {
+          // Non-evenly divisible pad, for example pad 18, inner 54, right 18, local shape is 10
+          // partition 0, and 1 would need the fused update (aka if idx <= pad / lowerShape)
+          leftSide = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+              getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
+              stablehlo::ComparisonDirection::LE
+          );
+        }
+        
+        leftSides.push_back(leftSide);
       }
 
+      for (auto &&[i, idx] : llvm::enumerate(updatedShardedDims)) {
+        Value rightSide;
+        int64_t startIdx = lowPads[idx] + globalUnPaddedUpdateType.getShape()[idx];
+        if (highPads[idx] == 0) {
+          // No pad, we are never needing to check combining update/operand and can just use update
+          rightSide = nullptr;
+        } else if (startIdx % localResultType.getShape()[idx] == 0) {
+          // Evenly divisible startIdx, for example pad 20, inner 50, right X, local shape is 10
+          // partition 7, 8, ... would need the fused update (aka if idx >= startIdx / lowerShape)
+          rightSide = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+              getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
+              stablehlo::ComparisonDirection::GE
+          );
+        } else {
+          // Non-evenly divisible startIdx, for example pad 20, inner 48, right X, local shape is 10
+          // partition 6, 7, 8, ... would need the fused update (aka if idx >= startIdx / lowerShape)
+          // partition 6 only needs from 58-60, partitoin 7 uses fully
+          rightSide = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+              getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
+              stablehlo::ComparisonDirection::GE
+          );
+        }
+        
+        rightSides.push_back(rightSide);
+      }
 
-      if (updatedDims.size() == 1 && false) {
+
+      Value mayContainOperandData = nullptr;
+      for (int i=0; i<updatedShardedDims.size(); i++) {
+        if (leftSides[i]) {
+          if (mayContainOperandData)
+            mayContainOperandData = rewriter.create<stablehlo::OrOp>(loc, mayContainOperandData, leftSides[i]);
+          else
+            mayContainOperandData = leftSides[i];
+        }
+        if (rightSides[i]) {
+          if (mayContainOperandData)
+            mayContainOperandData = rewriter.create<stablehlo::OrOp>(loc, mayContainOperandData, rightSides[i]);
+          else
+            mayContainOperandData = leftSides[i];
+        }
+      }
+
+      if (updatedShardedDims.size() == 0) {
+        rewriter.create<sdy::ReturnOp>(loc, innerUpdateVal);
+      } else {
+      if (updatedShardedDims.size() == 1 && false) {
         // TODO performance optimization, specialize for one dim update, can incorporate from above.
       } else {
         // if (fully in update) {
-        auto if0 = rewriter.create<stablehlo::IfOp>(dus.getLoc(), manualTypes, onAnyBoundary);
-        rewriter.create<stablehlo::ReturnOp>(dus.getLoc(), if0->getResults());
+        assert(mayContainOperandData);
+        Type localTypes[] = { localResultType };
+        auto if0 = rewriter.create<stablehlo::IfOp>(loc, localTypes, mayContainOperandData);
+        rewriter.create<sdy::ReturnOp>(loc, if0->getResults());
 
         {
           rewriter.createBlock(&if0.getTrueBranch(), if0.getTrueBranch().begin());
-          Value idx = nullptr;
-          SmallVector<int64_t> toBC;
-          SmallVector<int64_t> dimSizes;
-          auto R1 = RankedTensorType::get(localType.getShape(), rewriter.getI1Type());
-          for (int i=0; i<updatedDims.size(); i++) {
-            auto TT = RankedTensorType::get(localType.getShape(), rewriter.getI32Type());
-            auto iota = rewriter.create<stablehlo::IotaOp>(dus.getLoc(), R1, updatedDims[i]);
-            auto lhs = rewriter.create<stablehlo::CompareOp>(dus.getLoc(), iota, 
-                rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), TT, makeAttr(TT, lowPads[updatedDims[i]]).cast<ElementsAttr>()),
-                stablehlo::ComparisonDirection::LT
-                );
-            auto rhs = rewriter.create<stablehlo::CompareOp>(dus.getLoc(), iota, 
-                rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), TT, makeAttr(TT, localType.getShape()[updatedDims[i]] - highPads[updatedDims[i]]).cast<ElementsAttr>()),
-                stablehlo::ComparisonDirection::GE
-                );
-            auto inUpdate = rewriter.create<stablehlo::SelectOp>(
-              dus.getLoc(),
-              leftSides[i],
-              lhs,
-              rhs
-            );
-            toBC.push_back(i);
-            dimSizes.push_back(localType.getShape()[updatedDims[i]]);
-            if (idx) {
-              idx = rewriter.create<stablehlo::OrOp>(dus.getLoc(), idx, inUpdate);
+          Value multiIdx = nullptr;
+          for (int i=0; i<updatedShardedDims.size(); i++) {
+            auto TT = RankedTensorType::get(localResultType.getShape(), rewriter.getIntegerType(32, false));
+            auto TTBool = RankedTensorType::get(localResultType.getShape(), rewriter.getI1Type());
+            auto idx = updatedShardedDims[i];
+
+            auto iota = rewriter.create<stablehlo::IotaOp>(loc, TT, idx);
+            Value lhs = nullptr;
+
+            if (lowPads[idx] == 0) {
+              // No pad, we are never needing to check combining update/operand and can just use update
+            } else if (lowPads[idx] % localResultType.getShape()[idx] == 0) {
+              // Evenly divisible pad, for example pad 20, inner 50, right 20, local shape is 10
+              // partition 0, and 1 would need the fused update (aka if idx < pad / lowerShape)
+              // If we are in here, no additional check is needed for within node index. However, we need to check if the given
+              // partition itself 
+              // First, we can special case if the condition to enter here is equivalent to our partition check, do nothing.
+              if (mayContainOperandData == leftSides[i]) {
+                // No check needed
+              } else {
+                // Otherwise we could've entered this if statement for other reasons, whether to use is simply the partition check, now broadcasted
+                lhs = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, leftSides[i], ArrayRef<int64_t>());
+              }
             } else {
-              idx = inUpdate;
+              // Non-evenly divisible pad, for example pad 18, inner 54, right 18, local shape is 10
+              // partition 0, and 1 would need the fused update (aka if idx <= pad / lowerShape)
+              // The single node test needs to consider both if we're in the right node, and within the transition node, if we're
+              // at the point of transition
+              // Within the point of transition, we need to consider the offset mod the local result type.
+              Value leftSideTransition = rewriter.create<stablehlo::CompareOp>(loc, iota,
+                  getOrCreateConstant(lowPads[idx] % localResultType.getShape()[idx], TT),
+                  stablehlo::ComparisonDirection::LT
+              );
+              assert(leftSideTransition.getType() == TTBool);
+
+
+              // If we know we only have one node (the transition node), we're done if there's only one node in this axis.
+              // Otherwise we need the operand if we're in a lower node (independent of transition index), and also
+              // need to ensure we don't use the there's a risk that we're in a higher node and accidentally 
+              // used to enter the if statement. This is because the only entering checks would be the low check (aka if the left partition),
+              // or the high check
+
+              // First let's begin by confirming that the leftside transition is only true if within the transition node itself
+              // If only one node, that's easy, no additional check required
+              if (globalResultType.getShape()[idx] == localResultType.getShape()[idx]) {
+                // noop
+              } else if (mayContainOperandData == leftSides[i]) {
+                // If the only way we could enter here is if we are in a left transition, we won't accidentally update higher nodes
+                // so we can also skip the check
+              } else {
+                // otherwise we fall back and need to check that we're actually at the transition point
+                Value atTransition = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx], 
+                      getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
+                      stablehlo::ComparisonDirection::EQ
+                    );
+                atTransition = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, atTransition, ArrayRef<int64_t>());
+                assert(leftSideTransition.getType() == TTBool);
+                leftSideTransition = rewriter.create<stablehlo::AndOp>(loc, leftSideTransition, atTransition);
+              }
+
+              // Now let's check for potential non-transition nodes
+
+              // If the update starts within the first node, no additional check required!
+              if (lowPads[idx] < localResultType.getShape()[idx]) {
+                // noop
+                lhs = leftSideTransition;
+              } else {
+                // Otherwise we must check both the node idx and the transition idx.
+                Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+                    getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
+                    stablehlo::ComparisonDirection::LT
+                );
+                fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+                assert(leftSideTransition.getType() == TTBool);
+                lhs = rewriter.create<stablehlo::OrOp>(loc, leftSideTransition, fullyOperandNode);
+              }
+            }
+
+            Value rhs = nullptr;
+
+            int64_t startIdx = lowPads[idx] + globalUnPaddedUpdateType.getShape()[idx];
+            if (highPads[idx] == 0) {
+              // No pad, we are never needing to check combining update/operand and can just use update
+            } else if (startIdx % localResultType.getShape()[idx] == 0) {
+              // Evenly divisible startIdx, for example pad 20, inner 50, right X, local shape is 10
+              // partition 7, 8, ... would need the fused update (aka if idx >= startIdx / lowerShape)
+              // If we are in here, no additional check is needed for within node index. However, we need to check if the given
+              // partition itself 
+              // First, we can special case if the condition to enter here is equivalent to our partition check, do nothing.
+              if (mayContainOperandData == rightSides[i]) {
+                // No check needed
+              } else {
+                // Otherwise we could've entered this if statement for other reasons, whether to use is simply the partition check, now broadcasted
+                rhs = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, rightSides[i], ArrayRef<int64_t>());
+              }
+            } else {
+              // Non-evenly divisible startIdx, for example pad 20, inner 48, right X, local shape is 10
+              // partition 6, 7, 8, ... would need the fused update (aka if idx >= startIdx / lowerShape)
+              // partition 6 only needs from 58-60, partitoin 7 uses fully
+              // The single node test needs to consider both if we're in the right node, and within the transition node, if we're
+              // at the point of transition
+              // Within the point of transition, we need to consider the offset mod the local result type.
+
+
+              Value rightSideTransition = rewriter.create<stablehlo::CompareOp>(loc, iota,
+                  getOrCreateConstant(startIdx % localResultType.getShape()[idx], TT),
+                  stablehlo::ComparisonDirection::GE
+              );
+              assert(rightSideTransition.getType() == TTBool);
+
+              // If we know we only have one node (the transition node), we're done if there's only one node in this axis.
+              // Otherwise we need the operand if we're in a higher node (independent of transition index), and also
+              // need to ensure we don't use the there's a risk that we're in a lower node and accidentally 
+              // used to enter the if statement. This is because the only entering checks would be the high check (aka if the right partition),
+              // or the lower check
+
+              // First let's begin by confirming that the leftside transition is only true if within the transition node itself
+              // If only one node, that's easy, no additional check required
+              if (globalResultType.getShape()[idx] == localResultType.getShape()[idx]) {
+                // noop
+              } else if (mayContainOperandData == rightSides[i]) {
+                // If the only way we could enter here is if we are in a right transition, we won't accidentally lower higher nodes
+                // so we can also skip the check
+              } else {
+                // otherwise we fall back and need to check that we're actually at the transition point
+                Value atTransition = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx], 
+                      getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
+                      stablehlo::ComparisonDirection::EQ
+                    );
+                atTransition = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, atTransition, ArrayRef<int64_t>());
+                assert(rightSideTransition.getType() == TTBool);
+                rightSideTransition = rewriter.create<stablehlo::AndOp>(loc, rightSideTransition, atTransition);
+              }
+
+              // Now let's check for potential non-transition nodes
+
+              // If the update end within the last node, no additional check required!
+              if (startIdx / localResultType.getShape()[idx] == globalResultType.getShape()[idx] / localResultType.getShape()[idx] - 1) {
+                // noop
+                rhs = rightSideTransition;
+              } else {
+                // Otherwise we must check both the node idx and the transition idx.
+                Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(loc, multiDimIdxs[idx],
+                    getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
+                    stablehlo::ComparisonDirection::GT
+                );
+                fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+                assert(rightSideTransition.getType() == TTBool);
+                rhs = rewriter.create<stablehlo::OrOp>(loc, rightSideTransition, fullyOperandNode);
+              }
+            }
+
+            // We are in the operand if either lhs or rhs are in operand
+            Value inOperand = lhs;
+            if (rhs) {
+              if (inOperand)
+                inOperand = rewriter.create<stablehlo::OrOp>(loc, inOperand, rhs);
+              else
+                inOperand = rhs;
+            }
+            assert(inOperand);
+
+            // We are in the operand if either of the indices are in the operand
+            if (multiIdx) {
+              multiIdx = rewriter.create<stablehlo::OrOp>(loc, multiIdx, inOperand);
+            } else {
+              multiIdx = inOperand;
             }
           }
 
-          auto newV = rewriter.create<stablehlo::SelectOp>(dus.getLoc(), idx, innerOperand, innerUpdate);
-          rewriter.create<stablehlo::ReturnOp>(dus.getLoc(), newV->getResults());
+          auto newV = rewriter.create<stablehlo::SelectOp>(loc, multiIdx, innerOperand, innerUpdateVal);
+          rewriter.create<stablehlo::ReturnOp>(loc, newV->getResults());
         }
 
         {
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.createBlock(&if0.getFalseBranch(), if0.getFalseBranch().begin());
-          rewriter.create<stablehlo::ReturnOp>(dus.getLoc(), innerUpdate);
+          rewriter.create<stablehlo::ReturnOp>(loc, innerUpdateVal);
         }
+      }
       }
     }
 

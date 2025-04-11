@@ -530,7 +530,7 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*C++ variable name=*/"pad_like_raise",
        /*CLI argument=*/"pad_like_raise",
        /*type=*/"int",
-       /*default=*/"-1",
+       /*default=*/"3",
        /*description=*/"Whether to throw a pass error if not fully raised">,
 Option<
        /*C++ variable name=*/"permute_like_raise",
