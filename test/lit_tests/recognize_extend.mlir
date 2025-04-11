@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_extend" --transform-interpreter --enzyme-hlo-remove-transform %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=recognize_extend" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module {
   func.func @main(%6595: tensor<20x24x80xf64>) -> (tensor<1x10x82xf64>) {
