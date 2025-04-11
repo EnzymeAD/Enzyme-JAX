@@ -1508,6 +1508,21 @@ def SliceWrap : EnzymeHLOPatternOp<
   let patterns = ["SliceWrap"];
 }
 
+def TransposeWrap : EnzymeHLOPatternOp<
+    "transpose_wrap"> {
+  let patterns = ["TransposeWrap"];
+}
+
+def TransposeExtend : EnzymeHLOPatternOp<
+    "transpose_extend"> {
+  let patterns = ["TransposeExtend"];
+}
+
+def TransposeRotate : EnzymeHLOPatternOp<
+    "transpose_rotate"> {
+  let patterns = ["TransposeRotate"];
+}
+
 def LowerExtend : EnzymeHLOPatternOp<
     "lower_extend"> {
   let patterns = ["LowerExtend"];
