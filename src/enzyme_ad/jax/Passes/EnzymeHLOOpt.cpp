@@ -662,6 +662,192 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+// reshape(extend) -> extend(reshape)
+struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is an ExtendOp
+    auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!extendOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(extendOp->getUsers()))
+      return failure();
+
+    // Get extend operation parameters
+    int64_t extendDim = extendOp.getDimension();
+    int64_t lhs = extendOp.getLhs();
+    int64_t rhs = extendOp.getRhs();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        extendOp.getOperand().getType().getShape().begin(),
+        extendOp.getOperand().getType().getShape().end());
+
+    // Calculate the new extended dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new extend dimension
+    int64_t newExtendDim = -1;
+    int64_t oldDimSize = extendOp.getOperand().getType().getShape()[extendDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newExtendDim = i;
+        break;
+      }
+    }
+
+    if (newExtendDim == -1)
+      return failure();
+
+    // First reshape the extend's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              extendOp.getOperand().getType().getElementType()),
+        extendOp.getOperand());
+
+    // Then create a new extend operation on the reshaped data
+    auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
+        op.getLoc(), newReshapeOp.getResult(), lhs, rhs, newExtendDim);
+
+    // Replace the original reshape op with the new extend operation
+    rewriter.replaceOp(op, newExtendOp);
+
+    return success();
+  }
+};
+
+// reshape(wrap) -> wrap(reshape)
+struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a WrapOp
+    auto wrapOp = op.getOperand().getDefiningOp<enzymexla::WrapOp>();
+    if (!wrapOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(wrapOp->getUsers()))
+      return failure();
+
+    // Get wrap operation parameters
+    int64_t wrapDim = wrapOp.getDimension();
+    int64_t lhs = wrapOp.getLhs();
+    int64_t rhs = wrapOp.getRhs();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        wrapOp.getOperand().getType().getShape().begin(),
+        wrapOp.getOperand().getType().getShape().end());
+
+    // Calculate the new wrapped dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new wrap dimension
+    int64_t newWrapDim = -1;
+    int64_t oldDimSize = wrapOp.getOperand().getType().getShape()[wrapDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newWrapDim = i;
+        break;
+      }
+    }
+
+    if (newWrapDim == -1)
+      return failure();
+
+    // First reshape the wrap's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              wrapOp.getOperand().getType().getElementType()),
+        wrapOp.getOperand());
+
+    // Then create a new wrap operation on the reshaped data
+    auto newWrapOp = rewriter.create<enzymexla::WrapOp>(
+        op.getLoc(), op.getType(), newReshapeOp.getResult(), lhs, rhs,
+        newWrapDim);
+
+    // Replace the original reshape op with the new wrap operation
+    rewriter.replaceOp(op, newWrapOp);
+
+    return success();
+  }
+};
+
+// reshape(rotate) -> rotate(reshape)
+struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a RotateOp
+    auto rotateOp = op.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!rotateOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(rotateOp->getUsers()))
+      return failure();
+
+    // Get rotate operation parameters
+    int64_t rotateDim = rotateOp.getDimension();
+    int64_t rotateAmount = rotateOp.getAmount();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        rotateOp.getOperand().getType().getShape().begin(),
+        rotateOp.getOperand().getType().getShape().end());
+
+    // Calculate the new rotated dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new rotate dimension
+    int64_t newRotateDim = -1;
+    int64_t oldDimSize = rotateOp.getOperand().getType().getShape()[rotateDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newRotateDim = i;
+        break;
+      }
+    }
+
+    if (newRotateDim == -1)
+      return failure();
+
+    // First reshape the rotate's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              rotateOp.getOperand().getType().getElementType()),
+        rotateOp.getOperand());
+
+    // Then create a new rotate operation on the reshaped data
+    auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
+        op.getLoc(), newReshapeOp.getResult(), rotateAmount, newRotateDim);
+
+    // Replace the original reshape op with the new rotate operation
+    rewriter.replaceOp(op, newRotateOp);
+
+    return success();
+  }
+};
+
 struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -15948,6 +16134,9 @@ struct EnzymeHLOOptPass
 
     patterns.add<SliceExtend>(context);
     patterns.add<SliceWrap>(context);
+    patterns.add<ReshapeWrap>(context);
+    patterns.add<ReshapeExtend>(context);
+    patterns.add<ReshapeRotate>(context);
     patterns.add<TransposeWrap>(context);
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
