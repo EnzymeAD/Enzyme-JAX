@@ -1332,8 +1332,12 @@ struct ConcatToOneDimDUS final
               .cast<ElementsAttr>());
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+    auto shard = sdy::getShardingPerValue(outer);
+    auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         outer, operand, innerConcat, starts);
+    if (shard) {
+      sdy::setShardings(dus, shard);
+    }
     return success();
   }
 };
