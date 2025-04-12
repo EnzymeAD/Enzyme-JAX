@@ -2072,13 +2072,43 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
     auto operand = dus.getOperand();
     auto operandSharding = mlir::sdy::getSharding(operand);
-    if (!operandSharding || (operandSharding != sharding))
-      return failure();
+    if (!operandSharding || (operandSharding != sharding)) {
+      // If operand is a constant, then we can construct a new constant
+      auto stablehloConstant = operand.getDefiningOp<stablehlo::ConstantOp>();
+      auto sdyConstant = operand.getDefiningOp<sdy::ConstantOp>();
+      if (stablehloConstant) {
+        operand = rewriter.clone(*stablehloConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else if (sdyConstant) {
+        operand = rewriter.clone(*sdyConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else {
+        return failure();
+      }
+      mlir::sdy::setSharding(operand, sharding);
+    }
 
     auto update = dus.getUpdate();
     auto updateSharding = mlir::sdy::getSharding(update);
-    if (!updateSharding || (updateSharding != operandSharding))
-      return failure();
+    if (!updateSharding || (updateSharding != operandSharding)) {
+      // If update is a constant, then we can construct a new constant
+      auto stablehloConstant = update.getDefiningOp<stablehlo::ConstantOp>();
+      auto sdyConstant = update.getDefiningOp<sdy::ConstantOp>();
+      if (stablehloConstant) {
+        update = rewriter.clone(*stablehloConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else if (sdyConstant) {
+        update = rewriter.clone(*sdyConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else {
+        return failure();
+      }
+      mlir::sdy::setSharding(update, sharding);
+    }
 
     auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
     auto updateShape = cast<RankedTensorType>(update.getType()).getShape();
