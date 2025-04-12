@@ -1161,6 +1161,94 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    auto elemType = wrap.getType().getElementType();
+    auto ndims = wrap.getType().getRank();
+    auto wrapOperandShape = wrap.getOperand().getType().getShape();
+    auto wrapShape = wrap.getType().getShape();
+    auto wrapDimension = wrap.getDimension();
+
+    auto wrapSharding = mlir::sdy::getSharding(wrap);
+    if (!wrapSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(wrap.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != wrapSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(wrapSharding, wrapDimension, wrap);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    SmallVector<int64_t> strides(ndims, 1);
+
+    SmallVector<int64_t> leftStarts(ndims, 0);
+    SmallVector<int64_t> leftLimits = llvm::to_vector(wrapOperandShape);
+    leftLimits[wrapDimension] = wrap.getLhs();
+
+    auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
+        wrap.getLoc(), wrap.getOperand(), leftStarts, leftLimits, strides);
+    sdy::setSharding(leftSliceOp, wrapSharding);
+
+    SmallVector<int64_t> rightStarts(ndims, 0);
+    SmallVector<int64_t> rightLimits = llvm::to_vector(wrapOperandShape);
+    rightStarts[wrapDimension] =
+        rightLimits[wrapDimension] - wrap.getRhs();
+
+    auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
+        wrap.getLoc(), wrap.getOperand(), rightStarts, rightLimits,
+        strides);
+    sdy::setSharding(rightSliceOp, wrapSharding);
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), rewriter.getZeroAttr(elemType));
+
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
+    padHigh[wrapDimension] = 0;
+    auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
+        wrap.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedLeftSliceOp, wrapSharding);
+
+    padLow[wrapDimension] = 0;
+    padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
+    auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
+        wrap.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedRightSliceOp, wrapSharding);
+
+    padLow[wrapDimension] = wrap.getLhs();
+    padHigh[wrapDimension] = wrap.getRhs();
+    auto paddedWrapOp = rewriter.create<stablehlo::PadOp>(
+        wrap.getLoc(), wrap.getOperand(), zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedWrapOp, wrapSharding);
+
+    auto addOp = rewriter.create<stablehlo::AddOp>(
+        wrap.getLoc(), paddedLeftSliceOp, paddedRightSliceOp);
+    mlir::sdy::setSharding(addOp, wrapSharding);
+
+    addOp = rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp,
+                                              paddedWrapOp);
+    sdy::setSharding(addOp, wrapSharding);
+
+    rewriter.replaceOp(wrap, addOp);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   int &channel_id;
@@ -2693,6 +2781,14 @@ struct OptimizeCommunicationPass
       patterns.add<PeriodicConcatSimplify>(channel_id, context,
                                            PatternBenefit(periodic_concat));
 
+    if (concat_to_pad_comm > 0)
+      patterns.add<ConcatToPadCommOptimize>(context,
+                                            PatternBenefit(concat_to_pad_comm));
+
+    if (concat_two_operands_comm > 0)
+      patterns.add<ConcatTwoOperandsCommOptimize>(
+          channel_id, context, PatternBenefit(concat_two_operands_comm));
+
     if (rotate_comm > 0)
       patterns.add<RotateCommOptimize>(channel_id, context,
                                        PatternBenefit(rotate_comm));
@@ -2705,25 +2801,21 @@ struct OptimizeCommunicationPass
       patterns.add<WrapCommOptimize>(channel_id, context,
                                      PatternBenefit(wrap_comm));
 
+    if (wrap_to_pad_comm > 0)
+      patterns.add<WrapToPadCommOptimize>(context,
+                                          PatternBenefit(wrap_to_pad_comm));
+
     if (extend_comm > 0)
       patterns.add<ExtendCommOptimize>(channel_id, context,
                                        PatternBenefit(extend_comm));
-
-    if (dus_to_pad_comm > 0)
-      patterns.add<DUSToPadComm>(channel_id, context,
-                                 PatternBenefit(dus_to_pad_comm));
-
-    if (concat_to_pad_comm > 0)
-      patterns.add<ConcatToPadCommOptimize>(context,
-                                            PatternBenefit(concat_to_pad_comm));
 
     if (extend_to_pad_comm > 0)
       patterns.add<ExtendToPadCommOptimize>(context,
                                             PatternBenefit(extend_to_pad_comm));
 
-    if (concat_two_operands_comm > 0)
-      patterns.add<ConcatTwoOperandsCommOptimize>(
-          channel_id, context, PatternBenefit(concat_two_operands_comm));
+    if (dus_to_pad_comm > 0)
+      patterns.add<DUSToPadComm>(channel_id, context,
+                                 PatternBenefit(dus_to_pad_comm));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
