@@ -1514,6 +1514,14 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
     auto rotateDimension = rotate.getDimension();
 
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     // sl0[A:end], sl1[0:A]
     SmallVector<int64_t> strides(ndims, 1);
 
@@ -2508,18 +2516,10 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
 struct ConcatToPadCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
-
-  int &channel_id;
-  ConcatToPadCommOptimize(int &channel_id, MLIRContext *context,
-                          PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
+  using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
-    if (concat.getNumOperands() != 2) {
-      return failure();
-    }
-
     auto ndims = concat.getType().getShape().size();
     auto concatShape = concat.getType().getShape();
     auto concatDimension = concat.getDimension();
@@ -2529,6 +2529,14 @@ struct ConcatToPadCommOptimize
     auto concatSharding = mlir::sdy::getSharding(concat);
     if (!concatSharding)
       return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(concatSharding, concatDimension, concat);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
 
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
@@ -2542,7 +2550,7 @@ struct ConcatToPadCommOptimize
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
       auto operandSharding = mlir::sdy::getSharding(operand);
-      if (!operandSharding || operandSharding != concatSharding)
+      if (!operandSharding || (operandSharding != concatSharding))
         return failure();
 
       auto operandConcatDimSize =
@@ -2556,7 +2564,6 @@ struct ConcatToPadCommOptimize
           concat.getLoc(), operand, zero, padLow, padHigh, padInner);
       sdy::setSharding(paddedOperand, concatSharding);
       addOperands[i] = paddedOperand;
-
       leftPadding += operandConcatDimSize;
     }
 
@@ -2619,7 +2626,7 @@ struct OptimizeCommunicationPass
                                  PatternBenefit(dus_to_pad_comm));
 
     if (concat_to_pad_comm > 0)
-      patterns.add<ConcatToPadCommOptimize>(channel_id, context,
+      patterns.add<ConcatToPadCommOptimize>(context,
                                             PatternBenefit(concat_to_pad_comm));
 
     if (concat_two_operands_comm > 0)
