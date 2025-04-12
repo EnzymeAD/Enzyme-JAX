@@ -254,7 +254,7 @@ void generateCommPatternForNonEdges(
     Value superSliceInnerArg, Value midOpInnerArg,
     TensorShardingAttr opSharding, int concatDim, int paddedBoundarySize,
     int numDevicesAlongDimension, int ndims, SmallVector<int64_t> localRetShape,
-    Value leftSide) {
+    Value leftSide, int &channel_id) {
   auto sourceTargetPairsVec =
       generateShiftPairs(opSharding, concatDim, op, /*leftToRight*/ true,
                          /*onlyEdges*/ false, /*splitHalfComm*/ true);
@@ -945,7 +945,7 @@ struct PeriodicConcatSimplify
         generateCommPatternForNonEdges(
             rewriter, concat, partitionId, zero, superSliceInnerArg,
             midOpInnerArg, concatSharding, concatDim, N,
-            numDevicesAlongDimension, ndims, localRetShape, leftSide);
+            numDevicesAlongDimension, ndims, localRetShape, leftSide, channel_id);
       }
 
       // else
@@ -1103,7 +1103,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         generateCommPatternForNonEdges(
             rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
             wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-            localRetShape, leftSide);
+            localRetShape, leftSide, channel_id);
       }
 
       {
@@ -1262,7 +1262,7 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
         generateCommPatternForNonEdges(
             rewriter, extend, partitionId, zero, innerArg, innerArg,
             extendSharding, extendDimension, paddedBoundarySize,
-            numDevicesAlongDimension, ndims, localRetShape, leftSide);
+            numDevicesAlongDimension, ndims, localRetShape, leftSide, channel_id);
       }
 
       {
