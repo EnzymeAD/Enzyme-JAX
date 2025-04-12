@@ -16171,6 +16171,139 @@ struct ConcatConcatAxisSwap final
   }
 };
 
+struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  struct CandidateInfo {
+    enzymexla::RotateOp rotateOp;
+    stablehlo::SliceOp sliceOp; // Null if it's a direct extend user
+  };
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp triggerRotateOp,
+                                PatternRewriter &rewriter) const override {
+
+    Value triggerOperand = triggerRotateOp.getOperand();
+    auto triggerSliceOp = triggerOperand.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!triggerSliceOp) {
+      return failure();
+    }
+
+    Value baseOperand = triggerSliceOp.getOperand();
+
+    // --- Get Target Rotate Parameters ---
+    int targetAmount = triggerRotateOp.getAmount();
+    int targetRotateDim = triggerRotateOp.getDimension();
+    Location loc = triggerRotateOp.getLoc();
+
+    // --- Check Validity of Trigger Slice ---
+    auto baseOperandType = dyn_cast<RankedTensorType>(baseOperand.getType());
+    if (!baseOperandType || !baseOperandType.hasStaticShape()) {
+      return rewriter.notifyMatchFailure(triggerRotateOp,
+                                         "Base operand requires static shape");
+    }
+    if (triggerSliceOp.getStartIndices()[targetRotateDim] != 0 ||
+        triggerSliceOp.getLimitIndices()[targetRotateDim] !=
+            baseOperandType.getShape()[targetRotateDim] ||
+        triggerSliceOp.getStrides()[targetRotateDim] != 1) {
+      return rewriter.notifyMatchFailure(
+          triggerRotateOp,
+          "Trigger SliceOp modifies the dimension being extended");
+    }
+
+    llvm::SmallVector<CandidateInfo> candidates;
+    candidates.push_back({triggerRotateOp, triggerSliceOp});
+
+    for (auto const &userOp : baseOperand.getUsers()) {
+      // Skip the slice that defines the trigger operand
+      if (userOp == triggerSliceOp.getOperation())
+        continue;
+
+      // Case 1: Direct Rotate
+      if (auto directRotate = dyn_cast<enzymexla::RotateOp>(userOp)) {
+        if (directRotate.getDimension() == targetRotateDim &&
+            directRotate.getAmount() == targetAmount) {
+          candidates.push_back({directRotate, nullptr});
+        }
+      }
+      // Case 2: Rotate of Slice
+      else if (auto sliceUser = dyn_cast<stablehlo::SliceOp>(userOp)) {
+        if (!sliceUser->hasOneUse())
+          continue;
+        auto rotateOfSlice =
+            dyn_cast<enzymexla::RotateOp>(*sliceUser->user_begin());
+        if (!rotateOfSlice)
+          continue;
+
+        if (rotateOfSlice.getDimension() == targetRotateDim &&
+            rotateOfSlice.getAmount() == targetAmount) {
+          // Check validity: sliceUser must not modify targetRotateDim
+          if (sliceUser.getStartIndices()[targetRotateDim] == 0 &&
+              sliceUser.getLimitIndices()[targetRotateDim] ==
+                  baseOperandType.getShape()[targetRotateDim] &&
+              sliceUser.getStrides()[targetRotateDim] == 1) {
+            candidates.push_back({rotateOfSlice, sliceUser});
+          }
+        }
+      }
+    }
+
+    if (candidates.size() <= 1) {
+      return rewriter.notifyMatchFailure(
+          triggerRotateOp,
+          "Rewrite condition not met (only found the trigger candidate)");
+    }
+
+    SmallVector<int64_t> newBaseExtendShape =
+        llvm::to_vector(baseOperandType.getShape());
+
+    auto newBaseRotateType = baseOperandType;
+
+    if (auto subOp = baseOperand.getDefiningOp())
+      rewriter.setInsertionPointAfter(subOp);
+    else
+      rewriter.setInsertionPointToStart(
+          cast<BlockArgument>(baseOperand).getOwner());
+
+    auto newBaseRotateOp = rewriter.create<enzymexla::RotateOp>(
+        loc, newBaseRotateType, baseOperand, targetAmount, targetRotateDim);
+    Value newBaseRotateResult = newBaseRotateOp.getResult();
+    RankedTensorType newBaseRotateResultType = newBaseRotateType;
+
+    for (const auto &candidate : candidates) {
+      enzymexla::RotateOp oldRotateOp = candidate.rotateOp;
+      stablehlo::SliceOp oldSliceOp = candidate.sliceOp; // Might be null
+
+      if (!oldSliceOp) {
+        // Direct Rotate - Replace directly
+        rewriter.replaceOp(oldRotateOp, newBaseRotateResult);
+      } else {
+        SmallVector<int64_t> newSliceStarts =
+            llvm::to_vector(oldSliceOp.getStartIndices());
+        SmallVector<int64_t> newSliceLimits =
+            llvm::to_vector(oldSliceOp.getLimitIndices());
+        SmallVector<int64_t> newSliceStrides =
+            llvm::to_vector(oldSliceOp.getStrides());
+
+        newSliceStarts[targetRotateDim] = 0;
+        newSliceLimits[targetRotateDim] =
+            newBaseRotateResultType.getDimSize(targetRotateDim);
+        newSliceStrides[targetRotateDim] = 1;
+
+        auto newSlice = rewriter.create<stablehlo::SliceOp>(
+            oldRotateOp.getLoc(),
+            oldRotateOp.getResult()
+                .getType(), // Use original extend op's result type
+            newBaseRotateResult, newSliceStarts, newSliceLimits,
+            newSliceStrides);
+        rewriter.replaceAllOpUsesWith(oldRotateOp, newSlice.getResult());
+      }
+    }
+
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -16329,6 +16462,7 @@ struct EnzymeHLOOptPass
     mlir::enzyme::populateWithGenerated(patterns);
 
     patterns.add<SliceExtend>(context);
+    patterns.add<SliceRotate>(context);
     patterns.add<SliceWrap>(context);
     patterns.add<ReshapeWrap>(context);
     patterns.add<ReshapeExtend>(context);
