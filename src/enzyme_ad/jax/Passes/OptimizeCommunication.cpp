@@ -2373,6 +2373,75 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
+struct ConcatToPadCommOptimize
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat.getNumOperands() != 2) {
+      return failure();
+    }
+
+    auto ndims = concat.getType().getShape().size();
+    auto concatShape = concat.getType().getShape();
+    auto concatDimension = concat.getDimension();
+    auto elemType = concat.getType().getElementType();
+
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+
+    auto operands = llvm::to_vector(concat.getOperands());
+    auto leftOperand = operands[0];
+    auto rightOperand = operands[1];
+
+    auto leftOperandSharding = mlir::sdy::getSharding(leftOperand);
+    if (!leftOperandSharding)
+      return failure();
+    auto rightOperandSharding = mlir::sdy::getSharding(rightOperand);
+    if (!rightOperandSharding)
+      return failure();
+
+    if (leftOperandSharding != rightOperandSharding ||
+        leftOperandSharding != concatSharding) {
+      return failure();
+    }
+
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    SmallVector<int64_t> padLowLeft(ndims, 0);
+    SmallVector<int64_t> padHighLeft(ndims, 0);
+    padHighLeft[concatDimension] =
+        cast<RankedTensorType>(rightOperand.getType())
+            .getShape()[concatDimension];
+
+    SmallVector<int64_t> padLowRight(ndims, 0);
+    SmallVector<int64_t> padHighRight(ndims, 0);
+    padLowRight[concatDimension] = cast<RankedTensorType>(leftOperand.getType())
+                                       .getShape()[concatDimension];
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        concat.getLoc(), rewriter.getZeroAttr(elemType));
+
+    auto leftPad = rewriter.create<stablehlo::PadOp>(
+        concat.getLoc(), leftOperand, zero, padLowLeft, padHighLeft, padInner);
+    sdy::setSharding(leftPad, concatSharding);
+
+    auto rightPad =
+        rewriter.create<stablehlo::PadOp>(concat.getLoc(), rightOperand, zero,
+                                          padLowRight, padHighRight, padInner);
+    sdy::setSharding(rightPad, concatSharding);
+
+    auto addOp =
+        rewriter.create<stablehlo::AddOp>(concat.getLoc(), leftPad, rightPad);
+    sdy::setSharding(addOp, concatSharding);
+
+    rewriter.replaceOp(concat, addOp);
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -2382,13 +2451,16 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
+    // ConcatTwoOperandsCommOptimize is not added to this list. pad_like_raise
+    // is almost certainly a better option.
     if (permute_like_raise > 0)
       patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
-                   ExtendCommOptimize, ConcatTwoOperandsCommOptimize>(
-          context, PatternBenefit(permute_like_raise));
+                   ExtendCommOptimize>(context,
+                                       PatternBenefit(permute_like_raise));
 
     if (pad_like_raise > 0)
-      patterns.add<DUSToPadComm>(context, PatternBenefit(pad_like_raise));
+      patterns.add<DUSToPadComm, ConcatToPadCommOptimize>(
+          context, PatternBenefit(pad_like_raise));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
