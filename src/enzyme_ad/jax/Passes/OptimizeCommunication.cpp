@@ -2058,10 +2058,127 @@ struct ConcatTwoOperandsCommOptimize
 };
 
 struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    auto sharding = mlir::sdy::getSharding(dus);
+    if (!sharding)
+      return failure();
+
+    auto ndims = dus.getType().getShape().size();
+    auto elementType = dus.getType().getElementType();
+    auto startIndices = dus.getStartIndices();
+
+    auto operand = dus.getOperand();
+    auto operandSharding = mlir::sdy::getSharding(operand);
+    if (!operandSharding || (operandSharding != sharding)) {
+      // If operand is a constant, then we can construct a new constant
+      auto stablehloConstant = operand.getDefiningOp<stablehlo::ConstantOp>();
+      auto sdyConstant = operand.getDefiningOp<sdy::ConstantOp>();
+      if (stablehloConstant) {
+        operand = rewriter.clone(*stablehloConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else if (sdyConstant) {
+        operand = rewriter.clone(*sdyConstant)
+                      ->getResult(0)
+                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else {
+        return failure();
+      }
+      mlir::sdy::setSharding(operand, sharding);
+    }
+
+    auto update = dus.getUpdate();
+    auto updateSharding = mlir::sdy::getSharding(update);
+    if (!updateSharding || (updateSharding != operandSharding)) {
+      // If update is a constant, then we can construct a new constant
+      auto stablehloConstant = update.getDefiningOp<stablehlo::ConstantOp>();
+      auto sdyConstant = update.getDefiningOp<sdy::ConstantOp>();
+      if (stablehloConstant) {
+        update = rewriter.clone(*stablehloConstant)
+                     ->getResult(0)
+                     .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else if (sdyConstant) {
+        update = rewriter.clone(*sdyConstant)
+                     ->getResult(0)
+                     .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+      } else {
+        return failure();
+      }
+      mlir::sdy::setSharding(update, sharding);
+    }
+
+    auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
+    auto updateShape = cast<RankedTensorType>(update.getType()).getShape();
+
+    SmallVector<int64_t> constantStartIndices(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      DenseIntElementsAttr cst;
+      APInt val;
+      if (auto cstAttr = startIndices[i].getDefiningOp<sdy::ConstantOp>()) {
+        val = *cast<DenseIntElementsAttr>(cstAttr.getValue()).begin();
+      } else if (matchPattern(startIndices[i], m_Constant(&cst))) {
+        val = (*cst.begin());
+      } else {
+        return failure();
+      }
+
+      if (val.isNegative())
+        return failure();
+
+      constantStartIndices[i] = val.getZExtValue();
+    }
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), rewriter.getZeroAttr(elementType));
+    auto one = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), rewriter.getOneAttr(elementType));
+
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    SmallVector<int64_t> updatePadLow(ndims, 0);
+    SmallVector<int64_t> updatePadHigh(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      updatePadLow[i] = constantStartIndices[i];
+      updatePadHigh[i] =
+          operandShape[i] - updateShape[i] - constantStartIndices[i];
+    }
+    auto updatePadOp = rewriter.create<stablehlo::PadOp>(
+        dus.getLoc(), update, zero, updatePadLow, updatePadHigh, padInner);
+    sdy::setSharding(updatePadOp, sharding);
+
+    auto updateType = update.getType().cast<RankedTensorType>();
+    auto zeroAttr =
+        DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
+    auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), updateType, zeroAttr);
+    sdy::setSharding(zeroUpdateOp, sharding);
+
+    auto maskOp = rewriter.create<stablehlo::PadOp>(
+        dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh, padInner);
+    sdy::setSharding(maskOp, sharding);
+
+    auto maskedOperand =
+        rewriter.create<stablehlo::MulOp>(dus.getLoc(), operand, maskOp);
+    sdy::setSharding(maskedOperand, sharding);
+
+    auto result = rewriter.create<stablehlo::AddOp>(dus.getLoc(), maskedOperand,
+                                                    updatePadOp);
+    sdy::setSharding(result, sharding);
+
+    rewriter.replaceOp(dus, result);
+    return success();
+  }
+};
+
+struct DUSToPadManualCompComm
+    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
   int &channel_id;
-  DUSToPadComm(int &channel_id, MLIRContext *context,
-               PatternBenefit benefit = 1)
+  DUSToPadManualCompComm(int &channel_id, MLIRContext *context,
+                         PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
@@ -2155,7 +2272,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       lowPads.push_back(v2);
       highPads.push_back(rightPad);
       auto extraPad = 0;
-      ;
+
       if (localType.getShape()[i] == 0 ||
           dus.getType().getShape()[i] % localType.getShape()[i] != 0) {
         auto ndevices = getShardingDevices(sharding, i, dus);
@@ -2814,9 +2931,12 @@ struct OptimizeCommunicationPass
       patterns.add<ExtendToPadCommOptimize>(context,
                                             PatternBenefit(extend_to_pad_comm));
 
+    if (dus_to_pad_manual_comp_comm > 0)
+      patterns.add<DUSToPadManualCompComm>(
+          channel_id, context, PatternBenefit(dus_to_pad_manual_comp_comm));
+
     if (dus_to_pad_comm > 0)
-      patterns.add<DUSToPadComm>(channel_id, context,
-                                 PatternBenefit(dus_to_pad_comm));
+      patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
