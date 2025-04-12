@@ -1588,3 +1588,8 @@ def ConcatToOneDimDUS : EnzymeHLOPatternOp<
     "concat_to_onedim_dus"> {
   let patterns = ["ConcatToOneDimDUS"];
 }
+
+def ConcatToOneDimDUSSlice : EnzymeHLOPatternOp<
+    "concat_to_onedim_dusslice"> {
+  let patterns = ["ConcatToOneDimDUSSlice"];
+}
