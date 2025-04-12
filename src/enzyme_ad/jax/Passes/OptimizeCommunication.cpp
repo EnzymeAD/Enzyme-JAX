@@ -999,8 +999,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
-  WrapCommOptimize(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  WrapCommOptimize(int &channel_id, MLIRContext *context,
+                   PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
@@ -1157,8 +1157,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   using OpRewritePattern::OpRewritePattern;
   int &channel_id;
-  OpRewritePattern(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  OpRewritePattern(int &channel_id, MLIRContext *context,
+                   PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
@@ -1316,8 +1316,8 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
-  RotateCommOptimize(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  RotateCommOptimize(int &channel_id, MLIRContext *context,
+                     PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
@@ -1437,7 +1437,8 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
                   {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               sourceTargetIdxs),
-          stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ channel_id,
+          stablehlo::ChannelHandleAttr::get(rotate.getContext(),
+                                            /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
 
@@ -1499,8 +1500,8 @@ struct ConcatTwoOperandsCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
   int &channel_id;
-  ConcatTwoOperandsCommOptimize(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  ConcatTwoOperandsCommOptimize(int &channel_id, MLIRContext *context,
+                                PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
@@ -1700,7 +1701,8 @@ struct ConcatTwoOperandsCommOptimize
                   {(int64_t)(shiftPairs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               shiftPairs),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ channel_id,
+          stablehlo::ChannelHandleAttr::get(concat.getContext(),
+                                            /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
 
@@ -1811,8 +1813,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
-  DUSToPadComm(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  DUSToPadComm(int &channel_id, MLIRContext *context,
+               PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
@@ -2403,8 +2405,8 @@ struct ConcatToPadCommOptimize
   using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
-  ConcatToPadCommOptimize(int& channel_id, MLIRContext *context,
-                      PatternBenefit benefit = 1)
+  ConcatToPadCommOptimize(int &channel_id, MLIRContext *context,
+                          PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
@@ -2483,7 +2485,7 @@ struct OptimizeCommunicationPass
 
     int channel_id = 0;
 
-    getOperation()->walk([&](stablehlo::CollectivePermuteOp perm){
+    getOperation()->walk([&](stablehlo::CollectivePermuteOp perm) {
       channel_id = max(channel_id, perm->getChannelId() + 1);
     });
 
@@ -2492,16 +2494,20 @@ struct OptimizeCommunicationPass
                                            PatternBenefit(periodic_concat));
 
     if (rotate_comm > 0)
-      patterns.add<RotateCommOptimize>(channel_id, context, PatternBenefit(rotate_comm));
+      patterns.add<RotateCommOptimize>(channel_id, context,
+                                       PatternBenefit(rotate_comm));
 
     if (wrap_comm > 0)
-      patterns.add<WrapCommOptimize>(channel_id, context, PatternBenefit(wrap_comm));
+      patterns.add<WrapCommOptimize>(channel_id, context,
+                                     PatternBenefit(wrap_comm));
 
     if (extend_comm > 0)
-      patterns.add<ExtendCommOptimize>(channel_id, context, PatternBenefit(extend_comm));
+      patterns.add<ExtendCommOptimize>(channel_id, context,
+                                       PatternBenefit(extend_comm));
 
     if (dus_to_pad_comm > 0)
-      patterns.add<DUSToPadComm>(channel_id, context, PatternBenefit(dus_to_pad_comm));
+      patterns.add<DUSToPadComm>(channel_id, context,
+                                 PatternBenefit(dus_to_pad_comm));
 
     if (concat_to_pad_comm > 0)
       patterns.add<ConcatToPadCommOptimize>(channel_id, context,
