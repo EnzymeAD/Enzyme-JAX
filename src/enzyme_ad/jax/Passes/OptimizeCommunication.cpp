@@ -1857,7 +1857,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     auto loc = dus.getLoc();
     SmallVector<int64_t> lowPads;
     SmallVector<int64_t> highPads;
-    // Extra padding size we make to ensure things are evenly divisible by the number of devices
+    // Extra padding size we make to ensure things are evenly divisible by the
+    // number of devices
     SmallVector<int64_t> extraHighPads;
     // The total padding (highPads + extraHighPads)
     SmallVector<int64_t> totalHighPads;
@@ -1911,10 +1912,13 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
       lowPads.push_back(v2);
       highPads.push_back(rightPad);
-      auto extraPad = 0; ;
+      auto extraPad = 0;
+      ;
       if (dus.getType().getShape()[i] % localType.getShape()[i] != 0) {
-        auto numDevicesAlongDimension = dus.getType().getShape()[i] / localType.getShape()[i];
-        extraPad = numDevicesAlongDimension - (dus.getType().getShape()[i] % numDevicesAlongDimension);
+        auto numDevicesAlongDimension =
+            dus.getType().getShape()[i] / localType.getShape()[i];
+        extraPad = numDevicesAlongDimension -
+                   (dus.getType().getShape()[i] % numDevicesAlongDimension);
         extraSlice = true;
       }
       extraHighPads.push_back(extraPad);
@@ -1949,13 +1953,13 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     if (extraSlice) {
       SmallVector<int64_t> zeros(ndims, 0);
       auto padOp = rewriter.create<stablehlo::PadOp>(
-          loc, dus.getOperand(),
-          getOrCreateConstant(0, PT),
-          zeros, extraHighPads, zeros);
+          loc, dus.getOperand(), getOrCreateConstant(0, PT), zeros,
+          extraHighPads, zeros);
       sdy::setShardings(padOp, sdy::getShardingPerValue(dus));
       globalOperand = padOp;
     }
-    RankedTensorType globalResultType = cast<RankedTensorType>(globalOperand.getType());
+    RankedTensorType globalResultType =
+        cast<RankedTensorType>(globalOperand.getType());
 
     auto localResultType =
         getLocalType(globalResultType, sharding, manualAxes, dus);
@@ -1967,7 +1971,6 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     if (shardedDims.size() == 0) {
       return failure();
     }
-
 
     Value pad2 = nullptr;
     SplatElementsAttr splat = nullptr;
@@ -1981,9 +1984,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     }
     if (!splat) {
       auto padOp = rewriter.create<stablehlo::PadOp>(
-          loc, dus.getUpdate(),
-          getOrCreateConstant(0, PT),
-          lowPads, totalHighPads, interior);
+          loc, dus.getUpdate(), getOrCreateConstant(0, PT), lowPads,
+          totalHighPads, interior);
       sdy::setShardings(padOp, sdy::getShardingPerValue(dus));
       pad2 = padOp;
     }
@@ -2436,7 +2438,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       SmallVector<int64_t> starts(ndims, 0);
       SmallVector<int64_t> limits = llvm::to_vector(dus.getType().getShape());
       SmallVector<int64_t> interior(ndims, 1);
-      auto sl = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(dus, manual->getResult(0), starts, limits, interior);
+      auto sl = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          dus, manual->getResult(0), starts, limits, interior);
       sdy::setSharding(sl, sharding);
     }
     return success();
