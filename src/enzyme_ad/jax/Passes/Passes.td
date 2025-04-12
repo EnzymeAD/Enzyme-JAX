@@ -557,6 +557,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Whether to throw a pass error if not fully raised">,
        Option<
+	/*C++ variable name=*/"concat_two_operands_comm",
+       /*CLI argument=*/"concat_two_operands_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
        /*C++ variable name=*/"concat_to_pad_comm",
        /*CLI argument=*/"concat_to_pad_comm",
        /*type=*/"int",
