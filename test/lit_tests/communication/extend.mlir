@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt --optimize-communication %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{extend_comm=1 extend_to_pad_comm=0})" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{extend_comm=0 extend_to_pad_comm=1})" %s | FileCheck %s --check-prefix=PAD
 
 sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
 func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
@@ -68,6 +69,20 @@ func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1
 // CHECK-NEXT:     return %2 : tensor<1x10x82xf64>
 // CHECK-NEXT: }
 
+// PAD:  sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
+// PAD-NEXT:  func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// PAD-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// PAD-NEXT:    %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// PAD-NEXT:    %1 = stablehlo.slice %0 [0:1, 0:10, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>) -> tensor<1x10x1xf64>
+// PAD-NEXT:    %2 = stablehlo.slice %0 [0:1, 0:10, 79:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>) -> tensor<1x10x1xf64>
+// PAD-NEXT:    %3 = stablehlo.pad %1, %cst, low = [0, 0, 0], high = [0, 0, 81], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x1xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:    %4 = stablehlo.pad %2, %cst, low = [0, 0, 81], high = [0, 0, 0], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x1xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:    %5 = stablehlo.pad %0, %cst, low = [0, 0, 1], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:    %6 = stablehlo.add %3, %4 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : tensor<1x10x82xf64>
+// PAD-NEXT:    %7 = stablehlo.add %6, %5 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : tensor<1x10x82xf64>
+// PAD-NEXT:    return %7 : tensor<1x10x82xf64>
+// PAD-NEXT:  }
+
 sdy.mesh @mesh2 = <["z"=1, "x"=2, "y"=4]>
 func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) {
     %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
@@ -97,3 +112,17 @@ func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // CHECK-NEXT:    } : (tensor<1x10x80xf64>) -> tensor<1x10x82xf64>
 // CHECK-NEXT:    return %1 : tensor<1x10x82xf64>
 // CHECK-NEXT:  }
+
+// PAD: sdy.mesh @mesh2 = <["z"=1, "x"=2, "y"=4]>
+// PAD-NEXT: func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) {
+// PAD-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// PAD-NEXT:     %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
+// PAD-NEXT:     %1 = stablehlo.slice %0 [0:1, 0:10, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>) -> tensor<1x10x1xf64>
+// PAD-NEXT:     %2 = stablehlo.slice %0 [0:1, 0:10, 79:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>) -> tensor<1x10x1xf64>
+// PAD-NEXT:     %3 = stablehlo.pad %1, %cst, low = [0, 0, 0], high = [0, 0, 81], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x1xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:     %4 = stablehlo.pad %2, %cst, low = [0, 0, 81], high = [0, 0, 0], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x1xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:     %5 = stablehlo.pad %0, %cst, low = [0, 0, 1], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x10x80xf64>, tensor<f64>) -> tensor<1x10x82xf64>
+// PAD-NEXT:     %6 = stablehlo.add %3, %4 {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : tensor<1x10x82xf64>
+// PAD-NEXT:     %7 = stablehlo.add %6, %5 {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : tensor<1x10x82xf64>
+// PAD-NEXT:     return %7 : tensor<1x10x82xf64>
+// PAD-NEXT: }
