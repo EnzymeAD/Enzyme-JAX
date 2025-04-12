@@ -43,8 +43,8 @@ public:
 
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
-    if (isa<LLVM::LLVMArrayType, LLVM::LLVMFixedVectorType,
-            LLVM::LLVMScalableVectorType>(llvmNDVectorTy)) {
+    if (isa<LLVM::LLVMArrayType, LLVM::LLVMScalableVectorType>(
+            llvmNDVectorTy)) {
       return failure();
     }
 
