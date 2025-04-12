@@ -2523,57 +2523,56 @@ struct ConcatToPadCommOptimize
     auto ndims = concat.getType().getShape().size();
     auto concatShape = concat.getType().getShape();
     auto concatDimension = concat.getDimension();
+    auto concatDimSize = concatShape[concatDimension];
     auto elemType = concat.getType().getElementType();
 
     auto concatSharding = mlir::sdy::getSharding(concat);
     if (!concatSharding)
       return failure();
 
-    auto operands = llvm::to_vector(concat.getOperands());
-    auto leftOperand = operands[0];
-    auto rightOperand = operands[1];
-
-    auto leftOperandSharding = mlir::sdy::getSharding(leftOperand);
-    if (!leftOperandSharding)
-      return failure();
-    auto rightOperandSharding = mlir::sdy::getSharding(rightOperand);
-    if (!rightOperandSharding)
-      return failure();
-
-    if (leftOperandSharding != rightOperandSharding ||
-        leftOperandSharding != concatSharding) {
-      return failure();
-    }
-
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
 
-    SmallVector<int64_t> padLowLeft(ndims, 0);
-    SmallVector<int64_t> padHighLeft(ndims, 0);
-    padHighLeft[concatDimension] =
-        cast<RankedTensorType>(rightOperand.getType())
-            .getShape()[concatDimension];
-
-    SmallVector<int64_t> padLowRight(ndims, 0);
-    SmallVector<int64_t> padHighRight(ndims, 0);
-    padLowRight[concatDimension] = cast<RankedTensorType>(leftOperand.getType())
-                                       .getShape()[concatDimension];
+    SmallVector<Value> addOperands(concat.getOperands().size());
 
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), rewriter.getZeroAttr(elemType));
 
-    auto leftPad = rewriter.create<stablehlo::PadOp>(
-        concat.getLoc(), leftOperand, zero, padLowLeft, padHighLeft, padInner);
-    sdy::setSharding(leftPad, concatSharding);
+    int64_t leftPadding = 0;
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandSharding = mlir::sdy::getSharding(operand);
+      if (!operandSharding || operandSharding != concatSharding)
+        return failure();
 
-    auto rightPad =
-        rewriter.create<stablehlo::PadOp>(concat.getLoc(), rightOperand, zero,
-                                          padLowRight, padHighRight, padInner);
-    sdy::setSharding(rightPad, concatSharding);
+      auto operandConcatDimSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
 
-    auto addOp =
-        rewriter.create<stablehlo::AddOp>(concat.getLoc(), leftPad, rightPad);
+      padLow[concatDimension] = leftPadding;
+      padHigh[concatDimension] =
+          concatDimSize - leftPadding - operandConcatDimSize;
+
+      auto paddedOperand = rewriter.create<stablehlo::PadOp>(
+          concat.getLoc(), operand, zero, padLow, padHigh, padInner);
+      sdy::setSharding(paddedOperand, concatSharding);
+      addOperands[i] = paddedOperand;
+
+      leftPadding += operandConcatDimSize;
+    }
+
+    if (addOperands.size() == 1) {
+      rewriter.replaceOp(concat, addOperands[0]);
+      return success();
+    }
+
+    stablehlo::AddOp addOp = rewriter.create<stablehlo::AddOp>(
+        concat.getLoc(), addOperands[0], addOperands[1]);
     sdy::setSharding(addOp, concatSharding);
-
+    for (int i = 2; i < addOperands.size(); i++) {
+      addOp = rewriter.create<stablehlo::AddOp>(concat.getLoc(), addOp,
+                                                addOperands[i]);
+      sdy::setSharding(addOp, concatSharding);
+    }
     rewriter.replaceOp(concat, addOp);
     return success();
   }

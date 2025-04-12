@@ -530,7 +530,7 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*C++ variable name=*/"periodic_concat",
        /*CLI argument=*/"periodic_concat",
        /*type=*/"int",
-       /*default=*/"1",
+       /*default=*/"0",
        /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"rotate_comm",
