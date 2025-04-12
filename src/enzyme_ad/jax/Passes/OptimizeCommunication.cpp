@@ -738,7 +738,6 @@ getWrapExtendConfiguration(int middleSize, int lhsSize, int rhsSize,
 // concat(slice2, op, slice1)
 struct PeriodicConcatSimplify
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
   PeriodicConcatSimplify(int &channel_id, MLIRContext *context,
@@ -1001,7 +1000,6 @@ struct PeriodicConcatSimplify
 
 // TODO: check mesh attr and ensure only applied to iota tile
 struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
-  using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
   WrapCommOptimize(int &channel_id, MLIRContext *context,
@@ -1160,9 +1158,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
-  using OpRewritePattern::OpRewritePattern;
   int &channel_id;
-  OpRewritePattern(int &channel_id, MLIRContext *context,
+  ExtendCommOptimize(int &channel_id, MLIRContext *context,
                    PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
@@ -1318,7 +1315,6 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
 // TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
-  using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
   RotateCommOptimize(int &channel_id, MLIRContext *context,
@@ -1503,7 +1499,6 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 // into a single shard
 struct ConcatTwoOperandsCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
   int &channel_id;
   ConcatTwoOperandsCommOptimize(int &channel_id, MLIRContext *context,
                                 PatternBenefit benefit = 1)
@@ -1815,7 +1810,6 @@ struct ConcatTwoOperandsCommOptimize
 };
 
 struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
   DUSToPadComm(int &channel_id, MLIRContext *context,
@@ -2407,7 +2401,6 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
 struct ConcatToPadCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
 
   int &channel_id;
   ConcatToPadCommOptimize(int &channel_id, MLIRContext *context,
@@ -2488,10 +2481,11 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    int channel_id = 0;
+    int channel_id = 1;
 
     getOperation()->walk([&](stablehlo::CollectivePermuteOp perm) {
-      channel_id = std::max(channel_id, perm.getChannelId() + 1);
+      if (auto attr = perm.getChannelHandle())
+      channel_id = std::max(channel_id, (int)attr->getHandle() + 1);
     });
 
     if (periodic_concat > 0)
