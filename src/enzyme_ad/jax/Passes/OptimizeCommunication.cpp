@@ -2455,8 +2455,8 @@ struct OptimizeCommunicationPass
     // is almost certainly a better option.
     if (permute_like_raise > 0)
       patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
-                   ExtendCommOptimize>(
-          context, PatternBenefit(permute_like_raise));
+                   ExtendCommOptimize>(context,
+                                       PatternBenefit(permute_like_raise));
 
     if (pad_like_raise > 0)
       patterns.add<DUSToPadComm, ConcatToPadCommOptimize>(
