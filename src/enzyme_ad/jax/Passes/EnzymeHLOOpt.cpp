@@ -1273,6 +1273,12 @@ struct ConcatToOneDimDUS final
           legal = false;
           break;
         }
+        if (i != outer.getDimension()) {
+          if (lhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+            legal = false;
+            break;
+          }
+        }
         if (lhsSlice.getStrides()[i] != 1) {
           legal = false;
           break;
@@ -1291,6 +1297,12 @@ struct ConcatToOneDimDUS final
           legal = false;
           break;
         }
+        if (i != outer.getDimension()) {
+          if (rhsSlice.getStartIndices()[i] != 0) {
+            legal = false;
+            break;
+          }
+        }
         if (rhsSlice.getStrides()[i] != 1) {
           legal = false;
           break;
@@ -1306,6 +1318,11 @@ struct ConcatToOneDimDUS final
     if (lhs && rhs && outer.getOperands().size() == 2) {
       return failure();
     }
+    if (lhs && rhs && lhs.getOperand() != rhs.getOperand()) {
+      return failure();
+    }
+
+    auto shard = sdy::getShardingPerValue(outer);
 
     SmallVector<Value> newOps;
     int start = lhs ? 1 : 0;
@@ -1313,10 +1330,15 @@ struct ConcatToOneDimDUS final
     for (int i = start; i < end; i++) {
       newOps.push_back(outer.getOperands()[i]);
     }
-    Value innerConcat = newOps.size() == 1
-                            ? newOps[0]
-                            : rewriter.create<stablehlo::ConcatenateOp>(
-                                  outer.getLoc(), newOps, outer.getDimension());
+    Value innerConcat = newOps[0];
+    if (newOps.size() != 1) {
+      auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOps, outer.getDimension());
+      innerConcat = nConcat;
+      if (shard) {
+        sdy::setShardings(nConcat, shard);
+      }
+    }
 
     auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
     Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
@@ -1332,7 +1354,123 @@ struct ConcatToOneDimDUS final
               .cast<ElementsAttr>());
     }
 
+    auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        outer, operand, innerConcat, starts);
+    if (shard) {
+      sdy::setShardings(dus, shard);
+    }
+    return success();
+  }
+};
+
+struct ConcatToOneDimDUSSlice final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer.getOperands().size() < 2)
+      return failure();
+    SmallVector<stablehlo::ConcatenateOp> inners;
+
+    stablehlo::SliceOp lhs = nullptr;
+    bool hasSlice = false;
+    if (auto lhsSlice =
+            outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
+        if (lhsSlice.getStartIndices()[i] != 0) {
+          hasSlice = true;
+        }
+        if (lhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+      }
+      if (legal)
+        lhs = lhsSlice;
+    }
+
+    if (!lhs)
+      return failure();
+
+    stablehlo::SliceOp rhs = nullptr;
+    if (auto rhsSlice =
+            outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
+        if (rhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+        if (i == outer.getDimension()) {
+          if (lhs.getStartIndices()[i] + outer.getType().getShape()[i] !=
+              rhsSlice.getLimitIndices()[i]) {
+            legal = false;
+            break;
+          }
+        } else {
+          if (lhs.getStartIndices()[i] != rhsSlice.getStartIndices()[i]) {
+            legal = false;
+            break;
+          }
+          if (lhs.getLimitIndices()[i] != rhsSlice.getLimitIndices()[i]) {
+            legal = false;
+            break;
+          }
+        }
+        if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+          hasSlice = true;
+        }
+      }
+      if (legal)
+        rhs = rhsSlice;
+    }
+
+    if (!rhs)
+      return failure();
+    if (!hasSlice)
+      return failure();
+    if (rhs.getOperand() != lhs.getOperand())
+      return failure();
+
     auto shard = sdy::getShardingPerValue(outer);
+
+    SmallVector<Value> newOps;
+    int start = lhs ? 1 : 0;
+    int end = outer.getOperands().size() - (rhs ? 1 : 0);
+    for (int i = start; i < end; i++) {
+      newOps.push_back(outer.getOperands()[i]);
+    }
+    Value innerConcat = newOps[0];
+    if (newOps.size() != 1) {
+      auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOps, outer.getDimension());
+      innerConcat = nConcat;
+      if (shard) {
+        sdy::setShardings(nConcat, shard);
+      }
+    }
+
+    auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
+    auto operand = rewriter.create<stablehlo::SliceOp>(
+        lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
+        rhs.getLimitIndices(), lhs.getStrides());
+    if (shard) {
+      sdy::setShardings(operand, shard);
+    }
+    SmallVector<Value> starts(
+        outer.getType().getShape().size(),
+        rewriter.create<stablehlo::ConstantOp>(
+            outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+
+    if (lhs) {
+      starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
+          outer.getLoc(), iTy,
+          makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
+              .cast<ElementsAttr>());
+    }
+
     auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         outer, operand, innerConcat, starts);
     if (shard) {
@@ -14724,6 +14862,8 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T end,
                                 PatternRewriter &rewriter) const override {
     if (end->template getParentOfType<enzymexla::CommRegionOp>())
+      return failure();
+    if (end->template getParentOfType<sdy::ManualComputationOp>())
       return failure();
     SetVector<Operation *> done;
     done.insert(end);
