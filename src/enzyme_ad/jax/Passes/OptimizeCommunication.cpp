@@ -2452,28 +2452,23 @@ struct OptimizeCommunicationPass
     RewritePatternSet patterns(context);
 
     if (periodic_concat > 0)
-      patterns.add<WrapCommOptimize>(context,
-                                       PatternBenefit(periodic_concat));
+      patterns.add<WrapCommOptimize>(context, PatternBenefit(periodic_concat));
 
     if (rotate_comm > 0)
-      patterns.add<WrapCommOptimize>(context,
-                                       PatternBenefit(rotate_comm));
+      patterns.add<WrapCommOptimize>(context, PatternBenefit(rotate_comm));
 
     if (wrap_comm > 0)
-      patterns.add<WrapCommOptimize>(context,
-                                       PatternBenefit(wrap_comm));
+      patterns.add<WrapCommOptimize>(context, PatternBenefit(wrap_comm));
 
     if (extend_comm > 0)
-      patterns.add<ExtendCommOptimize>(context,
-                                       PatternBenefit(extend_comm));
-    
+      patterns.add<ExtendCommOptimize>(context, PatternBenefit(extend_comm));
+
     if (dus_to_pad_comm > 0)
-      patterns.add<DUSToPadComm>(
-          context, PatternBenefit(dus_to_pad_comm));
+      patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
 
     if (concat_to_pad_comm > 0)
-      patterns.add<ConcatToPadCommOptimize>(
-          context, PatternBenefit(concat_to_pad_comm));
+      patterns.add<ConcatToPadCommOptimize>(context,
+                                            PatternBenefit(concat_to_pad_comm));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
