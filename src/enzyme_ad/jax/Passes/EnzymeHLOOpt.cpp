@@ -10437,6 +10437,58 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
+// https://github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
+struct SpeculateIfPadToSelect final
+    : public OpRewritePattern<mlir::stablehlo::IfOp> {
+  using OpRewritePattern<mlir::stablehlo::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
+        op.getFalseBranch().empty())
+      return failure();
+
+    auto pred = op.getPred();
+
+    auto trueOperands =
+        op.getTrueBranch().front().getTerminator()->getOperands();
+    auto falseOperands =
+        op.getFalseBranch().front().getTerminator()->getOperands();
+
+    bool anyPad = false;
+    for (auto [trueVal, falseVal] : llvm::zip(trueOperands, falseOperands)) {
+      if (&op.getTrueBranch() != trueVal.getParentRegion() &&
+          &op.getFalseBranch() == falseVal.getParentRegion()) {
+        if (auto pad = falseVal.getDefiningOp<stablehlo::PadOp>()) {
+          if (pad.getOperand().getParentRegion() != &op.getFalseBranch() &&
+              pad.getPaddingValue().getParentRegion() != &op.getFalseBranch()) {
+            rewriter.modifyOpInPlace(pad, [&]() { pad->moveBefore(op); });
+            anyPad = true;
+            continue;
+          }
+        }
+      }
+
+      if (&op.getFalseBranch() != falseVal.getParentRegion() &&
+          &op.getTrueBranch() == trueVal.getParentRegion()) {
+        if (auto pad = trueVal.getDefiningOp<stablehlo::PadOp>()) {
+          if (pad.getOperand().getParentRegion() != &op.getTrueBranch() &&
+              pad.getPaddingValue().getParentRegion() != &op.getTrueBranch()) {
+            rewriter.modifyOpInPlace(pad, [&]() { pad->moveBefore(op); });
+            anyPad = true;
+            continue;
+          }
+        }
+      }
+    }
+
+    if (anyPad)
+      return success();
+    else
+      return failure();
+  }
+};
+
 bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
                                stablehlo::TransposeOp outerTrans) {
   auto innerPerm = innerTrans.getPermutation();
