@@ -263,7 +263,8 @@ public:
   }
 
   static std::optional<StaticSlice> get(Value v) {
-    if (!v) return std::nullopt;
+    if (!v)
+      return std::nullopt;
 
     StaticSlice res;
     RankedTensorType ty = dyn_cast<RankedTensorType>(v.getType());
@@ -15361,9 +15362,12 @@ LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            StaticSlice *midSS = nullptr,
                            StaticSlice *rhsSS = nullptr) {
   std::optional<StaticSlice> lhs, mid, rhs;
-  if (_lhs) lhs = StaticSlice::get(_lhs);
-  if (_mid) mid = StaticSlice::get(_mid);
-  if (_rhs) rhs = StaticSlice::get(_rhs);
+  if (_lhs)
+    lhs = StaticSlice::get(_lhs);
+  if (_mid)
+    mid = StaticSlice::get(_mid);
+  if (_rhs)
+    rhs = StaticSlice::get(_rhs);
 
   if (!mid)
     return rewriter.notifyMatchFailure(loc, "lhs or mid or rhs not slice");
@@ -15415,11 +15419,11 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
       StaticSlice lhs;
       StaticSlice mid;
 
-      if (succeeded(isExtendLike(dim, concat.getOperand(0), concat.getOperand(1), nullptr, concat.getLoc(),
+      if (succeeded(isExtendLike(dim, concat.getOperand(0),
+                                 concat.getOperand(1), nullptr, concat.getLoc(),
                                  rewriter, &lhs, &mid, nullptr))) {
         auto extend = rewriter.create<enzymexla::ExtendOp>(
-            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim),
-            0, dim);
+            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim), 0, dim);
         if (auto shard = sdy::getShardingPerValue(concat)) {
           sdy::setShardings(extend, shard);
         }
@@ -15431,7 +15435,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
       StaticSlice rhs;
       StaticSlice mid;
 
-      if (succeeded(isExtendLike(dim, nullptr, concat.getOperand(0), concat.getOperand(1), concat.getLoc(),
+      if (succeeded(isExtendLike(dim, nullptr, concat.getOperand(0),
+                                 concat.getOperand(1), concat.getLoc(),
                                  rewriter, nullptr, &mid, &rhs))) {
         auto extend = rewriter.create<enzymexla::ExtendOp>(
             concat.getLoc(), mid.getOutput(), 0, rhs.getOutputShape(dim), dim);
