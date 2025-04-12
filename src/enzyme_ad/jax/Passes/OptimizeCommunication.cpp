@@ -333,8 +333,9 @@ void generateCommPatternForNonEdges(
 
   auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
       op->getLoc(), ifCondCommSelect.getResults()[0], sourceTargetPairs,
-      stablehlo::ChannelHandleAttr::get(op->getContext(), /*handle*/ 1,
+      stablehlo::ChannelHandleAttr::get(op->getContext(), /*handle*/ channel_id,
                                         /*type*/ 0));
+  channel_id++;
 
   Type ifTypes[] = {RankedTensorType::get(
       localRetShape,
@@ -492,8 +493,9 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
               {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
               rewriter.getI64Type()),
           sourceTargetIdxs),
-      stablehlo::ChannelHandleAttr::get(op->getContext(), /*handle*/ 1,
+      stablehlo::ChannelHandleAttr::get(op->getContext(), /*handle*/ channel_id,
                                         /*type*/ 0));
+  channel_id++;
 
   Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
   auto ifCondInner =
@@ -996,6 +998,11 @@ struct PeriodicConcatSimplify
 struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  int &channel_id;
+  WrapCommOptimize(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
+
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
                                 PatternRewriter &rewriter) const override {
     auto elemType = wrap.getType().getElementType();
@@ -1149,7 +1156,10 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   using OpRewritePattern::OpRewritePattern;
-
+  int &channel_id;
+  OpRewritePattern(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
     auto elemType = extend.getType().getElementType();
@@ -1305,6 +1315,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  int &channel_id;
+  RotateCommOptimize(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
     int32_t ndims = rotate.getType().getRank();
@@ -1423,8 +1437,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
                   {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               sourceTargetIdxs),
-          stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ 1,
+          stablehlo::ChannelHandleAttr::get(rotate.getContext(), /*handle*/ channel_id,
                                             /*type*/ 0));
+      channel_id++;
 
       SmallVector<int64_t> innerStartsPresent(ndims, 0);
       SmallVector<int64_t> innerLimitsPresent = llvm::to_vector(
@@ -1483,6 +1498,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 struct ConcatTwoOperandsCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
+  int &channel_id;
+  ConcatTwoOperandsCommOptimize(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
@@ -1681,8 +1700,9 @@ struct ConcatTwoOperandsCommOptimize
                   {(int64_t)(shiftPairs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               shiftPairs),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ 1,
+          stablehlo::ChannelHandleAttr::get(concat.getContext(), /*handle*/ channel_id,
                                             /*type*/ 0));
+      channel_id++;
 
       Type ifTypes[] = {RankedTensorType::get(
           commResult.getType().cast<ShapedType>().getShape(), elemType)};
@@ -1789,6 +1809,11 @@ struct ConcatTwoOperandsCommOptimize
 
 struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
+
+  int &channel_id;
+  DUSToPadComm(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
@@ -2377,6 +2402,11 @@ struct ConcatToPadCommOptimize
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  int &channel_id;
+  ConcatToPadCommOptimize(int& channel_id, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
+
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
     if (concat.getNumOperands() != 2) {
@@ -2451,29 +2481,35 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
+    int channel_id = 0;
+
+    getOperation()->walk([&](stablehlo::CollectivePermuteOp perm){
+      channel_id = max(channel_id, perm->getChannelId() + 1);
+    });
+
     if (periodic_concat > 0)
-      patterns.add<PeriodicConcatSimplify>(context,
+      patterns.add<PeriodicConcatSimplify>(channel_id, context,
                                            PatternBenefit(periodic_concat));
 
     if (rotate_comm > 0)
-      patterns.add<RotateCommOptimize>(context, PatternBenefit(rotate_comm));
+      patterns.add<RotateCommOptimize>(channel_id, context, PatternBenefit(rotate_comm));
 
     if (wrap_comm > 0)
-      patterns.add<WrapCommOptimize>(context, PatternBenefit(wrap_comm));
+      patterns.add<WrapCommOptimize>(channel_id, context, PatternBenefit(wrap_comm));
 
     if (extend_comm > 0)
-      patterns.add<ExtendCommOptimize>(context, PatternBenefit(extend_comm));
+      patterns.add<ExtendCommOptimize>(channel_id, context, PatternBenefit(extend_comm));
 
     if (dus_to_pad_comm > 0)
-      patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+      patterns.add<DUSToPadComm>(channel_id, context, PatternBenefit(dus_to_pad_comm));
 
     if (concat_to_pad_comm > 0)
-      patterns.add<ConcatToPadCommOptimize>(context,
+      patterns.add<ConcatToPadCommOptimize>(channel_id, context,
                                             PatternBenefit(concat_to_pad_comm));
 
     if (concat_two_operands_comm > 0)
       patterns.add<ConcatTwoOperandsCommOptimize>(
-          context, PatternBenefit(concat_two_operands_comm));
+          channel_id, context, PatternBenefit(concat_two_operands_comm));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
