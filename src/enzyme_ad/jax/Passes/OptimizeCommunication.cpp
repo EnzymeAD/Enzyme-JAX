@@ -747,6 +747,8 @@ struct PeriodicConcatSimplify
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     if (concat.getNumOperands() != 3) {
       return failure();
     }
@@ -1012,6 +1014,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
                                 PatternRewriter &rewriter) const override {
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto elemType = wrap.getType().getElementType();
     auto ndims = wrap.getType().getRank();
     auto wrapOperandShape = wrap.getOperand().getType().getShape();
@@ -1166,6 +1170,8 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
                                 PatternRewriter &rewriter) const override {
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto elemType = wrap.getType().getElementType();
     auto ndims = wrap.getType().getRank();
     auto wrapOperandShape = wrap.getOperand().getType().getShape();
@@ -1255,6 +1261,8 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto elemType = extend.getType().getElementType();
     auto ndims = extend.getType().getRank();
     auto extendOperandShape = extend.getOperand().getType().getShape();
@@ -1410,6 +1418,8 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto elemType = extend.getType().getElementType();
     auto ndims = extend.getType().getRank();
     auto extendOperandShape = extend.getOperand().getType().getShape();
@@ -1502,6 +1512,8 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     int32_t ndims = rotate.getType().getRank();
     auto elType = rotate.getType().getElementType();
     auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
@@ -1679,6 +1691,8 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto rotateSharding = mlir::sdy::getSharding(rotate);
     if (!rotateSharding)
       return failure();
@@ -1754,6 +1768,8 @@ struct ConcatTwoOperandsCommOptimize
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     if (concat.getNumOperands() != 2) {
       return failure();
     }
@@ -2812,6 +2828,8 @@ struct ConcatToPadCommOptimize
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     auto ndims = concat.getType().getShape().size();
     auto concatShape = concat.getType().getShape();
     auto concatDimension = concat.getDimension();
