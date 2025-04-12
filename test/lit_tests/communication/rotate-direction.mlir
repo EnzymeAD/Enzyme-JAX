@@ -7,7 +7,7 @@ module {
 // CHECK-SAME:                             %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<4x8x80xf64>) -> tensor<4x8x80xf64> {
 // CHECK:           %[[VAL_1:.*]] = sdy.manual_computation(%[[VAL_0]]) in_shardings=[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>] out_shardings=[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>] manual_axes={"x", "y", "z"} (%[[VAL_2:.*]]: tensor<4x8x20xf64>) {
 // CHECK:             %[[VAL_3:.*]] = stablehlo.slice %[[VAL_2]] [0:4, 0:8, 0:1] : (tensor<4x8x20xf64>) -> tensor<4x8x1xf64>
-// CHECK:             %[[VAL_4:.*]] = "stablehlo.collective_permute"(%[[VAL_3]]) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<{{\[\[}}1, 0], [2, 1], [3, 2], [0, 3]]> : tensor<4x2xi64>}> : (tensor<4x8x1xf64>) -> tensor<4x8x1xf64>
+// CHECK:             %[[VAL_4:.*]] = "stablehlo.collective_permute"(%[[VAL_3]]) <{channel_handle = #stablehlo.channel_handle<handle = 2, type = 0>, source_target_pairs = dense<{{\[\[}}1, 0], [2, 1], [3, 2], [0, 3]]> : tensor<4x2xi64>}> : (tensor<4x8x1xf64>) -> tensor<4x8x1xf64>
 // CHECK:             %[[VAL_5:.*]] = stablehlo.slice %[[VAL_2]] [0:4, 0:8, 1:20] : (tensor<4x8x20xf64>) -> tensor<4x8x19xf64>
 // CHECK:             %[[VAL_6:.*]] = stablehlo.concatenate %[[VAL_5]], %[[VAL_4]], dim = 2 : (tensor<4x8x19xf64>, tensor<4x8x1xf64>) -> tensor<4x8x20xf64>
 // CHECK:             sdy.return %[[VAL_6]] : tensor<4x8x20xf64>
