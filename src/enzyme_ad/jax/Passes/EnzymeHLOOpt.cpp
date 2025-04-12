@@ -15806,8 +15806,7 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
 
       if (!oldSliceOp) {
         // Direct Extend - Replace directly
-        if (oldExtendOp.getResult().getType() ==
-            newBaseExtendOp.getType()) {
+        if (oldExtendOp.getResult().getType() == newBaseExtendOp.getType()) {
           rewriter.replaceOp(oldExtendOp, newBaseExtendOp);
         } else {
           auto castOp = rewriter.create<tensor::CastOp>(
@@ -15826,10 +15825,9 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
         newSliceLimits[targetExtendDim] =
             newBaseExtendResultType.getDimSize(targetExtendDim);
         newSliceStrides[targetExtendDim] = 1;
-	assert(newBaseExtendOp);
-	rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-            oldExtendOp,
-            newBaseExtendOp, newSliceStarts, newSliceLimits,
+        assert(newBaseExtendOp);
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+            oldExtendOp, newBaseExtendOp, newSliceStarts, newSliceLimits,
             newSliceStrides);
       }
     }
