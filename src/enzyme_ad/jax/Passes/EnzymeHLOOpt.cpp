@@ -263,6 +263,9 @@ public:
   }
 
   static std::optional<StaticSlice> get(Value v) {
+    if (!v)
+      return std::nullopt;
+
     StaticSlice res;
     RankedTensorType ty = dyn_cast<RankedTensorType>(v.getType());
     if (!ty)
@@ -657,6 +660,192 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
     rewriter.replaceOpWithNewOp<mlir::stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
+
+    return success();
+  }
+};
+
+// reshape(extend) -> extend(reshape)
+struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is an ExtendOp
+    auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!extendOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(extendOp->getUsers()))
+      return failure();
+
+    // Get extend operation parameters
+    int64_t extendDim = extendOp.getDimension();
+    int64_t lhs = extendOp.getLhs();
+    int64_t rhs = extendOp.getRhs();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        extendOp.getOperand().getType().getShape().begin(),
+        extendOp.getOperand().getType().getShape().end());
+
+    // Calculate the new extended dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new extend dimension
+    int64_t newExtendDim = -1;
+    int64_t oldDimSize = extendOp.getOperand().getType().getShape()[extendDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newExtendDim = i;
+        break;
+      }
+    }
+
+    if (newExtendDim == -1)
+      return failure();
+
+    // First reshape the extend's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              extendOp.getOperand().getType().getElementType()),
+        extendOp.getOperand());
+
+    // Then create a new extend operation on the reshaped data
+    auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
+        op.getLoc(), newReshapeOp.getResult(), lhs, rhs, newExtendDim);
+
+    // Replace the original reshape op with the new extend operation
+    rewriter.replaceOp(op, newExtendOp);
+
+    return success();
+  }
+};
+
+// reshape(wrap) -> wrap(reshape)
+struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a WrapOp
+    auto wrapOp = op.getOperand().getDefiningOp<enzymexla::WrapOp>();
+    if (!wrapOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(wrapOp->getUsers()))
+      return failure();
+
+    // Get wrap operation parameters
+    int64_t wrapDim = wrapOp.getDimension();
+    int64_t lhs = wrapOp.getLhs();
+    int64_t rhs = wrapOp.getRhs();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        wrapOp.getOperand().getType().getShape().begin(),
+        wrapOp.getOperand().getType().getShape().end());
+
+    // Calculate the new wrapped dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new wrap dimension
+    int64_t newWrapDim = -1;
+    int64_t oldDimSize = wrapOp.getOperand().getType().getShape()[wrapDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newWrapDim = i;
+        break;
+      }
+    }
+
+    if (newWrapDim == -1)
+      return failure();
+
+    // First reshape the wrap's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              wrapOp.getOperand().getType().getElementType()),
+        wrapOp.getOperand());
+
+    // Then create a new wrap operation on the reshaped data
+    auto newWrapOp = rewriter.create<enzymexla::WrapOp>(
+        op.getLoc(), op.getType(), newReshapeOp.getResult(), lhs, rhs,
+        newWrapDim);
+
+    // Replace the original reshape op with the new wrap operation
+    rewriter.replaceOp(op, newWrapOp);
+
+    return success();
+  }
+};
+
+// reshape(rotate) -> rotate(reshape)
+struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the input to Reshape is a RotateOp
+    auto rotateOp = op.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!rotateOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(rotateOp->getUsers()))
+      return failure();
+
+    // Get rotate operation parameters
+    int64_t rotateDim = rotateOp.getDimension();
+    int64_t rotateAmount = rotateOp.getAmount();
+
+    // Get the shape of the operand
+    SmallVector<int64_t> operandShape(
+        rotateOp.getOperand().getType().getShape().begin(),
+        rotateOp.getOperand().getType().getShape().end());
+
+    // Calculate the new rotated dimension after the reshape
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    // Determine the new rotate dimension
+    int64_t newRotateDim = -1;
+    int64_t oldDimSize = rotateOp.getOperand().getType().getShape()[rotateDim];
+
+    for (size_t i = 0; i < operandShape.size(); ++i) {
+      if (operandShape[i] == oldDimSize) {
+        newRotateDim = i;
+        break;
+      }
+    }
+
+    if (newRotateDim == -1)
+      return failure();
+
+    // First reshape the rotate's operand
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              rotateOp.getOperand().getType().getElementType()),
+        rotateOp.getOperand());
+
+    // Then create a new rotate operation on the reshaped data
+    auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
+        op.getLoc(), newReshapeOp.getResult(), rotateAmount, newRotateDim);
+
+    // Replace the original reshape op with the new rotate operation
+    rewriter.replaceOp(op, newRotateOp);
 
     return success();
   }
@@ -1087,6 +1276,12 @@ struct ConcatToOneDimDUS final
           legal = false;
           break;
         }
+        if (i != outer.getDimension()) {
+          if (lhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+            legal = false;
+            break;
+          }
+        }
         if (lhsSlice.getStrides()[i] != 1) {
           legal = false;
           break;
@@ -1105,6 +1300,12 @@ struct ConcatToOneDimDUS final
           legal = false;
           break;
         }
+        if (i != outer.getDimension()) {
+          if (rhsSlice.getStartIndices()[i] != 0) {
+            legal = false;
+            break;
+          }
+        }
         if (rhsSlice.getStrides()[i] != 1) {
           legal = false;
           break;
@@ -1120,6 +1321,11 @@ struct ConcatToOneDimDUS final
     if (lhs && rhs && outer.getOperands().size() == 2) {
       return failure();
     }
+    if (lhs && rhs && lhs.getOperand() != rhs.getOperand()) {
+      return failure();
+    }
+
+    auto shard = sdy::getShardingPerValue(outer);
 
     SmallVector<Value> newOps;
     int start = lhs ? 1 : 0;
@@ -1127,10 +1333,15 @@ struct ConcatToOneDimDUS final
     for (int i = start; i < end; i++) {
       newOps.push_back(outer.getOperands()[i]);
     }
-    Value innerConcat = newOps.size() == 1
-                            ? newOps[0]
-                            : rewriter.create<stablehlo::ConcatenateOp>(
-                                  outer.getLoc(), newOps, outer.getDimension());
+    Value innerConcat = newOps[0];
+    if (newOps.size() != 1) {
+      auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOps, outer.getDimension());
+      innerConcat = nConcat;
+      if (shard) {
+        sdy::setShardings(nConcat, shard);
+      }
+    }
 
     auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
     Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
@@ -1142,12 +1353,132 @@ struct ConcatToOneDimDUS final
     if (lhs) {
       starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
           outer.getLoc(), iTy,
-          makeAttr(iTy, lhs.getStartIndices()[outer.getDimension()])
+          makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
               .cast<ElementsAttr>());
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+    auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         outer, operand, innerConcat, starts);
+    if (shard) {
+      sdy::setShardings(dus, shard);
+    }
+    return success();
+  }
+};
+
+struct ConcatToOneDimDUSSlice final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer.getOperands().size() < 2)
+      return failure();
+    SmallVector<stablehlo::ConcatenateOp> inners;
+
+    stablehlo::SliceOp lhs = nullptr;
+    bool hasSlice = false;
+    if (auto lhsSlice =
+            outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
+        if (lhsSlice.getStartIndices()[i] != 0) {
+          hasSlice = true;
+        }
+        if (lhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+      }
+      if (legal)
+        lhs = lhsSlice;
+    }
+
+    if (!lhs)
+      return failure();
+
+    stablehlo::SliceOp rhs = nullptr;
+    if (auto rhsSlice =
+            outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
+      bool legal = true;
+      for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
+        if (rhsSlice.getStrides()[i] != 1) {
+          legal = false;
+          break;
+        }
+        if (i == outer.getDimension()) {
+          if (lhs.getStartIndices()[i] + outer.getType().getShape()[i] !=
+              rhsSlice.getLimitIndices()[i]) {
+            legal = false;
+            break;
+          }
+        } else {
+          if (lhs.getStartIndices()[i] != rhsSlice.getStartIndices()[i]) {
+            legal = false;
+            break;
+          }
+          if (lhs.getLimitIndices()[i] != rhsSlice.getLimitIndices()[i]) {
+            legal = false;
+            break;
+          }
+        }
+        if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+          hasSlice = true;
+        }
+      }
+      if (legal)
+        rhs = rhsSlice;
+    }
+
+    if (!rhs)
+      return failure();
+    if (!hasSlice)
+      return failure();
+    if (rhs.getOperand() != lhs.getOperand())
+      return failure();
+
+    auto shard = sdy::getShardingPerValue(outer);
+
+    SmallVector<Value> newOps;
+    int start = lhs ? 1 : 0;
+    int end = outer.getOperands().size() - (rhs ? 1 : 0);
+    for (int i = start; i < end; i++) {
+      newOps.push_back(outer.getOperands()[i]);
+    }
+    Value innerConcat = newOps[0];
+    if (newOps.size() != 1) {
+      auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
+          outer.getLoc(), newOps, outer.getDimension());
+      innerConcat = nConcat;
+      if (shard) {
+        sdy::setShardings(nConcat, shard);
+      }
+    }
+
+    auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
+    auto operand = rewriter.create<stablehlo::SliceOp>(
+        lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
+        rhs.getLimitIndices(), lhs.getStrides());
+    if (shard) {
+      sdy::setShardings(operand, shard);
+    }
+    SmallVector<Value> starts(
+        outer.getType().getShape().size(),
+        rewriter.create<stablehlo::ConstantOp>(
+            outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+
+    if (lhs) {
+      starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
+          outer.getLoc(), iTy,
+          makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
+              .cast<ElementsAttr>());
+    }
+
+    auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        outer, operand, innerConcat, starts);
+    if (shard) {
+      sdy::setShardings(dus, shard);
+    }
     return success();
   }
 };
@@ -14535,6 +14866,8 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
                                 PatternRewriter &rewriter) const override {
     if (end->template getParentOfType<enzymexla::CommRegionOp>())
       return failure();
+    if (end->template getParentOfType<sdy::ManualComputationOp>())
+      return failure();
     SetVector<Operation *> done;
     done.insert(end);
     SmallVector<Operation *> todo = {end};
@@ -14956,38 +15289,119 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern<enzymexla::ExtendOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
+                                PatternRewriter &rewriter) const override {
+    DenseElementsAttr cstAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
+      return failure();
+
+    if (!cstAttr.isSplat())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        op, SplatElementsAttr::get(op.getType(),
+                                   cstAttr.getSplatValue<Attribute>()));
+
+    return success();
+  }
+};
+
+template <typename Op, typename EnzymeOp>
+LogicalResult commOpElementWise(Op op, PatternRewriter &rewriter) {
+  auto lhs = op.getLhs();
+  auto rhs = op.getRhs();
+
+  auto lhsExtend = lhs.template getDefiningOp<EnzymeOp>();
+  auto rhsExtend = rhs.template getDefiningOp<EnzymeOp>();
+
+  if (!lhsExtend || !rhsExtend)
+    return failure();
+
+  if (lhsExtend.getLhs() != rhsExtend.getLhs() ||
+      lhsExtend.getRhs() != rhsExtend.getRhs() ||
+      lhsExtend.getDimension() != rhsExtend.getDimension())
+    return failure();
+
+  if (!llvm::hasSingleElement(lhs.getUsers()) ||
+      !llvm::hasSingleElement(rhs.getUsers()))
+    return failure();
+
+  auto elementWise = rewriter.create<Op>(op.getLoc(), lhsExtend.getOperand(),
+                                         rhsExtend.getOperand());
+  rewriter.replaceOpWithNewOp<EnzymeOp>(op, elementWise, lhsExtend.getLhs(),
+                                        lhsExtend.getRhs(),
+                                        lhsExtend.getDimension());
+
+  return success();
+};
+
+template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    return commOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
+  }
+};
+
+template <typename Op> struct WrapElementwise : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    return commOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
+  }
+};
+
 LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            Location loc, RewriterBase &rewriter,
                            StaticSlice *lhsSS = nullptr,
                            StaticSlice *midSS = nullptr,
                            StaticSlice *rhsSS = nullptr) {
-  auto lhs = StaticSlice::get(_lhs);
-  auto mid = StaticSlice::get(_mid);
-  auto rhs = StaticSlice::get(_rhs);
+  std::optional<StaticSlice> lhs, mid, rhs;
+  if (_lhs)
+    lhs = StaticSlice::get(_lhs);
+  if (_mid)
+    mid = StaticSlice::get(_mid);
+  if (_rhs)
+    rhs = StaticSlice::get(_rhs);
 
-  if (!lhs || !mid || !rhs)
+  if (!mid)
     return rewriter.notifyMatchFailure(loc, "lhs or mid or rhs not slice");
 
-  if (!StaticSlice::isPrefixInDim(*lhs, *mid, dim))
-    return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
-  if (lhs->getOutputShape(dim) != 1) {
-    return failure();
+  if (!lhs && !rhs) {
+    return rewriter.notifyMatchFailure(loc, "lhs or rhs must be slice");
   }
-  if (rhs->getOutputShape(dim) != 1) {
-    return failure();
-  }
-  if (!StaticSlice::isSuffixInDim(*rhs, *mid, dim))
-    return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
-  if (!rhs->isStrideOneAtDim(dim) || !mid->isStrideOneAtDim(dim) ||
-      !lhs->isStrideOneAtDim(dim))
-    return rewriter.notifyMatchFailure(loc, "Not stride one");
-  if (rhs->getInput() != mid->getInput() || lhs->getInput() != mid->getInput())
-    return rewriter.notifyMatchFailure(loc,
-                                       "lhs mid or rhs not on the same input");
 
-  if (lhsSS)
+  if (_lhs && !StaticSlice::isPrefixInDim(*lhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
+  if (_lhs && lhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
+  if (_rhs && rhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
+  if (_rhs && !StaticSlice::isSuffixInDim(*rhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
+  if (_rhs && !rhs->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "RHS not stride one");
+  if (_lhs && !lhs->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "LHS not stride one");
+  if (!mid->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "Mid not stride one");
+  if (_rhs && rhs->getInput() != mid->getInput())
+    return rewriter.notifyMatchFailure(loc,
+                                       "mid and rhs not on the same input");
+  if (_lhs && lhs->getInput() != mid->getInput())
+    return rewriter.notifyMatchFailure(loc,
+                                       "mid and lhs not on the same input");
+
+  if (_lhs && lhsSS)
     *lhsSS = *lhs;
-  if (rhsSS)
+  if (_rhs && rhsSS)
     *rhsSS = *rhs;
   if (midSS)
     *midSS = *mid;
@@ -15001,6 +15415,38 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
     unsigned dim = concat.getDimension();
+    if (concat.getNumOperands() == 2) {
+      StaticSlice lhs;
+      StaticSlice mid;
+
+      if (succeeded(isExtendLike(dim, concat.getOperand(0),
+                                 concat.getOperand(1), nullptr, concat.getLoc(),
+                                 rewriter, &lhs, &mid, nullptr))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim), 0, dim);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(extend, shard);
+        }
+        rewriter.replaceOp(concat, extend);
+        return success();
+      }
+    }
+    if (concat.getNumOperands() == 2) {
+      StaticSlice rhs;
+      StaticSlice mid;
+
+      if (succeeded(isExtendLike(dim, nullptr, concat.getOperand(0),
+                                 concat.getOperand(1), concat.getLoc(),
+                                 rewriter, nullptr, &mid, &rhs))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), 0, rhs.getOutputShape(dim), dim);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(extend, shard);
+        }
+        rewriter.replaceOp(concat, extend);
+        return success();
+      }
+    }
     for (unsigned i = 2; i < concat.getNumOperands(); i++) {
       auto finish = [&](Value extend) {
         SmallVector<Value> toConcat;
@@ -15050,8 +15496,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
           if (inShape.size() != outShape.size() + 1)
             return nullptr;
 
-          for (unsigned inI = 0, outI = 0;
-               inI < inShape.size(), outI < outShape.size();) {
+          for (unsigned inI = 0, outI = 0; inI < inShape.size();) {
+            if (outI == outShape.size())
+              return nullptr;
             if (inShape[inI] == outShape[outI]) {
               inI++;
               outI++;
@@ -15061,6 +15508,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
               } else if (!removedDim) {
                 removedDim = inI;
                 inI++;
+              } else {
+                return nullptr;
               }
             } else {
               return nullptr;
@@ -15485,6 +15934,165 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+// transpose(wrap) -> wrap(transpose)
+struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is a wrap operation
+    auto wrapOp = op.getOperand().getDefiningOp<enzymexla::WrapOp>();
+    if (!wrapOp)
+      return failure();
+
+    // Get wrap operation parameters
+    int64_t wrapDim = wrapOp.getDimension();
+    int64_t lhs = wrapOp.getLhs();
+    int64_t rhs = wrapOp.getRhs();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new wrap dimension will be the permuted dimension
+    int64_t newWrapDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == wrapDim) {
+        newWrapDim = i;
+        break;
+      }
+    }
+
+    if (newWrapDim == -1)
+      return failure();
+
+    // First transpose the wrap's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), wrapOp.getOperand(), op.getPermutation());
+
+    // Then create a new wrap operation on the transposed data
+    auto newWrapType = op.getType();
+    auto newWrapOp = rewriter.create<enzymexla::WrapOp>(
+        op.getLoc(), newWrapType, newTranspose.getResult(), lhs, rhs,
+        newWrapDim);
+
+    // Replace the original op with the new wrap operation
+    rewriter.replaceOp(op, newWrapOp);
+    return success();
+  }
+};
+
+// transpose(extend) -> extend(transpose)
+struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is an extend operation
+    auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!extendOp)
+      return failure();
+
+    // Get extend operation parameters
+    int64_t extendDim = extendOp.getDimension();
+    int64_t lhs = extendOp.getLhs();
+    int64_t rhs = extendOp.getRhs();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new extend dimension will be the permuted dimension
+    int64_t newExtendDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == extendDim) {
+        newExtendDim = i;
+        break;
+      }
+    }
+
+    if (newExtendDim == -1)
+      return failure();
+
+    // First transpose the extend's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), extendOp.getOperand(), op.getPermutation());
+
+    // Then create a new extend operation on the transposed data
+    auto newExtendType = op.getType();
+    auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
+        op.getLoc(), newTranspose.getResult(), lhs, rhs, newExtendDim);
+
+    // Replace the original op with the new extend operation
+    rewriter.replaceOp(op, newExtendOp);
+    return success();
+  }
+};
+
+// transpose(rotate) -> rotate(transpose)
+struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the operand is a rotate operation
+    auto rotateOp = op.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!rotateOp)
+      return failure();
+
+    // Get rotate operation parameters
+    int64_t rotateDim = rotateOp.getDimension();
+    int64_t amount = rotateOp.getAmount();
+
+    // Get permutation array
+    SmallVector<int64_t> permutation;
+    for (auto val : op.getPermutation()) {
+      permutation.push_back(static_cast<int64_t>(val));
+    }
+
+    // The new rotate dimension will be the permuted dimension
+    int64_t newRotateDim = -1;
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i] == rotateDim) {
+        newRotateDim = i;
+        break;
+      }
+    }
+
+    if (newRotateDim == -1)
+      return failure();
+
+    // First transpose the rotate's operand
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), rotateOp.getOperand(), op.getPermutation());
+
+    // Then create a new rotate operation on the transposed data
+    auto newRotateType = op.getType();
+    auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
+        op.getLoc(), newTranspose.getResult(), amount, newRotateDim);
+
+    // Replace the original op with the new rotate operation
+    rewriter.replaceOp(op, newRotateOp);
+    return success();
+  }
+};
+
 struct ConcatConcatAxisSwap final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -15856,6 +16464,12 @@ struct EnzymeHLOOptPass
     patterns.add<SliceExtend>(context);
     patterns.add<SliceRotate>(context);
     patterns.add<SliceWrap>(context);
+    patterns.add<ReshapeWrap>(context);
+    patterns.add<ReshapeExtend>(context);
+    patterns.add<ReshapeRotate>(context);
+    patterns.add<TransposeWrap>(context);
+    patterns.add<TransposeExtend>(context);
+    patterns.add<TransposeRotate>(context);
 
     patterns
         .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
