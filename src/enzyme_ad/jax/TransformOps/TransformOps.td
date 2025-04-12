@@ -1598,3 +1598,9 @@ def ConcatToOneDimDUSSlice : EnzymeHLOPatternOp<
     "concat_to_onedim_dusslice"> {
   let patterns = ["ConcatToOneDimDUSSlice"];
 }
+
+def SpeculateIfPadToSelect : EnzymeHLOPatternOp<
+    "speculate_if_pad_to_select"> {
+  let patterns = ["SpeculateIfPadToSelect"];
+}
+
