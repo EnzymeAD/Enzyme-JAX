@@ -2098,12 +2098,12 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       auto sdyConstant = update.getDefiningOp<sdy::ConstantOp>();
       if (stablehloConstant) {
         update = rewriter.clone(*stablehloConstant)
-                      ->getResult(0)
-                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+                     ->getResult(0)
+                     .cast<mlir::TypedValue<mlir::RankedTensorType>>();
       } else if (sdyConstant) {
         update = rewriter.clone(*sdyConstant)
-                      ->getResult(0)
-                      .cast<mlir::TypedValue<mlir::RankedTensorType>>();
+                     ->getResult(0)
+                     .cast<mlir::TypedValue<mlir::RankedTensorType>>();
       } else {
         return failure();
       }
