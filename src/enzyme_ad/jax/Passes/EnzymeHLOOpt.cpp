@@ -15798,9 +15798,7 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
     auto newBaseExtendOp = rewriter.create<enzymexla::ExtendOp>(
         loc, newBaseExtendType, baseOperand, targetLhs, targetRhs,
         targetExtendDim);
-    Value newBaseExtendResult = newBaseExtendOp.getResult();
-    RankedTensorType newBaseExtendResultType =
-        newBaseExtendResult.getType().cast<RankedTensorType>();
+    RankedTensorType newBaseExtendResultType = newBaseExtendOp.getType();
 
     for (const auto &candidate : candidates) {
       enzymexla::ExtendOp oldExtendOp = candidate.extendOp;
@@ -15808,12 +15806,11 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
 
       if (!oldSliceOp) {
         // Direct Extend - Replace directly
-        if (oldExtendOp.getResult().getType() ==
-            newBaseExtendResult.getType()) {
-          rewriter.replaceOp(oldExtendOp, newBaseExtendResult);
+        if (oldExtendOp.getResult().getType() == newBaseExtendOp.getType()) {
+          rewriter.replaceOp(oldExtendOp, newBaseExtendOp);
         } else {
           auto castOp = rewriter.create<tensor::CastOp>(
-              loc, oldExtendOp.getResult().getType(), newBaseExtendResult);
+              loc, oldExtendOp.getResult().getType(), newBaseExtendOp);
           rewriter.replaceOp(oldExtendOp, castOp);
         }
       } else {
@@ -15828,14 +15825,10 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
         newSliceLimits[targetExtendDim] =
             newBaseExtendResultType.getDimSize(targetExtendDim);
         newSliceStrides[targetExtendDim] = 1;
-
-        auto newSlice = rewriter.create<stablehlo::SliceOp>(
-            oldExtendOp.getLoc(),
-            oldExtendOp.getResult()
-                .getType(), // Use original extend op's result type
-            newBaseExtendResult, newSliceStarts, newSliceLimits,
+        assert(newBaseExtendOp);
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+            oldExtendOp, newBaseExtendOp, newSliceStarts, newSliceLimits,
             newSliceStrides);
-        rewriter.replaceAllOpUsesWith(oldExtendOp, newSlice.getResult());
       }
     }
 
