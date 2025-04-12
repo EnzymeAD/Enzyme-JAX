@@ -2158,7 +2158,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       ;
       if (localType.getShape()[i] == 0 ||
           dus.getType().getShape()[i] % localType.getShape()[i] != 0) {
-        auto ndevices = getShardingDevices(sharding, i, pad);
+        auto ndevices = getShardingDevices(sharding, i, dus);
         int64_t numDevicesAlongDimension = ndevices[i];
         extraPad = numDevicesAlongDimension -
                    (dus.getType().getShape()[i] % numDevicesAlongDimension);
