@@ -2719,15 +2719,17 @@ struct ConcatToPadCommOptimize
 
     SmallVector<Value> addOperands(concat.getOperands().size());
 
+    for (auto operand : concat.getOperands()) {
+      auto operandSharding = mlir::sdy::getSharding(operand);
+      if (!operandSharding || (operandSharding != concatSharding))
+        return failure();
+    }
+
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), rewriter.getZeroAttr(elemType));
 
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
-      auto operandSharding = mlir::sdy::getSharding(operand);
-      if (!operandSharding || (operandSharding != concatSharding))
-        return failure();
-
       auto operandConcatDimSize =
           cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
 
