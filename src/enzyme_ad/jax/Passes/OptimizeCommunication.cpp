@@ -740,6 +740,11 @@ struct PeriodicConcatSimplify
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  int &channel_id;
+  PeriodicConcatSimplify(int &channel_id, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
+
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
     if (concat.getNumOperands() != 3) {
@@ -956,7 +961,7 @@ struct PeriodicConcatSimplify
         wrapCommPatternForEdges(
             rewriter, concat, partitionId, zero, superSliceInnerArg,
             midOpInnerArg, concatSharding, concatDim, N,
-            numDevicesAlongDimension, ndims, T, localRetShape, isLeftSide);
+            numDevicesAlongDimension, ndims, T, localRetShape, isLeftSide, channel_id);
       }
 
       rewriter.setInsertionPointAfter(if1);
@@ -2486,7 +2491,7 @@ struct OptimizeCommunicationPass
     int channel_id = 0;
 
     getOperation()->walk([&](stablehlo::CollectivePermuteOp perm) {
-      channel_id = max(channel_id, perm->getChannelId() + 1);
+      channel_id = std::max(channel_id, perm.getChannelId() + 1);
     });
 
     if (periodic_concat > 0)
