@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=slice_rotate" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=slice_rotate" --transform-interpreter --enzyme-hlo-remove-transform %s -allow-unregistered-dialect | FileCheck %s
 
 func.func @rotate_operations(%arg0: tensor<1x10x80xf64>, %arg1: tensor<1x10x8xf64>, %arg2: tensor<1x10x8xf64>) -> (tensor<1x10x8xf64>, tensor<1x10x7xf64>, tensor<1x10x80xf64>) {
   %0 = stablehlo.slice %arg0 [0:1, 0:10, 0:8] : (tensor<1x10x80xf64>) -> tensor<1x10x8xf64>
