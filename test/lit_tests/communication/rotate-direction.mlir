@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --optimize-communication %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_comm=1 rotate_to_pad_comm=0})" %s | FileCheck %s
 
 module {
   sdy.mesh @mesh = <["x"=4, "y"=1, "z"=1]>

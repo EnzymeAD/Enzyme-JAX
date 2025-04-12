@@ -1500,6 +1500,66 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    auto rotateSharding = mlir::sdy::getSharding(rotate);
+    if (!rotateSharding)
+      return failure();
+
+    auto ndims = rotate.getType().getRank();
+    auto elType = rotate.getType().getElementType();
+    auto rotateShape = cast<RankedTensorType>(rotate.getType()).getShape();
+    auto rotateDimension = rotate.getDimension();
+
+    // sl0[A:end], sl1[0:A]
+    SmallVector<int64_t> strides(ndims, 1);
+
+    SmallVector<int64_t> sl0_starts(ndims, 0);
+    SmallVector<int64_t> sl0_ends(rotateShape);
+    sl0_starts[rotate.getDimension()] = rotate.getAmount();
+
+    SmallVector<int64_t> sl1_starts(ndims, 0);
+    SmallVector<int64_t> sl1_ends(rotateShape);
+    sl1_ends[rotate.getDimension()] = rotate.getAmount();
+
+    auto sl0 = rewriter.create<stablehlo::SliceOp>(
+        rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
+    sdy::setSharding(sl0, rotateSharding);
+
+    auto sl1 = rewriter.create<stablehlo::SliceOp>(
+        rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
+    sdy::setSharding(sl1, rotateSharding);
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        rotate.getLoc(), rewriter.getZeroAttr(elType));
+
+    SmallVector<int64_t> padInner(ndims, 0);
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    padHigh[rotate.getDimension()] =
+        sl1.getType().getShape()[rotate.getDimension()];
+    auto paddedSl0 = rewriter.create<stablehlo::PadOp>(
+        rotate.getLoc(), sl0, zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedSl0, rotateSharding);
+
+    padHigh[rotate.getDimension()] = 0;
+    padLow[rotate.getDimension()] =
+        sl0.getType().getShape()[rotate.getDimension()];
+    auto paddedSl1 = rewriter.create<stablehlo::PadOp>(
+        rotate.getLoc(), sl1, zero, padLow, padHigh, padInner);
+
+    auto addOp = rewriter.create<stablehlo::AddOp>(rotate.getLoc(), paddedSl0,
+                                                   paddedSl1);
+    sdy::setSharding(addOp, rotateSharding);
+
+    rewriter.replaceOp(rotate, addOp);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 // we match if exactly one of the operands is small enough that it can be fit
 // into a single shard
@@ -2542,6 +2602,10 @@ struct OptimizeCommunicationPass
     if (rotate_comm > 0)
       patterns.add<RotateCommOptimize>(channel_id, context,
                                        PatternBenefit(rotate_comm));
+
+    if (rotate_to_pad_comm > 0)
+      patterns.add<RotateToPadCommOptimize>(context,
+                                            PatternBenefit(rotate_to_pad_comm));
 
     if (wrap_comm > 0)
       patterns.add<WrapCommOptimize>(channel_id, context,

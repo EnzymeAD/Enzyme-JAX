@@ -531,43 +531,49 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"periodic_concat",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"rotate_comm",
        /*CLI argument=*/"rotate_comm",
        /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Rotate to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"rotate_to_pad_comm",
+       /*CLI argument=*/"rotate_to_pad_comm",
+       /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Perform a rotate with Padding to optimize the communication">,
        Option<
        /*C++ variable name=*/"wrap_comm",
        /*CLI argument=*/"wrap_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Convert Wrap to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"extend_comm",
        /*CLI argument=*/"extend_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Convert Extend to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"dus_to_pad_comm",
        /*CLI argument=*/"dus_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Perform a DUS with Padding to optimize the communication">,
        Option<
-	/*C++ variable name=*/"concat_two_operands_comm",
+       /*C++ variable name=*/"concat_two_operands_comm",
        /*CLI argument=*/"concat_two_operands_comm",
        /*type=*/"int",
        /*default=*/"0",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
+       /*description=*/"Convert Concatenate two operands to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"concat_to_pad_comm",
        /*CLI argument=*/"concat_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">];
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">];
 }
 
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
