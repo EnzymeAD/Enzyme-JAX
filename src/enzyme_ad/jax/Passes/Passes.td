@@ -527,18 +527,47 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
   ];
   let options =
   [Option<
-       /*C++ variable name=*/"pad_like_raise",
-       /*CLI argument=*/"pad_like_raise",
-       /*type=*/"int",
-       /*default=*/"3",
-       /*description=*/"Whether to throw a pass error if not fully raised">,
-Option<
-       /*C++ variable name=*/"permute_like_raise",
-       /*CLI argument=*/"permute_like_raise",
+       /*C++ variable name=*/"periodic_concat",
+       /*CLI argument=*/"periodic_concat",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Whether to throw a pass error if not fully raised">
-       ];
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+       /*C++ variable name=*/"rotate_comm",
+       /*CLI argument=*/"rotate_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+       /*C++ variable name=*/"wrap_comm",
+       /*CLI argument=*/"wrap_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+       /*C++ variable name=*/"extend_comm",
+       /*CLI argument=*/"extend_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+       /*C++ variable name=*/"dus_to_pad_comm",
+       /*CLI argument=*/"dus_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+	/*C++ variable name=*/"concat_two_operands_comm",
+       /*CLI argument=*/"concat_two_operands_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+       /*C++ variable name=*/"concat_to_pad_comm",
+       /*CLI argument=*/"concat_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Whether to throw a pass error if not fully raised">];
 }
 
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {

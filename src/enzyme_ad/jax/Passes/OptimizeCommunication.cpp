@@ -2451,16 +2451,29 @@ struct OptimizeCommunicationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    // ConcatTwoOperandsCommOptimize is not added to this list. pad_like_raise
-    // is almost certainly a better option.
-    if (permute_like_raise > 0)
-      patterns.add<PeriodicConcatSimplify, RotateCommOptimize, WrapCommOptimize,
-                   ExtendCommOptimize>(context,
-                                       PatternBenefit(permute_like_raise));
+    if (periodic_concat > 0)
+      patterns.add<PeriodicConcatSimplify>(context,
+                                           PatternBenefit(periodic_concat));
 
-    if (pad_like_raise > 0)
-      patterns.add<DUSToPadComm, ConcatToPadCommOptimize>(
-          context, PatternBenefit(pad_like_raise));
+    if (rotate_comm > 0)
+      patterns.add<RotateCommOptimize>(context, PatternBenefit(rotate_comm));
+
+    if (wrap_comm > 0)
+      patterns.add<WrapCommOptimize>(context, PatternBenefit(wrap_comm));
+
+    if (extend_comm > 0)
+      patterns.add<ExtendCommOptimize>(context, PatternBenefit(extend_comm));
+
+    if (dus_to_pad_comm > 0)
+      patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+
+    if (concat_to_pad_comm > 0)
+      patterns.add<ConcatToPadCommOptimize>(context,
+                                            PatternBenefit(concat_to_pad_comm));
+
+    if (concat_two_operands_comm > 0)
+      patterns.add<ConcatTwoOperandsCommOptimize>(
+          context, PatternBenefit(concat_two_operands_comm));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
