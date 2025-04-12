@@ -782,6 +782,24 @@ struct PeriodicConcatSimplify
     if (leftSliceOp.getOperand() != rightSliceOp.getOperand())
       return failure();
 
+    for (int i = 0; i < ndims; i++) {
+      if (leftSliceOp.getStrides()[i] != 1)
+        return failure();
+      if (rightSliceOp.getStrides()[i] != 1)
+        return failure();
+      if (i == concatDim) {
+        if (leftSliceOp.getStartIndices()[i] <
+            rightSliceOp.getStartIndices()[i]) {
+          return failure();
+        }
+      } else {
+        if (leftSliceOp.getStartIndices()[i] !=
+            rightSliceOp.getStartIndices()[i]) {
+          return failure();
+        }
+      }
+    }
+
     Value superSliceOp;
 
     auto midSliceOp = midOp.getDefiningOp<stablehlo::SliceOp>();
