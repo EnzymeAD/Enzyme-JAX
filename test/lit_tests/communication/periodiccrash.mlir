@@ -10,3 +10,4 @@ module {
   }
 }
 
+// CHECK: func.func
