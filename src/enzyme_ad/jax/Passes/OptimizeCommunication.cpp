@@ -434,7 +434,7 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
                         Value midOpInnerArg, TensorShardingAttr opSharding,
                         int concatDim, int N, int numDevicesAlongDimension,
                         int ndims, int T, SmallVector<int64_t> localRetShape,
-                        Value isLeftSide, bool returnResults = true) {
+                        Value isLeftSide, int &channel_id, bool returnResults = true) {
   auto elemType =
       superSliceInnerArg.getType().cast<RankedTensorType>().getElementType();
 
@@ -965,7 +965,7 @@ struct PeriodicConcatSimplify
       auto results = wrapCommPatternForEdges(
           rewriter, concat, partitionId, zero, superSliceInnerArg,
           midOpInnerArg, concatSharding, concatDim, N, numDevicesAlongDimension,
-          ndims, T, localRetShape, isLeftSide, /*returnResults=*/false);
+          ndims, T, localRetShape, isLeftSide, channel_id, /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(concat.getLoc(), results);
     }
 
@@ -1113,7 +1113,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrapCommPatternForEdges(
             rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
             wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-            paddedResultSize, localRetShape, isLeftSide);
+            paddedResultSize, localRetShape, isLeftSide, channel_id);
       }
 
       rewriter.setInsertionPointAfter(ifCond);
@@ -1123,7 +1123,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       auto results = wrapCommPatternForEdges(
           rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
           wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-          paddedResultSize, localRetShape, isLeftSide, /*returnResults=*/false);
+          paddedResultSize, localRetShape, isLeftSide, channel_id, /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(wrap.getLoc(), results);
     }
 
