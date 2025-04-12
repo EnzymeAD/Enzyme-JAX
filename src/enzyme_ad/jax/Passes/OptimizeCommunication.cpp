@@ -434,7 +434,8 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
                         Value midOpInnerArg, TensorShardingAttr opSharding,
                         int concatDim, int N, int numDevicesAlongDimension,
                         int ndims, int T, SmallVector<int64_t> localRetShape,
-                        Value isLeftSide, int &channel_id, bool returnResults = true) {
+                        Value isLeftSide, int &channel_id,
+                        bool returnResults = true) {
   auto elemType =
       superSliceInnerArg.getType().cast<RankedTensorType>().getElementType();
 
@@ -741,7 +742,7 @@ struct PeriodicConcatSimplify
 
   int &channel_id;
   PeriodicConcatSimplify(int &channel_id, MLIRContext *context,
-                   PatternBenefit benefit = 1)
+                         PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
@@ -946,10 +947,11 @@ struct PeriodicConcatSimplify
       {
         rewriter.createBlock(&if1.getTrueBranch(), if1.getTrueBranch().begin());
 
-        generateCommPatternForNonEdges(
-            rewriter, concat, partitionId, zero, superSliceInnerArg,
-            midOpInnerArg, concatSharding, concatDim, N,
-            numDevicesAlongDimension, ndims, localRetShape, leftSide, channel_id);
+        generateCommPatternForNonEdges(rewriter, concat, partitionId, zero,
+                                       superSliceInnerArg, midOpInnerArg,
+                                       concatSharding, concatDim, N,
+                                       numDevicesAlongDimension, ndims,
+                                       localRetShape, leftSide, channel_id);
       }
 
       // else
@@ -957,10 +959,11 @@ struct PeriodicConcatSimplify
         rewriter.createBlock(&if1.getFalseBranch(),
                              if1.getFalseBranch().begin());
 
-        wrapCommPatternForEdges(
-            rewriter, concat, partitionId, zero, superSliceInnerArg,
-            midOpInnerArg, concatSharding, concatDim, N,
-            numDevicesAlongDimension, ndims, T, localRetShape, isLeftSide, channel_id);
+        wrapCommPatternForEdges(rewriter, concat, partitionId, zero,
+                                superSliceInnerArg, midOpInnerArg,
+                                concatSharding, concatDim, N,
+                                numDevicesAlongDimension, ndims, T,
+                                localRetShape, isLeftSide, channel_id);
       }
 
       rewriter.setInsertionPointAfter(if1);
@@ -969,7 +972,8 @@ struct PeriodicConcatSimplify
       auto results = wrapCommPatternForEdges(
           rewriter, concat, partitionId, zero, superSliceInnerArg,
           midOpInnerArg, concatSharding, concatDim, N, numDevicesAlongDimension,
-          ndims, T, localRetShape, isLeftSide, channel_id, /*returnResults=*/false);
+          ndims, T, localRetShape, isLeftSide, channel_id,
+          /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(concat.getLoc(), results);
     }
 
@@ -1126,7 +1130,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       auto results = wrapCommPatternForEdges(
           rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
           wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-          paddedResultSize, localRetShape, isLeftSide, channel_id, /*returnResults=*/false);
+          paddedResultSize, localRetShape, isLeftSide, channel_id,
+          /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(wrap.getLoc(), results);
     }
 
@@ -1160,7 +1165,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   int &channel_id;
   ExtendCommOptimize(int &channel_id, MLIRContext *context,
-                   PatternBenefit benefit = 1)
+                     PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
@@ -1261,10 +1266,11 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
         rewriter.createBlock(&ifCond.getTrueBranch(),
                              ifCond.getTrueBranch().begin());
 
-        generateCommPatternForNonEdges(
-            rewriter, extend, partitionId, zero, innerArg, innerArg,
-            extendSharding, extendDimension, paddedBoundarySize,
-            numDevicesAlongDimension, ndims, localRetShape, leftSide, channel_id);
+        generateCommPatternForNonEdges(rewriter, extend, partitionId, zero,
+                                       innerArg, innerArg, extendSharding,
+                                       extendDimension, paddedBoundarySize,
+                                       numDevicesAlongDimension, ndims,
+                                       localRetShape, leftSide, channel_id);
       }
 
       {
@@ -2485,7 +2491,7 @@ struct OptimizeCommunicationPass
 
     getOperation()->walk([&](stablehlo::CollectivePermuteOp perm) {
       if (auto attr = perm.getChannelHandle())
-      channel_id = std::max(channel_id, (int)attr->getHandle() + 1);
+        channel_id = std::max(channel_id, (int)attr->getHandle() + 1);
     });
 
     if (periodic_concat > 0)
