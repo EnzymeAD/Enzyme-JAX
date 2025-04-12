@@ -263,6 +263,9 @@ public:
   }
 
   static std::optional<StaticSlice> get(Value v) {
+    if (!v)
+      return std::nullopt;
+
     StaticSlice res;
     RankedTensorType ty = dyn_cast<RankedTensorType>(v.getType());
     if (!ty)
@@ -15358,33 +15361,47 @@ LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            StaticSlice *lhsSS = nullptr,
                            StaticSlice *midSS = nullptr,
                            StaticSlice *rhsSS = nullptr) {
-  auto lhs = StaticSlice::get(_lhs);
-  auto mid = StaticSlice::get(_mid);
-  auto rhs = StaticSlice::get(_rhs);
+  std::optional<StaticSlice> lhs, mid, rhs;
+  if (_lhs)
+    lhs = StaticSlice::get(_lhs);
+  if (_mid)
+    mid = StaticSlice::get(_mid);
+  if (_rhs)
+    rhs = StaticSlice::get(_rhs);
 
-  if (!lhs || !mid || !rhs)
+  if (!mid)
     return rewriter.notifyMatchFailure(loc, "lhs or mid or rhs not slice");
 
-  if (!StaticSlice::isPrefixInDim(*lhs, *mid, dim))
-    return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
-  if (lhs->getOutputShape(dim) != 1) {
-    return failure();
+  if (!lhs && !rhs) {
+    return rewriter.notifyMatchFailure(loc, "lhs or rhs must be slice");
   }
-  if (rhs->getOutputShape(dim) != 1) {
-    return failure();
-  }
-  if (!StaticSlice::isSuffixInDim(*rhs, *mid, dim))
-    return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
-  if (!rhs->isStrideOneAtDim(dim) || !mid->isStrideOneAtDim(dim) ||
-      !lhs->isStrideOneAtDim(dim))
-    return rewriter.notifyMatchFailure(loc, "Not stride one");
-  if (rhs->getInput() != mid->getInput() || lhs->getInput() != mid->getInput())
-    return rewriter.notifyMatchFailure(loc,
-                                       "lhs mid or rhs not on the same input");
 
-  if (lhsSS)
+  if (_lhs && !StaticSlice::isPrefixInDim(*lhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "lhs not a prefix of mid");
+  if (_lhs && lhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
+  if (_rhs && rhs->getOutputShape(dim) != 1) {
+    return failure();
+  }
+  if (_rhs && !StaticSlice::isSuffixInDim(*rhs, *mid, dim))
+    return rewriter.notifyMatchFailure(loc, "rhs is not suffix of mid");
+  if (_rhs && !rhs->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "RHS not stride one");
+  if (_lhs && !lhs->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "LHS not stride one");
+  if (!mid->isStrideOneAtDim(dim))
+    return rewriter.notifyMatchFailure(loc, "Mid not stride one");
+  if (_rhs && rhs->getInput() != mid->getInput())
+    return rewriter.notifyMatchFailure(loc,
+                                       "mid and rhs not on the same input");
+  if (_lhs && lhs->getInput() != mid->getInput())
+    return rewriter.notifyMatchFailure(loc,
+                                       "mid and lhs not on the same input");
+
+  if (_lhs && lhsSS)
     *lhsSS = *lhs;
-  if (rhsSS)
+  if (_rhs && rhsSS)
     *rhsSS = *rhs;
   if (midSS)
     *midSS = *mid;
@@ -15398,6 +15415,38 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
     unsigned dim = concat.getDimension();
+    if (concat.getNumOperands() == 2) {
+      StaticSlice lhs;
+      StaticSlice mid;
+
+      if (succeeded(isExtendLike(dim, concat.getOperand(0),
+                                 concat.getOperand(1), nullptr, concat.getLoc(),
+                                 rewriter, &lhs, &mid, nullptr))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), lhs.getOutputShape(dim), 0, dim);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(extend, shard);
+        }
+        rewriter.replaceOp(concat, extend);
+        return success();
+      }
+    }
+    if (concat.getNumOperands() == 2) {
+      StaticSlice rhs;
+      StaticSlice mid;
+
+      if (succeeded(isExtendLike(dim, nullptr, concat.getOperand(0),
+                                 concat.getOperand(1), concat.getLoc(),
+                                 rewriter, nullptr, &mid, &rhs))) {
+        auto extend = rewriter.create<enzymexla::ExtendOp>(
+            concat.getLoc(), mid.getOutput(), 0, rhs.getOutputShape(dim), dim);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(extend, shard);
+        }
+        rewriter.replaceOp(concat, extend);
+        return success();
+      }
+    }
     for (unsigned i = 2; i < concat.getNumOperands(); i++) {
       auto finish = [&](Value extend) {
         SmallVector<Value> toConcat;
