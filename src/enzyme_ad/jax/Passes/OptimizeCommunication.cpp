@@ -1319,6 +1319,94 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    auto elemType = extend.getType().getElementType();
+    auto ndims = extend.getType().getRank();
+    auto extendOperandShape = extend.getOperand().getType().getShape();
+    auto extendShape = extend.getType().getShape();
+    auto extendDimension = extend.getDimension();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(extendSharding, extendDimension, extend);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    SmallVector<int64_t> strides(ndims, 1);
+
+    SmallVector<int64_t> leftStarts(ndims, 0);
+    SmallVector<int64_t> leftLimits = llvm::to_vector(extendOperandShape);
+    leftLimits[extendDimension] = extend.getLhs();
+
+    auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
+        extend.getLoc(), extend.getOperand(), leftStarts, leftLimits, strides);
+    sdy::setSharding(leftSliceOp, extendSharding);
+
+    SmallVector<int64_t> rightStarts(ndims, 0);
+    SmallVector<int64_t> rightLimits = llvm::to_vector(extendOperandShape);
+    rightStarts[extendDimension] =
+        rightLimits[extendDimension] - extend.getRhs();
+
+    auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
+        extend.getLoc(), extend.getOperand(), rightStarts, rightLimits,
+        strides);
+    sdy::setSharding(rightSliceOp, extendSharding);
+
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        extend.getLoc(), rewriter.getZeroAttr(elemType));
+
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    padLow[extendDimension] = 0;
+    padHigh[extendDimension] = extendShape[extendDimension] - extend.getLhs();
+    auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
+        extend.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedLeftSliceOp, extendSharding);
+
+    padLow[extendDimension] = extendShape[extendDimension] - extend.getRhs();
+    padHigh[extendDimension] = 0;
+    auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
+        extend.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedRightSliceOp, extendSharding);
+
+    padLow[extendDimension] = extend.getLhs();
+    padHigh[extendDimension] = extend.getRhs();
+    auto paddedExtendOp = rewriter.create<stablehlo::PadOp>(
+        extend.getLoc(), extend.getOperand(), zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedExtendOp, extendSharding);
+
+    auto addOp = rewriter.create<stablehlo::AddOp>(
+        extend.getLoc(), paddedLeftSliceOp, paddedRightSliceOp);
+    mlir::sdy::setSharding(addOp, extendSharding);
+
+    addOp = rewriter.create<stablehlo::AddOp>(extend.getLoc(), addOp,
+                                              paddedExtendOp);
+    sdy::setSharding(addOp, extendSharding);
+
+    rewriter.replaceOp(extend, addOp);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
@@ -2628,6 +2716,10 @@ struct OptimizeCommunicationPass
     if (concat_to_pad_comm > 0)
       patterns.add<ConcatToPadCommOptimize>(context,
                                             PatternBenefit(concat_to_pad_comm));
+
+    if (extend_to_pad_comm > 0)
+      patterns.add<ExtendToPadCommOptimize>(context,
+                                            PatternBenefit(extend_to_pad_comm));
 
     if (concat_two_operands_comm > 0)
       patterns.add<ConcatTwoOperandsCommOptimize>(

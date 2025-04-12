@@ -554,7 +554,7 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*C++ variable name=*/"extend_comm",
        /*CLI argument=*/"extend_comm",
        /*type=*/"int",
-       /*default=*/"1",
+       /*default=*/"0",
        /*description=*/"Convert Extend to Manual Computation with CollectivePermute">,
        Option<
        /*C++ variable name=*/"dus_to_pad_comm",
@@ -573,7 +573,13 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"concat_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Perform a Concatenate with Padding to optimize the communication">];
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"extend_to_pad_comm",
+       /*CLI argument=*/"extend_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">];
 }
 
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
