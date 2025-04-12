@@ -557,7 +557,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Extend to Manual Computation with CollectivePermute">,
        Option<
-       /*C++ variable name=*/"dus_to_pad_comm",
+       /*C++ variable name=*/"dus_to_pad_manual_comp_comm",
+       /*CLI argument=*/"dus_to_pad_manual_comp_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a DUS with Padding with Manual Computation to optimize the communication">,
+       Option</*C++ variable name=*/"dus_to_pad_comm",
        /*CLI argument=*/"dus_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
