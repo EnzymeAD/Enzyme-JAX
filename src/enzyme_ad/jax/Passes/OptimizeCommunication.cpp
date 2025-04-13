@@ -1193,8 +1193,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
-        sliceStartIndices[wrapDimension] = leftPadding;
-        sliceLimits[wrapDimension] = leftPadding;
+        sliceStartIndices[wrapDimension] += leftPadding;
+        sliceLimits[wrapDimension] += leftPadding;
       }
 
       rewriter.setInsertionPointAfter(manual);
