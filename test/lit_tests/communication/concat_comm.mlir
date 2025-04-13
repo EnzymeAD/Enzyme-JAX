@@ -205,3 +205,10 @@ func.func @mainOne(%arg0: tensor<80x20x24xf64> {sdy.sharding = #sdy.sharding<@me
 // DUS-NEXT:    %1 = stablehlo.concatenate %arg0, %0, dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<80x20x24xf64>, tensor<3x20x24xf64>) -> tensor<83x20x24xf64>
 // DUS-NEXT:    return %1 : tensor<83x20x24xf64>
 // DUS-NEXT:  }
+
+
+func.func @mainNC2(%arg0: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x25x81xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+    %0 = stablehlo.slice %arg1 [0:20, 0:24, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x80xf64>) -> tensor<20x25x1xf64>
+    %1 = stablehlo.concatenate %0, %arg0, dim = 2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x1xf64>, tensor<20x25x80xf64>) -> tensor<20x25x81xf64>
+    return %1 : tensor<20x25x81xf64>
+}
