@@ -15345,7 +15345,6 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
     args.push_back(wrap.getOperand());
 
     if (wrap.getRhs() != 0) {
-
       SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
       SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
 
