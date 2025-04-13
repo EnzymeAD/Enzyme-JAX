@@ -1245,7 +1245,7 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     SmallVector<int64_t> leftStarts(ndims, 0);
     SmallVector<int64_t> leftLimits = llvm::to_vector(wrapOperandShape);
-    leftLimits[wrapDimension] = wrap.getLhs();
+    leftLimits[wrapDimension] = wrap.getRhs();
 
     auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
         wrap.getLoc(), wrap.getOperand(), leftStarts, leftLimits, strides);
@@ -1253,7 +1253,7 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     SmallVector<int64_t> rightStarts(ndims, 0);
     SmallVector<int64_t> rightLimits = llvm::to_vector(wrapOperandShape);
-    rightStarts[wrapDimension] = rightLimits[wrapDimension] - wrap.getRhs();
+    rightStarts[wrapDimension] = rightLimits[wrapDimension] - wrap.getLhs();
 
     auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
         wrap.getLoc(), wrap.getOperand(), rightStarts, rightLimits, strides);
@@ -1266,14 +1266,14 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
 
-    padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
+    padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
     padHigh[wrapDimension] = 0;
     auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
         wrap.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedLeftSliceOp, wrapSharding);
 
     padLow[wrapDimension] = 0;
-    padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
+    padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
     auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
         wrap.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedRightSliceOp, wrapSharding);
@@ -1285,11 +1285,11 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     sdy::setSharding(paddedWrapOp, wrapSharding);
 
     auto addOp = rewriter.create<stablehlo::AddOp>(
-        wrap.getLoc(), paddedLeftSliceOp, paddedRightSliceOp);
+        wrap.getLoc(), paddedRightSliceOp, paddedWrapOp);
     mlir::sdy::setSharding(addOp, wrapSharding);
 
-    addOp =
-        rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp, paddedWrapOp);
+    addOp = rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp,
+                                              paddedLeftSliceOp);
     sdy::setSharding(addOp, wrapSharding);
 
     rewriter.replaceOp(wrap, addOp);
@@ -1555,11 +1555,11 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     sdy::setSharding(paddedExtendOp, extendSharding);
 
     auto addOp = rewriter.create<stablehlo::AddOp>(
-        extend.getLoc(), paddedLeftSliceOp, paddedRightSliceOp);
+        extend.getLoc(), paddedLeftSliceOp, paddedExtendOp);
     mlir::sdy::setSharding(addOp, extendSharding);
 
     addOp = rewriter.create<stablehlo::AddOp>(extend.getLoc(), addOp,
-                                              paddedExtendOp);
+                                              paddedRightSliceOp);
     sdy::setSharding(addOp, extendSharding);
 
     rewriter.replaceOp(extend, addOp);
