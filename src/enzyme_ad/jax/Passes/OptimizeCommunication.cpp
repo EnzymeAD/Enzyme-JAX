@@ -1288,8 +1288,8 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrap.getLoc(), paddedRightSliceOp, paddedWrapOp);
     mlir::sdy::setSharding(addOp, wrapSharding);
 
-    addOp =
-        rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp, paddedLeftSliceOp);
+    addOp = rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp,
+                                              paddedLeftSliceOp);
     sdy::setSharding(addOp, wrapSharding);
 
     rewriter.replaceOp(wrap, addOp);
