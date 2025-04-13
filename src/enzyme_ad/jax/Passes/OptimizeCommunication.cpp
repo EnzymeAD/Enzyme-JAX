@@ -2171,8 +2171,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 // set
 //.  lowPad[idx], and highPad[idx], index into the data within update if we are
 //>= lowPad for all idx and < lowPad + globalUnpaddedUpdateType aka totalShape -
-//highPad
-bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
+// highPad
+void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
                             RankedTensorType globalResultType,
                             RankedTensorType localResultType,
                             const SmallVectorImpl<int64_t> &lowPads,
