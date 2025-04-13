@@ -13,7 +13,7 @@ func.func @main1(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:24, 0:3] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<20x24x3xf64>
 // DUS-NEXT:    %1 = stablehlo.pad %arg0, %cst, low = [0, 0, 0], high = [0, 0, 4], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>, tensor<f64>) -> tensor<20x24x84xf64>
 // DUS-NEXT:    %2 = stablehlo.pad %0, %cst, low = [0, 0, 80], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x3xf64>, tensor<f64>) -> tensor<20x24x84xf64>
-// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
+// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
 // DUS-NEXT:      %c = stablehlo.constant dense<17> : tensor<20x6x21xui32>
 // DUS-NEXT:      %c_0 = stablehlo.constant dense<3> : tensor<ui32>
 // DUS-NEXT:      %c_1 = stablehlo.constant dense<4> : tensor<ui32>
@@ -78,7 +78,7 @@ func.func @mainA(%arg0: tensor<20x24x79xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:24, 0:3] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<20x24x3xf64>
 // DUS-NEXT:    %1 = stablehlo.pad %arg0, %cst, low = [0, 0, 0], high = [0, 0, 5], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x79xf64>, tensor<f64>) -> tensor<20x24x84xf64>
 // DUS-NEXT:    %2 = stablehlo.pad %0, %cst, low = [0, 0, 79], high = [0, 0, 2], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x3xf64>, tensor<f64>) -> tensor<20x24x84xf64>
-// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
+// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
 // DUS-NEXT:      %c = stablehlo.constant dense<16> : tensor<20x6x21xui32>
 // DUS-NEXT:      %c_0 = stablehlo.constant dense<3> : tensor<ui32>
 // DUS-NEXT:      %c_1 = stablehlo.constant dense<4> : tensor<ui32>
@@ -144,7 +144,7 @@ func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:24, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<20x24x1xf64>
 // DUS-NEXT:    %1 = stablehlo.pad %0, %cst, low = [0, 0, 0], high = [0, 0, 83], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x1xf64>, tensor<f64>) -> tensor<20x24x84xf64>
 // DUS-NEXT:    %2 = stablehlo.pad %arg0, %cst, low = [0, 0, 1], high = [0, 0, 3], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>, tensor<f64>) -> tensor<20x24x84xf64>
-// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
+// DUS-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x6x21xf64>, %arg3: tensor<20x6x21xf64>) {
 // DUS-NEXT:      %c = stablehlo.constant dense<1> : tensor<20x6x21xui32>
 // DUS-NEXT:      %c_0 = stablehlo.constant dense<4> : tensor<ui32>
 // DUS-NEXT:      %c_1 = stablehlo.constant dense<0> : tensor<ui32>
