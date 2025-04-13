@@ -23,8 +23,6 @@
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
 
-
-
 // #define GET_TYPEDEF_CLASSES
 // #include "Dialect/EnzymeXLAOpsTypes.cpp.inc"
 //  #include "Dialect/EnzymeTypes.cpp.inc"

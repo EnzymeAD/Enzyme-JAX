@@ -66,24 +66,32 @@ void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
 
 using namespace mlir;
 
-
-template<typename T>
+template <typename T>
 struct PermuteOperandOpInterface
     : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
           PermuteOperandOpInterface<T>, T> {
-  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation* op) const {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
     bool conservativePropagation = false;
-    return sdy::OpShardingRuleBuilder(op).addPointwiseWithDiffTypeForMismatch(sdy::getTensorShape(op->getOperands()[0]), sdy::getTensorShape(op->getResult(0)), sdy::FactorType::kPermutation, /*mismatchFactorIsBlocked*/conservativePropagation).build();
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwiseWithDiffTypeForMismatch(
+            sdy::getTensorShape(op->getOperands()[0]),
+            sdy::getTensorShape(op->getResult(0)),
+            sdy::FactorType::kPermutation,
+            /*mismatchFactorIsBlocked*/ conservativePropagation)
+        .build();
   }
 };
 
-
 void prepareRegistry(mlir::DialectRegistry &registry) {
-  registry.addExtension(+[](mlir::MLIRContext* ctx, enzymexla::EnzymeXLADialect*) {
-    enzymexla::WrapOp::attachInterface<PermuteOperandOpInterface<enzymexla::WrapOp>>(*ctx);
-    enzymexla::ExtendOp::attachInterface<PermuteOperandOpInterface<enzymexla::ExtendOp>>(*ctx);
-    enzymexla::RotateOp::attachInterface<PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
-  });
+  registry.addExtension(
+      +[](mlir::MLIRContext *ctx, enzymexla::EnzymeXLADialect *) {
+        enzymexla::WrapOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::WrapOp>>(*ctx);
+        enzymexla::ExtendOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::ExtendOp>>(*ctx);
+        enzymexla::RotateOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
+      });
 
   // Register MLIR stuff
   registry.insert<mlir::affine::AffineDialect>();
