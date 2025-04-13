@@ -1426,11 +1426,11 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
         rewriter.createBlock(&ifCond.getTrueBranch(),
                              ifCond.getTrueBranch().begin());
 
-        generateCommPatternForNonEdges(rewriter, extend, partitionId, zero,
-                                       innerArg, innerArg, extendSharding,
-                                       extendDimension, paddedBoundarySize,
-                                       numDevicesAlongDimension, ndims,
-                                       localResultType.getShape(), leftSide, channel_id);
+        generateCommPatternForNonEdges(
+            rewriter, extend, partitionId, zero, innerArg, innerArg,
+            extendSharding, extendDimension, paddedBoundarySize,
+            numDevicesAlongDimension, ndims, localResultType.getShape(),
+            leftSide, channel_id);
       }
 
       {
@@ -1449,7 +1449,8 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       auto results = extendCommPatternForEdges(
           rewriter, extend, partitionId, zero, innerArg, extendSharding,
           extendDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-          paddedResultSize, localResultType.getShape(), isLeftSide, /*returnResults=*/false);
+          paddedResultSize, localResultType.getShape(), isLeftSide,
+          /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(extend.getLoc(), results);
     }
 
