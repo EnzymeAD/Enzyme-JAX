@@ -2900,7 +2900,7 @@ struct DUSToPadManualCompComm
       if (UT.getShape()[i] != dus.getType().getShape()[i]) {
         updated = true;
       }
-      
+
       for (auto axis : meshAxes)
         manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
 
