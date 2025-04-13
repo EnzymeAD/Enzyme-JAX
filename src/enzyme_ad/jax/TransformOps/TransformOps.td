@@ -1604,6 +1604,11 @@ def ConcatReshapeToOneDimDUS : EnzymeHLOPatternOp<
   let patterns = ["ConcatReshapeToOneDimDUS"];
 }
 
+def ReshapeToBroadcast : EnzymeHLOPatternOp<
+    "reshape_to_broadcast"> {
+  let patterns = ["ReshapeToBroadcast"];
+}
+
 def SpeculateIfPadToSelect : EnzymeHLOPatternOp<
     "speculate_if_pad_to_select"> {
   let patterns = ["SpeculateIfPadToSelect"];

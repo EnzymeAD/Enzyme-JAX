@@ -14156,6 +14156,39 @@ struct BroadcastInDimIsReshape final
   }
 };
 
+struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+  using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshape,
+                                PatternRewriter &rewriter) const override {
+
+    auto inShape = reshape.getOperand().getType().getShape();
+    auto outShape = reshape.getResult().getType().getShape();
+    if (inShape.size() != outShape.size() + 1)
+      return failure();
+
+    if (outShape[0] == 1) {
+      bool legal = true;
+      for (auto &&[lhs, rhs] : llvm::zip_equal(outShape.slice(1), inShape)) {
+        if (lhs != rhs) {
+          return failure();
+        }
+      }
+    }
+    SmallVector<int64_t> vals(inShape.size(), 0);
+    for (int i = 0; i < inShape.size(); i++) {
+      vals[i] = i + 1;
+    }
+    auto shard = sdy::getShardingPerValue(reshape);
+    auto rep = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        reshape, reshape.getType(), reshape.getOperand(), vals);
+    if (shard) {
+      sdy::setShardings(rep, shard);
+    }
+    return success();
+  }
+};
+
 struct PadConcatToConcatPad
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
