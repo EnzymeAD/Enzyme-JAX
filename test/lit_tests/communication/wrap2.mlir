@@ -37,13 +37,18 @@ func.func @wrap(%7175 : tensor<3x10x80xf64> {sdy.sharding = #sdy.sharding<@mesh,
 
 // PAD: sdy.mesh @mesh = <["x"=2, "y"=1, "z"=1]>
 // PAD-NEXT:  func.func @wrap(%arg0: tensor<3x10x80xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> tensor<3x10x82xf64> {
+// PAD-NEXT:    %c = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} dense<81> : tensor<3x10x82xui32>
+// PAD-NEXT:    %c_0 = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} dense<1> : tensor<3x10x82xui32>
 // PAD-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // PAD-NEXT:    %0 = stablehlo.slice %arg0 [0:3, 0:10, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x80xf64>) -> tensor<3x10x1xf64>
 // PAD-NEXT:    %1 = stablehlo.slice %arg0 [0:3, 0:10, 79:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x80xf64>) -> tensor<3x10x1xf64>
 // PAD-NEXT:    %2 = stablehlo.pad %0, %cst, low = [0, 0, 81], high = [0, 0, 0], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x1xf64>, tensor<f64>) -> tensor<3x10x82xf64>
 // PAD-NEXT:    %3 = stablehlo.pad %1, %cst, low = [0, 0, 0], high = [0, 0, 81], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x1xf64>, tensor<f64>) -> tensor<3x10x82xf64>
 // PAD-NEXT:    %4 = stablehlo.pad %arg0, %cst, low = [0, 0, 1], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x80xf64>, tensor<f64>) -> tensor<3x10x82xf64>
-// PAD-NEXT:    %5 = stablehlo.add %3, %4 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : tensor<3x10x82xf64>
-// PAD-NEXT:    %6 = stablehlo.add %5, %2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : tensor<3x10x82xf64>
+// PAD-NEXT:    %5 = stablehlo.iota dim = 2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : tensor<3x10x82xui32>
+// PAD-NEXT:    %6 = stablehlo.compare  LT, %5, %c_0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x82xui32>, tensor<3x10x82xui32>) -> tensor<3x10x82xi1>
+// PAD-NEXT:    %7 = stablehlo.select %6, %3, %4 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : tensor<3x10x82xi1>, tensor<3x10x82xf64>
+// PAD-NEXT:    %8 = stablehlo.compare  LT, %5, %c {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<3x10x82xui32>, tensor<3x10x82xui32>) -> tensor<3x10x82xi1>
+// PAD-NEXT:    %9 = stablehlo.select %8, %7, %2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : tensor<3x10x82xi1>, tensor<3x10x82xf64>
 // PAD-NEXT:    stablehlo.return %6 : tensor<3x10x82xf64>
 // PAD-NEXT:  }
