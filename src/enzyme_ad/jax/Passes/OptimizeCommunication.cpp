@@ -1591,12 +1591,15 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     SmallVector<int64_t> lowPads(ndims, 0);
     SmallVector<int64_t> highPads(ndims, 0);
     SmallVector<int64_t> interior(ndims, 0);
-    for (int i=0; i<ndims; i++) {
+    for (int i = 0; i < ndims; i++) {
       auto numDevicesAlongDimension =
           getNumDevicesAlongDimension(rotateSharding, i, rotate);
-      if (i == rotateDimension) continue;
-      if (outputShape[i] % numDevicesAlongDimension == 0 ) continue;
-      highPads[i] = numDevicesAlongDimension - (outputShape[i] % numDevicesAlongDimension);
+      if (i == rotateDimension)
+        continue;
+      if (outputShape[i] % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] = numDevicesAlongDimension -
+                    (outputShape[i] % numDevicesAlongDimension);
       needsSlice = true;
     }
     if (needsSlice) {
@@ -1608,7 +1611,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     }
 
     SmallVector<int64_t> innerStrides(ndims, 1);
-    mlir::Type inTyps[1]{getLocalType(cast<RankedTensorType>(inputArg.getType()), rotateSharding, manualAxes, rotate)};
+    mlir::Type inTyps[1]{
+        getLocalType(cast<RankedTensorType>(inputArg.getType()), rotateSharding,
+                     manualAxes, rotate)};
     mlir::Location inLocs[] = {rotate.getLoc()};
 
     Value manualOps[] = {inputArg};
@@ -1689,7 +1694,8 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     if (manual->getResult(0).getType() != rotate.getType()) {
       rewriter.setInsertionPointAfter(manual);
       SmallVector<int64_t> innerStarts(ndims, 0);
-      SmallVector<int64_t> innerLimits = llvm::to_vector(rotate.getType().getShape());
+      SmallVector<int64_t> innerLimits =
+          llvm::to_vector(rotate.getType().getShape());
       auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
           rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
           innerStrides);
