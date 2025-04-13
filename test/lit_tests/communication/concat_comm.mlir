@@ -155,7 +155,7 @@ func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:        %9 = stablehlo.iota dim = 2 : tensor<20x6x21xui32>
 // DUS-NEXT:        %10 = stablehlo.compare  LT, %9, %c : (tensor<20x6x21xui32>, tensor<20x6x21xui32>) -> tensor<20x6x21xi1>
 // DUS-NEXT:        %11 = stablehlo.select %10, %arg2, %arg3 : tensor<20x6x21xi1>, tensor<20x6x21xf64>
-// DUS-NEXT:        stablehlo.return %11 : tensor<20x24x21xf64>
+// DUS-NEXT:        stablehlo.return %11 : tensor<20x6x21xf64>
 // DUS-NEXT:      }, {
 // DUS-NEXT:        stablehlo.return %arg3 : tensor<20x6x21xf64>
 // DUS-NEXT:      }) : (tensor<i1>) -> tensor<20x6x21xf64>
