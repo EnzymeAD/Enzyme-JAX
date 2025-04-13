@@ -1464,7 +1464,7 @@ concat_to_dus_slice_common(PatternRewriter &rewriter, Location loc,
   if (!shard) {
     if (auto opSharding = mlir::sdy::getSharding(operand)) {
       sdy::TensorShardingAttr opShardings[] = {opSharding};
-      shard = sdy::TensorShardingPerValueAttr::get(opearnd.getContext(),
+      shard = sdy::TensorShardingPerValueAttr::get(operand.getContext(),
                                                    opShardings);
     }
   }
