@@ -55,7 +55,7 @@ struct EnzymeXLADialectInlinerInterface : public DialectInlinerInterface {
     return true;
   }
 };
-}
+} // namespace
 
 void EnzymeXLADialect::initialize() {
 
