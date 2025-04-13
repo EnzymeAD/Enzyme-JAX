@@ -2624,6 +2624,7 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     bool extraSlice = false;
 
     SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> padHigh(ndims, 0);
     for (int i = 0; i < ndims; i++) {
       auto meshAxes = sharding.getDimShardings()[i].getAxes();
       if (meshAxes.size() != 1)
@@ -2636,9 +2637,13 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
         for (auto axis : meshAxes)
           manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
         if (globalResultType.getShape()[i] % numDevicesAlongDimension != 0) {
-          shape[i] +=
+          int toPad =
               numDevicesAlongDimension -
               (globalResultType.getShape()[i] % numDevicesAlongDimension);
+          shape[i] += toPad;
+          if (i != concatDimension) {
+            padHigh[i] = toPad;
+          }
           extraSlice = true;
         }
       }
@@ -2650,7 +2655,6 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     auto concatDimSize = globalResultType.getShape()[concatDimension];
 
     SmallVector<int64_t> padLow(ndims, 0);
-    SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
 
     SmallVector<Value> manualOps(concat.getOperands().size());

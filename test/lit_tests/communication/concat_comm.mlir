@@ -205,3 +205,36 @@ func.func @mainOne(%arg0: tensor<80x20x24xf64> {sdy.sharding = #sdy.sharding<@me
 // DUS-NEXT:    %1 = stablehlo.concatenate %arg0, %0, dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<80x20x24xf64>, tensor<3x20x24xf64>) -> tensor<83x20x24xf64>
 // DUS-NEXT:    return %1 : tensor<83x20x24xf64>
 // DUS-NEXT:  }
+
+
+func.func @mainNC2(%arg0: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x25x81xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+    %0 = stablehlo.slice %arg1 [0:20, 0:25, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x80xf64>) -> tensor<20x25x1xf64>
+    %1 = stablehlo.concatenate %0, %arg0, dim = 2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x1xf64>, tensor<20x25x80xf64>) -> tensor<20x25x81xf64>
+    return %1 : tensor<20x25x81xf64>
+}
+
+// CHECK:  func.func @mainNC2(%arg0: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<20x25x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x25x81xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:25, 0:1] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x80xf64>) -> tensor<20x25x1xf64>
+// CHECK-NEXT:    %1 = stablehlo.pad %0, %cst, low = [0, 0, 0], high = [0, 3, 83], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x1xf64>, tensor<f64>) -> tensor<20x28x84xf64>
+// CHECK-NEXT:    %2 = stablehlo.pad %arg0, %cst, low = [0, 0, 1], high = [0, 3, 3], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x25x80xf64>, tensor<f64>) -> tensor<20x28x84xf64>
+// CHECK-NEXT:    %3 = sdy.manual_computation(%1, %2) in_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>, <@mesh1, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh1, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x7x21xf64>, %arg3: tensor<20x7x21xf64>) {
+// CHECK-NEXT:      %c = stablehlo.constant dense<1> : tensor<20x7x21xui32>
+// CHECK-NEXT:      %c_0 = stablehlo.constant dense<4> : tensor<ui32>
+// CHECK-NEXT:      %c_1 = stablehlo.constant dense<0> : tensor<ui32>
+// CHECK-NEXT:      %5 = stablehlo.partition_id : tensor<ui32>
+// CHECK-NEXT:      %6 = stablehlo.divide %5, %c_0 : tensor<ui32>
+// CHECK-NEXT:      %7 = stablehlo.compare  LE, %6, %c_1 : (tensor<ui32>, tensor<ui32>) -> tensor<i1>
+// CHECK-NEXT:      %8 = "stablehlo.if"(%7) ({
+// CHECK-NEXT:        %9 = stablehlo.iota dim = 2 : tensor<20x7x21xui32>
+// CHECK-NEXT:        %10 = stablehlo.compare  LT, %9, %c : (tensor<20x7x21xui32>, tensor<20x7x21xui32>) -> tensor<20x7x21xi1>
+// CHECK-NEXT:        %11 = stablehlo.select %10, %arg2, %arg3 : tensor<20x7x21xi1>, tensor<20x7x21xf64>
+// CHECK-NEXT:        stablehlo.return %11 : tensor<20x7x21xf64>
+// CHECK-NEXT:      }, {
+// CHECK-NEXT:        stablehlo.return %arg3 : tensor<20x7x21xf64>
+// CHECK-NEXT:      }) : (tensor<i1>) -> tensor<20x7x21xf64>
+// CHECK-NEXT:      sdy.return %8 : tensor<20x7x21xf64>
+// CHECK-NEXT:    } : (tensor<20x28x84xf64>, tensor<20x28x84xf64>) -> tensor<20x28x84xf64>
+// CHECK-NEXT:    %4 = stablehlo.slice %3 [0:20, 0:25, 0:81] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x28x84xf64>) -> tensor<20x25x81xf64>
+// CHECK-NEXT:    return %4 : tensor<20x25x81xf64>
+// CHECK-NEXT:  }
