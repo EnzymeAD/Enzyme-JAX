@@ -8789,7 +8789,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -15616,6 +15617,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
         auto extend = rewriter.create<enzymexla::ExtendOp>(
             concat.getLoc(), mid.getOutput(), lhs.getOutputShape(reshapedDim),
             rhs.getOutputShape(reshapedDim), reshapedDim);
+        if (auto shard = sdy::getShardingPerValue(mid)) {
+          sdy::setShardings(extend, shard);
+        }
         auto shape = llvm::to_vector(extend.getResult().getType().getShape());
         assert(shape[*removedDim] == 1);
         shape.erase(std::next(shape.begin(), *removedDim),
@@ -15625,6 +15629,9 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
             RankedTensorType::get(
                 shape, concat.getResult().getType().getElementType()),
             extend);
+        if (auto shard = sdy::getShardingPerValue(concat)) {
+          sdy::setShardings(reshape, shard);
+        }
         finish(reshape);
         return success();
       }
