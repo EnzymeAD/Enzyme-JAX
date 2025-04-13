@@ -1587,13 +1587,37 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     if (amount > localShape[rotate.getDimension()]) {
       return rewriter.notifyMatchFailure(rotate, "No local tensor remaining!");
     }
+    bool needsSlice = false;
+    SmallVector<int64_t> lowPads(ndims, 0);
+    SmallVector<int64_t> highPads(ndims, 0);
+    SmallVector<int64_t> interior(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      auto numDevicesAlongDimension =
+          getNumDevicesAlongDimension(rotateSharding, i, rotate);
+      if (i == rotateDimension)
+        continue;
+      if (outputShape[i] % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] = numDevicesAlongDimension -
+                    (outputShape[i] % numDevicesAlongDimension);
+      needsSlice = true;
+    }
+    if (needsSlice) {
+      inputArg = rewriter.create<stablehlo::PadOp>(
+          rotate.getLoc(), rotate.getOperand(),
+          rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
+                                                 rewriter.getZeroAttr(elType)),
+          lowPads, highPads, interior);
+    }
 
     SmallVector<int64_t> innerStrides(ndims, 1);
-    mlir::Type inTyps[1]{RankedTensorType::get(localShape, elType)};
+    mlir::Type inTyps[1]{
+        getLocalType(cast<RankedTensorType>(inputArg.getType()), rotateSharding,
+                     manualAxes, rotate)};
     mlir::Location inLocs[] = {rotate.getLoc()};
 
     Value manualOps[] = {inputArg};
-    Type manualTypes[] = {RankedTensorType::get(outputShape, elType)};
+    Type manualTypes[] = {inputArg.getType()};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         rotate.getLoc(), manualTypes, manualOps, inShardings, outShardings,
         manualAxes);
@@ -1667,13 +1691,11 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       }
     }
 
-    if (rightPadding != 0) {
+    if (manual->getResult(0).getType() != rotate.getType()) {
       rewriter.setInsertionPointAfter(manual);
-
       SmallVector<int64_t> innerStarts(ndims, 0);
-      SmallVector<int64_t> innerLimits = llvm::to_vector(outputShape);
-      innerLimits[rotateDimension] -= rightPadding;
-
+      SmallVector<int64_t> innerLimits =
+          llvm::to_vector(rotate.getType().getShape());
       auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
           rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
           innerStrides);
