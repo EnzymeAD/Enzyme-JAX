@@ -35,7 +35,7 @@ func.func @main(%arg0: tensor<1x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1,
 // CHECK-NEXT:           %17 = stablehlo.slice %arg1 [0:1, 0:2, 0:8] : (tensor<1x2x20xf64>) -> tensor<1x2x8xf64>
 // CHECK-NEXT:           stablehlo.return %17 : tensor<1x2x8xf64>
 // CHECK-NEXT:         }) : (tensor<i1>) -> tensor<1x2x8xf64>
-// CHECK-NEXT{LITERAL}:         %15 = "stablehlo.collective_permute"(%14) <{channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [12, 8], [13, 9], [14, 10], [15, 11]]> : tensor<8x2xi64>}> : (tensor<1x2x8xf64>) -> tensor<1x2x8xf64>
+// CHECK-NEXT{LITERAL}:         %15 = "stablehlo.collective_permute"(%14) <{channel_handle = #stablehlo.channel_handle<handle = 3, type = 0>, source_target_pairs = dense<[[0, 4], [1, 5], [2, 6], [3, 7], [12, 8], [13, 9], [14, 10], [15, 11]]> : tensor<8x2xi64>}> : (tensor<1x2x8xf64>) -> tensor<1x2x8xf64>
 // CHECK-NEXT:         %16 = "stablehlo.if"(%13) ({
 // CHECK-NEXT:           %17 = stablehlo.concatenate %15, %arg1, dim = 2 : (tensor<1x2x8xf64>, tensor<1x2x20xf64>) -> tensor<1x2x28xf64>
 // CHECK-NEXT:           %18 = stablehlo.multiply %12, %c_1 : tensor<ui32>
@@ -57,7 +57,7 @@ func.func @main(%arg0: tensor<1x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1,
 // CHECK-NEXT:           %15 = stablehlo.slice %arg1 [0:1, 0:2, 12:20] : (tensor<1x2x20xf64>) -> tensor<1x2x8xf64>
 // CHECK-NEXT:           stablehlo.return %15 : tensor<1x2x8xf64>
 // CHECK-NEXT:         }) : (tensor<i1>) -> tensor<1x2x8xf64>
-// CHECK-NEXT{LITERAL}:         %13 = "stablehlo.collective_permute"(%12) <{channel_handle = #stablehlo.channel_handle<handle = 2, type = 0>, source_target_pairs = dense<[[0, 12], [1, 13], [2, 14], [3, 15], [12, 0], [13, 1], [14, 2], [15, 3]]> : tensor<8x2xi64>}> : (tensor<1x2x8xf64>) -> tensor<1x2x8xf64>
+// CHECK-NEXT{LITERAL}:         %13 = "stablehlo.collective_permute"(%12) <{channel_handle = #stablehlo.channel_handle<handle = 4, type = 0>, source_target_pairs = dense<[[0, 12], [1, 13], [2, 14], [3, 15], [12, 0], [13, 1], [14, 2], [15, 3]]> : tensor<8x2xi64>}> : (tensor<1x2x8xf64>) -> tensor<1x2x8xf64>
 // CHECK-NEXT:         %14 = "stablehlo.if"(%4) ({
 // CHECK-NEXT:           %15 = stablehlo.slice %arg1 [0:1, 0:2, 0:16] : (tensor<1x2x20xf64>) -> tensor<1x2x16xf64>
 // CHECK-NEXT:           %16 = stablehlo.concatenate %13, %15, dim = 2 : (tensor<1x2x8xf64>, tensor<1x2x16xf64>) -> tensor<1x2x24xf64>
