@@ -915,30 +915,29 @@ struct PeriodicConcatSimplify
       auto shape_i = cast<RankedTensorType>(midOp.getType()).getShape()[i];
       if (shape_i % numDevicesAlongDimension == 0)
         continue;
-      highPads[i] = numDevicesAlongDimension -
-                    (shape_i % numDevicesAlongDimension);
+      highPads[i] =
+          numDevicesAlongDimension - (shape_i % numDevicesAlongDimension);
       manualOpRetShape[i] += highPads[i];
       needsSlice = true;
     }
     if (needsSlice) {
       auto cst = rewriter.create<stablehlo::ConstantOp>(
-              concat.getLoc(), rewriter.getZeroAttr(elemType));
+          concat.getLoc(), rewriter.getZeroAttr(elemType));
 
       superSliceOp = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), superSliceOp, cst,
-          lowPads, highPads, interior);
+          concat.getLoc(), superSliceOp, cst, lowPads, highPads, interior);
 
-      midOp = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), midOp, cst,
-          lowPads, highPads, interior);
+      midOp = rewriter.create<stablehlo::PadOp>(concat.getLoc(), midOp, cst,
+                                                lowPads, highPads, interior);
     }
 
     manualOpRetShape[concatDim] = T;
 
-    mlir::Type in_tys[2]{getLocalType(cast<RankedTensorType>(superSliceOp.getType()),
-                                      concatSharding, manualAxes, concat),
-                        getLocalType(cast<RankedTensorType>(midOp.getType()),
-                                                          concatSharding, manualAxes, concat)};
+    mlir::Type in_tys[2]{
+        getLocalType(cast<RankedTensorType>(superSliceOp.getType()),
+                     concatSharding, manualAxes, concat),
+        getLocalType(cast<RankedTensorType>(midOp.getType()), concatSharding,
+                     manualAxes, concat)};
     mlir::Location in_locs[] = {superSliceOp.getLoc(), midOp.getLoc()};
 
     auto globalResultType = RankedTensorType::get(manualOpRetShape, elemType);
@@ -978,11 +977,11 @@ struct PeriodicConcatSimplify
       {
         rewriter.createBlock(&if1.getTrueBranch(), if1.getTrueBranch().begin());
 
-        generateCommPatternForNonEdges(rewriter, concat, partitionId, zero,
-                                       superSliceInnerArg, midOpInnerArg,
-                                       concatSharding, concatDim, N,
-                                       numDevicesAlongDimension, ndims,
-                                       localResultType.getShape(), leftSide, channel_id);
+        generateCommPatternForNonEdges(
+            rewriter, concat, partitionId, zero, superSliceInnerArg,
+            midOpInnerArg, concatSharding, concatDim, N,
+            numDevicesAlongDimension, ndims, localResultType.getShape(),
+            leftSide, channel_id);
       }
 
       // else
@@ -990,11 +989,11 @@ struct PeriodicConcatSimplify
         rewriter.createBlock(&if1.getFalseBranch(),
                              if1.getFalseBranch().begin());
 
-        wrapCommPatternForEdges(rewriter, concat, partitionId, zero,
-                                superSliceInnerArg, midOpInnerArg,
-                                concatSharding, concatDim, N,
-                                numDevicesAlongDimension, ndims, T,
-                                localResultType.getShape(), isLeftSide, channel_id);
+        wrapCommPatternForEdges(
+            rewriter, concat, partitionId, zero, superSliceInnerArg,
+            midOpInnerArg, concatSharding, concatDim, N,
+            numDevicesAlongDimension, ndims, T, localResultType.getShape(),
+            isLeftSide, channel_id);
       }
 
       rewriter.setInsertionPointAfter(if1);
@@ -1010,7 +1009,7 @@ struct PeriodicConcatSimplify
 
     if (concat.getType() != manual->getResult(0).getType()) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-        SmallVector<int64_t> sliceLimits =
+      SmallVector<int64_t> sliceLimits =
           llvm::to_vector(concat.getType().getShape());
       if (leftPadding > 0) {
         sliceStartIndices[concatDim] += leftPadding;
