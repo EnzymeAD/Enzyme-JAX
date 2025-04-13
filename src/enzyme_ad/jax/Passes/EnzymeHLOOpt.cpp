@@ -8789,8 +8789,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -15323,30 +15322,50 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
     // sl0[end-lhs:end], mid, sl1[0:rhs]
     auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
     SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
-    SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
-    SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
-    SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
-    SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
-    sl0_starts[wrap.getDimension()] =
-        wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
-    sl1_ends[wrap.getDimension()] = wrap.getRhs();
+
+    SmallVector<Value> args;
+
     auto shard = sdy::getShardingPerValue(wrap);
-    auto sl0 = rewriter.create<stablehlo::SliceOp>(
-        wrap.getLoc(), wrap.getOperand(), sl0_starts, sl0_ends, strides);
-    if (shard) {
-      sdy::setShardings(sl0, shard);
+
+    if (wrap.getLhs() != 0) {
+      SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
+      SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
+
+      sl0_starts[wrap.getDimension()] =
+          wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
+
+      auto sl0 = rewriter.create<stablehlo::SliceOp>(
+          wrap.getLoc(), wrap.getOperand(), sl0_starts, sl0_ends, strides);
+      if (shard)
+        sdy::setShardings(sl0, shard);
+
+      args.push_back(sl0);
     }
-    auto sl1 = rewriter.create<stablehlo::SliceOp>(
-        wrap.getLoc(), wrap.getOperand(), sl1_starts, sl1_ends, strides);
-    if (shard) {
-      sdy::setShardings(sl1, shard);
+
+    args.push_back(wrap.getOperand());
+
+    if (wrap.getRhs() != 0) {
+      SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
+      SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
+
+      sl1_ends[wrap.getDimension()] = wrap.getRhs();
+      auto sl1 = rewriter.create<stablehlo::SliceOp>(
+          wrap.getLoc(), wrap.getOperand(), sl1_starts, sl1_ends, strides);
+      if (shard)
+        sdy::setShardings(sl1, shard);
+
+      args.push_back(sl1);
     }
-    Value args[] = {sl0, wrap.getOperand(), sl1};
+
+    if (args.size() == 1) {
+      rewriter.replaceOp(wrap, args[0]);
+      return success();
+    }
+
     auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         wrap, args, wrap.getDimension());
-    if (shard) {
+    if (shard)
       sdy::setShardings(newConcat, shard);
-    }
     return success();
   }
 };
@@ -15621,31 +15640,48 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
                                 PatternRewriter &rewriter) const override {
     auto loc = extend.getLoc();
     auto operand = extend.getOperand();
+
+    SmallVector<Value> args;
+
     SmallVector<int64_t> strides(operand.getType().getRank(), 1);
-    SmallVector<int64_t> lhsStarts(operand.getType().getRank(), 0);
-    SmallVector<int64_t> lhsLimits(operand.getType().getShape());
-    lhsLimits[extend.getDimension()] = extend.getLhs();
-    auto lhs = rewriter.create<stablehlo::SliceOp>(loc, operand, lhsStarts,
-                                                   lhsLimits, strides);
     auto shard = sdy::getShardingPerValue(extend);
-    if (shard) {
-      sdy::setShardings(lhs, shard);
+
+    if (extend.getLhs() != 0) {
+      SmallVector<int64_t> lhsStarts(operand.getType().getRank(), 0);
+      SmallVector<int64_t> lhsLimits(operand.getType().getShape());
+      lhsLimits[extend.getDimension()] = extend.getLhs();
+      auto lhs = rewriter.create<stablehlo::SliceOp>(loc, operand, lhsStarts,
+                                                     lhsLimits, strides);
+      if (shard)
+        sdy::setShardings(lhs, shard);
+
+      args.push_back(lhs);
     }
-    SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
-    SmallVector<int64_t> rhsLimits(operand.getType().getShape());
-    rhsStarts[extend.getDimension()] =
-        rhsLimits[extend.getDimension()] - extend.getRhs();
-    auto rhs = rewriter.create<stablehlo::SliceOp>(loc, operand, rhsStarts,
-                                                   rhsLimits, strides);
-    if (shard) {
-      sdy::setShardings(rhs, shard);
+
+    args.push_back(operand);
+
+    if (extend.getRhs() != 0) {
+      SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
+      SmallVector<int64_t> rhsLimits(operand.getType().getShape());
+      rhsStarts[extend.getDimension()] =
+          rhsLimits[extend.getDimension()] - extend.getRhs();
+      auto rhs = rewriter.create<stablehlo::SliceOp>(loc, operand, rhsStarts,
+                                                     rhsLimits, strides);
+      if (shard)
+        sdy::setShardings(rhs, shard);
+
+      args.push_back(rhs);
     }
-    Value args[] = {lhs, extend.getOperand(), rhs};
+
+    if (args.size() == 1) {
+      rewriter.replaceOp(extend, args[0]);
+      return success();
+    }
+
     auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         extend, args, extend.getDimension());
-    if (shard) {
+    if (shard)
       sdy::setShardings(newConcat, shard);
-    }
     return success();
   }
 };
