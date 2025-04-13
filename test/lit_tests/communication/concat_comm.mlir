@@ -26,8 +26,8 @@ func.func @main1(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:        %11 = stablehlo.compare  LT, %6, %c_0 : (tensor<ui32>, tensor<ui32>) -> tensor<i1>
 // DUS-NEXT:        %12 = stablehlo.broadcast_in_dim %11, dims = [] : (tensor<i1>) -> tensor<20x6x21xi1>
 // DUS-NEXT:        %13 = stablehlo.or %10, %12 : tensor<20x6x21xi1>
-// DUS-NEXT:        %14 = stablehlo.select %13, %arg2, %arg3 : tensor<20x6x21xi1>, tensor<20x24x21xf64>
-// DUS-NEXT:        stablehlo.return %14 : tensor<20x24x21xf64>
+// DUS-NEXT:        %14 = stablehlo.select %13, %arg2, %arg3 : tensor<20x6x21xi1>, tensor<20x6x21xf64>
+// DUS-NEXT:        stablehlo.return %14 : tensor<20x6x21xf64>
 // DUS-NEXT:      }, {
 // DUS-NEXT:        stablehlo.return %arg3 : tensor<20x6x21xf64>
 // DUS-NEXT:      }) : (tensor<i1>) -> tensor<20x6x21xf64>
