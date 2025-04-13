@@ -541,6 +541,7 @@ cc_library(
         "@llvm-project//mlir:ToLLVMIRTranslationRegistration",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
+        "@llvm-project//mlir:InliningUtils",
         "@llvm-project//mlir:TransformDialectTransforms",
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
