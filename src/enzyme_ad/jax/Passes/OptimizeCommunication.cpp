@@ -2814,7 +2814,7 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
 
   int &channel_id;
   ExtendDUSLike(int &channel_id, MLIRContext *context,
-                   PatternBenefit benefit = 1)
+                PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(enzymexla::ExtendOp concat,
@@ -2890,15 +2890,17 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), rewriter.getZeroAttr(elemType));
 
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       auto operand = concat.getOperand();
       auto operandConcatDimSize =
           cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
 
       SmallVector<int64_t> padLowLocal(ndims, 0);
       SmallVector<int64_t> padHighLocal = padHigh;
-      padLowLocal[concatDimension] += i == 0 ? 0 : ( concat.getLhs() + concat.getRhs() );
-      padHighLocal[concatDimension] += i == 0 ? ( concat.getLhs() + concat.getRhs() ) : 0;
+      padLowLocal[concatDimension] +=
+          i == 0 ? 0 : (concat.getLhs() + concat.getRhs());
+      padHighLocal[concatDimension] +=
+          i == 0 ? (concat.getLhs() + concat.getRhs()) : 0;
 
       auto paddedOperand = rewriter.create<stablehlo::PadOp>(
           concat.getLoc(), operand, zero, padLowLocal, padHighLocal, padInner);
@@ -2907,10 +2909,14 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     }
 
     SmallVector<int64_t> lowPads(ndims, 0);
-    lowPads[concatDimension] = concat.getLhs() ? concat.getLhs() : cast<RankedTensorType>(concat.getOperand().getType()).getShape()[concat.getDimension()];
+    lowPads[concatDimension] =
+        concat.getLhs() ? concat.getLhs()
+                        : cast<RankedTensorType>(concat.getOperand().getType())
+                              .getShape()[concat.getDimension()];
     SmallVector<int64_t> highPads(ndims, 0);
 
-    RankedTensorType globalUnPaddedUpdateType = cast<RankedTensorType>(concat.getOperand().getType());
+    RankedTensorType globalUnPaddedUpdateType =
+        cast<RankedTensorType>(concat.getOperand().getType());
     RankedTensorType globalPaddedUpdateType = globalResultType;
 
     auto localResultType =
@@ -3351,7 +3357,7 @@ struct OptimizeCommunicationPass
 
     if (extend_dus_like > 0)
       patterns.add<ExtendDUSLike>(channel_id, context,
-                                     PatternBenefit(extend_dus_like));
+                                  PatternBenefit(extend_dus_like));
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
