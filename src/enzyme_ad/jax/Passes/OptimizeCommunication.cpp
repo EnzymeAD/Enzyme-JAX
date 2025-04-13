@@ -2554,7 +2554,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
 
           // We are in the operand if either of the indices are in the
           // operand
-          if (inOperand == mayContainOperandData || multiIdx == mayContainOperandData) {
+          if (inOperand == mayContainOperandData ||
+              multiIdx == mayContainOperandData) {
             multiIdx = mayContainOperandData;
           } else if (inOperand) {
             if (multiIdx) {
@@ -2566,8 +2567,12 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
           }
         }
 
-        auto newV = multiIdx == mayContainOperandData ? innerOperand : rewriter.create<stablehlo::SelectOp>(
-            loc, multiIdx, innerOperand, innerUpdateVal)->getResult(0);
+        auto newV = multiIdx == mayContainOperandData
+                        ? innerOperand
+                        : rewriter
+                              .create<stablehlo::SelectOp>(
+                                  loc, multiIdx, innerOperand, innerUpdateVal)
+                              ->getResult(0);
         rewriter.create<stablehlo::ReturnOp>(loc, newV);
       }
 
@@ -2623,26 +2628,24 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
       auto meshAxes = sharding.getDimShardings()[i].getAxes();
       if (meshAxes.size() != 1)
         return failure();
-      
+
       auto ndevices = getShardingDevices(sharding, i, concat);
       int64_t numDevicesAlongDimension = ndevices[i];
 
       if (numDevicesAlongDimension != 1) {
         for (auto axis : meshAxes)
           manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
-        if (globalResultType.getShape()[i] %
-                numDevicesAlongDimension !=
-            0) {
-          shape[i] += numDevicesAlongDimension -
-                                    (globalResultType.getShape()[i] %
-                                     numDevicesAlongDimension);
+        if (globalResultType.getShape()[i] % numDevicesAlongDimension != 0) {
+          shape[i] +=
+              numDevicesAlongDimension -
+              (globalResultType.getShape()[i] % numDevicesAlongDimension);
           extraSlice = true;
         }
       }
-   }
+    }
 
-    SmallVector<int64_t> updatedShardedDims = { (int64_t)concatDimension };
-    SmallVector<int64_t> updatedDims = { (int64_t)concatDimension };
+    SmallVector<int64_t> updatedShardedDims = {(int64_t)concatDimension};
+    SmallVector<int64_t> updatedDims = {(int64_t)concatDimension};
     globalResultType = RankedTensorType::get(shape, elemType);
     auto concatDimSize = globalResultType.getShape()[concatDimension];
 
@@ -2657,7 +2660,6 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
       if (!operandSharding || (operandSharding != sharding))
         return failure();
     }
-
 
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         concat.getLoc(), rewriter.getZeroAttr(elemType));
