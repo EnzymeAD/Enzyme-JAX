@@ -571,7 +571,7 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
                           stablehlo::ConstantOp zero, Value innerArg,
                           TensorShardingAttr opSharding, int concatDim, int N,
                           int numDevicesAlongDimension, int ndims, int T,
-                          SmallVector<int64_t> localRetShape, Value isLeftSide,
+                          ArrayRef<int64_t> localRetShape, Value isLeftSide,
                           bool returnResults = true) {
   auto elemType = innerArg.getType().cast<RankedTensorType>().getElementType();
 
@@ -1359,22 +1359,44 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       return rewriter.notifyMatchFailure(
           extend, "Amount of shift extends past a shard boundary.");
 
-    SmallVector<int64_t> localRetShape = llvm::to_vector(extendShape);
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(extendShape);
-    for (int i = 0; i < localRetShape.size(); i++) {
-      if (i == extendDimension) {
-        localRetShape[i] = paddedResultSize / ndevices[i];
+    Value inputArg = extend.getOperand();
+
+    bool needsSlice = false;
+    SmallVector<int64_t> lowPads(ndims, 0);
+    SmallVector<int64_t> highPads(ndims, 0);
+    SmallVector<int64_t> interior(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      auto numDevicesAlongDimension =
+          getNumDevicesAlongDimension(extendSharding, i, extend);
+      if (i == extendDimension)
         continue;
-      }
-      localRetShape[i] /= ndevices[i];
+      if (extend.getType().getShape()[i] % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] = numDevicesAlongDimension -
+                    (extend.getType().getShape()[i] % numDevicesAlongDimension);
+      manualOpRetShape[i] += highPads[i];
+      needsSlice = true;
+    }
+    if (needsSlice) {
+      inputArg = rewriter.create<stablehlo::PadOp>(
+          extend.getLoc(), inputArg,
+          rewriter.create<stablehlo::ConstantOp>(
+              extend.getLoc(), rewriter.getZeroAttr(elemType)),
+          lowPads, highPads, interior);
     }
     manualOpRetShape[extendDimension] = paddedResultSize;
 
-    mlir::Type inTys[1]{RankedTensorType::get(localShape, elemType)};
+    mlir::Type inTys[1]{getLocalType(cast<RankedTensorType>(inputArg.getType()),
+                                     extendSharding, manualAxes, extend)};
     mlir::Location inLocs[] = {extend.getLoc()};
 
-    Value manualOps[] = {extend.getOperand()};
-    Type manualTypes[] = {RankedTensorType::get(manualOpRetShape, elemType)};
+    auto globalResultType = RankedTensorType::get(manualOpRetShape, elemType);
+    auto localResultType =
+        getLocalType(globalResultType, extendSharding, manualAxes, extend);
+
+    Value manualOps[] = {inputArg};
+    Type manualTypes[] = {globalResultType};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         extend.getLoc(), manualTypes, manualOps, inShardings, outShardings,
         manualAxes);
@@ -1394,7 +1416,7 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
                                               numDevicesAlongDimension, zero);
 
     if (numDevicesAlongDimension != 2) {
-      Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+      Type ifTypes[] = {localResultType};
       auto ifCond = rewriter.create<stablehlo::IfOp>(
           extend.getLoc(), ifTypes,
           rewriter.create<stablehlo::AndOp>(extend.getLoc(), isNotLeftSide,
@@ -1408,7 +1430,7 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
                                        innerArg, innerArg, extendSharding,
                                        extendDimension, paddedBoundarySize,
                                        numDevicesAlongDimension, ndims,
-                                       localRetShape, leftSide, channel_id);
+                                       localResultType.getShape(), leftSide, channel_id);
       }
 
       {
@@ -1418,7 +1440,7 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
         extendCommPatternForEdges(
             rewriter, extend, partitionId, zero, innerArg, extendSharding,
             extendDimension, paddedBoundarySize, numDevicesAlongDimension,
-            ndims, paddedResultSize, localRetShape, isLeftSide);
+            ndims, paddedResultSize, localResultType.getShape(), isLeftSide);
       }
 
       rewriter.setInsertionPointAfter(ifCond);
@@ -1427,22 +1449,19 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       auto results = extendCommPatternForEdges(
           rewriter, extend, partitionId, zero, innerArg, extendSharding,
           extendDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-          paddedResultSize, localRetShape, isLeftSide, /*returnResults=*/false);
+          paddedResultSize, localResultType.getShape(), isLeftSide, /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(extend.getLoc(), results);
     }
 
-    if (leftPadding != 0 || rightPadding != 0) {
+    if (extend.getType() != manual->getResult(0).getType()) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits = llvm::to_vector(
-          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
+      SmallVector<int64_t> sliceLimits =
+          llvm::to_vector(extend.getType().getShape());
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
-        sliceStartIndices[extendDimension] = leftPadding;
-      }
-
-      if (rightPadding > 0) {
-        sliceLimits[extendDimension] -= rightPadding;
+        sliceStartIndices[extendDimension] += leftPadding;
+        sliceLimits[extendDimension] += leftPadding;
       }
 
       rewriter.setInsertionPointAfter(manual);
