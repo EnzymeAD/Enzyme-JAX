@@ -561,6 +561,7 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
         "@xla//xla/mlir_hlo",
     ],
 )

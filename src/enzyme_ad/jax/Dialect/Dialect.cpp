@@ -55,10 +55,10 @@ struct EnzymeXLADialectInlinerInterface : public DialectInlinerInterface {
     return true;
   }
 };
+
 } // namespace
 
 void EnzymeXLADialect::initialize() {
-
   addInterfaces<EnzymeXLADialectInlinerInterface>();
   addOperations<
 #define GET_OP_LIST
