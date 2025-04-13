@@ -160,7 +160,7 @@ func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // DUS-NEXT:        stablehlo.return %arg3 : tensor<20x6x21xf64>
 // DUS-NEXT:      }) : (tensor<i1>) -> tensor<20x6x21xf64>
 // DUS-NEXT:      sdy.return %8 : tensor<20x6x21xf64>
-// DUS-NEXT:    } : (tensor<20x6x84xf64>, tensor<20x6x84xf64>) -> tensor<20x6x84xf64>
+// DUS-NEXT:    } : (tensor<20x24x84xf64>, tensor<20x24x84xf64>) -> tensor<20x24x84xf64>
 // DUS-NEXT:    %4 = stablehlo.slice %3 [0:20, 0:24, 0:81] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x84xf64>) -> tensor<20x24x81xf64>
 // DUS-NEXT:    return %4 : tensor<20x24x81xf64>
 // DUS-NEXT:  }
