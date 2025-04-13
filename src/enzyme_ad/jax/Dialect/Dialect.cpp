@@ -15,6 +15,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "mlir/IR/Dialect.h"
+#include "mlir/Transforms/InliningUtils.h"
 
 // #include "Dialect/EnzymeEnums.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLADialect.cpp.inc"
@@ -33,7 +34,32 @@ using namespace mlir::enzymexla;
 // Enzyme dialect.
 //===----------------------------------------------------------------------===//
 
+namespace {
+struct EnzymeXLADialectInlinerInterface : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  // Allow all call operations to be inlined.
+  bool isLegalToInline(Operation *call, Operation *callable,
+                       bool wouldBeCloned) const final {
+    return true;
+  }
+  // We don't have any special restrictions on what can be inlined into
+  // destination regions (e.g. while/conditional bodies). Always allow it.
+  bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
+                       IRMapping &valueMapping) const final {
+    return true;
+  }
+  // Operations in StableHLO dialect are always legal to inline since they are
+  // pure.
+  bool isLegalToInline(Operation *, Region *, bool, IRMapping &) const final {
+    return true;
+  }
+};
+}
+
 void EnzymeXLADialect::initialize() {
+
+  addInterfaces<EnzymeXLADialectInlinerInterface>();
   addOperations<
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
