@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{periodic_concat=0 concat_to_pad_comm=1 concat_two_operands_comm=0 concat_two_dus_like=0})" %s | FileCheck %s
-// TODO: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{periodic_concat=0 concat_to_pad_comm=0 concat_two_operands_comm=0 concat_two_dus_like=1})" %s | FileCheck %s --check-prefix=DUS
+// TODO: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{periodic_concat=0 concat_to_pad_comm=1 concat_two_operands_comm=0 concat_two_dus_like=0})" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{periodic_concat=0 concat_to_pad_comm=0 concat_two_operands_comm=0 concat_two_dus_like=1})" %s | FileCheck %s --check-prefix=DUS
 
 sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
 func.func @main1(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x83xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
