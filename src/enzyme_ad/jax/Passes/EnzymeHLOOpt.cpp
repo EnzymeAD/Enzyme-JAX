@@ -15660,7 +15660,8 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
           if (inShape[0] == 1) {
             bool legal = true;
-            for (auto &&[lhs, rhs] : llvm::zip_equal(outShape, inShape.slice(1))) {
+            for (auto &&[lhs, rhs] :
+                 llvm::zip_equal(outShape, inShape.slice(1))) {
               if (lhs != rhs) {
                 legal = false;
                 break;
