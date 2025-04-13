@@ -881,12 +881,12 @@ struct PeriodicConcatSimplify
     TensorShardingPerValueAttr out_shardings =
         TensorShardingPerValueAttr::get(concat.getContext(), op_shardings);
 
-    SmallVector<StringAttr> manual_axes;
+    SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape =
         llvm::to_vector(cast<RankedTensorType>(midOp.getType()).getShape());
 
     updateManualComputationAxesShape(concatSharding, rewriter, concat,
-                                     manual_axes, localShape, concatDim);
+                                     manualAxes, localShape, concatDim);
 
     if (numDevicesAlongDimension % 2 != 0) {
       return failure();
@@ -901,26 +901,54 @@ struct PeriodicConcatSimplify
       return failure();
     }
 
-    SmallVector<int64_t> localRetShape = llvm::to_vector(concatShape);
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(concatShape);
-    for (int i = 0; i < localRetShape.size(); i++) {
-      if (i == concatDim) {
-        localRetShape[i] = T / ndevices[i];
+
+    bool needsSlice = false;
+    SmallVector<int64_t> lowPads(ndims, 0);
+    SmallVector<int64_t> highPads(ndims, 0);
+    SmallVector<int64_t> interior(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      auto numDevicesAlongDimension =
+          getNumDevicesAlongDimension(concatSharding, i, concat);
+      if (i == concatDim)
         continue;
-      }
-      localRetShape[i] /= ndevices[i];
+      auto shape_i = cast<RankedTensorType>(midOp.getType()).getShape()[i];
+      if (shape_i % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] =
+          numDevicesAlongDimension - (shape_i % numDevicesAlongDimension);
+      manualOpRetShape[i] += highPads[i];
+      needsSlice = true;
     }
+    if (needsSlice) {
+      auto cst = rewriter.create<stablehlo::ConstantOp>(
+          concat.getLoc(), rewriter.getZeroAttr(elemType));
+
+      superSliceOp = rewriter.create<stablehlo::PadOp>(
+          concat.getLoc(), superSliceOp, cst, lowPads, highPads, interior);
+
+      midOp = rewriter.create<stablehlo::PadOp>(concat.getLoc(), midOp, cst,
+                                                lowPads, highPads, interior);
+    }
+
     manualOpRetShape[concatDim] = T;
 
-    mlir::Type in_tys[2]{RankedTensorType::get(localShape, elemType),
-                         RankedTensorType::get(localShape, elemType)};
+    mlir::Type in_tys[2]{
+        getLocalType(cast<RankedTensorType>(superSliceOp.getType()),
+                     concatSharding, manualAxes, concat),
+        getLocalType(cast<RankedTensorType>(midOp.getType()), concatSharding,
+                     manualAxes, concat)};
     mlir::Location in_locs[] = {superSliceOp.getLoc(), midOp.getLoc()};
 
+    auto globalResultType = RankedTensorType::get(manualOpRetShape, elemType);
+    auto localResultType =
+        getLocalType(globalResultType, concatSharding, manualAxes, concat);
+
     Value manual_ops[] = {superSliceOp, midOp};
-    Type manual_types[] = {RankedTensorType::get(manualOpRetShape, elemType)};
+    Type manual_types[] = {globalResultType};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         concat.getLoc(), manual_types, manual_ops, in_shardings, out_shardings,
-        manual_axes);
+        manualAxes);
 
     auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
                                     in_tys, in_locs);
@@ -939,7 +967,7 @@ struct PeriodicConcatSimplify
     SmallVector<int64_t> innerStrides(ndims, 1);
 
     if (numDevicesAlongDimension != 2) {
-      Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+      Type ifTypes[] = {localResultType};
       auto if1 = rewriter.create<stablehlo::IfOp>(
           concat.getLoc(), ifTypes,
           rewriter.create<stablehlo::AndOp>(concat.getLoc(), isNotLeftSide,
@@ -949,11 +977,11 @@ struct PeriodicConcatSimplify
       {
         rewriter.createBlock(&if1.getTrueBranch(), if1.getTrueBranch().begin());
 
-        generateCommPatternForNonEdges(rewriter, concat, partitionId, zero,
-                                       superSliceInnerArg, midOpInnerArg,
-                                       concatSharding, concatDim, N,
-                                       numDevicesAlongDimension, ndims,
-                                       localRetShape, leftSide, channel_id);
+        generateCommPatternForNonEdges(
+            rewriter, concat, partitionId, zero, superSliceInnerArg,
+            midOpInnerArg, concatSharding, concatDim, N,
+            numDevicesAlongDimension, ndims, localResultType.getShape(),
+            leftSide, channel_id);
       }
 
       // else
@@ -961,11 +989,11 @@ struct PeriodicConcatSimplify
         rewriter.createBlock(&if1.getFalseBranch(),
                              if1.getFalseBranch().begin());
 
-        wrapCommPatternForEdges(rewriter, concat, partitionId, zero,
-                                superSliceInnerArg, midOpInnerArg,
-                                concatSharding, concatDim, N,
-                                numDevicesAlongDimension, ndims, T,
-                                localRetShape, isLeftSide, channel_id);
+        wrapCommPatternForEdges(
+            rewriter, concat, partitionId, zero, superSliceInnerArg,
+            midOpInnerArg, concatSharding, concatDim, N,
+            numDevicesAlongDimension, ndims, T, localResultType.getShape(),
+            isLeftSide, channel_id);
       }
 
       rewriter.setInsertionPointAfter(if1);
@@ -974,22 +1002,18 @@ struct PeriodicConcatSimplify
       auto results = wrapCommPatternForEdges(
           rewriter, concat, partitionId, zero, superSliceInnerArg,
           midOpInnerArg, concatSharding, concatDim, N, numDevicesAlongDimension,
-          ndims, T, localRetShape, isLeftSide, channel_id,
+          ndims, T, localResultType.getShape(), isLeftSide, channel_id,
           /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(concat.getLoc(), results);
     }
 
-    if (leftPadding != 0 || rightPadding != 0) {
+    if (concat.getType() != manual->getResult(0).getType()) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits = llvm::to_vector(
-          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
-
+      SmallVector<int64_t> sliceLimits =
+          llvm::to_vector(concat.getType().getShape());
       if (leftPadding > 0) {
-        sliceStartIndices[concatDim] = leftPadding;
-      }
-
-      if (rightPadding > 0) {
-        sliceLimits[concatDim] -= rightPadding;
+        sliceStartIndices[concatDim] += leftPadding;
+        sliceLimits[concatDim] += leftPadding;
       }
 
       rewriter.setInsertionPointAfter(manual);
