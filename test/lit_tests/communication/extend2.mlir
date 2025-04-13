@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{extend_dus_like=1 extend_comm=0 extend_to_pad_comm=0})" %s | FileCheck %s --check-prefix=PAD
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{extend_dus_like=1 extend_comm=0 extend_to_pad_comm=0})" %s | FileCheck %s 
 
 sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
 func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x81xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
