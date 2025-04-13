@@ -15114,6 +15114,7 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
     // sl0[A:end], sl1[0:A]
+    auto shard = sdy::getShardingPerValue(rotate);
     SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
     SmallVector<int64_t> sl0_starts(rotate.getType().getShape().size(), 0);
     SmallVector<int64_t> sl0_ends(rotate.getType().getShape());
@@ -15123,11 +15124,20 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
     sl1_ends[rotate.getDimension()] = rotate.getAmount();
     auto sl0 = rewriter.create<stablehlo::SliceOp>(
         rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
+    if (shard) {
+      sdy::setShardings(sl0, shard);
+    }
     auto sl1 = rewriter.create<stablehlo::SliceOp>(
         rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
+    if (shard) {
+      sdy::setShardings(sl1, shard);
+    }
     Value args[] = {sl0, sl1};
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         rotate, args, rotate.getDimension());
+    if (shard) {
+      sdy::setShardings(newConcat, shard);
+    }
     return success();
   }
 };
