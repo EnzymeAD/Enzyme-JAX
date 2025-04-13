@@ -230,7 +230,7 @@ generateShiftPairs(const sdy::TensorShardingAttr &shardingAttr, int dimension,
 void updateManualComputationAxesShape(TensorShardingAttr shardingAttr,
                                       PatternRewriter &rewriter, Operation *op,
                                       SmallVector<StringAttr> &manualAxes,
-                                      SmallVector<int64_t> &localShape,
+                                      SmallVectorImpl<int64_t> &localShape,
                                       int64_t dimension) {
   TensorShardingAttr op_shardings[] = {shardingAttr};
 
@@ -253,7 +253,7 @@ void generateCommPatternForNonEdges(
     stablehlo::PartitionIdOp partitionId, stablehlo::ConstantOp zero,
     Value superSliceInnerArg, Value midOpInnerArg,
     TensorShardingAttr opSharding, int concatDim, int paddedBoundarySize,
-    int numDevicesAlongDimension, int ndims, SmallVector<int64_t> localRetShape,
+    int numDevicesAlongDimension, int ndims, ArrayRef<int64_t> localRetShape,
     Value leftSide, int &channel_id) {
   auto sourceTargetPairsVec =
       generateShiftPairs(opSharding, concatDim, op, /*leftToRight*/ true,
@@ -433,7 +433,7 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
                         stablehlo::ConstantOp zero, Value superSliceInnerArg,
                         Value midOpInnerArg, TensorShardingAttr opSharding,
                         int concatDim, int N, int numDevicesAlongDimension,
-                        int ndims, int T, SmallVector<int64_t> localRetShape,
+                        int ndims, int T, ArrayRef<int64_t> localRetShape,
                         Value isLeftSide, int &channel_id,
                         bool returnResults = true) {
   auto elemType =
@@ -1067,22 +1067,44 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return rewriter.notifyMatchFailure(
           wrap, "Amount of shift extends past a shard boundary.");
 
-    SmallVector<int64_t> localRetShape = llvm::to_vector(wrapShape);
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(wrapShape);
-    for (int i = 0; i < localRetShape.size(); i++) {
-      if (i == wrapDimension) {
-        localRetShape[i] = paddedResultSize / ndevices[i];
+    Value inputArg = wrap.getOperand();
+
+    bool needsSlice = false;
+    SmallVector<int64_t> lowPads(ndims, 0);
+    SmallVector<int64_t> highPads(ndims, 0);
+    SmallVector<int64_t> interior(ndims, 0);
+    for (int i = 0; i < ndims; i++) {
+      auto numDevicesAlongDimension =
+          getNumDevicesAlongDimension(wrapSharding, i, wrap);
+      if (i == wrapDimension)
         continue;
-      }
-      localRetShape[i] /= ndevices[i];
+      if (wrap.getType().getShape()[i] % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] = numDevicesAlongDimension -
+                    (wrap.getType().getShape()[i] % numDevicesAlongDimension);
+      manualOpRetShape[i] += highPads[i];
+      needsSlice = true;
+    }
+    if (needsSlice) {
+      inputArg = rewriter.create<stablehlo::PadOp>(
+          wrap.getLoc(), inputArg,
+          rewriter.create<stablehlo::ConstantOp>(
+              wrap.getLoc(), rewriter.getZeroAttr(elemType)),
+          lowPads, highPads, interior);
     }
     manualOpRetShape[wrapDimension] = paddedResultSize;
 
-    mlir::Type inTys[1]{RankedTensorType::get(localShape, elemType)};
+    mlir::Type inTys[1]{getLocalType(cast<RankedTensorType>(inputArg.getType()),
+                                     wrapSharding, manualAxes, wrap)};
     mlir::Location inLocs[] = {wrap.getLoc()};
 
-    Value manualOps[] = {wrap.getOperand()};
-    Type manualTypes[] = {RankedTensorType::get(manualOpRetShape, elemType)};
+    auto globalResultType = RankedTensorType::get(manualOpRetShape, elemType);
+    auto localResultType =
+        getLocalType(globalResultType, wrapSharding, manualAxes, wrap);
+
+    Value manualOps[] = {inputArg};
+    Type manualTypes[] = {globalResultType};
     auto manual = rewriter.create<sdy::ManualComputationOp>(
         wrap.getLoc(), manualTypes, manualOps, inShardings, outShardings,
         manualAxes);
@@ -1101,7 +1123,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
                                               numDevicesAlongDimension, zero);
 
     if (numDevicesAlongDimension != 2) {
-      Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
+      Type ifTypes[] = {localResultType};
       auto ifCond = rewriter.create<stablehlo::IfOp>(
           wrap.getLoc(), ifTypes,
           rewriter.create<stablehlo::AndOp>(wrap.getLoc(), isNotLeftSide,
@@ -1114,7 +1136,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         generateCommPatternForNonEdges(
             rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
             wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-            localRetShape, leftSide, channel_id);
+            localResultType.getShape(), leftSide, channel_id);
       }
 
       {
@@ -1124,7 +1146,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrapCommPatternForEdges(
             rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
             wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-            paddedResultSize, localRetShape, isLeftSide, channel_id);
+            paddedResultSize, localResultType.getShape(), isLeftSide,
+            channel_id);
       }
 
       rewriter.setInsertionPointAfter(ifCond);
@@ -1134,23 +1157,20 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       auto results = wrapCommPatternForEdges(
           rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
           wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-          paddedResultSize, localRetShape, isLeftSide, channel_id,
+          paddedResultSize, localResultType.getShape(), isLeftSide, channel_id,
           /*returnResults=*/false);
       rewriter.create<sdy::ReturnOp>(wrap.getLoc(), results);
     }
 
-    if (leftPadding != 0 || rightPadding != 0) {
+    if (wrap.getType() != manual->getResult(0).getType()) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits = llvm::to_vector(
-          cast<RankedTensorType>(manual->getResults()[0].getType()).getShape());
+      SmallVector<int64_t> sliceLimits =
+          llvm::to_vector(wrap.getType().getShape());
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
         sliceStartIndices[wrapDimension] = leftPadding;
-      }
-
-      if (rightPadding > 0) {
-        sliceLimits[wrapDimension] -= rightPadding;
+        sliceLimits[wrapDimension] = leftPadding;
       }
 
       rewriter.setInsertionPointAfter(manual);
