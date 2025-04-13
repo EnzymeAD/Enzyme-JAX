@@ -1266,14 +1266,14 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
 
-    padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
+    padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
     padHigh[wrapDimension] = 0;
     auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
         wrap.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedLeftSliceOp, wrapSharding);
 
     padLow[wrapDimension] = 0;
-    padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
+    padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
     auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
         wrap.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedRightSliceOp, wrapSharding);
