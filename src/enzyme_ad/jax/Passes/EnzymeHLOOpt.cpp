@@ -15658,6 +15658,27 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
           if (inShape.size() != outShape.size() + 1)
             return nullptr;
 
+          if (inShape[0] == 1) {
+            bool legal = true;
+            for (auto &&[lhs, rhs] :
+                 llvm::zip_equal(outShape, inShape.slice(1))) {
+              if (lhs != rhs) {
+                legal = false;
+                break;
+              }
+            }
+            if (legal) {
+              if (removedDim) {
+                if (*removedDim != 0) {
+                  return nullptr;
+                }
+              } else {
+                removedDim = 0;
+              }
+              return reshape.getOperand();
+            }
+          }
+
           for (unsigned inI = 0, outI = 0; inI < inShape.size();) {
             if (outI == outShape.size())
               return nullptr;
