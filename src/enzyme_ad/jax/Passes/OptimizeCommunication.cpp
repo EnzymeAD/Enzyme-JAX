@@ -1074,30 +1074,34 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     SmallVector<int64_t> lowPads(ndims, 0);
     SmallVector<int64_t> highPads(ndims, 0);
     SmallVector<int64_t> interior(ndims, 0);
-    for (int i=0; i<ndims; i++) {
+    for (int i = 0; i < ndims; i++) {
       auto numDevicesAlongDimension =
           getNumDevicesAlongDimension(wrapSharding, i, wrap);
-      if (i == wrapDimension) continue;
-      if (wrap.getType().getShape()[i] % numDevicesAlongDimension == 0 ) continue;
-      highPads[i] = numDevicesAlongDimension - (wrap.getType().getShape()[i] % numDevicesAlongDimension);
+      if (i == wrapDimension)
+        continue;
+      if (wrap.getType().getShape()[i] % numDevicesAlongDimension == 0)
+        continue;
+      highPads[i] = numDevicesAlongDimension -
+                    (wrap.getType().getShape()[i] % numDevicesAlongDimension);
       manualOpRetShape[i] += highPads[i];
       needsSlice = true;
     }
     if (needsSlice) {
       inputArg = rewriter.create<stablehlo::PadOp>(
           wrap.getLoc(), inputArg,
-          rewriter.create<stablehlo::ConstantOp>(wrap.getLoc(),
-                                                 rewriter.getZeroAttr(elemType)),
+          rewriter.create<stablehlo::ConstantOp>(
+              wrap.getLoc(), rewriter.getZeroAttr(elemType)),
           lowPads, highPads, interior);
     }
     manualOpRetShape[wrapDimension] = paddedResultSize;
 
-
-    mlir::Type inTys[1]{getLocalType(cast<RankedTensorType>(inputArg.getType()), wrapSharding, manualAxes, wrap)};
+    mlir::Type inTys[1]{getLocalType(cast<RankedTensorType>(inputArg.getType()),
+                                     wrapSharding, manualAxes, wrap)};
     mlir::Location inLocs[] = {wrap.getLoc()};
 
     auto globalResultType = RankedTensorType::get(manualOpRetShape, elemType);
-    auto localResultType = getLocalType(globalResultType, wrapSharding, manualAxes, wrap);
+    auto localResultType =
+        getLocalType(globalResultType, wrapSharding, manualAxes, wrap);
 
     Value manualOps[] = {inputArg};
     Type manualTypes[] = {globalResultType};
@@ -1142,7 +1146,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrapCommPatternForEdges(
             rewriter, wrap, partitionId, zero, innerArg, innerArg, wrapSharding,
             wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
-            paddedResultSize, localResultType.getShape(), isLeftSide, channel_id);
+            paddedResultSize, localResultType.getShape(), isLeftSide,
+            channel_id);
       }
 
       rewriter.setInsertionPointAfter(ifCond);
@@ -1159,7 +1164,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     if (wrap.getType() != manual->getResult(0).getType()) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits = llvm::to_vector(wrap.getType().getShape());
+      SmallVector<int64_t> sliceLimits =
+          llvm::to_vector(wrap.getType().getShape());
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
