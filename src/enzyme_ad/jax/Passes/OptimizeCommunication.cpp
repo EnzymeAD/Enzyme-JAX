@@ -2361,6 +2361,7 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // our partition check, do nothing.
             if (mayContainOperandData == leftSides[i]) {
               // No check needed
+              lhs = mayContainOperandData;
             } else {
               // Otherwise we could've entered this if statement for other
               // reasons, whether to use is simply the partition check, now
@@ -2457,6 +2458,7 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // equivalent to our partition check, do nothing.
             if (mayContainOperandData == rightSides[i]) {
               // No check needed
+              rhs = mayContainOperandData;
             } else {
               // Otherwise we could've entered this if statement for other
               // reasons, whether to use is simply the partition check, now
@@ -2543,27 +2545,35 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
 
           // We are in the operand if either lhs or rhs are in operand
           Value inOperand = lhs;
-          if (rhs) {
+          if (rhs && inOperand != mayContainOperandData) {
             if (inOperand)
               inOperand = rewriter.create<stablehlo::OrOp>(loc, inOperand, rhs);
             else
               inOperand = rhs;
           }
-          assert(inOperand);
 
           // We are in the operand if either of the indices are in the
           // operand
-          if (multiIdx) {
-            multiIdx =
-                rewriter.create<stablehlo::OrOp>(loc, multiIdx, inOperand);
-          } else {
-            multiIdx = inOperand;
+          if (inOperand == mayContainOperandData ||
+              multiIdx == mayContainOperandData) {
+            multiIdx = mayContainOperandData;
+          } else if (inOperand) {
+            if (multiIdx) {
+              multiIdx =
+                  rewriter.create<stablehlo::OrOp>(loc, multiIdx, inOperand);
+            } else {
+              multiIdx = inOperand;
+            }
           }
         }
 
-        auto newV = rewriter.create<stablehlo::SelectOp>(
-            loc, multiIdx, innerOperand, innerUpdateVal);
-        rewriter.create<stablehlo::ReturnOp>(loc, newV->getResults());
+        auto newV = multiIdx == mayContainOperandData
+                        ? innerOperand
+                        : rewriter
+                              .create<stablehlo::SelectOp>(
+                                  loc, multiIdx, innerOperand, innerUpdateVal)
+                              ->getResult(0);
+        rewriter.create<stablehlo::ReturnOp>(loc, newV);
       }
 
       {
@@ -2609,25 +2619,34 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
-    auto meshAxes = sharding.getDimShardings()[concatDimension].getAxes();
-    if (meshAxes.size() != 1)
-      return failure();
-    SmallVector<StringAttr> manualAxes = {
-        rewriter.getStringAttr(meshAxes[0].getName())};
-
     RankedTensorType globalResultType = concat.getType();
+    SmallVector<int64_t> shape = llvm::to_vector(globalResultType.getShape());
     bool extraSlice = false;
-    if (globalResultType.getShape()[concatDimension] %
-            numDevicesAlongDimension !=
-        0) {
-      SmallVector<int64_t> shape = llvm::to_vector(globalResultType.getShape());
-      shape[concatDimension] += numDevicesAlongDimension -
-                                (globalResultType.getShape()[concatDimension] %
-                                 numDevicesAlongDimension);
-      globalResultType = RankedTensorType::get(shape, elemType);
-      extraSlice = true;
+
+    SmallVector<StringAttr> manualAxes;
+    for (int i = 0; i < ndims; i++) {
+      auto meshAxes = sharding.getDimShardings()[i].getAxes();
+      if (meshAxes.size() != 1)
+        return failure();
+
+      auto ndevices = getShardingDevices(sharding, i, concat);
+      int64_t numDevicesAlongDimension = ndevices[i];
+
+      if (numDevicesAlongDimension != 1) {
+        for (auto axis : meshAxes)
+          manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
+        if (globalResultType.getShape()[i] % numDevicesAlongDimension != 0) {
+          shape[i] +=
+              numDevicesAlongDimension -
+              (globalResultType.getShape()[i] % numDevicesAlongDimension);
+          extraSlice = true;
+        }
+      }
     }
 
+    SmallVector<int64_t> updatedShardedDims = {(int64_t)concatDimension};
+    SmallVector<int64_t> updatedDims = {(int64_t)concatDimension};
+    globalResultType = RankedTensorType::get(shape, elemType);
     auto concatDimSize = globalResultType.getShape()[concatDimension];
 
     SmallVector<int64_t> padLow(ndims, 0);
@@ -2666,8 +2685,6 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
         cast<RankedTensorType>(concat.getOperands()[0].getType())
             .getShape()[concatDimension];
     SmallVector<int64_t> highPads(ndims, 0);
-    SmallVector<int64_t> updatedShardedDims = {(int64_t)concat.getDimension()};
-    SmallVector<int64_t> updatedDims = updatedShardedDims;
 
     RankedTensorType globalUnPaddedUpdateType =
         cast<RankedTensorType>(concat.getOperands()[1].getType());
