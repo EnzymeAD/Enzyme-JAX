@@ -14156,9 +14156,7 @@ struct BroadcastInDimIsReshape final
   }
 };
 
-
-struct ReshapeToBroadcast final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshape,
@@ -14171,24 +14169,22 @@ struct ReshapeToBroadcast final
 
     if (outShape[0] == 1) {
       bool legal = true;
-      for (auto &&[lhs, rhs] :
-           llvm::zip_equal(outShape.slice(1), inShape)) {
+      for (auto &&[lhs, rhs] : llvm::zip_equal(outShape.slice(1), inShape)) {
         if (lhs != rhs) {
           return failure();
         }
       }
     }
     SmallVector<int64_t> vals(inShape.size(), 0);
-    for (int i=0; i<inShape.size(); i++) {
-      vals[i] = i+1;
+    for (int i = 0; i < inShape.size(); i++) {
+      vals[i] = i + 1;
     }
     auto shard = sdy::getShardingPerValue(reshape);
     auto rep = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-      reshape, reshape.getType(), reshape.getOperand(), vals
-      );
-       if (shard) {
-            sdy::setShardings(rep, shard);
-          }
+        reshape, reshape.getType(), reshape.getOperand(), vals);
+    if (shard) {
+      sdy::setShardings(rep, shard);
+    }
     return success();
   }
 };
