@@ -1788,7 +1788,7 @@ struct ConcatTwoOperandsCommOptimize
 
     auto allOperands = llvm::to_vector(concat.getOperands());
 
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       auto opSharding = mlir::sdy::getSharding(allOperands[i]);
       if (!opSharding)
         return failure();
@@ -1798,8 +1798,8 @@ struct ConcatTwoOperandsCommOptimize
     }
 
     RankedTensorType originalArgTypes[2] = {
-      cast<RankedTensorType>(allOperands[0].getType()),
-      cast<RankedTensorType>(allOperands[1].getType()),
+        cast<RankedTensorType>(allOperands[0].getType()),
+        cast<RankedTensorType>(allOperands[1].getType()),
     };
 
     int leftOperandSize = originalArgTypes[0].getShape()[concatDimension];
@@ -1829,10 +1829,12 @@ struct ConcatTwoOperandsCommOptimize
     if (meshAxes.size() != 1)
       return failure();
 
-    int64_t padding[2] = { 0, 0 };
-    for (int i=0; i<2; i++) {
-      auto extra = originalArgTypes[i].getShape()[concatDimension] % numDevicesAlongDimension;
-      if (extra == 0) continue;
+    int64_t padding[2] = {0, 0};
+    for (int i = 0; i < 2; i++) {
+      auto extra = originalArgTypes[i].getShape()[concatDimension] %
+                   numDevicesAlongDimension;
+      if (extra == 0)
+        continue;
       padding[i] = numDevicesAlongDimension - extra;
       SmallVector<int64_t> padLow(ndims, 0);
       SmallVector<int64_t> padHigh(ndims, 0);
@@ -1844,34 +1846,38 @@ struct ConcatTwoOperandsCommOptimize
       }
       auto paddedOperand = rewriter.create<stablehlo::PadOp>(
           concat.getLoc(), allOperands[i],
-          rewriter.create<stablehlo::ConstantOp>(concat.getLoc(),
-                                                 rewriter.getZeroAttr(elemType)),
+          rewriter.create<stablehlo::ConstantOp>(
+              concat.getLoc(), rewriter.getZeroAttr(elemType)),
           padLow, padHigh, padInner);
       sdy::setSharding(paddedOperand, concatSharding);
       allOperands[i] = paddedOperand;
     }
 
     RankedTensorType paddedArgTypes[2] = {
-      cast<RankedTensorType>(allOperands[0].getType()),
-      cast<RankedTensorType>(allOperands[1].getType()),
+        cast<RankedTensorType>(allOperands[0].getType()),
+        cast<RankedTensorType>(allOperands[1].getType()),
     };
 
-    SmallVector<StringAttr> axis = {rewriter.getStringAttr(meshAxes[0].getName())};
+    SmallVector<StringAttr> axis = {
+        rewriter.getStringAttr(meshAxes[0].getName())};
 
     RankedTensorType paddedLocalArgTypes[2] = {
-      getLocalType(paddedArgTypes[0], concatSharding, axis, concat),
-      getLocalType(paddedArgTypes[1], concatSharding, axis, concat),
+        getLocalType(paddedArgTypes[0], concatSharding, axis, concat),
+        getLocalType(paddedArgTypes[1], concatSharding, axis, concat),
     };
 
     SmallVector<int64_t> globalResultShape = llvm::to_vector(concatShape);
-    globalResultShape[concatDimension] = paddedArgTypes[0].getShape()[concatDimension] + paddedArgTypes[1].getShape()[concatDimension];
-    RankedTensorType globalResultType = RankedTensorType::get(globalResultShape, elemType);
+    globalResultShape[concatDimension] =
+        paddedArgTypes[0].getShape()[concatDimension] +
+        paddedArgTypes[1].getShape()[concatDimension];
+    RankedTensorType globalResultType =
+        RankedTensorType::get(globalResultShape, elemType);
 
-    auto localResultType = getLocalType(globalResultType, concatSharding, axis, concat);
+    auto localResultType =
+        getLocalType(globalResultType, concatSharding, axis, concat);
 
-    mlir::Type inTys[2]{ paddedLocalArgTypes[0], paddedLocalArgTypes[1] };
-    mlir::Location inLocs[] = {concat.getLoc(),
-                               concat.getLoc()};
+    mlir::Type inTys[2]{paddedLocalArgTypes[0], paddedLocalArgTypes[1]};
+    mlir::Location inLocs[] = {concat.getLoc(), concat.getLoc()};
 
     TensorShardingAttr opShardings[] = {concatSharding};
 
@@ -1880,7 +1886,6 @@ struct ConcatTwoOperandsCommOptimize
         TensorShardingPerValueAttr::get(concat.getContext(), opShardingsIn);
     TensorShardingPerValueAttr outShardings =
         TensorShardingPerValueAttr::get(concat.getContext(), opShardings);
-
 
     Type manualTypes[] = {globalResultType};
 
@@ -2027,7 +2032,8 @@ struct ConcatTwoOperandsCommOptimize
 
     if (padding[0] != 0 || padding[1] != 0) {
       SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits = llvm::to_vector(globalResultType.getShape());
+      SmallVector<int64_t> sliceLimits =
+          llvm::to_vector(globalResultType.getShape());
       sliceStartIndices[concatDimension] = padding[0];
       sliceLimits[concatDimension] -= padding[1];
 
@@ -2161,13 +2167,21 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
-// Given two values, an 'operand', and 'update', and a multidimensional index set
-//.  lowPad[idx], and highPad[idx], index into the data within update if we are >= lowPad for all idx and < lowPad + globalUnpaddedUpdateType aka totalShape - highPad
+// Given two values, an 'operand', and 'update', and a multidimensional index
+// set
+//.  lowPad[idx], and highPad[idx], index into the data within update if we are
+//>= lowPad for all idx and < lowPad + globalUnpaddedUpdateType aka totalShape -
+//highPad
 bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
-                            RankedTensorType globalResultType, RankedTensorType localResultType, 
-                            const SmallVectorImpl<int64_t> &lowPads, const SmallVectorImpl<int64_t> &highPads, 
-                            const SmallVectorImpl<int64_t> &updatedDims, 
-                            const SmallVectorImpl<int64_t> &updatedShardedDims, Value innerOperand, Value innerUpdate, RankedTensorType globalUnPaddedUpdateType, Operation* op) {
+                            RankedTensorType globalResultType,
+                            RankedTensorType localResultType,
+                            const SmallVectorImpl<int64_t> &lowPads,
+                            const SmallVectorImpl<int64_t> &highPads,
+                            const SmallVectorImpl<int64_t> &updatedDims,
+                            const SmallVectorImpl<int64_t> &updatedShardedDims,
+                            Value innerOperand, Value innerUpdate,
+                            RankedTensorType globalUnPaddedUpdateType,
+                            Operation *op) {
   int ndims = globalResultType.getShape().size();
 
   auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(loc);
@@ -2245,8 +2259,7 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // idx < pad / lowerShape)
       leftSide = rewriter.create<stablehlo::CompareOp>(
           loc, multiDimIdxs[idx],
-          getOrCreateConstant(lowPads[idx] /
-                              localResultType.getShape()[idx]),
+          getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::LT);
     } else {
       // Non-evenly divisible pad, for example pad 18, inner 54, right 18,
@@ -2254,8 +2267,7 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // (aka if idx <= pad / lowerShape)
       leftSide = rewriter.create<stablehlo::CompareOp>(
           loc, multiDimIdxs[idx],
-          getOrCreateConstant(lowPads[idx] /
-                              localResultType.getShape()[idx]),
+          getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::LE);
     }
 
@@ -2264,8 +2276,7 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
 
   for (auto &&[i, idx] : llvm::enumerate(updatedShardedDims)) {
     Value rightSide;
-    int64_t startIdx =
-        lowPads[idx] + globalUnPaddedUpdateType.getShape()[idx];
+    int64_t startIdx = lowPads[idx] + globalUnPaddedUpdateType.getShape()[idx];
     if (highPads[idx] == 0) {
       // No pad, we are never needing to check combining update/operand and
       // can just use update
@@ -2325,13 +2336,11 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       rewriter.create<sdy::ReturnOp>(loc, if0->getResults());
 
       {
-        rewriter.createBlock(&if0.getTrueBranch(),
-                             if0.getTrueBranch().begin());
+        rewriter.createBlock(&if0.getTrueBranch(), if0.getTrueBranch().begin());
         Value multiIdx = nullptr;
         for (int i = 0; i < updatedShardedDims.size(); i++) {
-          auto TT =
-              RankedTensorType::get(localResultType.getShape(),
-                                    rewriter.getIntegerType(32, false));
+          auto TT = RankedTensorType::get(localResultType.getShape(),
+                                          rewriter.getIntegerType(32, false));
           auto TTBool = RankedTensorType::get(localResultType.getShape(),
                                               rewriter.getI1Type());
           auto idx = updatedShardedDims[i];
@@ -2367,12 +2376,11 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // the transition node, if we're at the point of transition
             // Within the point of transition, we need to consider the
             // offset mod the local result type.
-            Value leftSideTransition =
-                rewriter.create<stablehlo::CompareOp>(
-                    loc, iota,
-                    getOrCreateConstant(
-                        lowPads[idx] % localResultType.getShape()[idx], TT),
-                    stablehlo::ComparisonDirection::LT);
+            Value leftSideTransition = rewriter.create<stablehlo::CompareOp>(
+                loc, iota,
+                getOrCreateConstant(
+                    lowPads[idx] % localResultType.getShape()[idx], TT),
+                stablehlo::ComparisonDirection::LT);
             assert(leftSideTransition.getType() == TTBool);
 
             // If we know we only have one node (the transition node), we're
@@ -2419,18 +2427,16 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // Otherwise we must check both the node idx and the
               // transition idx.
-              Value fullyOperandNode =
-                  rewriter.create<stablehlo::CompareOp>(
-                      loc, multiDimIdxs[idx],
-                      getOrCreateConstant(lowPads[idx] /
-                                          localResultType.getShape()[idx]),
-                      stablehlo::ComparisonDirection::LT);
-              fullyOperandNode =
-                  rewriter.create<stablehlo::BroadcastInDimOp>(
-                      loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+              Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(
+                  loc, multiDimIdxs[idx],
+                  getOrCreateConstant(lowPads[idx] /
+                                      localResultType.getShape()[idx]),
+                  stablehlo::ComparisonDirection::LT);
+              fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
               assert(leftSideTransition.getType() == TTBool);
-              lhs = rewriter.create<stablehlo::OrOp>(
-                  loc, leftSideTransition, fullyOperandNode);
+              lhs = rewriter.create<stablehlo::OrOp>(loc, leftSideTransition,
+                                                     fullyOperandNode);
             }
           }
 
@@ -2468,12 +2474,11 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // point of transition Within the point of transition, we need
             // to consider the offset mod the local result type.
 
-            Value rightSideTransition =
-                rewriter.create<stablehlo::CompareOp>(
-                    loc, iota,
-                    getOrCreateConstant(
-                        startIdx % localResultType.getShape()[idx], TT),
-                    stablehlo::ComparisonDirection::GE);
+            Value rightSideTransition = rewriter.create<stablehlo::CompareOp>(
+                loc, iota,
+                getOrCreateConstant(startIdx % localResultType.getShape()[idx],
+                                    TT),
+                stablehlo::ComparisonDirection::GE);
             assert(rightSideTransition.getType() == TTBool);
 
             // If we know we only have one node (the transition node), we're
@@ -2523,18 +2528,16 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // Otherwise we must check both the node idx and the
               // transition idx.
-              Value fullyOperandNode =
-                  rewriter.create<stablehlo::CompareOp>(
-                      loc, multiDimIdxs[idx],
-                      getOrCreateConstant(startIdx /
-                                          localResultType.getShape()[idx]),
-                      stablehlo::ComparisonDirection::GT);
-              fullyOperandNode =
-                  rewriter.create<stablehlo::BroadcastInDimOp>(
-                      loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+              Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(
+                  loc, multiDimIdxs[idx],
+                  getOrCreateConstant(startIdx /
+                                      localResultType.getShape()[idx]),
+                  stablehlo::ComparisonDirection::GT);
+              fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
               assert(rightSideTransition.getType() == TTBool);
-              rhs = rewriter.create<stablehlo::OrOp>(
-                  loc, rightSideTransition, fullyOperandNode);
+              rhs = rewriter.create<stablehlo::OrOp>(loc, rightSideTransition,
+                                                     fullyOperandNode);
             }
           }
 
@@ -2542,8 +2545,7 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
           Value inOperand = lhs;
           if (rhs) {
             if (inOperand)
-              inOperand =
-                  rewriter.create<stablehlo::OrOp>(loc, inOperand, rhs);
+              inOperand = rewriter.create<stablehlo::OrOp>(loc, inOperand, rhs);
             else
               inOperand = rhs;
           }
@@ -2574,12 +2576,11 @@ bool multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
   }
 }
 
-struct ConcatTwoDUSLike
-    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
   int &channel_id;
   ConcatTwoDUSLike(int &channel_id, MLIRContext *context,
-                         PatternBenefit benefit = 1)
+                   PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), channel_id(channel_id) {}
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
@@ -2616,9 +2617,13 @@ struct ConcatTwoDUSLike
 
     RankedTensorType globalResultType = concat.getType();
     bool extraSlice = false;
-    if (globalResultType.getShape()[concatDimension] % numDevicesAlongDimension != 0) {
+    if (globalResultType.getShape()[concatDimension] %
+            numDevicesAlongDimension !=
+        0) {
       SmallVector<int64_t> shape = llvm::to_vector(globalResultType.getShape());
-      shape[concatDimension] += numDevicesAlongDimension - (globalResultType.getShape()[concatDimension] % numDevicesAlongDimension);
+      shape[concatDimension] += numDevicesAlongDimension -
+                                (globalResultType.getShape()[concatDimension] %
+                                 numDevicesAlongDimension);
       globalResultType = RankedTensorType::get(shape, elemType);
       extraSlice = true;
     }
@@ -2657,20 +2662,21 @@ struct ConcatTwoDUSLike
     }
 
     SmallVector<int64_t> lowPads(ndims, 0);
-    lowPads[concatDimension] = cast<RankedTensorType>(concat.getOperands()[0].getType()).getShape()[concatDimension];
+    lowPads[concatDimension] =
+        cast<RankedTensorType>(concat.getOperands()[0].getType())
+            .getShape()[concatDimension];
     SmallVector<int64_t> highPads(ndims, 0);
-    SmallVector<int64_t> updatedShardedDims = { (int64_t)concat.getDimension() };
+    SmallVector<int64_t> updatedShardedDims = {(int64_t)concat.getDimension()};
     SmallVector<int64_t> updatedDims = updatedShardedDims;
 
     RankedTensorType globalUnPaddedUpdateType =
         cast<RankedTensorType>(concat.getOperands()[1].getType());
     RankedTensorType globalPaddedUpdateType = globalResultType;
 
-
     auto localResultType =
         getLocalType(globalResultType, sharding, manualAxes, concat);
 
-    SmallVector<TensorShardingAttr> in_shardings_array = { sharding, sharding };
+    SmallVector<TensorShardingAttr> in_shardings_array = {sharding, sharding};
 
     TensorShardingAttr out_shardings_array[] = {sharding};
 
@@ -2679,13 +2685,14 @@ struct ConcatTwoDUSLike
 
     Type manualTypes[] = {globalResultType};
 
-    TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), in_shardings_array);
-    TensorShardingPerValueAttr out_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), out_shardings_array);
+    TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
+        concat.getContext(), in_shardings_array);
+    TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
+        concat.getContext(), out_shardings_array);
 
     auto manual = rewriter.create<sdy::ManualComputationOp>(
-        concat.getLoc(), manualTypes, manualOps, in_shardings, out_shardings, manualAxes);
+        concat.getLoc(), manualTypes, manualOps, in_shardings, out_shardings,
+        manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
@@ -2693,7 +2700,10 @@ struct ConcatTwoDUSLike
 
       auto innerOperand = blk->getArgument(0);
       auto innerUpdate = blk->getArgument(1);
-      multiDimensionalSelect(concat.getLoc(), rewriter, globalResultType, localResultType, lowPads, highPads, updatedDims, updatedShardedDims, innerOperand, innerUpdate, globalUnPaddedUpdateType, concat);
+      multiDimensionalSelect(concat.getLoc(), rewriter, globalResultType,
+                             localResultType, lowPads, highPads, updatedDims,
+                             updatedShardedDims, innerOperand, innerUpdate,
+                             globalUnPaddedUpdateType, concat);
     }
 
     if (!extraSlice) {
@@ -2701,7 +2711,8 @@ struct ConcatTwoDUSLike
     } else {
       rewriter.setInsertionPointAfter(manual);
       SmallVector<int64_t> starts(ndims, 0);
-      SmallVector<int64_t> limits = llvm::to_vector(concat.getType().getShape());
+      SmallVector<int64_t> limits =
+          llvm::to_vector(concat.getType().getShape());
       SmallVector<int64_t> interior(ndims, 1);
       auto sl = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
           concat, manual->getResult(0), starts, limits, interior);
@@ -2940,7 +2951,10 @@ struct DUSToPadManualCompComm
             splat.resizeSplat(localPaddedUpdateType));
       }
 
-      multiDimensionalSelect(loc, rewriter, globalResultType, localResultType, lowPads, highPads, updatedDims, updatedShardedDims, innerOperand, innerUpdate, globalUnPaddedUpdateType, dus);
+      multiDimensionalSelect(loc, rewriter, globalResultType, localResultType,
+                             lowPads, highPads, updatedDims, updatedShardedDims,
+                             innerOperand, innerUpdate,
+                             globalUnPaddedUpdateType, dus);
     }
 
     if (!extraSlice) {
@@ -3090,8 +3104,8 @@ struct OptimizeCommunicationPass
           channel_id, context, PatternBenefit(dus_to_pad_manual_comp_comm));
 
     if (concat_two_dus_like > 0)
-      patterns.add<ConcatTwoDUSLike>(
-          channel_id, context, PatternBenefit(concat_two_dus_like));
+      patterns.add<ConcatTwoDUSLike>(channel_id, context,
+                                     PatternBenefit(concat_two_dus_like));
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
