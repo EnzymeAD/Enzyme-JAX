@@ -14164,7 +14164,7 @@ struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
     auto inShape = reshape.getOperand().getType().getShape();
     auto outShape = reshape.getResult().getType().getShape();
-    if (inShape.size() != outShape.size() + 1)
+    if (inShape.size() + 1 != outShape.size())
       return failure();
 
     if (outShape[0] == 1) {
