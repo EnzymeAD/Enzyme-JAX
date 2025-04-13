@@ -1365,6 +1365,137 @@ struct ConcatToOneDimDUS final
     return success();
   }
 };
+enum class SliceRequirement {
+  AnyOperand = 0,
+  NeedsSlice = 1,
+  NeedsFull = 2,
+};
+
+stablehlo::DynamicUpdateSliceOp
+concat_to_dus_slice_common(PatternRewriter &rewriter, Location loc,
+                           RankedTensorType concatType, int dimension,
+                           ArrayRef<Value> operands, SliceRequirement sliceReq,
+                           mlir::sdy::TensorShardingPerValueAttr shard) {
+  if (operands.size() < 3)
+    return nullptr;
+
+  stablehlo::SliceOp lhs = nullptr;
+  bool hasSlice = false;
+  if (auto lhsSlice = operands[0].getDefiningOp<stablehlo::SliceOp>()) {
+    bool legal = true;
+    for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
+      if (lhsSlice.getStartIndices()[i] != 0) {
+        hasSlice = true;
+      }
+      if (lhsSlice.getStrides()[i] != 1) {
+        legal = false;
+        break;
+      }
+    }
+    if (legal)
+      lhs = lhsSlice;
+  }
+
+  if (!lhs)
+    return nullptr;
+
+  stablehlo::SliceOp rhs = nullptr;
+  if (auto rhsSlice = operands.back().getDefiningOp<stablehlo::SliceOp>()) {
+    bool legal = true;
+    for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
+      if (rhsSlice.getStrides()[i] != 1) {
+        legal = false;
+        break;
+      }
+      if (i == dimension) {
+        if (lhs.getStartIndices()[i] + concatType.getShape()[i] !=
+            rhsSlice.getLimitIndices()[i]) {
+          legal = false;
+          break;
+        }
+      } else {
+        if (lhs.getStartIndices()[i] != rhsSlice.getStartIndices()[i]) {
+          legal = false;
+          break;
+        }
+        if (lhs.getLimitIndices()[i] != rhsSlice.getLimitIndices()[i]) {
+          legal = false;
+          break;
+        }
+      }
+      if (rhsSlice.getLimitIndices()[i] != concatType.getShape()[i]) {
+        hasSlice = true;
+      }
+    }
+    if (legal)
+      rhs = rhsSlice;
+  }
+
+  if (!rhs)
+    return nullptr;
+  if (sliceReq == SliceRequirement::NeedsSlice && !hasSlice)
+    return nullptr;
+  if (sliceReq == SliceRequirement::NeedsFull && hasSlice)
+    return nullptr;
+
+  if (rhs.getOperand() != lhs.getOperand())
+    return nullptr;
+
+  SmallVector<Value> newOps;
+  int start = lhs ? 1 : 0;
+  int end = operands.size() - (rhs ? 1 : 0);
+  for (int i = start; i < end; i++) {
+    newOps.push_back(operands[i]);
+  }
+  Value innerConcat = newOps[0];
+  if (newOps.size() != 1) {
+    auto nConcat =
+        rewriter.create<stablehlo::ConcatenateOp>(loc, newOps, dimension);
+    innerConcat = nConcat;
+    if (shard) {
+      sdy::setShardings(nConcat, shard);
+    }
+  }
+
+  auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
+
+  Value operand = lhs.getOperand();
+
+  if (!shard) {
+    if (auto opval = operand.getDefiningOp()) {
+      shard = sdy::getShardingPerValue(opval);
+    }
+  }
+
+  if (hasSlice) {
+    auto sloperand = rewriter.create<stablehlo::SliceOp>(
+        lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
+        rhs.getLimitIndices(), lhs.getStrides());
+    if (shard) {
+      sdy::setShardings(sloperand, shard);
+    }
+    operand = sloperand;
+  }
+
+  SmallVector<Value> starts(
+      concatType.getShape().size(),
+      rewriter.create<stablehlo::ConstantOp>(
+          loc, iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
+
+  if (lhs) {
+    starts[dimension] = rewriter.create<stablehlo::ConstantOp>(
+        loc, iTy,
+        makeAttr(iTy, lhs.getType().getShape()[dimension])
+            .cast<ElementsAttr>());
+  }
+
+  auto dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+      loc, operand, innerConcat, starts);
+  if (shard) {
+    sdy::setShardings(dus, shard);
+  }
+  return dus;
+}
 
 struct ConcatToOneDimDUSSlice final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -1372,112 +1503,61 @@ struct ConcatToOneDimDUSSlice final
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
                                 PatternRewriter &rewriter) const override {
-    if (outer.getOperands().size() < 2)
-      return failure();
-    SmallVector<stablehlo::ConcatenateOp> inners;
 
-    stablehlo::SliceOp lhs = nullptr;
-    bool hasSlice = false;
-    if (auto lhsSlice =
-            outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
-      bool legal = true;
-      for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
-        if (lhsSlice.getStartIndices()[i] != 0) {
-          hasSlice = true;
-        }
-        if (lhsSlice.getStrides()[i] != 1) {
-          legal = false;
-          break;
-        }
+    stablehlo::DynamicUpdateSliceOp replacement = concat_to_dus_slice_common(
+        rewriter, outer.getLoc(), outer.getType(), outer.getDimension(),
+        llvm::to_vector(outer.getOperands()), SliceRequirement::NeedsSlice,
+        sdy::getShardingPerValue(outer));
+    if (!replacement)
+      return failure();
+    rewriter.replaceOp(outer, replacement);
+
+    return success();
+  }
+};
+
+struct ConcatReshapeToOneDimDUS final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value> pre_reshape;
+    for (auto operand : outer.getOperands()) {
+      auto re = operand.getDefiningOp<stablehlo::ReshapeOp>();
+      auto pre_shape =
+          cast<RankedTensorType>(re.getOperand().getType()).getShape();
+      if (!re)
+        return failure();
+      if (re.getType().getShape().size() + 1 != pre_shape.size()) {
+        return failure();
       }
-      if (legal)
-        lhs = lhsSlice;
-    }
-
-    if (!lhs)
-      return failure();
-
-    stablehlo::SliceOp rhs = nullptr;
-    if (auto rhsSlice =
-            outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
-      bool legal = true;
-      for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
-        if (rhsSlice.getStrides()[i] != 1) {
-          legal = false;
-          break;
-        }
-        if (i == outer.getDimension()) {
-          if (lhs.getStartIndices()[i] + outer.getType().getShape()[i] !=
-              rhsSlice.getLimitIndices()[i]) {
-            legal = false;
-            break;
-          }
-        } else {
-          if (lhs.getStartIndices()[i] != rhsSlice.getStartIndices()[i]) {
-            legal = false;
-            break;
-          }
-          if (lhs.getLimitIndices()[i] != rhsSlice.getLimitIndices()[i]) {
-            legal = false;
-            break;
-          }
-        }
-        if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
-          hasSlice = true;
-        }
+      for (auto &&[lhs, rhs] :
+           llvm::zip_equal(re.getType().getShape(), pre_shape.slice(1))) {
+        if (lhs != rhs)
+          return failure();
       }
-      if (legal)
-        rhs = rhsSlice;
+      if (pre_shape[0] != 1) {
+        return failure();
+      }
+      pre_reshape.push_back(re.getOperand());
     }
-
-    if (!rhs)
-      return failure();
-    if (!hasSlice)
-      return failure();
-    if (rhs.getOperand() != lhs.getOperand())
+    SmallVector<int64_t> subShape = llvm::to_vector(outer.getType().getShape());
+    subShape.insert(subShape.begin(), 1);
+    RankedTensorType subType =
+        RankedTensorType::get(subShape, outer.getType().getElementType());
+    stablehlo::DynamicUpdateSliceOp replacement = concat_to_dus_slice_common(
+        rewriter, outer.getLoc(), subType, outer.getDimension() + 1,
+        pre_reshape, SliceRequirement::AnyOperand, nullptr);
+    if (!replacement)
       return failure();
 
     auto shard = sdy::getShardingPerValue(outer);
-
-    SmallVector<Value> newOps;
-    int start = lhs ? 1 : 0;
-    int end = outer.getOperands().size() - (rhs ? 1 : 0);
-    for (int i = start; i < end; i++) {
-      newOps.push_back(outer.getOperands()[i]);
-    }
-    Value innerConcat = newOps[0];
-    if (newOps.size() != 1) {
-      auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
-          outer.getLoc(), newOps, outer.getDimension());
-      innerConcat = nConcat;
-      if (shard) {
-        sdy::setShardings(nConcat, shard);
-      }
-    }
-
-    auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
-    auto operand = rewriter.create<stablehlo::SliceOp>(
-        lhs.getLoc(), lhs.getOperand(), lhs.getStartIndices(),
-        rhs.getLimitIndices(), lhs.getStrides());
+    auto reshaped = rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+        outer, outer.getType(), replacement);
     if (shard) {
-      sdy::setShardings(operand, shard);
-    }
-    SmallVector<Value> starts(
-        outer.getType().getShape().size(),
-        rewriter.create<stablehlo::ConstantOp>(
-            outer.getLoc(), iTy, makeAttr(iTy, 0).cast<ElementsAttr>()));
-
-    if (lhs) {
-      starts[outer.getDimension()] = rewriter.create<stablehlo::ConstantOp>(
-          outer.getLoc(), iTy,
-          makeAttr(iTy, lhs.getType().getShape()[outer.getDimension()])
-              .cast<ElementsAttr>());
-    }
-
-    auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-        outer, operand, innerConcat, starts);
-    if (shard) {
-      sdy::setShardings(dus, shard);
+      sdy::setShardings(reshaped, shard);
     }
     return success();
   }
