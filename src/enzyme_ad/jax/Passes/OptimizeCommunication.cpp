@@ -1513,7 +1513,7 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     SmallVector<int64_t> leftStarts(ndims, 0);
     SmallVector<int64_t> leftLimits = llvm::to_vector(extendOperandShape);
-    leftStarts[extendDimension] = leftLimits[extendDimension] - extend.getLhs();
+    leftLimits[extendDimension] = extend.getLhs();
 
     auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
         extend.getLoc(), extend.getOperand(), leftStarts, leftLimits, strides);
@@ -1521,7 +1521,8 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     SmallVector<int64_t> rightStarts(ndims, 0);
     SmallVector<int64_t> rightLimits = llvm::to_vector(extendOperandShape);
-    rightLimits[extendDimension] = extend.getRhs();
+    rightStarts[extendDimension] =
+        rightLimits[extendDimension] - extend.getRhs();
 
     auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
         extend.getLoc(), extend.getOperand(), rightStarts, rightLimits,
