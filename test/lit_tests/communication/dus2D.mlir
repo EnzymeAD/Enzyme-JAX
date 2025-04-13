@@ -24,7 +24,7 @@ func.func @constantUpdate1D(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.sh
 // PAD-NEXT: }
 
 // CHECK:  func.func @constantUpdate1D(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
-// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg1: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg1: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<1> : tensor<ui32>
@@ -77,7 +77,7 @@ func.func @constantUpdateOver(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.
 // PAD-NEXT: }
 
 // CHECK:  func.func @constantUpdateOver(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
-// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg1: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg1: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<9> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
@@ -152,7 +152,7 @@ func.func @constantUpdate(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.shar
 // PAD-NEXT: }
 
 // CHECK:  func.func @constantUpdate(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
-// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg1: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %0 = sdy.manual_computation(%arg0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg1: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<4> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
@@ -225,7 +225,7 @@ func.func @argUpdate1D(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.shardin
 // CHECK:  func.func @argUpdate1D(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.pad %arg1, %cst, low = [0, 0, 8], high = [0, 0, 8], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>, tensor<f64>) -> tensor<20x24x96xf64>
-// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<1> : tensor<ui32>
@@ -277,7 +277,7 @@ func.func @argUpdateOver(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.shard
 // CHECK:  func.func @argUpdateOver(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<4x1x80xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.pad %arg1, %cst, low = [8, 8, 8], high = [8, 15, 8], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x1x80xf64>, tensor<f64>) -> tensor<20x24x96xf64>
-// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<9> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
@@ -351,7 +351,7 @@ func.func @argUpdate(%arg21: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<
 // CHECK:  func.func @argUpdate(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<4x8x80xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"z"}, {"y"}, {"x"}]>}) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.pad %arg1, %cst, low = [8, 8, 8], high = [8, 8, 8], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x8x80xf64>, tensor<f64>) -> tensor<20x24x96xf64>
-// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
+// CHECK-NEXT:    %1 = sdy.manual_computation(%arg0, %0) in_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>, <@mesh, [{"z"}, {"y"}, {"x"}]>] out_shardings=[<@mesh, [{"z"}, {"y"}, {"x"}]>] manual_axes={"z", "y", "x"} (%arg2: tensor<20x12x48xf64>, %arg3: tensor<20x12x48xf64>) {
 // CHECK-NEXT:      %c = stablehlo.constant dense<40> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_0 = stablehlo.constant dense<4> : tensor<20x12x48xui32>
 // CHECK-NEXT:      %c_1 = stablehlo.constant dense<8> : tensor<20x12x48xui32>
