@@ -2699,9 +2699,10 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
       auto ndevices = getShardingDevices(sharding, i, concat);
       int64_t numDevicesAlongDimension = ndevices[i];
 
+      for (auto axis : meshAxes)
+        manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
+
       if (numDevicesAlongDimension != 1) {
-        for (auto axis : meshAxes)
-          manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
         if (globalResultType.getShape()[i] % numDevicesAlongDimension != 0) {
           int toPad =
               numDevicesAlongDimension -
@@ -2899,10 +2900,12 @@ struct DUSToPadManualCompComm
       if (UT.getShape()[i] != dus.getType().getShape()[i]) {
         updated = true;
       }
+      
+      for (auto axis : meshAxes)
+        manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
 
       if (localType.getShape()[i] != dus.getType().getShape()[i]) {
         shardedDims.push_back(i);
-        manualAxes.push_back(axis[0]);
       }
 
       lowPads.push_back(v2);
