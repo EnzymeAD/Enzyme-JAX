@@ -1526,10 +1526,10 @@ struct ConcatReshapeToOneDimDUS final
     SmallVector<Value> pre_reshape;
     for (auto operand : outer.getOperands()) {
       auto re = operand.getDefiningOp<stablehlo::ReshapeOp>();
-      auto pre_shape =
-          cast<RankedTensorType>(re.getOperand().getType()).getShape();
       if (!re)
         return failure();
+      auto pre_shape =
+          cast<RankedTensorType>(re.getOperand().getType()).getShape();
       if (re.getType().getShape().size() + 1 != pre_shape.size()) {
         return failure();
       }
