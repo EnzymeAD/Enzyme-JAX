@@ -1284,30 +1284,32 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrap.getLoc(), wrap.getOperand(), zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedWrapOp, wrapSharding);
 
-    auto ITy = RankedTensorType::get(wrap.getType().getShape(), rewriter.getIntegerType(32, false));
-    auto iota = rewriter.create<stablehlo::IotaOp>(wrap.getLoc(), ITy, wrapDimension);
+    auto ITy = RankedTensorType::get(wrap.getType().getShape(),
+                                     rewriter.getIntegerType(32, false));
+    auto iota =
+        rewriter.create<stablehlo::IotaOp>(wrap.getLoc(), ITy, wrapDimension);
     mlir::sdy::setSharding(iota, wrapSharding);
 
-    auto lhsC = rewriter.create<stablehlo::ConstantOp>(wrap.getLoc(), ITy, makeAttr(ITy, wrap.getLhs()).cast<ElementsAttr>());
+    auto lhsC = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), ITy, makeAttr(ITy, wrap.getLhs()).cast<ElementsAttr>());
     mlir::sdy::setSharding(lhsC, wrapSharding);
 
     auto leftSide = rewriter.create<stablehlo::CompareOp>(
-          wrap.getLoc(), iota,
-          lhsC,
-          stablehlo::ComparisonDirection::LT);
+        wrap.getLoc(), iota, lhsC, stablehlo::ComparisonDirection::LT);
     mlir::sdy::setSharding(leftSide, wrapSharding);
 
     auto select1 = rewriter.create<stablehlo::SelectOp>(
         wrap.getLoc(), leftSide, paddedRightSliceOp, paddedWrapOp);
     mlir::sdy::setSharding(select1, wrapSharding);
 
-    auto lhsC2 = rewriter.create<stablehlo::ConstantOp>(wrap.getLoc(), ITy, makeAttr(ITy, wrapShape[wrapDimension] - wrap.getRhs()).cast<ElementsAttr>());
+    auto lhsC2 = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), ITy,
+        makeAttr(ITy, wrapShape[wrapDimension] - wrap.getRhs())
+            .cast<ElementsAttr>());
     mlir::sdy::setSharding(lhsC2, wrapSharding);
 
     auto leftSide2 = rewriter.create<stablehlo::CompareOp>(
-          wrap.getLoc(), iota,
-          lhsC2,
-          stablehlo::ComparisonDirection::LT);
+        wrap.getLoc(), iota, lhsC2, stablehlo::ComparisonDirection::LT);
     mlir::sdy::setSharding(leftSide2, wrapSharding);
 
     auto select2 = rewriter.create<stablehlo::SelectOp>(
