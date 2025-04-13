@@ -2637,7 +2637,8 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
         for (auto axis : meshAxes)
           manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
         if (globalResultType.getShape()[i] % numDevicesAlongDimension != 0) {
-          int toPad = numDevicesAlongDimension -
+          int toPad =
+              numDevicesAlongDimension -
               (globalResultType.getShape()[i] % numDevicesAlongDimension);
           shape[i] += toPad;
           if (i != concatDimension) {
