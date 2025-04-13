@@ -35,6 +35,10 @@
 
 #include "llvm/ADT/TypeSwitch.h"
 
+#include "shardy/dialect/sdy/ir/dialect.h"
+#include "shardy/dialect/sdy/ir/utils.h"
+#include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
+
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
