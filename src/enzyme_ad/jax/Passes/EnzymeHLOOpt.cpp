@@ -8848,6 +8848,71 @@ struct SliceReshapeDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
+struct ReshuffleAndsCompares final : OpRewritePattern<mlir::stablehlo::AndOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp andOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> conjuncts;
+    SmallVector<Operation *> worklist;
+    worklist.push_back(andOp);
+    while (!worklist.empty()) {
+      auto andOp = cast<mlir::stablehlo::AndOp>(worklist.pop_back_val());
+      if (auto lhsAndOp =
+              andOp.getLhs().getDefiningOp<mlir::stablehlo::AndOp>()) {
+        worklist.push_back(lhsAndOp);
+      } else {
+        conjuncts.push_back(andOp.getLhs());
+      }
+      if (auto lhsAndOp =
+              andOp.getRhs().getDefiningOp<mlir::stablehlo::AndOp>()) {
+        worklist.push_back(lhsAndOp);
+      } else {
+        conjuncts.push_back(andOp.getRhs());
+      }
+    }
+    if (conjuncts.size() <= 2)
+      return failure();
+
+    Value compareLhs = nullptr;
+    auto compares = llvm::filter_to_vector(conjuncts, [&](Value v) {
+      auto cmpOp = v.getDefiningOp<mlir::stablehlo::CompareOp>();
+      if (!cmpOp)
+        return false;
+      if (compareLhs == nullptr)
+        compareLhs = cmpOp.getLhs();
+      else if (compareLhs != cmpOp.getLhs())
+        return false;
+      return cmpOp.getComparisonDirection() ==
+             mlir::stablehlo::ComparisonDirection::LE;
+    });
+
+    if (compares.size() <= 1)
+      return failure();
+
+    Value running =
+        compares[0].getDefiningOp<mlir::stablehlo::CompareOp>().getRhs();
+    for (unsigned i = 1, e = compares.size(); i < e; ++i) {
+      Value minRhs =
+          compares[i].getDefiningOp<mlir::stablehlo::CompareOp>().getRhs();
+      running = rewriter.create<mlir::stablehlo::MinOp>(andOp.getLoc(), running,
+                                                        minRhs);
+    }
+    Value replacement = rewriter.create<mlir::stablehlo::CompareOp>(
+        compares[0].getLoc(), compareLhs, running,
+        mlir::stablehlo::ComparisonDirection::LE);
+
+    for (Value conjunct : conjuncts) {
+      if (llvm::is_contained(compares, conjunct))
+        continue;
+      replacement = rewriter.create<mlir::stablehlo::AndOp>(
+          andOp.getLoc(), replacement, conjunct);
+    }
+    rewriter.replaceOp(andOp, replacement);
+    return success();
+  }
+};
+
 struct SliceReshapeSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -17472,6 +17537,7 @@ struct EnzymeHLOOptPass
         BroadcastInDimTransposeToBroadcastInDim,
         TransposeIsReshape,
         BroadcastInDimIsReshape,
+        ReshuffleAndsCompares,
         WhileDeadResults,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
