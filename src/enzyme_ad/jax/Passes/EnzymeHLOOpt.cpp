@@ -5304,8 +5304,7 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
-    
-    
+
     // true | x -> true
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_One())) {
