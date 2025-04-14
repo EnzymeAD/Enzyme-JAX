@@ -3340,7 +3340,7 @@ bool canMergeWrapsAlongAxis(int dimension, enzymexla::WrapOp wrap,
                             enzymexla::WrapOp otherWrap) {
   if (wrap.getDimension() != otherWrap.getDimension())
     return false;
-  
+
   if (dimension == wrap.getDimension())
     return false;
 
