@@ -6088,9 +6088,7 @@ struct BroadcastIotaSimplify
               auto cmp1 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
                   rewriter.create<stablehlo::ConstantOp>(
-                      loc, ITy,
-                      makeAttr(ITy, firstTrue)
-                          .cast<ElementsAttr>()),
+                      loc, ITy, makeAttr(ITy, firstTrue).cast<ElementsAttr>()),
                   stablehlo::ComparisonDirection::GE);
               auto cmp2 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
