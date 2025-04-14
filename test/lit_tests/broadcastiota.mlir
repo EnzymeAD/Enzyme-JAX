@@ -8,9 +8,7 @@ module {
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<f32>) -> tensor<2xf32> {
-// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %[[i1:.+]] = stablehlo.add %arg0, %[[i0]] : tensor<f32>
-// CHECK-NEXT:    %[[i2:.+]] = stablehlo.broadcast_in_dim %[[i1]], dims = [] : (tensor<f32>) -> tensor<2xf32>
-// CHECK-NEXT:    return %[[i2]] : tensor<2xf32>
+// CHECK:  func.func @main() -> tensor<4x6128x12272xi64> {
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 1 : tensor<4x6128x12272xi64>
+// CHECK-NEXT:    return %0 : tensor<4x6128x12272xi64>
 // CHECK-NEXT:  }
