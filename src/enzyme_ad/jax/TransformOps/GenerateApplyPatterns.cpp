@@ -152,7 +152,9 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
           opName == "reshape_licm" || opName == "transpose_licm" ||
           opName == "transpose_elementwise" ||
-          opName == "reshape_elementwise" || opName == "reshape_slice")
+          opName == "reshape_elementwise" || opName == "reshape_slice" ||
+          opName == "extend_unary_elementwise" ||
+          opName == "wrap_unary_elementwise")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));

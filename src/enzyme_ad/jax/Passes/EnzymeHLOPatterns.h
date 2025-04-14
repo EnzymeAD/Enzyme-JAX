@@ -60,5 +60,9 @@ void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
+void addExtendUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
+                               MLIRContext &context, PatternBenefit benefit);
+void addWrapUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
+                             MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform

@@ -1518,12 +1518,42 @@ def ExtendSplat : EnzymeHLOPatternOp<
   let patterns = ["ExtendSplat"];
 }
 
+def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
+  "extend_unary_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ExtendElementwise : EnzymeHLOPatternOp<
   "extend_elementwise"> {
   let patterns = ["ExtendElementwise<stablehlo::AddOp>",
                   "ExtendElementwise<stablehlo::SubtractOp>",
                   "ExtendElementwise<stablehlo::MulOp>",
                   "ExtendElementwise<stablehlo::DivOp>"];
+}
+
+def WrapUnaryElementwise : EnzymeHLOParameterizedPatternOp<
+  "wrap_unary_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def WrapElementwise : EnzymeHLOPatternOp<

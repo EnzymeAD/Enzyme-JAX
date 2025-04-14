@@ -16113,8 +16113,69 @@ struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+template <typename EnzymeOp>
+LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
+                                     PatternRewriter &rewriter) {
+  if (onlySingleUser && !llvm::hasSingleElement(op->getUsers()))
+    return failure();
+
+  bool anyModified = false;
+  for (auto elem : op->getUsers()) {
+    if (!elem->template hasTrait<mlir::OpTrait::Elementwise>() ||
+        elem->getNumResults() != 1 || elem->getNumOperands() != 1)
+      continue;
+
+    auto newOp = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(),
+        ValueRange(op.getOperand()),
+        TypeRange(elem->getResult(0)
+                      .getType()
+                      .template cast<RankedTensorType>()
+                      .clone(op.getOperand()
+                                 .getType()
+                                 .template cast<RankedTensorType>()
+                                 .getShape())),
+        elem->getAttrs(), {}, {});
+    rewriter.replaceOpWithNewOp<EnzymeOp>(
+        elem, newOp->getResult(0), op.getLhs(), op.getRhs(), op.getDimension());
+    anyModified = true;
+  }
+
+  return success(anyModified);
+}
+
+struct ExtendUnaryElementwise : public OpRewritePattern<enzymexla::ExtendOp> {
+  bool onlySingleUser;
+
+  ExtendUnaryElementwise(bool onlySingleUser, MLIRContext *context,
+                         PatternBenefit benefit = 1,
+                         ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        onlySingleUser(onlySingleUser) {}
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
+                                PatternRewriter &rewriter) const override {
+    return commUnaryOpElementwise(onlySingleUser, op, rewriter);
+  }
+};
+
+struct WrapUnaryElementwise : public OpRewritePattern<enzymexla::WrapOp> {
+  bool onlySingleUser;
+
+  WrapUnaryElementwise(bool onlySingleUser, MLIRContext *context,
+                       PatternBenefit benefit = 1,
+                       ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        onlySingleUser(onlySingleUser) {}
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp op,
+                                PatternRewriter &rewriter) const override {
+    return commUnaryOpElementwise(onlySingleUser, op, rewriter);
+  }
+};
+
 template <typename Op, typename EnzymeOp>
-LogicalResult commOpElementWise(Op op, PatternRewriter &rewriter) {
+LogicalResult commBinOpElementWise(Op op, PatternRewriter &rewriter) {
   auto lhs = op.getLhs();
   auto rhs = op.getRhs();
 
@@ -16147,7 +16208,7 @@ template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    return commOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
+    return commBinOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
   }
 };
 
@@ -16156,7 +16217,7 @@ template <typename Op> struct WrapElementwise : public OpRewritePattern<Op> {
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    return commOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
+    return commBinOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
   }
 };
 
@@ -17290,6 +17351,20 @@ void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
                                       bool onlySingleUser, MLIRContext &context,
                                       PatternBenefit benefit) {
   patterns.insert<ReshapeSlice>(onlySingleUser, &context, benefit);
+}
+
+void mlir::transform::addExtendUnaryElementwise(RewritePatternSet &patterns,
+                                                bool onlySingleUser,
+                                                MLIRContext &context,
+                                                PatternBenefit benefit) {
+  patterns.insert<ExtendUnaryElementwise>(onlySingleUser, &context, benefit);
+}
+
+void mlir::transform::addWrapUnaryElementwise(RewritePatternSet &patterns,
+                                              bool onlySingleUser,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<WrapUnaryElementwise>(onlySingleUser, &context, benefit);
 }
 
 namespace {
