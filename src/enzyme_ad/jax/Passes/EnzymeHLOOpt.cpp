@@ -13813,8 +13813,13 @@ struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
     if (!cmp)
       return failure();
 
+    if (!llvm::hasSingleElement(cmp->getUsers())) return failure();
+
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
         op, cmp.getLhs(), cmp.getRhs(), negatedComparisonDirection(cmp.getComparisonDirection()));
+
+    rewriter.eraseOp(cmp);
+
     return success();
   }
 };
