@@ -1619,3 +1619,7 @@ def SpeculateIfPadToSelect : EnzymeHLOPatternOp<
   let patterns = ["SpeculateIfPadToSelect"];
 }
 
+def CompareCleanup : EnzymeHLOPatternOp<
+    "compare_cleanup"> {
+  let patterns = ["CompareCleanup"];
+}

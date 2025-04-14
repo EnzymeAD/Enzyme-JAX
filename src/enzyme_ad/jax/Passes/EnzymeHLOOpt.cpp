@@ -9733,15 +9733,26 @@ struct SelectCompIotaConstToDUS final
 
     for (int i = 0; i < 2; i++) {
       auto lb_pred = compares[i].getComparisonDirection();
-      if (lb_pred != stablehlo::ComparisonDirection::GE)
+      if (lb_pred != stablehlo::ComparisonDirection::GE &&
+          lb_pred != stablehlo::ComparisonDirection::GT)
         continue;
 
       auto ub_pred = compares[1 - i].getComparisonDirection();
-      if (ub_pred != stablehlo::ComparisonDirection::LT)
+      if (ub_pred != stablehlo::ComparisonDirection::LT &&
+          ub_pred != stablehlo::ComparisonDirection::LE)
         continue;
 
       auto lb = constants[i] - start;
       auto ub = constants[1 - i] - start;
+
+      if (ub_pred == stablehlo::ComparisonDirection::LE) {
+        ub++;
+      }
+
+      if (lb_pred == stablehlo::ComparisonDirection::GT) {
+        lb++;
+      }
+
       if (lb >= ub)
         continue;
       if (lb < 0)
@@ -13767,6 +13778,91 @@ struct CommonCompareExpressionRewrite
             return success();
           }
         }
+      }
+    }
+
+    return failure();
+  }
+};
+
+stablehlo::ComparisonDirection
+reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GE;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GT;
+  }
+}
+
+struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
+  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+
+    if (!cast<RankedTensorType>(lhs.getType())
+             .getElementType()
+             .isSignlessInteger(64)) {
+      return failure();
+    }
+
+    DenseIntElementsAttr rhs;
+    if (!matchPattern(op.getRhs(), m_Constant(&rhs))) {
+      return failure();
+    }
+
+    if (!rhs.isSplat())
+      return failure();
+
+    auto rhsv = rhs.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+    if (auto add = lhs.getDefiningOp<stablehlo::AddOp>()) {
+      DenseIntElementsAttr c;
+      if (matchPattern(add.getRhs(), m_Constant(&c)) && c.isSplat()) {
+        auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            add.getLoc(), add.getType(),
+            makeAttr(add.getType(), rhsv - cv).cast<ElementsAttr>());
+
+        // x + cv ?= rhsv -> x ?= rhs - cv
+        rewriter.modifyOpInPlace(op, [&]() {
+          op.getLhsMutable().assign(add.getLhs());
+          op.getRhsMutable().assign(off);
+        });
+
+        return success();
+      }
+    }
+
+    if (auto mul = lhs.getDefiningOp<stablehlo::MulOp>()) {
+      DenseIntElementsAttr c;
+      if (matchPattern(mul.getRhs(), m_Constant(&c)) && c.isSplat()) {
+        auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            mul.getLoc(), mul.getType(),
+            makeAttr(mul.getType(), -rhsv).cast<ElementsAttr>());
+
+        // x * -1 ?= rhsv -> x =? -rhs
+        rewriter.modifyOpInPlace(op, [&]() {
+          op.getLhsMutable().assign(mul.getLhs());
+          op.getRhsMutable().assign(off);
+          op.setComparisonDirection(
+              reorderComparisionDirection(op.getComparisonDirection()));
+        });
+
+        return success();
       }
     }
 
