@@ -26,6 +26,33 @@
 // CHECK-NEXT:    return %1 : tensor<32x800xi1>
 // CHECK-NEXT:  }
 
+
+  func.func @isstarting() -> (tensor<32x800xi1>)  {
+      %c_32 = stablehlo.constant dense<[true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false]> : tensor<32xi1>
+      %21 = stablehlo.broadcast_in_dim %c_32, dims = [0] : (tensor<32xi1>) -> tensor<32x800xi1>
+      func.return %21 : tensor<32x800xi1>
+  }
+
+// CHECK:    func.func @isstarting() -> tensor<32x800xi1> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<31> : tensor<32x800xui32>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<32x800xui32>
+// CHECK-NEXT:    %1 = stablehlo.compare  NE, %0, %c : (tensor<32x800xui32>, tensor<32x800xui32>) -> tensor<32x800xi1>
+// CHECK-NEXT:    return %1 : tensor<32x800xi1>
+// CHECK-NEXT:  }
+
+  func.func @isending() -> (tensor<32x800xi1>)  {
+      %c_32 = stablehlo.constant dense<[false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]> : tensor<32xi1>
+      %21 = stablehlo.broadcast_in_dim %c_32, dims = [0] : (tensor<32xi1>) -> tensor<32x800xi1>
+      func.return %21 : tensor<32x800xi1>
+  }
+
+// CHECK:    func.func @isending() -> tensor<32x800xi1> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<32x800xui32>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<32x800xui32>
+// CHECK-NEXT:    %1 = stablehlo.compare  NE, %0, %c : (tensor<32x800xui32>, tensor<32x800xui32>) -> tensor<32x800xi1>
+// CHECK-NEXT:    return %1 : tensor<32x800xi1>
+// CHECK-NEXT:  }
+
   func.func @mid1() -> (tensor<31x800xi1>)  {
       %c_33 = stablehlo.constant dense<[false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false]> : tensor<31xi1>
       %21 = stablehlo.broadcast_in_dim %c_33, dims = [0] : (tensor<31xi1>) -> tensor<31x800xi1>

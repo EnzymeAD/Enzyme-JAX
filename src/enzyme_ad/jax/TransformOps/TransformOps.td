@@ -974,6 +974,11 @@ def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
   let patterns = ["SelectCompIotaConstSimplify"];
 }
 
+def SelectCompIotaConstToDUS : EnzymeHLOPatternOp<
+    "select_comp_iota_to_dus"> {
+  let patterns = ["SelectCompIotaConstToDUS"];
+}
+
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
     "select_op_used_within_if"> {
   let patterns = ["SelectOpUsedWithinIf"];
