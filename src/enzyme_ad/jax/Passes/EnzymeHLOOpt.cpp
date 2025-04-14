@@ -6038,6 +6038,142 @@ struct BroadcastInDimSimplify
   }
 };
 
+struct CompareIotaConstSimplify
+    : public OpRewritePattern<stablehlo::CompareOp> {
+  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CompareOp cmpOp,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = cmpOp.getLhs();
+    auto rhs = cmpOp.getRhs();
+
+    auto lhsIota = lhs.getDefiningOp<stablehlo::IotaOp>();
+    auto rhsIota = rhs.getDefiningOp<stablehlo::IotaOp>();
+
+    if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
+      return failure();
+
+    // TODO: remove post GB
+    if (!llvm::hasSingleElement(cmpOp.getResult().getUsers()) ||
+        !isa<stablehlo::ConvertOp>(*cmpOp.getResult().getUsers().begin()))
+      return failure();
+
+    auto iota = lhsIota ? lhsIota : rhsIota;
+    Value cst = lhsIota ? rhs : lhs;
+
+    APInt cstAPInt;
+    if (!matchPattern(cst, m_ConstantInt(&cstAPInt)))
+      return failure();
+
+    std::optional<stablehlo::ComparisonType> compType = cmpOp.getCompareType();
+
+    int64_t cstI = compType == stablehlo::ComparisonType::SIGNED
+                       ? cstAPInt.getSExtValue()
+                       : cstAPInt.getZExtValue();
+    auto dir = cmpOp.getComparisonDirection();
+
+    auto T = iota.getType().cast<RankedTensorType>();
+    auto boolType = rewriter.getI1Type();
+    int64_t lb = 0, ub = T.getShape()[iota.getIotaDimension()];
+
+    auto padInner = [&](bool valueIn, int64_t cstI, int64_t iotaDim) {
+      SmallVector<int64_t> shape(T.getShape().begin(), T.getShape().end());
+      SmallVector<int64_t> slow(T.getShape().size(), 0);
+      SmallVector<int64_t> shigh(T.getShape().size(), 0);
+      SmallVector<int64_t> sint(T.getShape().size(), 0);
+
+      shape[iotaDim] = 1;
+      slow[iotaDim] = cstI;
+      shigh[iotaDim] = T.getShape()[iotaDim] - (cstI + 1);
+
+      Value innerValue = rewriter.create<stablehlo::ConstantOp>(
+          cmpOp.getLoc(),
+          SplatElementsAttr::get(RankedTensorType::get(shape, boolType),
+                                 rewriter.getBoolAttr(valueIn)));
+      Value paddingValue = rewriter.create<stablehlo::ConstantOp>(
+          cmpOp.getLoc(),
+          SplatElementsAttr::get(RankedTensorType::get({}, boolType),
+                                 rewriter.getBoolAttr(!valueIn)));
+
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          cmpOp, innerValue, paddingValue, slow, shigh, sint);
+    };
+
+    switch (dir) {
+    case stablehlo::ComparisonDirection::EQ:
+      if (cstI < lb || cstI >= ub) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(false)));
+        return success();
+      }
+
+      padInner(true, cstI, iota.getIotaDimension());
+      return success();
+    case stablehlo::ComparisonDirection::NE:
+      if (cstI < lb || cstI >= ub) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(true)));
+        return success();
+      }
+
+      padInner(false, cstI, iota.getIotaDimension());
+      return success();
+    case stablehlo::ComparisonDirection::LE:
+      if (lhs == iota) { // iota <= cst [0, 1, 2, 3] .<= 2 -> [1, 1, 1, 0]
+        if (cstI >= T.getShape()[iota.getIotaDimension()]) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                            rewriter.getBoolAttr(true)));
+          return success();
+        }
+
+        if (cstI < 0) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                            rewriter.getBoolAttr(false)));
+          return success();
+        }
+
+        SmallVector<int64_t> trueShape;
+        SmallVector<int64_t> falseShape;
+
+        for (auto [i, S] : llvm::enumerate(T.getShape())) {
+          if (i == iota.getIotaDimension()) {
+            trueShape.push_back(cstI + 1);
+            falseShape.push_back(S - (cstI + 1));
+            continue;
+          }
+
+          trueShape.push_back(S);
+          falseShape.push_back(S);
+        }
+
+        Value ops[] = {
+            rewriter.create<stablehlo::ConstantOp>(
+                iota.getLoc(), SplatElementsAttr::get(
+                                   RankedTensorType::get(trueShape, boolType),
+                                   rewriter.getBoolAttr(true))),
+            rewriter.create<stablehlo::ConstantOp>(
+                iota.getLoc(), SplatElementsAttr::get(
+                                   RankedTensorType::get(falseShape, boolType),
+                                   rewriter.getBoolAttr(false)))};
+        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+            cmpOp, cmpOp.getType(), ValueRange(ops), iota.getIotaDimension());
+        return success();
+      }
+
+      break;
+    default:
+      // TODO: other directions
+      break;
+    }
+
+    return failure();
+  }
+};
+
 struct BroadcastIotaSimplify
     : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern::OpRewritePattern;
