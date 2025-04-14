@@ -9684,64 +9684,71 @@ struct SelectCompIotaConstToDUS final
   LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
                                 PatternRewriter &rewriter) const override {
     auto pred = selectOp.getPred().getDefiningOp<stablehlo::AndOp>();
-    if (!pred) return failure();
+    if (!pred)
+      return failure();
     Value trueTensor = selectOp.getOnTrue();
     Value falseTensor = selectOp.getOnFalse();
 
     stablehlo::CompareOp compares[2] = {
-      pred.getLhs().getDefiningOp<stablehlo::CompareOp>(),
-      pred.getRhs().getDefiningOp<stablehlo::CompareOp>(),
+        pred.getLhs().getDefiningOp<stablehlo::CompareOp>(),
+        pred.getRhs().getDefiningOp<stablehlo::CompareOp>(),
     };
     if (compares[0].getLhs() != compares[1].getLhs())
       return failure();
 
-    stablehlo::IotaOp iota = compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>();
-    if (!iota) return failure();
+    stablehlo::IotaOp iota =
+        compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
 
     int64_t constants[2];
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       DenseIntElementsAttr constant;
       if (!matchPattern(compares[i].getRhs(), m_Constant(&constant)))
         return failure();
       if (!constant.isSplat())
         return failure();
 
-      constants[i] = constant.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+      constants[i] =
+          constant.getSplatValue<IntegerAttr>().getValue().getSExtValue();
     }
 
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       auto lb_pred = compares[i].getComparisonDirection();
-      if (lb_pred != stablehlo::ComparisonDirection::GE) continue;
+      if (lb_pred != stablehlo::ComparisonDirection::GE)
+        continue;
 
-      auto ub_pred = compares[1-i].getComparisonDirection();
-      if (ub_pred != stablehlo::ComparisonDirection::LT) continue;
+      auto ub_pred = compares[1 - i].getComparisonDirection();
+      if (ub_pred != stablehlo::ComparisonDirection::LT)
+        continue;
 
       auto lb = constants[i];
-      auto ub = constants[1-i];
-      if (lb >= ub) continue;
+      auto ub = constants[1 - i];
+      if (lb >= ub)
+        continue;
 
       auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
 
       SmallVector<int64_t> startSlices(selectOp.getType().getShape().size(), 0);
-      SmallVector<int64_t> limits = llvm::to_vector(selectOp.getType().getShape());
+      SmallVector<int64_t> limits =
+          llvm::to_vector(selectOp.getType().getShape());
       SmallVector<int64_t> step(selectOp.getType().getShape().size(), 1);
       startSlices[iota.getIotaDimension()] = lb;
       startSlices[iota.getIotaDimension()] = ub;
 
-      auto slicedTrueTensor = rewriter.create<stablehlo::SliceOp>(selectOp.getLoc(), trueTensor, startSlices, limits, step);
+      auto slicedTrueTensor = rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, startSlices, limits, step);
 
-      SmallVector<Value> starts(selectOp.getType().getShape().size(), 
-        rewriter.create<stablehlo::ConstantOp>(selectOp.getLoc(), ITy, makeAttr(ITy, 0).cast<ElementsAttr>()));
+      SmallVector<Value> starts(
+          selectOp.getType().getShape().size(),
+          rewriter.create<stablehlo::ConstantOp>(
+              selectOp.getLoc(), ITy, makeAttr(ITy, 0).cast<ElementsAttr>()));
 
-      starts[iota.getIotaDimension()] = 
-        rewriter.create<stablehlo::ConstantOp>(selectOp.getLoc(), ITy, makeAttr(ITy, lb).cast<ElementsAttr>());
+      starts[iota.getIotaDimension()] = rewriter.create<stablehlo::ConstantOp>(
+          selectOp.getLoc(), ITy, makeAttr(ITy, lb).cast<ElementsAttr>());
 
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-        selectOp,
-        falseTensor,
-        slicedTrueTensor,
-        starts
-        );
+          selectOp, falseTensor, slicedTrueTensor, starts);
       return success();
     }
 
