@@ -1623,3 +1623,8 @@ def CompareCleanup : EnzymeHLOPatternOp<
     "compare_cleanup"> {
   let patterns = ["CompareCleanup"];
 }
+
+def BroadcastCompare : EnzymeHLOPatternOp<
+    "broadcast_compare"> {
+  let patterns = ["BroadcastCompare"];
+}
