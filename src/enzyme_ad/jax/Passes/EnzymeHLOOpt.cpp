@@ -9693,6 +9693,10 @@ struct SelectCompIotaConstToDUS final
         pred.getLhs().getDefiningOp<stablehlo::CompareOp>(),
         pred.getRhs().getDefiningOp<stablehlo::CompareOp>(),
     };
+
+    if (!compares[0] || !compares[1])
+      return failure();
+
     if (compares[0].getLhs() != compares[1].getLhs())
       return failure();
 
