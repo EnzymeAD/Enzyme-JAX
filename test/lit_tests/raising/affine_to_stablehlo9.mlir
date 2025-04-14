@@ -32,25 +32,25 @@ module {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<85x20x180xi64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<85x20x180xf64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<7> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<85xi64>
-// CHECK-NEXT:    %1 = stablehlo.slice %arg1 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
-// CHECK-NEXT:    %2 = stablehlo.slice %arg2 [0:1, 7:92, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
-// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %1, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %3, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %6 = stablehlo.compare  LE, %4, %5,  FLOAT : (tensor<20x85x180xf64>, tensor<20x85x180xf64>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %7 = stablehlo.slice %arg2 [0:1, 6:91, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
-// CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
-// CHECK-NEXT:    %9 = stablehlo.broadcast_in_dim %8, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %10 = stablehlo.compare  LE, %4, %9,  FLOAT : (tensor<20x85x180xf64>, tensor<20x85x180xf64>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %11 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<85xi64>) -> tensor<85x20x180xi64>
-// CHECK-NEXT:    %12 = stablehlo.compare  LT, %11, %c : (tensor<85x20x180xi64>, tensor<85x20x180xi64>) -> tensor<85x20x180xi1>
-// CHECK-NEXT:    %13 = stablehlo.transpose %10, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
-// CHECK-NEXT:    %14 = stablehlo.or %12, %13 : tensor<85x20x180xi1>
-// CHECK-NEXT:    %15 = stablehlo.transpose %14, dims = [1, 0, 2] : (tensor<85x20x180xi1>) -> tensor<20x85x180xi1>
-// CHECK-NEXT:    %16 = stablehlo.or %6, %15 : tensor<20x85x180xi1>
-// CHECK-NEXT:    %17 = stablehlo.not %12 : tensor<85x20x180xi1>
-// CHECK-NEXT:    %18 = stablehlo.transpose %16, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [7:27] : (tensor<34xf64>) -> tensor<20xf64>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg2 [0:1, 7:92, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<20xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %2, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %5 = stablehlo.compare  LE, %3, %4,  FLOAT : (tensor<20x85x180xf64>, tensor<20x85x180xf64>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %6 = stablehlo.slice %arg2 [0:1, 6:91, 7:187] : (tensor<1x99x194xf64>) -> tensor<1x85x180xf64>
+// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<1x85x180xf64>) -> tensor<85x180xf64>
+// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %7, dims = [1, 2] : (tensor<85x180xf64>) -> tensor<20x85x180xf64>
+// CHECK-NEXT:    %9 = stablehlo.compare  LE, %3, %8,  FLOAT : (tensor<20x85x180xf64>, tensor<20x85x180xf64>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %10 = stablehlo.iota dim = 0 : tensor<85x20x180xi64>
+// CHECK-NEXT:    %11 = stablehlo.compare  LT, %10, %c : (tensor<85x20x180xi64>, tensor<85x20x180xi64>) -> tensor<85x20x180xi1>
+// CHECK-NEXT:    %12 = stablehlo.transpose %9, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
+// CHECK-NEXT:    %13 = stablehlo.or %11, %12 : tensor<85x20x180xi1>
+// CHECK-NEXT:    %14 = stablehlo.transpose %13, dims = [1, 0, 2] : (tensor<85x20x180xi1>) -> tensor<20x85x180xi1>
+// CHECK-NEXT:    %15 = stablehlo.or %5, %14 : tensor<20x85x180xi1>
+// CHECK-NEXT:    %16 = stablehlo.iota dim = 0 : tensor<85x20x180xi64>
+// CHECK-NEXT:    %17 = stablehlo.compare GE, %16, %c : (tensor<85x20x180xi64>, tensor<85x20x180xi64>) -> tensor<85x20x180xi1>
+// CHECK-NEXT:    %18 = stablehlo.transpose %15, dims = [1, 0, 2] : (tensor<20x85x180xi1>) -> tensor<85x20x180xi1>
 // CHECK-NEXT:    %19 = stablehlo.and %17, %18 : tensor<85x20x180xi1>
 // CHECK-NEXT:    %20 = stablehlo.slice %arg0 [7:27, 7:92, 7:187] : (tensor<34x99x194xf64>) -> tensor<20x85x180xf64>
 // CHECK-NEXT:    %21 = stablehlo.transpose %20, dims = [1, 0, 2] : (tensor<20x85x180xf64>) -> tensor<85x20x180xf64>
