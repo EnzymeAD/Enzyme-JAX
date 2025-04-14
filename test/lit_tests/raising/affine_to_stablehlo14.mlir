@@ -28,19 +28,17 @@ module {
   }
 }
 // CHECK:  func.func private @multiple_dims_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>) {
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<3x3xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %6 = stablehlo.concatenate %3, %5, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %7 = stablehlo.reshape %arg1 : (tensor<3x3xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %8 = "stablehlo.scatter"(%arg0, %6, %7) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3x3x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.iota dim = 1 : tensor<3x3xi64>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %4 = stablehlo.concatenate %1, %3, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %arg1 : (tensor<3x3xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %6 = "stablehlo.scatter"(%arg0, %4, %5) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3x3xi64>, tensor<9x2xi64>, tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %8, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
+// CHECK-NEXT:    return %6, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
 // CHECK-NEXT:  }
 
 module {
@@ -78,17 +76,16 @@ module {
   }
 }
 // CHECK:  func.func private @load_indirect_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>, %arg2: tensor<3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>) {
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg2, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %0, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3x3xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %5 = stablehlo.concatenate %2, %4, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %6 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<3x3xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %8 = "stablehlo.scatter"(%arg0, %5, %7) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg2, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<3x3x1xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.iota dim = 1 : tensor<3x3xi64>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %4 = stablehlo.concatenate %1, %3, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %5 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<3x3xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %7 = "stablehlo.scatter"(%arg0, %4, %6) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<i64>, %arg4: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg4 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3x3xi64>, tensor<9x2xi64>, tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %8, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
+// CHECK-NEXT:    return %7, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }
