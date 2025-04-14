@@ -15791,26 +15791,29 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
   if (onlySingleUser && !llvm::hasSingleElement(op->getUsers()))
     return failure();
 
-  Operation *elem = *op->getUsers().begin();
+  bool anyModified = false;
+  for (auto elem : op->getUsers()) {
+    if (!elem->template hasTrait<mlir::OpTrait::Elementwise>() ||
+        elem->getNumResults() != 1 || elem->getNumOperands() != 1)
+      continue;
 
-  if (!elem->template hasTrait<mlir::OpTrait::Elementwise>() ||
-      elem->getNumResults() != 1 || elem->getNumOperands() != 1)
-    return failure();
+    auto newOp = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(),
+        ValueRange(op.getOperand()),
+        TypeRange(elem->getResult(0)
+                      .getType()
+                      .template cast<RankedTensorType>()
+                      .clone(op.getOperand()
+                                 .getType()
+                                 .template cast<RankedTensorType>()
+                                 .getShape())),
+        elem->getAttrs(), {}, {});
+    rewriter.replaceOpWithNewOp<EnzymeOp>(
+        elem, newOp->getResult(0), op.getLhs(), op.getRhs(), op.getDimension());
+    anyModified = true;
+  }
 
-  auto newOp = rewriter.create(
-      elem->getLoc(), elem->getName().getIdentifier(),
-      ValueRange(op.getOperand()),
-      TypeRange(
-          elem->getResult(0).getType().template cast<RankedTensorType>().clone(
-              op.getOperand()
-                  .getType()
-                  .template cast<RankedTensorType>()
-                  .getShape())),
-      elem->getAttrs(), {}, {});
-  rewriter.replaceOpWithNewOp<EnzymeOp>(elem, newOp->getResult(0), op.getLhs(),
-                                        op.getRhs(), op.getDimension());
-
-  return success();
+  return success(anyModified);
 }
 
 struct ExtendUnaryElementwise : public OpRewritePattern<enzymexla::ExtendOp> {
