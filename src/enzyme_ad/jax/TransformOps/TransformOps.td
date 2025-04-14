@@ -630,6 +630,10 @@ def ApplyUnaryPadPushExpPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_exp"> {
   let patterns = ["UnaryPadPush<stablehlo::ExpOp>"];
 }
+def ApplyCSEIotaPatterns : EnzymeHLOPatternOp<
+    "cse_iota"> {
+  let patterns = ["CSEIota"];
+}
 def ApplyCSEBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "cse_broadcast_in_dim"> {
   let patterns = ["CSE<stablehlo::BroadcastInDimOp>"];
@@ -1118,6 +1122,12 @@ def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   "broadcast_iota_simplify"
 > {
   let patterns = ["BroadcastIotaSimplify"];
+}
+
+def BroadcastIotaPatterns : EnzymeHLOPatternOp<
+  "broadcast_iota"
+> {
+  let patterns = ["BroadcastIota"];
 }
 
 def DUSDUSPatterns : EnzymeHLOPatternOp<
@@ -1649,3 +1659,17 @@ def SpeculateIfPadToSelect : EnzymeHLOPatternOp<
   let patterns = ["SpeculateIfPadToSelect"];
 }
 
+def CompareCleanup : EnzymeHLOPatternOp<
+    "compare_cleanup"> {
+  let patterns = ["CompareCleanup"];
+}
+
+def BroadcastCompare : EnzymeHLOPatternOp<
+    "broadcast_compare"> {
+  let patterns = ["BroadcastCompare"];
+}
+
+def NotCompare : EnzymeHLOPatternOp<
+    "not_compare"> {
+  let patterns = ["NotCompare"];
+}

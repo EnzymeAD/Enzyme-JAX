@@ -3960,6 +3960,22 @@ struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+struct BroadcastIota final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(
+        op, op.getType(), op.getBroadcastDimensions()[iota.getIotaDimension()]);
+    return success();
+  }
+};
+
 LogicalResult reshapePadHelper(stablehlo::ReshapeOp op,
                                PatternRewriter &rewriter) {
   auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
@@ -5253,6 +5269,11 @@ struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::AndOp op,
                                 PatternRewriter &rewriter) const final {
 
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
     // false & x -> x
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_Zero())) {
@@ -5294,6 +5315,11 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
 
   LogicalResult matchAndRewrite(mlir::stablehlo::OrOp op,
                                 PatternRewriter &rewriter) const final {
+
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
 
     // true | x -> true
     for (auto v : op.getOperands()) {
@@ -5621,6 +5647,66 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
     }
 
     return failure();
+  }
+};
+
+bool is_broadcastable_compare(Value operand) {
+  if (auto cmp = operand.getDefiningOp<stablehlo::CompareOp>()) {
+
+    for (int i = 0; i < 2; i++) {
+      auto v = cmp->getOperand(i);
+      if (v.getDefiningOp<stablehlo::IotaOp>()) {
+        continue;
+      }
+      DenseElementsAttr attr;
+      if (matchPattern(v, m_Constant(&attr))) {
+        if (attr.isSplat()) {
+          continue;
+        }
+      }
+      return false;
+    }
+    return true;
+  }
+  if (auto andv = operand.getDefiningOp<stablehlo::AndOp>()) {
+    return is_broadcastable_compare(andv.getLhs()) &&
+           is_broadcastable_compare(andv.getRhs());
+  }
+  return false;
+}
+
+struct BroadcastCompare
+    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const final {
+    if (!is_broadcastable_compare(op.getOperand()))
+      return failure();
+
+    auto operand = op.getOperand().getDefiningOp();
+
+    Value newops[2];
+
+    for (int i = 0; i < 2; i++) {
+      auto v = operand->getOperand(i);
+      auto RT = RankedTensorType::get(
+          op.getType().getShape(),
+          cast<RankedTensorType>(v.getType()).getElementType());
+      newops[i] = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), RT, v, op.getBroadcastDimensions());
+    }
+
+    if (auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>()) {
+      auto cmp2 = rewriter.create<stablehlo::CompareOp>(
+          cmp.getLoc(), newops[0], newops[1], cmp.getComparisonDirection());
+      rewriter.replaceOp(op, cmp2);
+    } else {
+      auto and2 = rewriter.create<stablehlo::AndOp>(op.getOperand().getLoc(),
+                                                    newops[0], newops[1]);
+      rewriter.replaceOp(op, and2);
+    }
+    return success();
   }
 };
 
@@ -8872,6 +8958,28 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
   }
 };
 
+struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::IotaOp op,
+                                PatternRewriter &rewriter) const override {
+    bool anyCsed = false;
+    Operation *next = op->getNextNode();
+    while (next) {
+      if (auto iota = dyn_cast<stablehlo::IotaOp>(next)) {
+        next = next->getNextNode();
+        if (iota.getIotaDimension() == op.getIotaDimension() &&
+            iota.getType() == op.getType()) {
+          rewriter.replaceOp(iota, op);
+          anyCsed = true;
+        }
+      } else
+        break;
+    }
+    return success(anyCsed);
+  }
+};
+
 template <typename T> struct CSE final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -9529,6 +9637,24 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GT;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GE;
+  }
+}
+
 struct SelectCompIotaConstSimplify final
     : OpRewritePattern<mlir::stablehlo::SelectOp> {
   struct slice_data {
@@ -9554,17 +9680,30 @@ struct SelectCompIotaConstSimplify final
       return failure();
 
     auto shapeLimit = tensorType.getShape();
-    auto compareOp = dyn_cast<stablehlo::CompareOp>(compare.getDefiningOp());
-    auto flag = compareOp.getComparisonDirection();
+
+    Value cmpLHS = nullptr;
+    Value cmpRHS = nullptr;
+    stablehlo::ComparisonDirection flag;
+    if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
+      cmpLHS = cmp.getLhs();
+      cmpRHS = cmp.getRhs();
+      flag = cmp.getComparisonDirection();
+    } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
+      if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
+        cmpLHS = cmp.getLhs();
+        cmpRHS = cmp.getRhs();
+        flag = negatedComparisonDirection(cmp.getComparisonDirection());
+      }
+    }
+
+    if (!cmpLHS)
+      return failure();
 
     stablehlo::IotaOp iota;
-    if (!matchPattern(
-            compare, m_Op<stablehlo::CompareOp>(m_Op<mlir::stablehlo::IotaOp>(),
-                                                m_Constant(&inp)))) {
-
-      if (matchPattern(compare, m_Op<stablehlo::CompareOp>(
-                                    m_Constant(&inp),
-                                    m_Op<mlir::stablehlo::IotaOp>()))) {
+    if (!(matchPattern(cmpLHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+          matchPattern(cmpRHS, m_Constant(&inp)))) {
+      if (matchPattern(cmpRHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+          matchPattern(cmpLHS, m_Constant(&inp))) {
         // incoming: const `op` iota
         // treat the match as iota `op` const
         switch (flag) {
@@ -9583,11 +9722,11 @@ struct SelectCompIotaConstSimplify final
         default:
           break;
         }
-        iota = cast<stablehlo::IotaOp>(compareOp.getRhs().getDefiningOp());
+        iota = cast<stablehlo::IotaOp>(cmpRHS.getDefiningOp());
       } else
         return failure();
     } else
-      iota = cast<stablehlo::IotaOp>(compareOp.getLhs().getDefiningOp());
+      iota = cast<stablehlo::IotaOp>(cmpLHS.getDefiningOp());
 
     assert(iota);
 
@@ -9689,26 +9828,43 @@ struct SelectCompIotaConstToDUS final
     Value trueTensor = selectOp.getOnTrue();
     Value falseTensor = selectOp.getOnFalse();
 
-    stablehlo::CompareOp compares[2] = {
-        pred.getLhs().getDefiningOp<stablehlo::CompareOp>(),
-        pred.getRhs().getDefiningOp<stablehlo::CompareOp>(),
-    };
+    Value lhs[2];
+    Value rhs[2];
+    stablehlo::ComparisonDirection direction[2];
+    for (int i = 0; i < 2; i++) {
+      Value cmpLHS = nullptr;
+      Value cmpRHS = nullptr;
+      stablehlo::ComparisonDirection flag;
+      auto compare = pred->getOperand(i);
+      if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
+        cmpLHS = cmp.getLhs();
+        cmpRHS = cmp.getRhs();
+        flag = cmp.getComparisonDirection();
+      } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
+        if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
+          cmpLHS = cmp.getLhs();
+          cmpRHS = cmp.getRhs();
+          flag = negatedComparisonDirection(cmp.getComparisonDirection());
+        }
+      }
 
-    if (!compares[0] || !compares[1])
-      return failure();
+      if (!cmpLHS)
+        return failure();
+      lhs[i] = cmpLHS;
+      rhs[i] = cmpRHS;
+      direction[i] = flag;
+    }
 
-    if (compares[0].getLhs() != compares[1].getLhs())
+    if (lhs[0] != lhs[1])
       return failure();
 
     int dimension = -1;
     int start = 0;
 
-    if (stablehlo::IotaOp iota =
-            compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>()) {
+    if (stablehlo::IotaOp iota = lhs[0].getDefiningOp<stablehlo::IotaOp>()) {
       dimension = iota.getIotaDimension();
       start = 0;
-    } else if (auto sl =
-                   compares[0].getLhs().getDefiningOp<stablehlo::SliceOp>()) {
+    } else if (auto sl = lhs[0].getDefiningOp<stablehlo::SliceOp>()) {
       if (stablehlo::IotaOp iota =
               sl.getOperand().getDefiningOp<stablehlo::IotaOp>()) {
         dimension = iota.getIotaDimension();
@@ -9722,7 +9878,7 @@ struct SelectCompIotaConstToDUS final
     int64_t constants[2];
     for (int i = 0; i < 2; i++) {
       DenseIntElementsAttr constant;
-      if (!matchPattern(compares[i].getRhs(), m_Constant(&constant)))
+      if (!matchPattern(rhs[i], m_Constant(&constant)))
         return failure();
       if (!constant.isSplat())
         return failure();
@@ -9732,16 +9888,34 @@ struct SelectCompIotaConstToDUS final
     }
 
     for (int i = 0; i < 2; i++) {
-      auto lb_pred = compares[i].getComparisonDirection();
-      if (lb_pred != stablehlo::ComparisonDirection::GE)
-        continue;
-
-      auto ub_pred = compares[1 - i].getComparisonDirection();
-      if (ub_pred != stablehlo::ComparisonDirection::LT)
-        continue;
 
       auto lb = constants[i] - start;
       auto ub = constants[1 - i] - start;
+
+      auto lb_pred = direction[i];
+      bool legalLB = false;
+      if (lb_pred == stablehlo::ComparisonDirection::GE) {
+        legalLB = true;
+      } else if (lb_pred == stablehlo::ComparisonDirection::GT) {
+        legalLB = true;
+        lb++;
+      } else if (lb_pred == stablehlo::ComparisonDirection::NE && lb == 0) {
+        legalLB = true;
+        lb++;
+      }
+
+      if (!legalLB)
+        continue;
+
+      auto ub_pred = direction[1 - i];
+      if (ub_pred != stablehlo::ComparisonDirection::LT &&
+          ub_pred != stablehlo::ComparisonDirection::LE)
+        continue;
+
+      if (ub_pred == stablehlo::ComparisonDirection::LE) {
+        ub++;
+      }
+
       if (lb >= ub)
         continue;
       if (lb < 0)
@@ -13715,23 +13889,27 @@ struct NotSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
   }
 };
 
-stablehlo::ComparisonDirection
-negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
-  switch (direction) {
-  case stablehlo::ComparisonDirection::EQ:
-    return stablehlo::ComparisonDirection::NE;
-  case stablehlo::ComparisonDirection::NE:
-    return stablehlo::ComparisonDirection::EQ;
-  case stablehlo::ComparisonDirection::GE:
-    return stablehlo::ComparisonDirection::LT;
-  case stablehlo::ComparisonDirection::GT:
-    return stablehlo::ComparisonDirection::LE;
-  case stablehlo::ComparisonDirection::LE:
-    return stablehlo::ComparisonDirection::GT;
-  case stablehlo::ComparisonDirection::LT:
-    return stablehlo::ComparisonDirection::GE;
+struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::NotOp op,
+                                PatternRewriter &rewriter) const final {
+    auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    if (!cmp)
+      return failure();
+
+    if (!llvm::hasSingleElement(cmp->getUsers()))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+        op, cmp.getLhs(), cmp.getRhs(),
+        negatedComparisonDirection(cmp.getComparisonDirection()));
+
+    rewriter.eraseOp(cmp);
+
+    return success();
   }
-}
+};
 
 struct CommonCompareExpressionRewrite
     : public OpRewritePattern<stablehlo::CompareOp> {
@@ -13767,6 +13945,91 @@ struct CommonCompareExpressionRewrite
             return success();
           }
         }
+      }
+    }
+
+    return failure();
+  }
+};
+
+stablehlo::ComparisonDirection
+reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GE;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GT;
+  }
+}
+
+struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
+  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
+                                PatternRewriter &rewriter) const final {
+    auto lhs = op.getLhs();
+
+    if (!cast<RankedTensorType>(lhs.getType())
+             .getElementType()
+             .isSignlessInteger(64)) {
+      return failure();
+    }
+
+    DenseIntElementsAttr rhs;
+    if (!matchPattern(op.getRhs(), m_Constant(&rhs))) {
+      return failure();
+    }
+
+    if (!rhs.isSplat())
+      return failure();
+
+    auto rhsv = rhs.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+    if (auto add = lhs.getDefiningOp<stablehlo::AddOp>()) {
+      DenseIntElementsAttr c;
+      if (matchPattern(add.getRhs(), m_Constant(&c)) && c.isSplat()) {
+        auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            add.getLoc(), add.getType(),
+            makeAttr(add.getType(), rhsv - cv).cast<ElementsAttr>());
+
+        // x + cv ?= rhsv -> x ?= rhs - cv
+        rewriter.modifyOpInPlace(op, [&]() {
+          op.getLhsMutable().assign(add.getLhs());
+          op.getRhsMutable().assign(off);
+        });
+
+        return success();
+      }
+    }
+
+    if (auto mul = lhs.getDefiningOp<stablehlo::MulOp>()) {
+      DenseIntElementsAttr c;
+      if (matchPattern(mul.getRhs(), m_Constant(&c)) && c.isSplat()) {
+        auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            mul.getLoc(), mul.getType(),
+            makeAttr(mul.getType(), -rhsv).cast<ElementsAttr>());
+
+        // x * -1 ?= rhsv -> x =? -rhs
+        rewriter.modifyOpInPlace(op, [&]() {
+          op.getLhsMutable().assign(mul.getLhs());
+          op.getRhsMutable().assign(off);
+          op.setComparisonDirection(
+              reorderComparisionDirection(op.getComparisonDirection()));
+        });
+
+        return success();
       }
     }
 
@@ -17183,7 +17446,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>>(context, PatternBenefit(65000));
+                   CSE<enzymexla::ExtendOp>, CSEIota>(context,
+                                                      PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -17291,7 +17555,10 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
-        BroadcastIotaSimplify
+        BroadcastIotaSimplify,
+        BroadcastIota,
+        BroadcastCompare,
+        NotCompare
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
