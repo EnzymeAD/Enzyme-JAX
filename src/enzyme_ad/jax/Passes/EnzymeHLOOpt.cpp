@@ -6045,6 +6045,62 @@ struct BroadcastIotaSimplify
               return success();
             }
           }
+
+          // false, false, ..., true, true, true, ..., false, false, ...
+          if (lastVal == 0 && start == 0) {
+            bool legal = true;
+            int firstTrue = -1;
+            int firstFalseAgain = -1;
+            int i = 0;
+            for (auto idx = int_attr_arr->begin(); idx != end; i++, idx++) {
+              bool isTrue = !(*idx).getValue().isZero();
+              // Before the transition.
+              if (firstTrue == -1) {
+                if (isTrue) {
+                  firstTrue = i;
+                  continue;
+                } else {
+                  continue;
+                }
+              }
+              // In the true region
+              if (firstFalseAgain == -1) {
+                if (isTrue) {
+                  continue;
+                } else {
+                  firstFalseAgain = i;
+                  continue;
+                }
+              }
+
+              // Post transition
+              if (isTrue) {
+                legal = false;
+                break;
+              }
+              continue;
+            }
+            if (legal && firstTrue != -1 && firstFalseAgain != -1) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp1 = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy, makeAttr(ITy, firstTrue).cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::GE);
+              auto cmp2 = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy,
+                      makeAttr(ITy, firstFalseAgain).cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::LT);
+              rewriter.replaceOpWithNewOp<stablehlo::AndOp>(broadcast, cmp1,
+                                                            cmp2);
+              return success();
+            }
+          }
         }
 
         for (broadcast_dim = 0; broadcast_dim < max_dims; ++broadcast_dim) {
