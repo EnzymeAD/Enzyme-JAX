@@ -13804,6 +13804,21 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
   }
 }
 
+struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::NotOp op,
+                                PatternRewriter &rewriter) const final {
+    auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    if (!cmp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+        op, cmp.getLhs(), cmp.getRhs(), negatedComparisonDirection(cmp.getComparisonDirection()));
+    return success();
+  }
+};
+
 struct CommonCompareExpressionRewrite
     : public OpRewritePattern<stablehlo::CompareOp> {
   using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
@@ -17373,7 +17388,8 @@ struct EnzymeHLOOptPass
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
         BroadcastIotaSimplify,
-        BroadcastCompare
+        BroadcastCompare,
+        NotCompare
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
