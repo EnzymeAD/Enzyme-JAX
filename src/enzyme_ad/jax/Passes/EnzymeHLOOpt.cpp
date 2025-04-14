@@ -5253,6 +5253,11 @@ struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::AndOp op,
                                 PatternRewriter &rewriter) const final {
 
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
     // false & x -> x
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_Zero())) {
@@ -5295,6 +5300,12 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
   LogicalResult matchAndRewrite(mlir::stablehlo::OrOp op,
                                 PatternRewriter &rewriter) const final {
 
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+    
+    
     // true | x -> true
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_One())) {
