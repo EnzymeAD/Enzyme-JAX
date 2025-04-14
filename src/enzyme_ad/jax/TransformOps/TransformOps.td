@@ -1628,3 +1628,8 @@ def BroadcastCompare : EnzymeHLOPatternOp<
     "broadcast_compare"> {
   let patterns = ["BroadcastCompare"];
 }
+
+def NotCompare : EnzymeHLOPatternOp<
+    "not_compare"> {
+  let patterns = ["NotCompare"];
+}
