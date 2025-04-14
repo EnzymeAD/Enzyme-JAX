@@ -1284,15 +1284,39 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         wrap.getLoc(), wrap.getOperand(), zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedWrapOp, wrapSharding);
 
-    auto addOp = rewriter.create<stablehlo::AddOp>(
-        wrap.getLoc(), paddedRightSliceOp, paddedWrapOp);
-    mlir::sdy::setSharding(addOp, wrapSharding);
+    auto ITy = RankedTensorType::get(wrap.getType().getShape(),
+                                     rewriter.getIntegerType(32, false));
+    auto iota =
+        rewriter.create<stablehlo::IotaOp>(wrap.getLoc(), ITy, wrapDimension);
+    mlir::sdy::setSharding(iota, wrapSharding);
 
-    addOp = rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp,
-                                              paddedLeftSliceOp);
-    sdy::setSharding(addOp, wrapSharding);
+    auto lhsC = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), ITy, makeAttr(ITy, wrap.getLhs()).cast<ElementsAttr>());
+    mlir::sdy::setSharding(lhsC, wrapSharding);
 
-    rewriter.replaceOp(wrap, addOp);
+    auto leftSide = rewriter.create<stablehlo::CompareOp>(
+        wrap.getLoc(), iota, lhsC, stablehlo::ComparisonDirection::LT);
+    mlir::sdy::setSharding(leftSide, wrapSharding);
+
+    auto select1 = rewriter.create<stablehlo::SelectOp>(
+        wrap.getLoc(), leftSide, paddedRightSliceOp, paddedWrapOp);
+    mlir::sdy::setSharding(select1, wrapSharding);
+
+    auto lhsC2 = rewriter.create<stablehlo::ConstantOp>(
+        wrap.getLoc(), ITy,
+        makeAttr(ITy, wrapShape[wrapDimension] - wrap.getRhs())
+            .cast<ElementsAttr>());
+    mlir::sdy::setSharding(lhsC2, wrapSharding);
+
+    auto leftSide2 = rewriter.create<stablehlo::CompareOp>(
+        wrap.getLoc(), iota, lhsC2, stablehlo::ComparisonDirection::LT);
+    mlir::sdy::setSharding(leftSide2, wrapSharding);
+
+    auto select2 = rewriter.create<stablehlo::SelectOp>(
+        wrap.getLoc(), leftSide2, select1, paddedLeftSliceOp);
+    mlir::sdy::setSharding(select2, wrapSharding);
+
+    rewriter.replaceOp(wrap, select2);
     return success();
   }
 };
