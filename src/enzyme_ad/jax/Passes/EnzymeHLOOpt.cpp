@@ -8958,6 +8958,28 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
   }
 };
 
+struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::IotaOp op,
+                                PatternRewriter &rewriter) const override {
+    bool anyCsed = false;
+    Operation *next = op->getNextNode();
+    while (next) {
+      if (auto iota = dyn_cast<stablehlo::IotaOp>(next)) {
+        next = next->getNextNode();
+        if (iota.getIotaDimension() == op.getIotaDimension() &&
+            iota.getType() == op.getType()) {
+          rewriter.replaceOp(iota, op);
+          anyCsed = true;
+        }
+      } else
+        break;
+    }
+    return success(anyCsed);
+  }
+};
+
 template <typename T> struct CSE final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -17349,7 +17371,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>>(context, PatternBenefit(65000));
+                   CSE<enzymexla::ExtendOp>, CSEIota>(context,
+                                                      PatternBenefit(65000));
     }
 
     if (passses & 256)
