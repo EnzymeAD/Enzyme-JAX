@@ -9732,25 +9732,31 @@ struct SelectCompIotaConstToDUS final
     }
 
     for (int i = 0; i < 2; i++) {
+
+      auto lb = constants[i] - start;
+      auto ub = constants[1 - i] - start;
+
       auto lb_pred = compares[i].getComparisonDirection();
-      if (lb_pred != stablehlo::ComparisonDirection::GE &&
-          lb_pred != stablehlo::ComparisonDirection::GT)
-        continue;
+      bool legalLB = false;
+      if (lb_pred == stablehlo::ComparisonDirection::GE) {
+        legalLB = true;
+      } else if (lb_pred == stablehlo::ComparisonDirection::GT) {
+        legalLB = true;
+        lb++;
+      } else if (lb_pred == stablehlo::ComparisonDirection::NE && lb == 0) {
+        legalLB = true;
+        lb++;
+      }
+
+      if (!legalLB) continue;
 
       auto ub_pred = compares[1 - i].getComparisonDirection();
       if (ub_pred != stablehlo::ComparisonDirection::LT &&
           ub_pred != stablehlo::ComparisonDirection::LE)
         continue;
 
-      auto lb = constants[i] - start;
-      auto ub = constants[1 - i] - start;
-
       if (ub_pred == stablehlo::ComparisonDirection::LE) {
         ub++;
-      }
-
-      if (lb_pred == stablehlo::ComparisonDirection::GT) {
-        lb++;
       }
 
       if (lb >= ub)
