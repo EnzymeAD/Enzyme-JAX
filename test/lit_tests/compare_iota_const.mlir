@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td=patterns=compare_iota_const_simplify --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
 module {
   func.func @compare_iota_const_le() -> tensor<4xi1> {
@@ -8,8 +8,10 @@ module {
     return %cmp : tensor<4xi1>
   }
   // CHECK:  func.func @compare_iota_const_le() -> tensor<4xi1> {
-  // CHECK-NEXT:    %c = stablehlo.constant dense<[true, true, true, false]> : tensor<4xi1>
-  // CHECK-NEXT:    return %c : tensor<4xi1>
+  // CHECK-NEXT:    %[[TRUE:.+]] = stablehlo.constant dense<true> : tensor<3xi1>
+  // CHECK-NEXT:    %[[FALSE:.+]] = stablehlo.constant dense<false> : tensor<1xi1>
+  // CHECK-NEXT:    %[[CONC:.+]] = stablehlo.concatenate %[[TRUE]], %[[FALSE]], dim = 0 : (tensor<3xi1>, tensor<1xi1>) -> tensor<4xi1>
+  // CHECK-NEXT:    return %[[CONC]] : tensor<4xi1>
   // CHECK-NEXT:  }
 
   func.func @compare_iota_const_le_oob() -> tensor<4xi1> {
@@ -30,8 +32,10 @@ module {
     return %cmp : tensor<4xi1>
   }
   // CHECK:  func.func @compare_iota_const_eq() -> tensor<4xi1> {
-  // CHECK-NEXT:    %c = stablehlo.constant dense<[false, false, true, false]> : tensor<4xi1>
-  // CHECK-NEXT:    return %c : tensor<4xi1>
+  // CHECK-NEXT:    %[[TRUE:.+]] = stablehlo.constant dense<true> : tensor<1xi1>
+  // CHECK-NEXT:    %[[FALSE:.+]] = stablehlo.constant dense<false> : tensor<i1>
+  // CHECK-NEXT:    %[[PAD:.+]] = stablehlo.pad %[[TRUE]], %[[FALSE]], low = [2], high = [1], interior = [0] : (tensor<1xi1>, tensor<i1>) -> tensor<4xi1>
+  // CHECK-NEXT:    return %[[PAD]] : tensor<4xi1>
   // CHECK-NEXT:  }
 
   func.func @compare_iota_const_eq_oob() -> tensor<4xi1> {
@@ -52,8 +56,10 @@ module {
     return %cmp : tensor<4xi1>
   }
   // CHECK:  func.func @compare_iota_const_ne() -> tensor<4xi1> {
-  // CHECK-NEXT:    %c = stablehlo.constant dense<[true, true, false, true]> : tensor<4xi1>
-  // CHECK-NEXT:    return %c : tensor<4xi1>
+  // CHECK-NEXT:    %[[FALSE:.+]] = stablehlo.constant dense<false> : tensor<1xi1>
+  // CHECK-NEXT:    %[[TRUE:.+]] = stablehlo.constant dense<true> : tensor<i1>
+  // CHECK-NEXT:    %[[PAD:.+]] = stablehlo.pad %c, %c_0, low = [2], high = [1], interior = [0] : (tensor<1xi1>, tensor<i1>) -> tensor<4xi1>
+  // CHECK-NEXT:    return %[[PAD]] : tensor<4xi1>
   // CHECK-NEXT:  }
 
   func.func @compare_iota_const_ne_oob() -> tensor<4xi1> {

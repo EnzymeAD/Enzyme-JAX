@@ -17613,7 +17613,6 @@ struct EnzymeHLOOptPass
         ReduceTransposeSimplify,
         BroadcastIotaSimplify,
         BroadcastIota,
-        CompareIotaConstSimplify,
         BroadcastCompare,
         NotCompare
       >(context);
