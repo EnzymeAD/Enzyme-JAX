@@ -9748,7 +9748,8 @@ struct SelectCompIotaConstToDUS final
         lb++;
       }
 
-      if (!legalLB) continue;
+      if (!legalLB)
+        continue;
 
       auto ub_pred = compares[1 - i].getComparisonDirection();
       if (ub_pred != stablehlo::ComparisonDirection::LT &&
