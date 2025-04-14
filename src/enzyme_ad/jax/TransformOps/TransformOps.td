@@ -630,6 +630,10 @@ def ApplyUnaryPadPushExpPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_exp"> {
   let patterns = ["UnaryPadPush<stablehlo::ExpOp>"];
 }
+def ApplyCSEIotaPatterns : EnzymeHLOPatternOp<
+    "cse_iota"> {
+  let patterns = ["CSEIota"];
+}
 def ApplyCSEBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "cse_broadcast_in_dim"> {
   let patterns = ["CSE<stablehlo::BroadcastInDimOp>"];
