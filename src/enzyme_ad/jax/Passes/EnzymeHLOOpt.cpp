@@ -9703,11 +9703,14 @@ struct SelectCompIotaConstToDUS final
     int dimension = -1;
     int start = 0;
 
-    if (stablehlo::IotaOp iota = compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>()) {
+    if (stablehlo::IotaOp iota =
+            compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>()) {
       dimension = iota.getIotaDimension();
       start = 0;
-    } else if (auto sl = compares[0].getLhs().getDefiningOp<stablehlo::SliceOp>()) {
-      if (stablehlo::IotaOp iota = sl.getOperand().getDefiningOp<stablehlo::IotaOp>()) {
+    } else if (auto sl =
+                   compares[0].getLhs().getDefiningOp<stablehlo::SliceOp>()) {
+      if (stablehlo::IotaOp iota =
+              sl.getOperand().getDefiningOp<stablehlo::IotaOp>()) {
         dimension = iota.getIotaDimension();
         start = sl.getStartIndices()[dimension];
       }
