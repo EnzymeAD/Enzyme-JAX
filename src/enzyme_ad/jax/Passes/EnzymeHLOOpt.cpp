@@ -6012,7 +6012,33 @@ struct BroadcastIotaSimplify
               return success();
             }
           }
-          // true, false, .... false.  -> iota == 0
+
+          // false, true, .... true.  -> iota != 0
+          if (start == 0 && !(*next).getValue().isZero()) {
+            bool legal = true;
+            for (auto idx = next; idx != end; idx++) {
+              if ((*idx).getValue().isZero()) {
+                legal = false;
+                break;
+              }
+            }
+            // only 1 at the start
+            if (legal) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy, makeAttr(ITy, 0).cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::NE);
+              rewriter.replaceOp(broadcast, cmp);
+              return success();
+            }
+          }
+
+          // false, .... false, true -> iota == end
           auto lastVal = (*(--int_attr_arr->end())).getInt();
           if (lastVal != 0) {
             bool legal = true;
@@ -6041,6 +6067,39 @@ struct BroadcastIotaSimplify
                       makeAttr(ITy, RTO.getShape()[0] - 1)
                           .cast<ElementsAttr>()),
                   stablehlo::ComparisonDirection::EQ);
+              rewriter.replaceOp(broadcast, cmp);
+              return success();
+            }
+          }
+
+          // true, .... true, false  -> iota != end
+          if (lastVal == 0) {
+            bool legal = true;
+            for (auto idx = int_attr_arr->begin();;) {
+              if ((*idx).getValue().isZero()) {
+                legal = false;
+                break;
+              }
+              idx++;
+              auto nextv = idx;
+              nextv++;
+              if (nextv == end) {
+                break;
+              }
+            }
+            // only 1 at the end
+            if (legal) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy,
+                      makeAttr(ITy, RTO.getShape()[0] - 1)
+                          .cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::NE);
               rewriter.replaceOp(broadcast, cmp);
               return success();
             }
@@ -9616,6 +9675,88 @@ struct SelectCompIotaConstSimplify final
         selectOp, ValueRange{sliceValues}, iotaDim);
 
     return success();
+  }
+};
+
+struct SelectCompIotaConstToDUS final
+    : OpRewritePattern<mlir::stablehlo::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
+                                PatternRewriter &rewriter) const override {
+    auto pred = selectOp.getPred().getDefiningOp<stablehlo::AndOp>();
+    if (!pred)
+      return failure();
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
+
+    stablehlo::CompareOp compares[2] = {
+        pred.getLhs().getDefiningOp<stablehlo::CompareOp>(),
+        pred.getRhs().getDefiningOp<stablehlo::CompareOp>(),
+    };
+
+    if (!compares[0] || !compares[1])
+      return failure();
+
+    if (compares[0].getLhs() != compares[1].getLhs())
+      return failure();
+
+    stablehlo::IotaOp iota =
+        compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    int64_t constants[2];
+    for (int i = 0; i < 2; i++) {
+      DenseIntElementsAttr constant;
+      if (!matchPattern(compares[i].getRhs(), m_Constant(&constant)))
+        return failure();
+      if (!constant.isSplat())
+        return failure();
+
+      constants[i] =
+          constant.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+    }
+
+    for (int i = 0; i < 2; i++) {
+      auto lb_pred = compares[i].getComparisonDirection();
+      if (lb_pred != stablehlo::ComparisonDirection::GE)
+        continue;
+
+      auto ub_pred = compares[1 - i].getComparisonDirection();
+      if (ub_pred != stablehlo::ComparisonDirection::LT)
+        continue;
+
+      auto lb = constants[i];
+      auto ub = constants[1 - i];
+      if (lb >= ub)
+        continue;
+
+      auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
+
+      SmallVector<int64_t> startSlices(selectOp.getType().getShape().size(), 0);
+      SmallVector<int64_t> limits =
+          llvm::to_vector(selectOp.getType().getShape());
+      SmallVector<int64_t> step(selectOp.getType().getShape().size(), 1);
+      startSlices[iota.getIotaDimension()] = lb;
+      startSlices[iota.getIotaDimension()] = ub;
+
+      auto slicedTrueTensor = rewriter.create<stablehlo::SliceOp>(
+          selectOp.getLoc(), trueTensor, startSlices, limits, step);
+
+      SmallVector<Value> starts(
+          selectOp.getType().getShape().size(),
+          rewriter.create<stablehlo::ConstantOp>(
+              selectOp.getLoc(), ITy, makeAttr(ITy, 0).cast<ElementsAttr>()));
+
+      starts[iota.getIotaDimension()] = rewriter.create<stablehlo::ConstantOp>(
+          selectOp.getLoc(), ITy, makeAttr(ITy, lb).cast<ElementsAttr>());
+
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          selectOp, falseTensor, slicedTrueTensor, starts);
+      return success();
+    }
+
+    return failure();
   }
 };
 
@@ -17043,6 +17184,7 @@ struct EnzymeHLOOptPass
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
         SelectCompIotaConstSimplify,
+        SelectCompIotaConstToDUS,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,
