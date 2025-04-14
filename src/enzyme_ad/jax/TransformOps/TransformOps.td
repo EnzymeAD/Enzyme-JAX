@@ -1673,3 +1673,8 @@ def NotCompare : EnzymeHLOPatternOp<
     "not_compare"> {
   let patterns = ["NotCompare"];
 }
+
+def ReshuffleAndsCompares : EnzymeHLOPatternOp<
+    "reshuffle_ands_compares"> {
+  let patterns = ["ReshuffleAndsCompares"];
+}
