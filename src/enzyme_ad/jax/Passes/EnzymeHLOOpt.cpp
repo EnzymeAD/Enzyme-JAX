@@ -5634,6 +5634,49 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
   }
 };
 
+struct BroadcastCompare
+    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const final {
+
+    auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    if (!cmp)
+      return failure();
+
+    for (int i = 0; i < 2; i++) {
+      auto v = cmp->getOperand(i);
+      if (v.getDefiningOp<stablehlo::IotaOp>()) {
+        continue;
+      }
+      DenseElementsAttr attr;
+      if (matchPattern(v, m_Constant(&attr))) {
+        if (attr.isSplat()) {
+          continue;
+        }
+      }
+      return failure();
+    }
+
+    Value newops[2];
+
+    for (int i = 0; i < 2; i++) {
+      auto v = cmp->getOperand(i);
+      auto RT = RankedTensorType::get(
+          op.getType().getShape(),
+          cast<RankedTensorType>(v.getType()).getElementType());
+      newops[i] = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), RT, v, op.getBroadcastDimensions());
+    }
+
+    auto cmp2 = rewriter.create<stablehlo::CompareOp>(
+        cmp.getLoc(), newops[0], newops[1], cmp.getComparisonDirection());
+    rewriter.replaceOp(op, cmp2);
+    return success();
+  }
+};
+
 struct IotaSimplify : public OpRewritePattern<mlir::stablehlo::IotaOp> {
   using OpRewritePattern<mlir::stablehlo::IotaOp>::OpRewritePattern;
   size_t max_constant_expansion;
@@ -17329,7 +17372,8 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
-        BroadcastIotaSimplify
+        BroadcastIotaSimplify,
+        BroadcastCompare
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
