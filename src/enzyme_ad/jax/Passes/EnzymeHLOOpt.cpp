@@ -5635,7 +5635,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
 };
 
 bool is_broadcastable_compare(Value operand) {
-    if (auto cmp = operand.getDefiningOp<stablehlo::CompareOp>()) {
+  if (auto cmp = operand.getDefiningOp<stablehlo::CompareOp>()) {
 
     for (int i = 0; i < 2; i++) {
       auto v = cmp->getOperand(i);
@@ -5653,7 +5653,8 @@ bool is_broadcastable_compare(Value operand) {
     return true;
   }
   if (auto andv = operand.getDefiningOp<stablehlo::AndOp>()) {
-    return is_broadcastable_compare(andv.getLhs()) && is_broadcastable_compare(andv.getRhs());
+    return is_broadcastable_compare(andv.getLhs()) &&
+           is_broadcastable_compare(andv.getRhs());
   }
   return false;
 }
@@ -5664,7 +5665,8 @@ struct BroadcastCompare
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
                                 PatternRewriter &rewriter) const final {
-    if (!is_broadcastable_compare(op.getOperand())) return failure();
+    if (!is_broadcastable_compare(op.getOperand()))
+      return failure();
 
     auto operand = op.getOperand().getDefiningOp();
 
@@ -5680,14 +5682,14 @@ struct BroadcastCompare
     }
 
     if (auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>()) {
-    auto cmp2 = rewriter.create<stablehlo::CompareOp>(
-        cmp.getLoc(), newops[0], newops[1], cmp.getComparisonDirection());
-    rewriter.replaceOp(op, cmp2);
-  } else {
-    auto and2 = rewriter.create<stablehlo::AndOp>(
-        op.getOperand().getLoc(), newops[0], newops[1]);
-    rewriter.replaceOp(op, and2);
-  }
+      auto cmp2 = rewriter.create<stablehlo::CompareOp>(
+          cmp.getLoc(), newops[0], newops[1], cmp.getComparisonDirection());
+      rewriter.replaceOp(op, cmp2);
+    } else {
+      auto and2 = rewriter.create<stablehlo::AndOp>(op.getOperand().getLoc(),
+                                                    newops[0], newops[1]);
+      rewriter.replaceOp(op, and2);
+    }
     return success();
   }
 };
@@ -9597,7 +9599,6 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
-
 stablehlo::ComparisonDirection
 negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
   switch (direction) {
@@ -9651,17 +9652,20 @@ struct SelectCompIotaConstSimplify final
       flag = cmp.getComparisonDirection();
     } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
       if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-      cmpLHS = cmp.getLhs();
-      cmpRHS = cmp.getRhs();
-      flag = negatedComparisonDirection(cmp.getComparisonDirection());
+        cmpLHS = cmp.getLhs();
+        cmpRHS = cmp.getRhs();
+        flag = negatedComparisonDirection(cmp.getComparisonDirection());
       }
     }
 
-    if (!cmpLHS) return failure();
+    if (!cmpLHS)
+      return failure();
 
     stablehlo::IotaOp iota;
-    if (!(matchPattern(cmpLHS, m_Op<mlir::stablehlo::IotaOp>()) && matchPattern(cmpRHS, m_Constant(&inp)))) {
-      if (matchPattern(cmpRHS, m_Op<mlir::stablehlo::IotaOp>()) && matchPattern(cmpLHS, m_Constant(&inp))) {
+    if (!(matchPattern(cmpLHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+          matchPattern(cmpRHS, m_Constant(&inp)))) {
+      if (matchPattern(cmpRHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+          matchPattern(cmpLHS, m_Constant(&inp))) {
         // incoming: const `op` iota
         // treat the match as iota `op` const
         switch (flag) {
@@ -9789,7 +9793,7 @@ struct SelectCompIotaConstToDUS final
     Value lhs[2];
     Value rhs[2];
     stablehlo::ComparisonDirection direction[2];
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       Value cmpLHS = nullptr;
       Value cmpRHS = nullptr;
       stablehlo::ComparisonDirection flag;
@@ -9800,18 +9804,18 @@ struct SelectCompIotaConstToDUS final
         flag = cmp.getComparisonDirection();
       } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
         if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-        cmpLHS = cmp.getLhs();
-        cmpRHS = cmp.getRhs();
-        flag = negatedComparisonDirection(cmp.getComparisonDirection());
+          cmpLHS = cmp.getLhs();
+          cmpRHS = cmp.getRhs();
+          flag = negatedComparisonDirection(cmp.getComparisonDirection());
         }
       }
 
-      if (!cmpLHS) return failure();
+      if (!cmpLHS)
+        return failure();
       lhs[i] = cmpLHS;
       rhs[i] = cmpRHS;
       direction[i] = flag;
     }
-
 
     if (lhs[0] != lhs[1])
       return failure();
@@ -13856,10 +13860,12 @@ struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
     if (!cmp)
       return failure();
 
-    if (!llvm::hasSingleElement(cmp->getUsers())) return failure();
+    if (!llvm::hasSingleElement(cmp->getUsers()))
+      return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
-        op, cmp.getLhs(), cmp.getRhs(), negatedComparisonDirection(cmp.getComparisonDirection()));
+        op, cmp.getLhs(), cmp.getRhs(),
+        negatedComparisonDirection(cmp.getComparisonDirection()));
 
     rewriter.eraseOp(cmp);
 
