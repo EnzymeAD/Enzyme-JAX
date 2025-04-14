@@ -5960,7 +5960,8 @@ struct BroadcastIotaSimplify
     matchPattern(operand, m_Constant(&input));
 
     auto RTO = cast<RankedTensorType>(operand.getType());
-    if (input && !input.isSplat() && RTO.getShape().size() == 1 && RTO.getShape()[0] >= 2) {
+    if (input && !input.isSplat() && RTO.getShape().size() == 1 &&
+        RTO.getShape()[0] >= 2) {
       auto elemType = input.getElementType();
 
       if (auto int_attr_arr = input.tryGetValues<::mlir::IntegerAttr>();
@@ -5998,12 +5999,15 @@ struct BroadcastIotaSimplify
             }
             // only 1 at the start
             if (legal) {
-              auto ITy = RankedTensorType::get(result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, ITy,
-                                                                   broadcast.getBroadcastDimensions()[0]);
-              auto cmp = rewriter.create<stablehlo::CompareOp>(loc, iota,
-                rewriter.create<stablehlo::ConstantOp>(loc, ITy, makeAttr(ITy, 0).cast<ElementsAttr>()),
-          stablehlo::ComparisonDirection::EQ);
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy, makeAttr(ITy, 0).cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::EQ);
               rewriter.replaceOp(broadcast, cmp);
               return success();
             }
@@ -6011,30 +6015,35 @@ struct BroadcastIotaSimplify
           // true, false, .... false.  -> iota == 0
           auto lastVal = (*(--int_attr_arr->end())).getInt();
           if (lastVal != 0) {
-              bool legal = true;
-              for (auto idx = int_attr_arr->begin(); ;) {
-                if ((*idx).getInt() != 0) {
-                  legal = false;
-                  break;
-                }
-                idx++;
-                auto nextv = idx;
-                nextv++;
-                if (nextv == end) {
-                  break;
-                }
+            bool legal = true;
+            for (auto idx = int_attr_arr->begin();;) {
+              if ((*idx).getInt() != 0) {
+                legal = false;
+                break;
               }
-              // only 1 at the end
-              if (legal) {
-                auto ITy = RankedTensorType::get(result_shape, rewriter.getIntegerType(32, false));
-                auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, ITy,
-                                                                     broadcast.getBroadcastDimensions()[0]);
-                auto cmp = rewriter.create<stablehlo::CompareOp>(loc, iota,
-                  rewriter.create<stablehlo::ConstantOp>(loc, ITy, makeAttr(ITy, RTO.getShape()[0]-1).cast<ElementsAttr>()),
-            stablehlo::ComparisonDirection::EQ);
-                rewriter.replaceOp(broadcast, cmp);
-                return success();
+              idx++;
+              auto nextv = idx;
+              nextv++;
+              if (nextv == end) {
+                break;
               }
+            }
+            // only 1 at the end
+            if (legal) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy,
+                      makeAttr(ITy, RTO.getShape()[0] - 1)
+                          .cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::EQ);
+              rewriter.replaceOp(broadcast, cmp);
+              return success();
+            }
           }
         }
 
@@ -6049,7 +6058,7 @@ struct BroadcastIotaSimplify
           if (!found)
             break;
         }
-        assert (broadcast_dim != -1);
+        assert(broadcast_dim != -1);
 
         if (diff == 0)
           return failure();
@@ -6061,7 +6070,6 @@ struct BroadcastIotaSimplify
           ++curr;
           ++next;
         }
-
 
         // build the replacement operations
         auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
