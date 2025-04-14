@@ -5974,8 +5974,8 @@ struct BroadcastIotaSimplify
         if (next == end)
           return failure();
 
-        const auto start = (*curr).getInt();
-        const auto diff = (*next).getInt() - (*curr).getInt();
+        const auto start = (*curr).getValue().getSExtValue();
+        const auto diff = (*next).getValue().getSExtValue() - (*curr).getValue().getSExtValue();
 
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
@@ -5988,10 +5988,10 @@ struct BroadcastIotaSimplify
 
         if (broadcast.getType().getElementType().isInteger(1)) {
           // true, false, .... false.  -> iota == 0
-          if (start != 0 && (*next).getInt() == 0) {
+          if (start != 0 && (*next).getValue().isZero()) {
             bool legal = true;
             for (auto idx = next; idx != end; idx++) {
-              if ((*idx).getInt() != 0) {
+              if (!(*idx).getValue().isZero()) {
                 legal = false;
                 break;
               }
@@ -6016,7 +6016,7 @@ struct BroadcastIotaSimplify
           if (lastVal != 0) {
             bool legal = true;
             for (auto idx = int_attr_arr->begin();;) {
-              if ((*idx).getInt() != 0) {
+              if (!(*idx).getValue().isZero()) {
                 legal = false;
                 break;
               }
@@ -6063,7 +6063,7 @@ struct BroadcastIotaSimplify
           return failure();
 
         while (next != end) {
-          auto curr_diff = (*next).getInt() - (*curr).getInt();
+          auto curr_diff = (*next).getValue().getSExtValue() - (*curr).getValue().getSExtValue();
           if (curr_diff != diff)
             return failure();
           ++curr;
@@ -9479,10 +9479,8 @@ struct SelectCompIotaConstSimplify final
     if (!inp.isSplat())
       return failure();
 
-    auto constValue = inp.getSplatValue<IntegerAttr>().getInt();
+    auto constValue = inp.getSplatValue<IntegerAttr>().getValue().getSExtValue();
     auto endValue = shapeLimit[iotaDim];
-
-    rewriter.setInsertionPointAfterValue(compare);
 
     SmallVector<slice_data, 3> slices;
 
