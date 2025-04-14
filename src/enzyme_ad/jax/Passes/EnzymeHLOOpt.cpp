@@ -15800,8 +15800,12 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
   auto newOp = rewriter.create(
       elem->getLoc(), elem->getName().getIdentifier(),
       ValueRange(op.getOperand()),
-      TypeRange(elem->getResult(0).getType().template cast<RankedTensorType>().clone(
-          op.getOperand().getType().template cast<RankedTensorType>().getShape())),
+      TypeRange(
+          elem->getResult(0).getType().template cast<RankedTensorType>().clone(
+              op.getOperand()
+                  .getType()
+                  .template cast<RankedTensorType>()
+                  .getShape())),
       elem->getAttrs(), {}, {});
   rewriter.replaceOpWithNewOp<EnzymeOp>(elem, newOp->getResult(0), op.getLhs(),
                                         op.getRhs(), op.getDimension());

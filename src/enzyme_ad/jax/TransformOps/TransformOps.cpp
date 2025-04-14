@@ -116,7 +116,7 @@ void ExtendUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
 }
 void WrapUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
   addWrapUnaryElementwise(patterns, getParameter(), *getContext(),
-                            PatternBenefit(getBenefit().value_or(0)));
+                          PatternBenefit(getBenefit().value_or(0)));
 }
 
 } // namespace transform
