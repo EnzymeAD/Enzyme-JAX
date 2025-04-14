@@ -5979,7 +5979,6 @@ struct BroadcastIotaSimplify
 
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
-        rewriter.setInsertionPointAfter(operand.getDefiningOp());
 
         // find the dimension to broadcast in
         int broadcast_dim = -1;
