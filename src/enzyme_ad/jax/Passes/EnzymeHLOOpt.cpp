@@ -3960,6 +3960,22 @@ struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
+struct BroadcastIota final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(
+        op, op.getType(), op.getBroadcastDimensions()[iota.getIotaDimension()]);
+    return success();
+  }
+};
+
 LogicalResult reshapePadHelper(stablehlo::ReshapeOp op,
                                PatternRewriter &rewriter) {
   auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
@@ -17442,6 +17458,7 @@ struct EnzymeHLOOptPass
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
         BroadcastIotaSimplify,
+        BroadcastIota,
         BroadcastCompare,
         NotCompare
       >(context);

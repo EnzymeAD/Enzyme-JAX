@@ -1120,6 +1120,12 @@ def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["BroadcastIotaSimplify"];
 }
 
+def BroadcastIotaPatterns : EnzymeHLOPatternOp<
+  "broadcast_iota"
+> {
+  let patterns = ["BroadcastIota"];
+}
+
 def DUSDUSPatterns : EnzymeHLOPatternOp<
   "dus_dus"
 > {
