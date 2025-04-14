@@ -5959,7 +5959,9 @@ struct BroadcastIotaSimplify
     DenseIntElementsAttr input;
     matchPattern(operand, m_Constant(&input));
 
-    if (input) {
+    auto RTO = cast<RankedTensorType>(operand.getType());
+    if (input && !input.isSplat() && RTO.getShape().size() == 1 &&
+        RTO.getShape()[0] >= 2) {
       auto elemType = input.getElementType();
 
       if (auto int_attr_arr = input.tryGetValues<::mlir::IntegerAttr>();
@@ -5975,27 +5977,77 @@ struct BroadcastIotaSimplify
         const auto start = (*curr).getInt();
         const auto diff = (*next).getInt() - (*curr).getInt();
 
-        if (diff == 0)
-          return failure();
-
-        while (next != end) {
-          auto curr_diff = (*next).getInt() - (*curr).getInt();
-          if (curr_diff != diff)
-            return failure();
-          ++curr;
-          ++next;
-        }
         auto result_type = broadcast->getResultTypes();
         auto loc = broadcast.getLoc();
         rewriter.setInsertionPointAfter(operand.getDefiningOp());
 
         // find the dimension to broadcast in
-        auto broadcast_dim = 0Z;
+        int broadcast_dim = -1;
         auto result_shape =
             result_type.front().template cast<mlir::ShapedType>().getShape();
         auto max_dims = result_shape.size();
 
-        for (broadcast_dim = 0Z; broadcast_dim < max_dims; ++broadcast_dim) {
+        if (broadcast.getType().getElementType().isInteger(1)) {
+          // true, false, .... false.  -> iota == 0
+          if (start != 0 && (*next).getInt() == 0) {
+            bool legal = true;
+            for (auto idx = next; idx != end; idx++) {
+              if ((*idx).getInt() != 0) {
+                legal = false;
+                break;
+              }
+            }
+            // only 1 at the start
+            if (legal) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy, makeAttr(ITy, 0).cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::EQ);
+              rewriter.replaceOp(broadcast, cmp);
+              return success();
+            }
+          }
+          // true, false, .... false.  -> iota == 0
+          auto lastVal = (*(--int_attr_arr->end())).getInt();
+          if (lastVal != 0) {
+            bool legal = true;
+            for (auto idx = int_attr_arr->begin();;) {
+              if ((*idx).getInt() != 0) {
+                legal = false;
+                break;
+              }
+              idx++;
+              auto nextv = idx;
+              nextv++;
+              if (nextv == end) {
+                break;
+              }
+            }
+            // only 1 at the end
+            if (legal) {
+              auto ITy = RankedTensorType::get(
+                  result_shape, rewriter.getIntegerType(32, false));
+              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+                  loc, ITy, broadcast.getBroadcastDimensions()[0]);
+              auto cmp = rewriter.create<stablehlo::CompareOp>(
+                  loc, iota,
+                  rewriter.create<stablehlo::ConstantOp>(
+                      loc, ITy,
+                      makeAttr(ITy, RTO.getShape()[0] - 1)
+                          .cast<ElementsAttr>()),
+                  stablehlo::ComparisonDirection::EQ);
+              rewriter.replaceOp(broadcast, cmp);
+              return success();
+            }
+          }
+        }
+
+        for (broadcast_dim = 0; broadcast_dim < max_dims; ++broadcast_dim) {
           bool found = false;
           for (auto &elem : broadcast.getBroadcastDimensions()) {
             if (elem == broadcast_dim) {
@@ -6005,6 +6057,18 @@ struct BroadcastIotaSimplify
           }
           if (!found)
             break;
+        }
+        assert(broadcast_dim != -1);
+
+        if (diff == 0)
+          return failure();
+
+        while (next != end) {
+          auto curr_diff = (*next).getInt() - (*curr).getInt();
+          if (curr_diff != diff)
+            return failure();
+          ++curr;
+          ++next;
         }
 
         // build the replacement operations
