@@ -9700,9 +9700,23 @@ struct SelectCompIotaConstToDUS final
     if (compares[0].getLhs() != compares[1].getLhs())
       return failure();
 
-    stablehlo::IotaOp iota =
-        compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>();
-    if (!iota)
+    int dimension = -1;
+    int start = 0;
+
+    if (stablehlo::IotaOp iota =
+            compares[0].getLhs().getDefiningOp<stablehlo::IotaOp>()) {
+      dimension = iota.getIotaDimension();
+      start = 0;
+    } else if (auto sl =
+                   compares[0].getLhs().getDefiningOp<stablehlo::SliceOp>()) {
+      if (stablehlo::IotaOp iota =
+              sl.getOperand().getDefiningOp<stablehlo::IotaOp>()) {
+        dimension = iota.getIotaDimension();
+        start = sl.getStartIndices()[dimension];
+      }
+    }
+
+    if (dimension == -1)
       return failure();
 
     int64_t constants[2];
@@ -9726,10 +9740,14 @@ struct SelectCompIotaConstToDUS final
       if (ub_pred != stablehlo::ComparisonDirection::LT)
         continue;
 
-      auto lb = constants[i];
-      auto ub = constants[1 - i];
+      auto lb = constants[i] - start;
+      auto ub = constants[1 - i] - start;
       if (lb >= ub)
         continue;
+      if (lb < 0)
+        lb = 0;
+      if (ub < 0)
+        ub = 0;
 
       auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
 
@@ -9737,8 +9755,8 @@ struct SelectCompIotaConstToDUS final
       SmallVector<int64_t> limits =
           llvm::to_vector(selectOp.getType().getShape());
       SmallVector<int64_t> step(selectOp.getType().getShape().size(), 1);
-      startSlices[iota.getIotaDimension()] = lb;
-      startSlices[iota.getIotaDimension()] = ub;
+      startSlices[dimension] = lb;
+      limits[dimension] = ub;
 
       auto slicedTrueTensor = rewriter.create<stablehlo::SliceOp>(
           selectOp.getLoc(), trueTensor, startSlices, limits, step);
@@ -9748,7 +9766,7 @@ struct SelectCompIotaConstToDUS final
           rewriter.create<stablehlo::ConstantOp>(
               selectOp.getLoc(), ITy, makeAttr(ITy, 0).cast<ElementsAttr>()));
 
-      starts[iota.getIotaDimension()] = rewriter.create<stablehlo::ConstantOp>(
+      starts[dimension] = rewriter.create<stablehlo::ConstantOp>(
           selectOp.getLoc(), ITy, makeAttr(ITy, lb).cast<ElementsAttr>());
 
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
