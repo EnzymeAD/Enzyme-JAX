@@ -10,15 +10,13 @@ module {
   }
 }
 // CHECK:  func.func private @main_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>) {
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %4 = stablehlo.concatenate %3, %2, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
-// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg1, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %7, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 1 : tensor<3x3x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3x3x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %0, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %4 = "stablehlo.gather"(%arg1, %3) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<9xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    return %5, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
 // CHECK-NEXT:  }
 
 module {
@@ -69,15 +67,14 @@ module {
   }
 }
 // CHECK:  func.func private @load_indirect_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>, %arg2: tensor<3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>) {
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.concatenate %2, %1, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
-// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
-// CHECK-NEXT:    %5 = "stablehlo.gather"(%arg1, %4) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<9xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    return %7, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
+// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3x3x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %1, %0, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
+// CHECK-NEXT:    %4 = "stablehlo.gather"(%arg1, %3) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<9xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %6 = stablehlo.transpose %5, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    return %6, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }
 
 module {
