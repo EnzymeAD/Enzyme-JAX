@@ -174,6 +174,7 @@ reduce_to_reshape<16>;
 broadcast_to_reshape<16>;
 gather_simplify<16>;
 iota_simplify<16>(1024);
+compare_iota_const_simplify;
 broadcast_in_dim_simplify<16>(1024);
 convert_concat<1>;
 dynamic_update_to_concat<1>;
