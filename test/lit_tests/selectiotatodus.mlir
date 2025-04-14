@@ -114,7 +114,7 @@
   }
 
 // CHECK:  func.func @midNE0(%arg0: tensor<31x800xf64>, %arg1: tensor<31x800xf64>) -> tensor<31x800xf64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<2> : tensor<i32>
+// CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<i32>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [1:29, 0:800] : (tensor<31x800xf64>) -> tensor<28x800xf64>
 // CHECK-NEXT:    %1 = stablehlo.dynamic_update_slice %arg1, %0, %c, %c_0 : (tensor<31x800xf64>, tensor<28x800xf64>, tensor<i32>, tensor<i32>) -> tensor<31x800xf64>
