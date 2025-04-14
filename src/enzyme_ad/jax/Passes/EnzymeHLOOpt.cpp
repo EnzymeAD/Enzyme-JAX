@@ -9733,11 +9733,13 @@ struct SelectCompIotaConstToDUS final
 
     for (int i = 0; i < 2; i++) {
       auto lb_pred = compares[i].getComparisonDirection();
-      if (lb_pred != stablehlo::ComparisonDirection::GE && lb_pred != stablehlo::ComparisonDirection::GT)
+      if (lb_pred != stablehlo::ComparisonDirection::GE &&
+          lb_pred != stablehlo::ComparisonDirection::GT)
         continue;
 
       auto ub_pred = compares[1 - i].getComparisonDirection();
-      if (ub_pred != stablehlo::ComparisonDirection::LT && ub_pred != stablehlo::ComparisonDirection::LE)
+      if (ub_pred != stablehlo::ComparisonDirection::LT &&
+          ub_pred != stablehlo::ComparisonDirection::LE)
         continue;
 
       auto lb = constants[i] - start;
@@ -9746,7 +9748,7 @@ struct SelectCompIotaConstToDUS final
       if (ub_pred == stablehlo::ComparisonDirection::LE) {
         ub++;
       }
-      
+
       if (lb_pred == stablehlo::ComparisonDirection::GT) {
         lb++;
       }
@@ -13783,8 +13785,6 @@ struct CommonCompareExpressionRewrite
   }
 };
 
-
-
 stablehlo::ComparisonDirection
 reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
   switch (direction) {
@@ -13803,15 +13803,16 @@ reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
   }
 }
 
-struct CompareCleanup
-    : public OpRewritePattern<stablehlo::CompareOp> {
+struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
   using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::CompareOp op,
                                 PatternRewriter &rewriter) const final {
     auto lhs = op.getLhs();
 
-    if (!cast<RankedTensorType>(lhs.getType()).getElementType().isSignlessInteger(64)) {
+    if (!cast<RankedTensorType>(lhs.getType())
+             .getElementType()
+             .isSignlessInteger(64)) {
       return failure();
     }
 
@@ -13820,7 +13821,8 @@ struct CompareCleanup
       return failure();
     }
 
-    if (!rhs.isSplat()) return failure();
+    if (!rhs.isSplat())
+      return failure();
 
     auto rhsv = rhs.getSplatValue<IntegerAttr>().getValue().getSExtValue();
 
@@ -13829,7 +13831,9 @@ struct CompareCleanup
       if (matchPattern(add.getRhs(), m_Constant(&c)) && c.isSplat()) {
         auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
 
-        auto off = rewriter.create<stablehlo::ConstantOp>(add.getLoc(), add.getType(), makeAttr(add.getType(), rhsv - cv).cast<ElementsAttr>());
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            add.getLoc(), add.getType(),
+            makeAttr(add.getType(), rhsv - cv).cast<ElementsAttr>());
 
         // x + cv ?= rhsv -> x ?= rhs - cv
         rewriter.modifyOpInPlace(op, [&]() {
@@ -13841,19 +13845,21 @@ struct CompareCleanup
       }
     }
 
-
     if (auto mul = lhs.getDefiningOp<stablehlo::MulOp>()) {
       DenseIntElementsAttr c;
       if (matchPattern(mul.getRhs(), m_Constant(&c)) && c.isSplat()) {
         auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
 
-        auto off = rewriter.create<stablehlo::ConstantOp>(mul.getLoc(), mul.getType(), makeAttr(mul.getType(), -rhsv).cast<ElementsAttr>());
+        auto off = rewriter.create<stablehlo::ConstantOp>(
+            mul.getLoc(), mul.getType(),
+            makeAttr(mul.getType(), -rhsv).cast<ElementsAttr>());
 
-        // x * -1 ?= rhsv -> x =? -rhs 
+        // x * -1 ?= rhsv -> x =? -rhs
         rewriter.modifyOpInPlace(op, [&]() {
           op.getLhsMutable().assign(mul.getLhs());
           op.getRhsMutable().assign(off);
-          op.setComparisonDirection(reorderComparisionDirection(op.getComparisonDirection()));
+          op.setComparisonDirection(
+              reorderComparisionDirection(op.getComparisonDirection()));
         });
 
         return success();
