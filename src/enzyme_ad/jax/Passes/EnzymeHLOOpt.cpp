@@ -3960,8 +3960,8 @@ struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
-
-struct BroadcastIota final : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
+struct BroadcastIota final
+    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
@@ -3970,7 +3970,8 @@ struct BroadcastIota final : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>
     if (!iota)
       return failure();
 
-    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), op.getBroadcastDimensions()[iota.getIotaDimension()]);
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(
+        op, op.getType(), op.getBroadcastDimensions()[iota.getIotaDimension()]);
     return success();
   }
 };
