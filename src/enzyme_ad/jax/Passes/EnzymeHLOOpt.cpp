@@ -6052,7 +6052,7 @@ struct BroadcastIotaSimplify
             int firstTrue = -1;
             int firstFalseAgain = -1;
             int i = 0;
-            for (auto idx = int_attr_arr->begin(); idx != end;i++, idx++) {
+            for (auto idx = int_attr_arr->begin(); idx != end; i++, idx++) {
               bool isTrue = !(*idx).getValue().isZero();
               // Before the transition.
               if (firstTrue == -1) {
@@ -6088,18 +6088,16 @@ struct BroadcastIotaSimplify
               auto cmp1 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
                   rewriter.create<stablehlo::ConstantOp>(
-                      loc, ITy,
-                      makeAttr(ITy, firstTrue)
-                          .cast<ElementsAttr>()),
+                      loc, ITy, makeAttr(ITy, firstTrue).cast<ElementsAttr>()),
                   stablehlo::ComparisonDirection::GE);
               auto cmp2 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
                   rewriter.create<stablehlo::ConstantOp>(
                       loc, ITy,
-                      makeAttr(ITy, firstFalseAgain)
-                          .cast<ElementsAttr>()),
+                      makeAttr(ITy, firstFalseAgain).cast<ElementsAttr>()),
                   stablehlo::ComparisonDirection::LT);
-              rewriter.replaceOpWithNewOp<stablehlo::AndOp>(broadcast, cmp1, cmp2);
+              rewriter.replaceOpWithNewOp<stablehlo::AndOp>(broadcast, cmp1,
+                                                            cmp2);
               return success();
             }
           }
