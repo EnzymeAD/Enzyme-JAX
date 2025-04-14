@@ -6050,6 +6050,11 @@ struct CompareIotaConstSimplify
     if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
       return failure();
 
+    // TODO: remove post GB
+    if (!llvm::hasSingleElement(cmpOp.getResult().getUsers()) ||
+        !isa<stablehlo::ConvertOp>(*cmpOp.getResult().getUsers().begin()))
+      return failure();
+
     auto iota = lhsIota ? lhsIota : rhsIota;
     Value cst = lhsIota ? rhs : lhs;
 
@@ -9290,8 +9295,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
