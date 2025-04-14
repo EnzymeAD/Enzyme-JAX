@@ -14774,12 +14774,12 @@ struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (inShape.size() + 1 != outShape.size())
       return failure();
 
-    if (outShape[0] == 1) {
-      bool legal = true;
-      for (auto &&[lhs, rhs] : llvm::zip_equal(outShape.slice(1), inShape)) {
-        if (lhs != rhs) {
-          return failure();
-        }
+    if (outShape[0] != 1) {
+      return failure();
+    }
+    for (auto &&[lhs, rhs] : llvm::zip_equal(outShape.slice(1), inShape)) {
+      if (lhs != rhs) {
+        return failure();
       }
     }
     SmallVector<int64_t> vals(inShape.size(), 0);
