@@ -1166,7 +1166,7 @@ struct DUSConcat final
     }
     if (auto rotate =
                    dus.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
-      concatDim = extend.getDimension();
+      concatDim = rotate.getDimension();
       inputSizes.push_back(cast<RankedTensorType>(rotate.getOperand().getType())
                                .getShape()[concatDim] -
                            rotate.getAmount());
