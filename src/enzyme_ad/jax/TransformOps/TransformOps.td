@@ -1276,6 +1276,16 @@ def WhileConcat : EnzymeHLOPatternOp<
   let patterns = ["WhileConcat"];
 }
 
+def WhileWrap : EnzymeHLOPatternOp<
+    "while_wrap"> {
+  let patterns = ["WhileWrap<enzymexla::WrapOp>"];
+}
+
+def WhileExtend : EnzymeHLOPatternOp<
+    "while_extend"> {
+  let patterns = ["WhileWrap<enzymexla::ExtendOp>"];
+}
+
 def DUSToI32 : EnzymeHLOPatternOp<
     "dus_to_i32"> {
   let patterns = ["DUSToI32"];
