@@ -2257,6 +2257,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       auto updatePadOp = rewriter.create<stablehlo::PadOp>(
           dus.getLoc(), update, zero, updatePadLow, updatePadHigh, padInner);
       sdy::setSharding(updatePadOp, sharding);
+      updatePad = updatePadOp;
     }
 
     Value maskedOperand = nullptr;
