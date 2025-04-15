@@ -1145,7 +1145,8 @@ struct DUSConcat final
             cast<RankedTensorType>(input.getType()).getShape()[concatDim]);
       }
       legal = true;
-    } else if (auto wrap =
+    }
+    if (auto wrap =
                    dus.getOperand().getDefiningOp<enzymexla::WrapOp>()) {
       concatDim = wrap.getDimension();
       inputSizes.push_back(wrap.getLhs());
@@ -1153,7 +1154,8 @@ struct DUSConcat final
                                .getShape()[concatDim]);
       inputSizes.push_back(wrap.getRhs());
       legal = true;
-    } else if (auto extend =
+    }
+    if (auto extend =
                    dus.getOperand().getDefiningOp<enzymexla::ExtendOp>()) {
       concatDim = extend.getDimension();
       inputSizes.push_back(extend.getLhs());
@@ -1161,10 +1163,11 @@ struct DUSConcat final
                                .getShape()[concatDim]);
       inputSizes.push_back(extend.getRhs());
       legal = true;
-    } else if (auto rotate =
+    }
+    if (auto rotate =
                    dus.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
       concatDim = extend.getDimension();
-      inputSizes.push_back(cast<RankedTensorType>(extend.getOperand().getType())
+      inputSizes.push_back(cast<RankedTensorType>(rotate.getOperand().getType())
                                .getShape()[concatDim] -
                            rotate.getAmount());
       inputSizes.push_back(rotate.getAmount());
@@ -1310,7 +1313,8 @@ struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       actualStartSizes.push_back(0);
       legal = true;
       operand = wrap.getOperand();
-    } else if (auto extend =
+    }
+    if (auto extend =
                    slice.getOperand().getDefiningOp<enzymexla::ExtendOp>()) {
       concatDim = extend.getDimension();
       inputSizes.push_back(extend.getLhs());
@@ -1324,7 +1328,8 @@ struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
               .getShape()[concatDim]);
       legal = true;
       operand = extend.getOperand();
-    } else if (auto rotate =
+    }
+    if (auto rotate =
                    slice.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
       concatDim = rotate.getDimension();
       inputSizes.push_back(cast<RankedTensorType>(rotate.getOperand().getType())
