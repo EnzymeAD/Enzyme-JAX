@@ -1265,6 +1265,22 @@ struct DUSConcat final
   }
 };
 
+template<typename T>
+struct SimplifyBoundary final : OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+
+    SplatElementsAttr elems;
+    if (!matchPattern(op.getOperand(), m_Constant(&elems))) {
+      return failure();
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), elems.resizeSplat(op.getType()));
+    return success();
+  }
+};
+
 struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -17941,6 +17957,9 @@ struct EnzymeHLOOptPass
              ReduceToReshape, BroadcastToReshape, GatherSimplify,
              ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
+              SimplifyBoundary<enzymexla::ExtendOp>,
+              SimplifyBoundary<enzymexla::WrapOp>,
+              SimplifyBoundary<enzymexla::RotateOp>,
              TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));

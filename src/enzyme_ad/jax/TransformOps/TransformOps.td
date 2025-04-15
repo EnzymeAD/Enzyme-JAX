@@ -1585,6 +1585,21 @@ def SliceInternal : EnzymeHLOPatternOp<
   let patterns = ["SliceInternal"];
 }
 
+def SimplifyExtend : EnzymeHLOPatternOp<
+  "simplify_extend"> {
+  let patterns = ["SimplifyBoundary<enzymexla::ExtendOp>"];
+}
+
+def SimplifyWrap : EnzymeHLOPatternOp<
+  "simplify_wrap"> {
+  let patterns = ["SimplifyBoundary<enzymexla::WrapOp>"];
+}
+
+def SimplifyRotate : EnzymeHLOPatternOp<
+  "simplify_rotate"> {
+  let patterns = ["SimplifyBoundary<enzymexla::RotateOp>"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
