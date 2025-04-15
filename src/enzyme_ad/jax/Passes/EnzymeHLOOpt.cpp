@@ -999,7 +999,10 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
 
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
                                 PatternRewriter &rewriter) const override {
-    lowerWrap(wrap, rewriter);
+    auto concat = lowerWrap(wrap, rewriter);
+    if (concat.getInputs().size() == 1) {
+      rewriter.replaceOp(concat, concat.getInputs()[0]);
+    }
     return success();
   }
 };
@@ -1053,7 +1056,10 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
 
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
-    lowerExtend(extend, rewriter);
+    auto concat = lowerExtend(extend, rewriter);
+    if (concat.getInputs().size() == 1) {
+      rewriter.replaceOp(concat, concat.getInputs()[0]);
+    }
     return success();
   }
 };
