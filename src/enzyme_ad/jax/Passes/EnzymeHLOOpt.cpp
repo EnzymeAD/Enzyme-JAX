@@ -13632,7 +13632,7 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 
 // TODO: this is not valid in general but presumes the inner structure is valid
 // from the input
-template<typename T>
+template <typename T>
 struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -13659,8 +13659,7 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
       if (!concat)
         continue;
 
-      candidates.emplace_back(
-          Candidate{idx, concat});
+      candidates.emplace_back(Candidate{idx, concat});
     }
 
     // If no candidates found, no rewrite needed
@@ -13678,14 +13677,19 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
     // Create input transposes for each candidate
     for (auto &candidate : candidates) {
       // Create a new transpose before the while loop
-      SmallVector<int64_t> starts(candidate.concat.getType().getShape().size(), 0);
-      SmallVector<int64_t> steps(candidate.concat.getType().getShape().size(), 1);
-      SmallVector<int64_t> limits = llvm::to_vector(cast<RankedTensorType>(whileOp.getOperands()[candidate.idx].getType()).getShape());
+      SmallVector<int64_t> starts(candidate.concat.getType().getShape().size(),
+                                  0);
+      SmallVector<int64_t> steps(candidate.concat.getType().getShape().size(),
+                                 1);
+      SmallVector<int64_t> limits = llvm::to_vector(
+          cast<RankedTensorType>(whileOp.getOperands()[candidate.idx].getType())
+              .getShape());
       starts[candidate.concat.getDimension()] += candidate.concat.getLhs();
       limits[candidate.concat.getDimension()] -= candidate.concat.getRhs();
 
       newOperands[candidate.idx] = rewriter.create<stablehlo::SliceOp>(
-          candidate.concat[1].getLoc(), whileOp.getOperands()[candidate.idx], starts, limits, steps);
+          candidate.concat[1].getLoc(), whileOp.getOperands()[candidate.idx],
+          starts, limits, steps);
     }
 
     // Update yield op to use the input of the inner transpose
@@ -13725,7 +13729,9 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
     {
       for (auto &candidate : candidates) {
         results[candidate.idx] = rewriter.create<T>(
-            candidate.concat.getLoc(), results[candidate.idx], candidate.concat.getLhs(), candidate.concat.getRhs(),candidate.concat.getDimension());
+            candidate.concat.getLoc(), results[candidate.idx],
+            candidate.concat.getLhs(), candidate.concat.getRhs(),
+            candidate.concat.getDimension());
       }
     }
 
@@ -13769,7 +13775,8 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
         for (auto &candidate : candidates) {
           if (candidate.idx == i) {
             newArg = rewriter.create<T>(
-            candidate.concat.getLoc(), newArg, candidate.concat.getLhs(), candidate.concat.getRhs(),candidate.concat.getDimension());
+                candidate.concat.getLoc(), newArg, candidate.concat.getLhs(),
+                candidate.concat.getRhs(), candidate.concat.getDimension());
             break;
           }
         }
@@ -13824,7 +13831,8 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
         for (auto &candidate : candidates) {
           if (candidate.idx == i) {
             newArg = rewriter.create<T>(
-            candidate.concat.getLoc(), newArg, candidate.concat.getLhs(), candidate.concat.getRhs(),candidate.concat.getDimension());
+                candidate.concat.getLoc(), newArg, candidate.concat.getLhs(),
+                candidate.concat.getRhs(), candidate.concat.getDimension());
             break;
           }
         }
