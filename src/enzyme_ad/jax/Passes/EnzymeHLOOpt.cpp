@@ -1267,16 +1267,16 @@ struct DUSConcat final
 
 template<typename T>
 struct SimplifyBoundary final : OpRewritePattern<T> {
-  using OpRewritePattern::OpRewritePattern;
+  using OpRewritePattern<T>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
 
     SplatElementsAttr elems;
-    if (!matchPattern(op.getOperand(), &elems)) {
+    if (!matchPattern(op.getOperand(), m_Constant(&elems))) {
       return failure();
     }
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op.getLoc(), op.getType(), elems.resizeSplat(op.getType()));
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), elems.resizeSplat(op.getType()));
     return success();
   }
 };
@@ -18185,7 +18185,7 @@ struct EnzymeHLOOptPass
         BroadcastIota,
         BroadcastCompare,
         NotCompare,
-        SliceInternal,
+        SliceInternal
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
