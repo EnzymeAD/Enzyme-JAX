@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_repeated_induction_reduction;slice_concat;slice_if;concat_const_prop;noop_slice;slice_licm(1);cse_slice;if_to_select" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_repeated_induction_reduction;slice_concat;slice_if;concat_const_prop(1024);noop_slice;slice_licm(1);cse_slice;if_to_select" --transform-interpreter --enzyme-hlo-remove-transform -allow-unregistered-dialect | FileCheck %s
 
 func.func @while_loop_example(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32>, %lim : tensor<i32>) -> tensor<1x2034x2032xf64> {
   %cst_0 = stablehlo.constant dense<0> : tensor<i32>

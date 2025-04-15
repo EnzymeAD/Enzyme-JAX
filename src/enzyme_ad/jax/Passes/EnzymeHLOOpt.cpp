@@ -1265,8 +1265,7 @@ struct DUSConcat final
   }
 };
 
-template<typename T>
-struct SimplifyBoundary final : OpRewritePattern<T> {
+template <typename T> struct SimplifyBoundary final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(T op,
@@ -1276,7 +1275,8 @@ struct SimplifyBoundary final : OpRewritePattern<T> {
     if (!matchPattern(op.getOperand(), m_Constant(&elems))) {
       return failure();
     }
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), elems.resizeSplat(op.getType()));
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op.getType(), elems.resizeSplat(op.getType()));
     return success();
   }
 };
@@ -4802,6 +4802,12 @@ struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
 struct ConcatConstProp final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
+  size_t max_constant_expansion;
+  ConcatConstProp(size_t max_constant_expansion, MLIRContext *context,
+                  PatternBenefit benefit = 1,
+                  ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
@@ -4844,6 +4850,31 @@ struct ConcatConstProp final
     }
 
     if (legal) {
+
+      if (constants[0].isSplat()) {
+        bool allSplat = true;
+        for (int i = 1; i < op->getNumOperands(); i++) {
+          if (!constants[i].isSplat()) {
+            allSplat = false;
+            break;
+          }
+          if (constants[0].getSplatValue<Attribute>() !=
+              constants[i].getSplatValue<Attribute>()) {
+            allSplat = false;
+            break;
+          }
+        }
+        if (allSplat) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), constants[0].resizeSplat(op.getType()));
+          return success();
+        }
+      }
+      size_t size = 1;
+      for (auto sz : op.getType().getShape())
+        size *= sz;
+      if (size >= max_constant_expansion)
+        return failure();
 
       SmallVector<stablehlo::Tensor> inps;
       for (auto &c : constants)
@@ -17790,6 +17821,13 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
   patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
+                                         int64_t maxConstantExpansion,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<ConcatConstProp>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
                                        bool hoistAll, MLIRContext &context,
                                        PatternBenefit benefit) {
@@ -17957,20 +17995,20 @@ struct EnzymeHLOOptPass
              ReduceToReshape, BroadcastToReshape, GatherSimplify,
              ReshapeEmptyBroadcast, BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-              SimplifyBoundary<enzymexla::ExtendOp>,
-              SimplifyBoundary<enzymexla::WrapOp>,
-              SimplifyBoundary<enzymexla::RotateOp>,
+             SimplifyBoundary<enzymexla::ExtendOp>,
+             SimplifyBoundary<enzymexla::WrapOp>,
+             SimplifyBoundary<enzymexla::RotateOp>,
              TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
-    patterns.add<IotaSimplify, BroadcastInDimSimplify>(
+    patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp>(
         max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 SliceReshapePad, DotReshapeDot, DynamicUpdateSliceConstProp,
+                 NotConstProp, IsFiniteConstProp, LogConstProp,
+                 LogPlusConstProp, ChloInfConstProp, GammaConstProp,
+                 AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
                  ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
