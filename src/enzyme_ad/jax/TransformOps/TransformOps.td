@@ -1582,7 +1582,7 @@ def WrapElementwise : EnzymeHLOPatternOp<
 
 def SliceInternal : EnzymeHLOPatternOp<
   "slice_internal"> {
-  let patterns = ["SliceInternal<"];
+  let patterns = ["SliceInternal"];
 }
 
 def SliceExtend : EnzymeHLOPatternOp<
