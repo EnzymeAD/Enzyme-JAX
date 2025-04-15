@@ -654,15 +654,17 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   return ifCondInner->getResults();
 }
 
-
 bool isZero(DenseElementsAttr v) {
-  if (!v.isSplat()) return failure();
+  if (!v.isSplat())
+    return failure();
 
   if (auto fp = v.getSplatValue<APFloat>()) {
-    if (fp.isZero()) return true;
+    if (fp.isZero())
+      return true;
   }
   if (auto fp = v.getSplatValue<APInt>()) {
-    if (fp.isZero()) return true;
+    if (fp.isZero())
+      return true;
   }
   return false;
 }
@@ -2266,7 +2268,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       sdy::setSharding(zeroUpdateOp, sharding);
 
       auto maskOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh, padInner);
+          dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh,
+          padInner);
       sdy::setSharding(maskOp, sharding);
 
       auto maskedOperand =
@@ -2277,8 +2280,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
     Value resultV = nullptr;
     if (maskedOperand && updatePadOp) {
-      auto result = rewriter.create<stablehlo::AddOp>(dus.getLoc(), maskedOperand,
-                                                      updatePadOp);
+      auto result = rewriter.create<stablehlo::AddOp>(
+          dus.getLoc(), maskedOperand, updatePadOp);
       sdy::setSharding(result, sharding);
       resultV = result;
     } else if (maskedOperand) {
@@ -2286,7 +2289,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     } else if (updatePadOp) {
       resultV = updatePadOp;
     } else {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(dus.getLoc(), dus.getType(), rewriter.getZeroAttr(dus.getType()));
+      auto cst = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), dus.getType(), rewriter.getZeroAttr(dus.getType()));
       sdy::setSharding(cst, sharding);
       resultV = cst;
     }
@@ -3345,9 +3349,10 @@ struct ConcatToPadCommOptimize
       leftPadding += operandConcatDimSize;
     }
 
-
     if (addOperands.size() == 0) {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(concat.getLoc(), concat.getType(), rewriter.getZeroAttr(concat.getType()));
+      auto cst = rewriter.create<stablehlo::ConstantOp>(
+          concat.getLoc(), concat.getType(),
+          rewriter.getZeroAttr(concat.getType()));
       sdy::setSharding(cst, sharding);
       rewriter.replaceOp(concat, cst);
     }
@@ -3355,7 +3360,7 @@ struct ConcatToPadCommOptimize
     Value sum = addOperands[0];
     for (int i = 1; i < addOperands.size(); i++) {
       auto addOp = rewriter.create<stablehlo::AddOp>(concat.getLoc(), sum,
-                                                addOperands[i]);
+                                                     addOperands[i]);
       sdy::setSharding(addOp, concatSharding);
       sum = addOp;
     }
