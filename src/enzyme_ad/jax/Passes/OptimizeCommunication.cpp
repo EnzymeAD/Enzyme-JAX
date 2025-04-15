@@ -2263,19 +2263,20 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     Value maskedOperand = nullptr;
     if (!isZero(operand)) {
       auto updateType = update.getType().cast<RankedTensorType>();
-      auto zeroAttr =
-          DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
-      auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), updateType, zeroAttr);
-      sdy::setSharding(zeroUpdateOp, sharding);
+      SmallVector<int64_t> limit = llvm::to_vector(updateType.getShape());
+      for (int i=0; i<ndims; i++) {
+        limit[i] += constantStartIndices[i];
+      }
+      SmallVector<int64_t> steps(ndims, 1);
+      auto slice = rewriter.create<stablehlo::SliceOp>(dus.getLoc(), operand, constantStartIndices, limit, steps);
+      sdy::setSharding(slice, sharding);
 
-      auto maskOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh,
-          padInner);
-      sdy::setSharding(maskOp, sharding);
+      auto slicePad = rewriter.create<stablehlo::PadOp>(
+          dus.getLoc(), slice, zero, updatePadLow, updatePadHigh, padInner);
+      sdy::setSharding(slicePad, sharding);
 
       auto maskedOperandOp =
-          rewriter.create<stablehlo::MulOp>(dus.getLoc(), operand, maskOp);
+          rewriter.create<stablehlo::SubtractOp>(dus.getLoc(), operand, slicePad);
       sdy::setSharding(maskedOperandOp, sharding);
       maskedOperand = maskedOperandOp;
     }
