@@ -653,6 +653,32 @@ public:
       reducedDims.push_back(en.index());
     }
 
+    SmallVector<int64_t> reshapedShape(outTy.getRank(), -1);
+    for (auto [i, sz] : llvm::enumerate(outTy.getShape())) {
+      if (llvm::is_contained(reducedDims, i)) {
+        reshapedShape[i] = 1;
+      } else {
+        reshapedShape[i] = sz;
+      }
+    }
+
+    SmallVector<int64_t> perm(outTy.getRank(), -1);
+    SmallVector<int64_t> mapping(outTy.getRank(), -1);
+    for (auto [i, dim] : llvm::enumerate(bcastDims)) {
+      mapping[dim] = i;
+    }
+
+    int next = bcastDims.size();
+    for (int i = 0; i < outTy.getRank(); i++) {
+      if (mapping[i] == -1) {
+        mapping[i] = next++;
+      }
+    }
+
+    for (int i = 0; i < outTy.getRank(); i++) {
+      perm[mapping[i]] = i;
+    }
+
     auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
     auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
 
@@ -674,10 +700,18 @@ public:
                                          body.getArgument(1));
     bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
 
-    Value res = red->getResult(0);
-    Type resTy = gutils->getShadowType(op.getOperand().getType());
-    if (res.getType() != resTy)
-      res = builder.create<ReshapeOp>(op.getLoc(), resTy, res);
+    // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
+    // transpose -> reshape
+    // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
+    auto reshapedRed = builder.create<ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(reshapedShape, inTy.getElementType()),
+        red->getResult(0));
+    auto transposedVal =
+        builder.create<TransposeOp>(op.getLoc(), reshapedRed, perm);
+    auto res = builder.create<ReshapeOp>(
+        op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
+        transposedVal);
 
     gutils->addToDiffe(op.getOperand(), res, builder);
     return success();
