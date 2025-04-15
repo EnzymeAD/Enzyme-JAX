@@ -2267,7 +2267,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
           DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
       auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
           dus.getLoc(), updateType, zeroAttr);
-      sdy::setSharding(zeroUpdateOp, sharding);
+      // sdy::setSharding(zeroUpdateOp, sharding);
 
       auto maskOp = rewriter.create<stablehlo::PadOp>(
           dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh,
