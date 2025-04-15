@@ -227,9 +227,19 @@ def ApplyDotReshapeDotPatterns : EnzymeHLOPatternOp<
     "dot_reshape_dot"> {
   let patterns = ["DotReshapeDot"];
 }
-def ApplyConcatConstPropPatterns : EnzymeHLOPatternOp<
+def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "concat_const_prop"> {
-  let patterns = ["ConcatConstProp"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
 }
 def ApplyDynamicUpdateSliceConstProp : EnzymeHLOPatternOp<
     "dynamic_update_slice_const_prop"> {
