@@ -1064,35 +1064,35 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
-
-stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate, PatternRewriter &rewriter) {
-    // sl0[A:end], sl1[0:A]
-    auto shard = sdy::getShardingPerValue(rotate);
-    SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
-    SmallVector<int64_t> sl0_starts(rotate.getType().getShape().size(), 0);
-    SmallVector<int64_t> sl0_ends(rotate.getType().getShape());
-    SmallVector<int64_t> sl1_starts(rotate.getType().getShape().size(), 0);
-    SmallVector<int64_t> sl1_ends(rotate.getType().getShape());
-    sl0_starts[rotate.getDimension()] = rotate.getAmount();
-    sl1_ends[rotate.getDimension()] = rotate.getAmount();
-    auto sl0 = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
-    if (shard) {
-      sdy::setShardings(sl0, shard);
-    }
-    auto sl1 = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
-    if (shard) {
-      sdy::setShardings(sl1, shard);
-    }
-    Value args[] = {sl0, sl1};
-    auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        rotate, args, rotate.getDimension());
-    if (shard) {
-      sdy::setShardings(newConcat, shard);
-    }
-    return newConcat;
+stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
+                                     PatternRewriter &rewriter) {
+  // sl0[A:end], sl1[0:A]
+  auto shard = sdy::getShardingPerValue(rotate);
+  SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
+  SmallVector<int64_t> sl0_starts(rotate.getType().getShape().size(), 0);
+  SmallVector<int64_t> sl0_ends(rotate.getType().getShape());
+  SmallVector<int64_t> sl1_starts(rotate.getType().getShape().size(), 0);
+  SmallVector<int64_t> sl1_ends(rotate.getType().getShape());
+  sl0_starts[rotate.getDimension()] = rotate.getAmount();
+  sl1_ends[rotate.getDimension()] = rotate.getAmount();
+  auto sl0 = rewriter.create<stablehlo::SliceOp>(
+      rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
+  if (shard) {
+    sdy::setShardings(sl0, shard);
   }
+  auto sl1 = rewriter.create<stablehlo::SliceOp>(
+      rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
+  if (shard) {
+    sdy::setShardings(sl1, shard);
+  }
+  Value args[] = {sl0, sl1};
+  auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+      rotate, args, rotate.getDimension());
+  if (shard) {
+    sdy::setShardings(newConcat, shard);
+  }
+  return newConcat;
+}
 
 struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1165,7 +1165,8 @@ struct DUSConcat final
                    dus.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
       concatDim = extend.getDimension();
       inputSizes.push_back(cast<RankedTensorType>(extend.getOperand().getType())
-                               .getShape()[concatDim] - rotate.getAmount());
+                               .getShape()[concatDim] -
+                           rotate.getAmount());
       inputSizes.push_back(rotate.getAmount());
       legal = true;
     }
@@ -1264,8 +1265,7 @@ struct DUSConcat final
   }
 };
 
-struct SliceInternal final
-    : OpRewritePattern<mlir::stablehlo::SliceOp> {
+struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp slice,
@@ -1280,15 +1280,16 @@ struct SliceInternal final
 
     Value operand;
 
-    if (auto wrap =
-                   slice.getOperand().getDefiningOp<enzymexla::WrapOp>()) {
+    if (auto wrap = slice.getOperand().getDefiningOp<enzymexla::WrapOp>()) {
       concatDim = wrap.getDimension();
       inputSizes.push_back(wrap.getLhs());
       inputSizes.push_back(cast<RankedTensorType>(wrap.getOperand().getType())
                                .getShape()[concatDim]);
       inputSizes.push_back(wrap.getRhs());
-      actualStartSizes.push_back(cast<RankedTensorType>(wrap.getOperand().getType())
-                               .getShape()[concatDim] - wrap.getLhs());
+      actualStartSizes.push_back(
+          cast<RankedTensorType>(wrap.getOperand().getType())
+              .getShape()[concatDim] -
+          wrap.getLhs());
       actualStartSizes.push_back(0);
       actualStartSizes.push_back(0);
       legal = true;
@@ -1302,15 +1303,17 @@ struct SliceInternal final
       inputSizes.push_back(extend.getRhs());
       actualStartSizes.push_back(0);
       actualStartSizes.push_back(0);
-      actualStartSizes.push_back(cast<RankedTensorType>(extend.getOperand().getType())
-                               .getShape()[concatDim]);
+      actualStartSizes.push_back(
+          cast<RankedTensorType>(extend.getOperand().getType())
+              .getShape()[concatDim]);
       legal = true;
       operand = wrap.getOperand();
     } else if (auto rotate =
                    slice.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
       concatDim = rotate.getDimension();
       inputSizes.push_back(cast<RankedTensorType>(rotate.getOperand().getType())
-                               .getShape()[concatDim] - rotate.getAmount());
+                               .getShape()[concatDim] -
+                           rotate.getAmount());
       inputSizes.push_back(rotate.getAmount());
       actualStartSizes.push_back(rotate.getAmount());
       actualStartSizes.push_back(0);
@@ -1338,8 +1341,7 @@ struct SliceInternal final
     // If no suitable input was found
     if (targetInputIdx == -1) {
       return rewriter.notifyMatchFailure(
-          slice,
-          "Slice region does not fall entirely within one concat input");
+          slice, "Slice region does not fall entirely within one concat input");
     }
 
     SmallVector<int64_t> newStart = llvm::to_vector(slice.getStartIndices());
