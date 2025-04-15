@@ -3356,7 +3356,7 @@ struct ConcatToPadCommOptimize
       auto cst = rewriter.create<stablehlo::ConstantOp>(
           concat.getLoc(), concat.getType(),
           rewriter.getZeroAttr(concat.getType()).cast<ElementsAttr>());
-      sdy::setSharding(cst, concatSharding);
+      // sdy::setSharding(cst, concatSharding);
       rewriter.replaceOp(concat, cst);
     }
 
