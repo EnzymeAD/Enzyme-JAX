@@ -1580,6 +1580,11 @@ def WrapElementwise : EnzymeHLOPatternOp<
                   "WrapElementwise<stablehlo::DivOp>"];
 }
 
+def SliceInternal : EnzymeHLOPatternOp<
+  "slice_internal"> {
+  let patterns = ["SliceInternal"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
