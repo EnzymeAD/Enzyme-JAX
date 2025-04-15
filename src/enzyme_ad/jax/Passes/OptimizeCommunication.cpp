@@ -2281,8 +2281,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
     Value resultV = nullptr;
     if (maskedOperand && updatePad) {
-      auto result = rewriter.create<stablehlo::AddOp>(
-          dus.getLoc(), maskedOperand, updatePad);
+      auto result = rewriter.create<stablehlo::AddOp>(dus.getLoc(),
+                                                      maskedOperand, updatePad);
       sdy::setSharding(result, sharding);
       resultV = result;
     } else if (maskedOperand) {
@@ -2291,7 +2291,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       resultV = updatePad;
     } else {
       auto cst = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), dus.getType(), rewriter.getZeroAttr(dus.getType()).cast<ElementsAttr>());
+          dus.getLoc(), dus.getType(),
+          rewriter.getZeroAttr(dus.getType()).cast<ElementsAttr>());
       sdy::setSharding(cst, sharding);
       resultV = cst;
     }
