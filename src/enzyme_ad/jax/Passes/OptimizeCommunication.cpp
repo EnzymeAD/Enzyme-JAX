@@ -2275,7 +2275,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
       auto maskedOperandOp =
           rewriter.create<stablehlo::MulOp>(dus.getLoc(), operand, maskOp);
-      sdy::setSharding(maskedOperand, sharding);
+      sdy::setSharding(maskedOperandOp, sharding);
       maskedOperand = maskedOperandOp;
     }
 
