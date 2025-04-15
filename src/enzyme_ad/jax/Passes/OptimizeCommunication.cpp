@@ -2265,7 +2265,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       auto updateType = update.getType().cast<RankedTensorType>();
       auto zeroAttr =
           DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
-      auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
+      auto zeroUpdateOp = rewriter.create<sdy::ConstantOp>(
           dus.getLoc(), updateType, zeroAttr);
       sdy::setSharding(zeroUpdateOp, sharding);
 
@@ -2291,7 +2291,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     } else if (updatePad) {
       resultV = updatePad;
     } else {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
+      auto cst = rewriter.create<sdy::ConstantOp>(
           dus.getLoc(), dus.getType(),
           rewriter.getZeroAttr(dus.getType()).cast<ElementsAttr>());
       sdy::setSharding(cst, sharding);
@@ -3353,7 +3353,7 @@ struct ConcatToPadCommOptimize
     }
 
     if (addOperands.size() == 0) {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
+      auto cst = rewriter.create<sdy::ConstantOp>(
           concat.getLoc(), concat.getType(),
           rewriter.getZeroAttr(concat.getType()).cast<ElementsAttr>());
       sdy::setSharding(cst, concatSharding);
