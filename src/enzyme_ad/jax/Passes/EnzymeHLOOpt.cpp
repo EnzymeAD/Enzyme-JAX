@@ -1159,7 +1159,7 @@ struct DUSConcat final
       inputSizes.push_back(extend.getLhs());
       inputSizes.push_back(cast<RankedTensorType>(extend.getOperand().getType())
                                .getShape()[concatDim]);
-      inputSizes.push_back(wrap.getRhs());
+      inputSizes.push_back(extend.getRhs());
       legal = true;
     } else if (auto rotate =
                    dus.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
@@ -1323,7 +1323,7 @@ struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
           cast<RankedTensorType>(extend.getOperand().getType())
               .getShape()[concatDim]);
       legal = true;
-      operand = wrap.getOperand();
+      operand = extend.getOperand();
     } else if (auto rotate =
                    slice.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
       concatDim = rotate.getDimension();
@@ -1333,7 +1333,7 @@ struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
       inputSizes.push_back(rotate.getAmount());
       actualStartSizes.push_back(rotate.getAmount());
       actualStartSizes.push_back(0);
-      operand = wrap.getOperand();
+      operand = rotate.getOperand();
       legal = true;
     }
 
