@@ -11694,6 +11694,7 @@ stablehlo::DynamicUpdateSliceOp concatToOneDimDUS(PatternRewriter &rewriter, mli
               .cast<ElementsAttr>());
     }
 
+    rewriter.setInsertionPointAfter(outer);
     auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         outer, operand, innerConcat, starts);
     if (shard) {
@@ -11782,6 +11783,7 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
                            .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
 
       if (!DUS) {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
         auto concat = yieldOp.getOperand(idx).getDefiningOp<stablehlo::ConcatenateOp>();
         assert(concat);
         DUS = concatToOneDimDUS(rewriter, concat);
