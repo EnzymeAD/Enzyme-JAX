@@ -79,9 +79,10 @@ void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyConcatConstPropPatterns::populatePatterns(RewritePatternSet &patterns) {
+void ApplyConcatConstPropPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
   addConcatConstProp(patterns, getParameter(), *getContext(),
-                  PatternBenefit(getBenefit().value_or(1)));
+                     PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
     RewritePatternSet &patterns) {

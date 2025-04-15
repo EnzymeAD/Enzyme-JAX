@@ -4804,8 +4804,8 @@ struct ConcatConstProp final
   using OpRewritePattern::OpRewritePattern;
   size_t max_constant_expansion;
   ConcatConstProp(size_t max_constant_expansion, MLIRContext *context,
-               PatternBenefit benefit = 1,
-               ArrayRef<StringRef> generatedNames = {})
+                  PatternBenefit benefit = 1,
+                  ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
@@ -4853,20 +4853,22 @@ struct ConcatConstProp final
 
       if (constants[0].isSplat()) {
         bool allSplat = true;
-	for (int i=1; i<op->getNumOperands(); i++) {
-	  if (!constants[i].isSplat()) {
-	    allSplat = false;
-	    break;
-	  }
-	  if (constants[0].getSplatValue<Attribute>() != constants[i].getSplatValue<Attribute>()) {
-	    allSplat = false;
-	    break;
-	  }
-	}
-	if (allSplat) {
-	  rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), constants[0].resizeSplat(op.getType()));
-	  return success();
-	}
+        for (int i = 1; i < op->getNumOperands(); i++) {
+          if (!constants[i].isSplat()) {
+            allSplat = false;
+            break;
+          }
+          if (constants[0].getSplatValue<Attribute>() !=
+              constants[i].getSplatValue<Attribute>()) {
+            allSplat = false;
+            break;
+          }
+        }
+        if (allSplat) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), constants[0].resizeSplat(op.getType()));
+          return success();
+        }
       }
       size_t size = 1;
       for (auto sz : op.getType().getShape())
@@ -17820,9 +17822,9 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
-                                      int64_t maxConstantExpansion,
-                                      MLIRContext &context,
-                                      PatternBenefit benefit) {
+                                         int64_t maxConstantExpansion,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
   patterns.insert<ConcatConstProp>(maxConstantExpansion, &context, benefit);
 }
 
@@ -18002,11 +18004,11 @@ struct EnzymeHLOOptPass
 
     patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
                  SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot,
-                 DynamicUpdateSliceConstProp, NotConstProp, IsFiniteConstProp,
-                 LogConstProp, LogPlusConstProp, ChloInfConstProp,
-                 GammaConstProp, AbsConstProp, ConcatFuse, ConcatToBroadcast,
-                 PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+                 SliceReshapePad, DotReshapeDot, DynamicUpdateSliceConstProp,
+                 NotConstProp, IsFiniteConstProp, LogConstProp,
+                 LogPlusConstProp, ChloInfConstProp, GammaConstProp,
+                 AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
                  ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
                  ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
