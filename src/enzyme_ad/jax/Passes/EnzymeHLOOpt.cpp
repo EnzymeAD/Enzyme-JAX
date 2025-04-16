@@ -8646,16 +8646,8 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
     if (!llvm::hasSingleElement(op.getOperand().getUsers()))
       return failure();
 
-    ssize_t opIdx = -1;
-    for (OpOperand &use : op.getOperand().getUses()) {
-      if (opIdx != -1) {
-        llvm_unreachable("multi use is not possible");
-      } else {
-        opIdx = use.getOperandNumber();
-      }
-    }
-    if (opIdx == -1)
-      llvm_unreachable("zero use is not possible");
+    auto opres = cast<OpResult>(op.getOperand());
+    ssize_t opIdx = opres.getResultNumber();
 
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifop->getResultTypes());
     ifResultTypes[opIdx] = op.getType();
