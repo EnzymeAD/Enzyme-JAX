@@ -1182,6 +1182,12 @@ def TransposeSlicePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeSlice"];
 }
 
+def TransposeDynamicSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_dynamic_slice"
+> {
+  let patterns = ["TransposeDynamicSlice"];
+}
+
 def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
   "transpose_reshape_to_broadcast"
 > {
