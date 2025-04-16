@@ -3449,6 +3449,7 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
                 otherSlice.getLimitIndices(), slice.getStrides());
             changed = true;
             i++;
+            continue;
           } else
             break;
         }
