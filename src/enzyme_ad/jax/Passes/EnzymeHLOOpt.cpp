@@ -3379,13 +3379,12 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
   return success();
 }
 
-bool canMergeSlicesAlongAxis(int dimension,
-                              ArrayRef<int64_t> sliceStarts,
-                              ArrayRef<int64_t> otherSliceStarts,
-                              ArrayRef<int64_t> sliceLimits,
-                              ArrayRef<int64_t> otherSliceLimits,
-                              ArrayRef<int64_t> sliceStrides,
-                              ArrayRef<int64_t> otherSliceStrides) {
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides) {
   bool canMerge = true;
 
   for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
@@ -3400,7 +3399,6 @@ bool canMergeSlicesAlongAxis(int dimension,
   }
   return canMerge;
 }
-
 
 bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                              stablehlo::SliceOp otherSlice) {
@@ -3417,7 +3415,9 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                     sliceStrides = slice.getStrides(),
                     otherSliceStrides = otherSlice.getStrides();
 
-  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts, sliceLimits,otherSliceLimits, sliceStrides, otherSliceStrides);
+  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts,
+                                 sliceLimits, otherSliceLimits, sliceStrides,
+                                 otherSliceStrides);
 }
 
 struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -3442,7 +3442,7 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 
       while (i + 1 < e) {
         if (auto otherSlice =
-                  op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>()) {
+                op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>()) {
           if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
             slice = rewriter.create<stablehlo::SliceOp>(
                 slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
@@ -3452,16 +3452,23 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
           } else
             break;
         }
-        if (auto otherWrap =  op->getOperand(i + 1).getDefiningOp<enzymexla::WrapOp>()) {
-          auto wrapSlice = otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
-          if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() && otherWrap.getLhs() != 0) {
-            SmallVector<int64_t> wrapStarts = llvm::to_vector(wrapSlice.getStartIndices());
-            SmallVector<int64_t> wrapLimits = llvm::to_vector(wrapSlice.getLimitIndices());
+        if (auto otherWrap =
+                op->getOperand(i + 1).getDefiningOp<enzymexla::WrapOp>()) {
+          auto wrapSlice =
+              otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
+          if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() &&
+              otherWrap.getLhs() != 0) {
+            SmallVector<int64_t> wrapStarts =
+                llvm::to_vector(wrapSlice.getStartIndices());
+            SmallVector<int64_t> wrapLimits =
+                llvm::to_vector(wrapSlice.getLimitIndices());
             if (wrapSlice.getStrides()[dim] == 1) {
               wrapStarts[dim] = wrapLimits[dim] - otherWrap.getLhs();
             }
-            if (canMergeSlicesAlongAxis(op.getDimension(), slice.getStartIndices(), wrapStarts, 
-                slice.getLimitIndices(), wrapLimits, slice.getStrides(), wrapSlice.getStrides())) {
+            if (canMergeSlicesAlongAxis(
+                    op.getDimension(), slice.getStartIndices(), wrapStarts,
+                    slice.getLimitIndices(), wrapLimits, slice.getStrides(),
+                    wrapSlice.getStrides())) {
 
               changed = true;
               auto c2 = lowerWrap(otherWrap, rewriter);
@@ -3469,7 +3476,7 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
                   slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
                   wrapLimits, slice.getStrides());
               newOperands.push_back(newSlice);
-              for (int i=1; i<c2.getOperands().size(); i++) {
+              for (int i = 1; i < c2.getOperands().size(); i++) {
                 newOperands.push_back(c2.getOperands()[i]);
               }
               i++;
@@ -16711,12 +16718,11 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
       stablehlo::SliceOp sl0;
       auto mid = operands[i - 1];
       stablehlo::SliceOp sl1;
-      if (isWrapLike(concatDim, operands[i - 2], mid,
-                     operands[i], &sl0, &sl1)) {
+      if (isWrapLike(concatDim, operands[i - 2], mid, operands[i], &sl0,
+                     &sl1)) {
         auto wrap = rewriter.create<enzymexla::WrapOp>(
             sl0.getLoc(), mid, sl0.getType().getShape()[concatDim],
-            sl1.getType().getShape()[concatDim],
-            concatDim);
+            sl1.getType().getShape()[concatDim], concatDim);
         if (auto shard = sdy::getShardingPerValue(sl0)) {
           sdy::setShardings(wrap, shard);
         }
@@ -16738,20 +16744,17 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
         }
         return success();
       }
-      auto rs0 =
-          operands[i - 2].getDefiningOp<stablehlo::ReshapeOp>();
-      auto rsmid =
-          operands[i - 1].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rs0 = operands[i - 2].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rsmid = operands[i - 1].getDefiningOp<stablehlo::ReshapeOp>();
       auto rs1 = operands[i].getDefiningOp<stablehlo::ReshapeOp>();
       if (rs0 && rsmid && rs1 && isOuterReducingReshape(rs0) &&
           isOuterReducingReshape(rsmid) && isOuterReducingReshape(rs1)) {
-        if (isWrapLike(concatDim + 1, rs0.getOperand(),
-                       rsmid.getOperand(), rs1.getOperand(), &sl0, &sl1)) {
+        if (isWrapLike(concatDim + 1, rs0.getOperand(), rsmid.getOperand(),
+                       rs1.getOperand(), &sl0, &sl1)) {
           auto wrap = rewriter.create<enzymexla::WrapOp>(
               sl0.getLoc(), rsmid.getOperand(),
               sl0.getType().getShape()[concatDim + 1],
-              sl1.getType().getShape()[concatDim + 1],
-              concatDim + 1);
+              sl1.getType().getShape()[concatDim + 1], concatDim + 1);
           if (auto shard = sdy::getShardingPerValue(sl0)) {
             sdy::setShardings(wrap, shard);
           }
