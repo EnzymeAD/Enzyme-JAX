@@ -2667,6 +2667,44 @@ struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
+// transpose(dynamic_slice x) -> dynamic_slice(transpose x)
+struct TransposeDynamicSlice final
+    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto dynamicSlice =
+        op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+    if (!dynamicSlice)
+      return failure();
+
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), dynamicSlice.getOperand(), op.getPermutation());
+
+    // Extract the original permutation, start indices, limit indices, and
+    // strides
+    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+
+    SmallVector<Value> startIndices(permutation.size());
+    SmallVector<int64_t> sliceSizes(permutation.size());
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      size_t permIndex = permutation[i];
+      startIndices[i] = dynamicSlice.getStartIndices()[permIndex];
+      sliceSizes[i] = dynamicSlice.getSliceSizes()[permIndex];
+    }
+
+    // Create a new dynamic slice
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+        op, newTranspose, startIndices, sliceSizes);
+    return success();
+  }
+};
+
 // transpose(slice x) -> slice(transpose x)
 struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -18203,7 +18241,8 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
                    TransposeDUS, TransposeIota, TransposeReduceWindow,
-                   TransposeReduce, TransposeSelect>(context);
+                   TransposeReduce, TransposeSelect, TransposeDynamicSlice>(
+          context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
