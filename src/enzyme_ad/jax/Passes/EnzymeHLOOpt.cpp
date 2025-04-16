@@ -3379,6 +3379,27 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
   return success();
 }
 
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides) {
+  bool canMerge = true;
+
+  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
+    if (d == dimension) {
+      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    } else {
+      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
+                  sliceLimits[d] == otherSliceLimits[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    }
+  }
+  return canMerge;
+}
+
 bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                              stablehlo::SliceOp otherSlice) {
   if (otherSlice.getOperand() != slice.getOperand())
@@ -3394,17 +3415,9 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                     sliceStrides = slice.getStrides(),
                     otherSliceStrides = otherSlice.getStrides();
 
-  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
-    if (d == dimension) {
-      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
-    } else {
-      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
-                  sliceLimits[d] == otherSliceLimits[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
-    }
-  }
-  return canMerge;
+  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts,
+                                 sliceLimits, otherSliceLimits, sliceStrides,
+                                 otherSliceStrides);
 }
 
 struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -3416,6 +3429,8 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 
     SmallVector<Value> newOperands;
 
+    bool changed = false;
+
     for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
       auto operand = op->getOperand(i);
       auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
@@ -3425,23 +3440,61 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
         continue;
       }
 
-      stablehlo::SliceOp otherSlice;
-      while (i + 1 < e &&
-             (otherSlice =
-                  op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>())) {
-        if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
-          slice = rewriter.create<stablehlo::SliceOp>(
-              slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
-              otherSlice.getLimitIndices(), slice.getStrides());
-          i++;
-        } else
-          break;
+      while (i + 1 < e) {
+        if (auto otherSlice =
+                op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>()) {
+          if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
+            slice = rewriter.create<stablehlo::SliceOp>(
+                slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
+                otherSlice.getLimitIndices(), slice.getStrides());
+            changed = true;
+            i++;
+            continue;
+          } else
+            break;
+        }
+        if (auto otherWrap =
+                op->getOperand(i + 1).getDefiningOp<enzymexla::WrapOp>()) {
+          auto wrapSlice =
+              otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
+          if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() &&
+              otherWrap.getLhs() != 0) {
+            SmallVector<int64_t> wrapStarts =
+                llvm::to_vector(wrapSlice.getStartIndices());
+            SmallVector<int64_t> wrapLimits =
+                llvm::to_vector(wrapSlice.getLimitIndices());
+            if (wrapSlice.getStrides()[dim] == 1) {
+              wrapStarts[dim] = wrapLimits[dim] - otherWrap.getLhs();
+            }
+            if (canMergeSlicesAlongAxis(
+                    op.getDimension(), slice.getStartIndices(), wrapStarts,
+                    slice.getLimitIndices(), wrapLimits, slice.getStrides(),
+                    wrapSlice.getStrides())) {
+
+              changed = true;
+              auto c2 = lowerWrap(otherWrap, rewriter);
+              auto newSlice = rewriter.create<stablehlo::SliceOp>(
+                  slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
+                  wrapLimits, slice.getStrides());
+              newOperands.push_back(newSlice);
+              for (int i = 1; i < c2.getOperands().size(); i++) {
+                newOperands.push_back(c2.getOperands()[i]);
+              }
+              i++;
+              slice = nullptr;
+              break;
+            } else
+              break;
+          }
+        }
+        break;
       }
 
-      newOperands.push_back(slice.getResult());
+      if (slice)
+        newOperands.push_back(slice.getResult());
     }
 
-    if (newOperands.size() == op->getNumOperands())
+    if (!changed)
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
@@ -16667,60 +16720,61 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
                                 PatternRewriter &rewriter) const override {
-    if (concat.getOperands().size() < 2)
+
+    int concatDim = concat.getDimension();
+    SmallVector<Value> operands = llvm::to_vector(concat.getOperands());
+    auto shard = sdy::getShardingPerValue(concat);
+    auto loc = concat.getLoc();
+
+    if (operands.size() < 2)
       return failure();
-    for (int i = 2; i < concat.getOperands().size(); i++) {
+    for (int i = 2; i < operands.size(); i++) {
       stablehlo::SliceOp sl0;
-      auto mid = concat.getOperands()[i - 1];
+      auto mid = operands[i - 1];
       stablehlo::SliceOp sl1;
-      if (isWrapLike(concat.getDimension(), concat.getOperands()[i - 2], mid,
-                     concat.getOperands()[i], &sl0, &sl1)) {
+      if (isWrapLike(concatDim, operands[i - 2], mid, operands[i], &sl0,
+                     &sl1)) {
         auto wrap = rewriter.create<enzymexla::WrapOp>(
-            sl0.getLoc(), mid, sl0.getType().getShape()[concat.getDimension()],
-            sl1.getType().getShape()[concat.getDimension()],
-            concat.getDimension());
+            sl0.getLoc(), mid, sl0.getType().getShape()[concatDim],
+            sl1.getType().getShape()[concatDim], concatDim);
         if (auto shard = sdy::getShardingPerValue(sl0)) {
           sdy::setShardings(wrap, shard);
         }
         SmallVector<Value> toConcat;
         for (int j = 0; j < i - 2; j++)
-          toConcat.push_back(concat.getOperands()[j]);
+          toConcat.push_back(operands[j]);
         toConcat.push_back(wrap);
-        for (int j = i + 1; j < concat.getOperands().size(); j++)
-          toConcat.push_back(concat.getOperands()[j]);
+        for (int j = i + 1; j < operands.size(); j++)
+          toConcat.push_back(operands[j]);
         if (toConcat.size() == 1) {
           rewriter.replaceOp(concat, toConcat[0]);
         } else {
-          auto shard = sdy::getShardingPerValue(concat);
           auto newConcat =
               rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-                  concat, toConcat, concat.getDimension());
+                  concat, toConcat, concatDim);
           if (shard) {
             sdy::setShardings(newConcat, shard);
           }
         }
         return success();
       }
-      auto rs0 =
-          concat.getOperands()[i - 2].getDefiningOp<stablehlo::ReshapeOp>();
-      auto rsmid =
-          concat.getOperands()[i - 1].getDefiningOp<stablehlo::ReshapeOp>();
-      auto rs1 = concat.getOperands()[i].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rs0 = operands[i - 2].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rsmid = operands[i - 1].getDefiningOp<stablehlo::ReshapeOp>();
+      auto rs1 = operands[i].getDefiningOp<stablehlo::ReshapeOp>();
       if (rs0 && rsmid && rs1 && isOuterReducingReshape(rs0) &&
           isOuterReducingReshape(rsmid) && isOuterReducingReshape(rs1)) {
-        if (isWrapLike(concat.getDimension() + 1, rs0.getOperand(),
-                       rsmid.getOperand(), rs1.getOperand(), &sl0, &sl1)) {
+        if (isWrapLike(concatDim + 1, rs0.getOperand(), rsmid.getOperand(),
+                       rs1.getOperand(), &sl0, &sl1)) {
           auto wrap = rewriter.create<enzymexla::WrapOp>(
               sl0.getLoc(), rsmid.getOperand(),
-              sl0.getType().getShape()[concat.getDimension() + 1],
-              sl1.getType().getShape()[concat.getDimension() + 1],
-              concat.getDimension() + 1);
+              sl0.getType().getShape()[concatDim + 1],
+              sl1.getType().getShape()[concatDim + 1], concatDim + 1);
           if (auto shard = sdy::getShardingPerValue(sl0)) {
             sdy::setShardings(wrap, shard);
           }
           SmallVector<Value> toConcat;
           for (int j = 0; j < i - 2; j++)
-            toConcat.push_back(concat.getOperands()[j]);
+            toConcat.push_back(operands[j]);
           SmallVector<int64_t> newShape =
               llvm::to_vector(wrap.getType().getShape());
           assert(newShape[0] == 1);
@@ -16733,14 +16787,14 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
             sdy::setShardings(reshape, shard);
           }
           toConcat.push_back(reshape);
-          for (int j = i + 1; j < concat.getOperands().size(); j++)
-            toConcat.push_back(concat.getOperands()[j]);
+          for (int j = i + 1; j < operands.size(); j++)
+            toConcat.push_back(operands[j]);
           if (toConcat.size() == 1) {
             rewriter.replaceOp(concat, toConcat[0]);
           } else {
             auto shard = sdy::getShardingPerValue(rs0);
             rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-                concat, toConcat, concat.getDimension());
+                concat, toConcat, concatDim);
             if (shard) {
               sdy::setShardings(reshape, shard);
             }
