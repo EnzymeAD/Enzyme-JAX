@@ -12092,6 +12092,8 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
           }
         }
 
+        if (!legal)
+          continue;
       } else if (auto concat = yieldOp.getOperand(idx)
                                    .getDefiningOp<stablehlo::ConcatenateOp>()) {
         Value operand;
@@ -12131,6 +12133,9 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         assert(concat);
         DUS = concatToOneDimDUS(rewriter, concat);
         assert(DUS);
+        for (auto idx : DUS.getStartIndices()) {
+          assert(definedOutside(idx, whileOp));
+        }
       }
 
       candidates.emplace_back(DUSCandidate{idx, DUS, whileOp.getOperands()[idx],
