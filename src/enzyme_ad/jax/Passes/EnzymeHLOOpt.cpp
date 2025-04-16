@@ -12012,14 +12012,6 @@ concatToOneDimDUS(PatternRewriter &rewriter,
     newOps.push_back(outer.getOperands()[i]);
   }
   Value innerConcat = newOps[0];
-  if (newOps.size() != 1) {
-    auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        outer.getLoc(), newOps, outer.getDimension());
-    innerConcat = nConcat;
-    if (shard) {
-      sdy::setShardings(nConcat, shard);
-    }
-  }
 
   auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
   Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
@@ -12036,6 +12028,15 @@ concatToOneDimDUS(PatternRewriter &rewriter,
   }
 
   rewriter.setInsertionPointAfter(outer);
+  if (newOps.size() != 1) {
+    auto nConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        outer.getLoc(), newOps, outer.getDimension());
+    innerConcat = nConcat;
+    if (shard) {
+      sdy::setShardings(nConcat, shard);
+    }
+  }
+
   auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
       outer, operand, innerConcat, starts);
   if (shard) {
