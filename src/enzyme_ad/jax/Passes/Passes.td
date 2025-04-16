@@ -641,5 +641,21 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def SplitHugeBlocksPass : InterfacePass<"split-huge-blocks", "mlir::FunctionOpInterface"> {
+  let summary = "Split huge blocks into smaller blocks";
+  let dependentDialects = [
+    "cf::ControlFlowDialect",
+  ];
+  let options = [
+      Option<
+           /*C++ variable name=*/"max_num_operations",
+           /*CLI argument=*/"max_num_operations",
+           /*type=*/"int64_t",
+           /*default=*/"-1",
+           /*description=*/"Maximum number of operations per block, -1 being unlimited">,
+    
+  ];
+}
+
 
 #endif
