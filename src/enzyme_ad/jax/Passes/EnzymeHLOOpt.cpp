@@ -11977,6 +11977,16 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
   if (!lhs && !rhs) {
     return false;
   }
+  if (!rhs && cast<RankedTensorType>(lhs.getOperand().getType())
+                      .getShape()[outer.getDimension()] !=
+                  outer.getType().getShape()[outer.getDimension()]) {
+    return false;
+  }
+  if (!lhs && cast<RankedTensorType>(rhs.getOperand().getType())
+                      .getShape()[outer.getDimension()] !=
+                  outer.getType().getShape()[outer.getDimension()]) {
+    return false;
+  }
 
   if (lhs && rhs && outer.getOperands().size() == 2) {
     return false;
@@ -12015,6 +12025,7 @@ concatToOneDimDUS(PatternRewriter &rewriter,
 
   auto iTy = RankedTensorType::get({}, rewriter.getI64Type());
   Value operand = lhs ? lhs.getOperand() : rhs.getOperand();
+  assert(operand.getType() == outer.getType());
   SmallVector<Value> starts(
       outer.getType().getShape().size(),
       rewriter.create<stablehlo::ConstantOp>(
@@ -12037,8 +12048,10 @@ concatToOneDimDUS(PatternRewriter &rewriter,
     }
   }
 
+  auto OT = outer.getType();
   auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
       outer, operand, innerConcat, starts);
+  assert(dus.getType() == OT);
   if (shard) {
     sdy::setShardings(dus, shard);
   }

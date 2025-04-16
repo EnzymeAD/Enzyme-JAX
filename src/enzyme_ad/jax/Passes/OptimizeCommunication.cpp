@@ -3280,10 +3280,12 @@ struct DUSToPadManualCompComm
     } else {
       rewriter.setInsertionPointAfter(manual);
       SmallVector<int64_t> starts(ndims, 0);
-      SmallVector<int64_t> limits = llvm::to_vector(dus.getType().getShape());
+      auto DT = dus.getType();
+      SmallVector<int64_t> limits = llvm::to_vector(DT.getShape());
       SmallVector<int64_t> interior(ndims, 1);
       auto sl = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
           dus, manual->getResult(0), starts, limits, interior);
+      assert(sl.getType() == DT);
       sdy::setSharding(sl, sharding);
     }
     return success();
@@ -3347,6 +3349,7 @@ struct ConcatToPadCommOptimize
 
       auto paddedOperand = rewriter.create<stablehlo::PadOp>(
           concat.getLoc(), operand, zero, padLow, padHigh, padInner);
+      assert(concat.getType() == paddedOperand.getType());
       sdy::setSharding(paddedOperand, concatSharding);
       addOperands.push_back(paddedOperand);
       leftPadding += operandConcatDimSize;
@@ -3368,6 +3371,7 @@ struct ConcatToPadCommOptimize
       sum = addOp;
     }
 
+    assert(concat.getType() == sum.getType());
     rewriter.replaceOp(concat, sum);
     return success();
   }
