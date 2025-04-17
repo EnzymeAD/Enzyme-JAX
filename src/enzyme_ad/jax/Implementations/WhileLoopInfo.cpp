@@ -10,7 +10,7 @@ LogicalResult WhileLoopInfo::computeInfo() {
   auto &condBlk = op.getCond().front();
   if (condBlk.getOperations().size() != 2)
     return failure();
-  auto condTerm = cast<stablehlo::ReturnOp>(&condBlk.back());
+  auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
   auto condV = condTerm->getOperand(0);
   auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
   if (!cond)
@@ -25,7 +25,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
     return failure();
 
-  auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
+  auto bodyTerm =
+      cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
   if (!inc)
@@ -33,18 +34,26 @@ LogicalResult WhileLoopInfo::computeInfo() {
 
   auto loopBodyBlock = &op.getBody().front();
 
-  auto incba = inc.getOperand(0).dyn_cast<BlockArgument>();
+  auto incba0 = inc.getOperand(0).dyn_cast<BlockArgument>();
+  auto incba1 = inc.getOperand(1).dyn_cast<BlockArgument>();
 
-  if (!incba)
+  bool found = false;
+
+  if (incba0 && (incba0.getOwner() == loopBodyBlock) &&
+      (incba0.getArgNumber() == induct.getArgNumber())) {
+    step = inc.getOperand(1);
+    found = true;
+  }
+
+  if (!found && incba1 && (incba1.getOwner() == loopBodyBlock) &&
+      (incba1.getArgNumber() == induct.getArgNumber())) {
+    step = inc.getOperand(0);
+    found = true;
+  }
+
+  if (!found)
     return failure();
 
-  if (incba.getOwner() != loopBodyBlock)
-    return failure();
-
-  if (incba.getArgNumber() != induct.getArgNumber())
-    return failure();
-
-  step = inc.getOperand(1);
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
 
