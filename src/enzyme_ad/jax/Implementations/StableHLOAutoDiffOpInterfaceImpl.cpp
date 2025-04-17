@@ -555,10 +555,7 @@ public:
     auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
     OpBuilder revBuilder(newWhile);
 
-    auto bodyBlk = &newWhile.getBody().front();
-    Type elementType = cast<RankedTensorType>(
-                           bodyBlk->getTerminator()->getOperand(0).getType())
-                           .getElementType();
+    Type elementType = loopConditionVariableElementType(newWhile, revBuilder);
 
     Value numIters;
 
@@ -628,6 +625,30 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
+
+private:
+  Type loopConditionVariableElementType(WhileOp whileOp,
+                                        OpBuilder &builder) const {
+    auto *condBlock = &whileOp.getCond().front();
+
+    auto condReturnOp =
+        llvm::dyn_cast<stablehlo::ReturnOp>(condBlock->getTerminator());
+    if (!condReturnOp || condReturnOp->getNumOperands() == 0)
+      return builder.getI64Type();
+
+    auto condVal = condReturnOp->getOperand(0);
+    auto *defOp = condVal.getDefiningOp();
+
+    auto cond = llvm::dyn_cast_or_null<stablehlo::CompareOp>(defOp);
+    if (!cond)
+      return builder.getI64Type();
+
+    auto lhsType = cond.getOperand(0).getType().dyn_cast<RankedTensorType>();
+    if (!lhsType)
+      return builder.getI64Type();
+
+    return lhsType.getElementType();
+  }
 };
 
 class AutoDiffBroadcastInDimRev
