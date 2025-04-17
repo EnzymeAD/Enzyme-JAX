@@ -406,14 +406,13 @@ public:
     Value numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
-    auto iterVar =
-        builder
-            .create<ConstantOp>(
-                orig->getLoc(), unrankedTensorType,
-                SplatElementsAttr::get(unrankedTensorType,
-                                       ArrayRef<Attribute>(IntegerAttr::get(
-                                           builder.getI64Type(), 0))))
-            .getResult();
+    auto iterVarOp = builder.create<ConstantOp>(
+        orig->getLoc(), unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
+    ;
+    auto iterVar = iterVarOp.getResult();
 
     SmallVector<Value> operands;
     operands.reserve(orig->getNumResults() + 1);
@@ -445,6 +444,18 @@ public:
       auto condIterVar = cond->getArgument(0);
 
       OpBuilder condBuilder(cond, cond->end());
+
+      auto condIterVarElemType =
+          cast<RankedTensorType>(condIterVar.getType()).getElementType();
+      auto numItersElemType =
+          cast<RankedTensorType>(numIters.getType()).getElementType();
+      if (numItersElemType != condIterVarElemType) {
+        builder.setInsertionPointAfter(iterVarOp);
+        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                             condIterVarElemType);
+        builder.setInsertionPointAfter(revWhile);
+      }
+
       condBuilder.create<ReturnOp>(
           orig->getLoc(),
           ValueRange(condBuilder
@@ -544,6 +555,8 @@ public:
     auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
     OpBuilder revBuilder(newWhile);
 
+    Type elementType = loopConditionVariableElementType(newWhile, revBuilder);
+
     Value numIters;
 
     WhileLoopInfo info(newWhile);
@@ -555,15 +568,14 @@ public:
       auto cond = &newWhile.getCond().front();
       auto body = &newWhile.getBody().front();
 
-      auto unrankedTensorType =
-          RankedTensorType::get({}, revBuilder.getI64Type());
+      auto unrankedTensorType = RankedTensorType::get({}, elementType);
       auto numItersInit =
           revBuilder
               .create<ConstantOp>(
                   orig->getLoc(), unrankedTensorType,
-                  SplatElementsAttr::get(unrankedTensorType,
-                                         ArrayRef<Attribute>(IntegerAttr::get(
-                                             revBuilder.getI64Type(), 0))))
+                  SplatElementsAttr::get(
+                      unrankedTensorType,
+                      ArrayRef<Attribute>(IntegerAttr::get(elementType, 0))))
               .getResult();
 
       newWhile->insertOperands(newWhile->getNumOperands(),
@@ -575,9 +587,9 @@ public:
       OpBuilder inBodyBuilder(body, body->begin());
       auto one = inBodyBuilder.create<ConstantOp>(
           orig->getLoc(), unrankedTensorType,
-          SplatElementsAttr::get(unrankedTensorType,
-                                 ArrayRef<Attribute>(IntegerAttr::get(
-                                     revBuilder.getI64Type(), 1))));
+          SplatElementsAttr::get(
+              unrankedTensorType,
+              ArrayRef<Attribute>(IntegerAttr::get(elementType, 1))));
       numItersInBlock = inBodyBuilder.create<AddOp>(
           orig->getLoc(), numItersInBlock, one.getResult());
       auto term = body->getTerminator();
@@ -613,6 +625,30 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
+
+private:
+  Type loopConditionVariableElementType(WhileOp whileOp,
+                                        OpBuilder &builder) const {
+    auto *condBlock = &whileOp.getCond().front();
+
+    auto condReturnOp =
+        llvm::dyn_cast<stablehlo::ReturnOp>(condBlock->getTerminator());
+    if (!condReturnOp || condReturnOp->getNumOperands() == 0)
+      return builder.getI64Type();
+
+    auto condVal = condReturnOp->getOperand(0);
+    auto *defOp = condVal.getDefiningOp();
+
+    auto cond = llvm::dyn_cast_or_null<stablehlo::CompareOp>(defOp);
+    if (!cond)
+      return builder.getI64Type();
+
+    auto lhsType = cond.getOperand(0).getType().dyn_cast<RankedTensorType>();
+    if (!lhsType)
+      return builder.getI64Type();
+
+    return lhsType.getElementType();
+  }
 };
 
 class AutoDiffBroadcastInDimRev
@@ -2085,6 +2121,14 @@ struct WhileOpEnzymeOpsRemover
       caches.push_back(info);
     }
 
+    WhileLoopInfo info(whileOp);
+
+    // TODO: support non-constant loops by using a dynamic dimension
+    // ...   should we fail ? i.e. return failure();
+    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
+      return success();
+    }
+
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
@@ -2135,14 +2179,6 @@ struct WhileOpEnzymeOpsRemover
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    WhileLoopInfo info(whileOp);
-
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
-    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return success();
-    }
-
     auto numIters = info.getConstantNumIters();
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
