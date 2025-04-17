@@ -948,7 +948,7 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
-                                   PatternRewriter &rewriter) {
+                                   PatternRewriter &rewriter, bool replace) {
   // sl0[end-lhs:end], mid, sl1[0:rhs]
   auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
   SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
@@ -987,8 +987,10 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
     args.push_back(sl1);
   }
 
-  auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-      wrap, args, wrap.getDimension());
+  auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+      wrap.getLoc(), args, wrap.getDimension());
+  if (replace)
+    rewriter.replaceOp(wrap, newConcat);
   if (shard)
     sdy::setShardings(newConcat, shard);
   return newConcat;
@@ -999,7 +1001,7 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
 
   LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
                                 PatternRewriter &rewriter) const override {
-    auto concat = lowerWrap(wrap, rewriter);
+    auto concat = lowerWrap(wrap, rewriter, /*replace*/ true);
     if (concat.getInputs().size() == 1) {
       rewriter.replaceOp(concat, concat.getInputs()[0]);
     }
@@ -1008,7 +1010,7 @@ struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
 };
 
 stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
-                                     PatternRewriter &rewriter) {
+                                     PatternRewriter &rewriter, bool replace) {
   auto loc = extend.getLoc();
   auto operand = extend.getOperand();
 
@@ -1044,8 +1046,10 @@ stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
     args.push_back(rhs);
   }
 
-  auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-      extend, args, extend.getDimension());
+  auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+      extend.getLoc(), args, extend.getDimension());
+  if (replace)
+    rewriter.replaceOp(extend, newConcat);
   if (shard)
     sdy::setShardings(newConcat, shard);
   return newConcat;
@@ -1056,7 +1060,7 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
 
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
-    auto concat = lowerExtend(extend, rewriter);
+    auto concat = lowerExtend(extend, rewriter, /*replace*/ true);
     if (concat.getInputs().size() == 1) {
       rewriter.replaceOp(concat, concat.getInputs()[0]);
     }
@@ -1065,7 +1069,7 @@ struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
 };
 
 stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
-                                     PatternRewriter &rewriter) {
+                                     PatternRewriter &rewriter, bool replace) {
   // sl0[A:end], sl1[0:A]
   auto shard = sdy::getShardingPerValue(rotate);
   SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
@@ -1086,8 +1090,10 @@ stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
     sdy::setShardings(sl1, shard);
   }
   Value args[] = {sl0, sl1};
-  auto newConcat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-      rotate, args, rotate.getDimension());
+  auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+      rotate.getLoc(), args, rotate.getDimension());
+  if (replace)
+    rewriter.replaceOp(rotate, newConcat);
   if (shard) {
     sdy::setShardings(newConcat, shard);
   }
@@ -1099,7 +1105,7 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
 
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
-    lowerRotate(rotate, rewriter);
+    lowerRotate(rotate, rewriter, /*replace*/ true);
     return success();
   }
 };
@@ -1208,13 +1214,13 @@ struct DUSConcat final
     auto concatOp = dus.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
 
     if (auto wrap = dus.getOperand().getDefiningOp<enzymexla::WrapOp>()) {
-      concatOp = lowerWrap(wrap, rewriter);
+      concatOp = lowerWrap(wrap, rewriter, /*replace*/ false);
     } else if (auto extend =
                    dus.getOperand().getDefiningOp<enzymexla::ExtendOp>()) {
-      concatOp = lowerExtend(extend, rewriter);
+      concatOp = lowerExtend(extend, rewriter, /*replace*/ false);
     } else if (auto rotate =
                    dus.getOperand().getDefiningOp<enzymexla::RotateOp>()) {
-      concatOp = lowerRotate(rotate, rewriter);
+      concatOp = lowerRotate(rotate, rewriter, /*replace*/ false);
     }
     assert(concatOp);
 
@@ -3510,7 +3516,7 @@ struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
                     wrapSlice.getStrides())) {
 
               changed = true;
-              auto c2 = lowerWrap(otherWrap, rewriter);
+              auto c2 = lowerWrap(otherWrap, rewriter, /*replace*/ false);
               auto newSlice = rewriter.create<stablehlo::SliceOp>(
                   slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
                   wrapLimits, slice.getStrides());
