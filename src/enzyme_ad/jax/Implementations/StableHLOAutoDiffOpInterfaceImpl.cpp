@@ -432,8 +432,6 @@ public:
     auto &condReg = revWhile.getCond();
     auto &bodyReg = revWhile.getBody();
 
-    llvm::errs() << "revWhile: " << revWhile << "\n";
-
     auto cond = new Block();
     auto body = new Block();
 
@@ -2091,10 +2089,6 @@ struct WhileOpEnzymeOpsRemover
       }
     }
 
-    if (otherWhileOp) {
-      llvm::errs() << "other while: " << otherWhileOp << "\n";
-    }
-
     // nothing to do
     if (updatedGradients.empty() && cachesMap.empty())
       return success();
@@ -2158,17 +2152,6 @@ struct WhileOpEnzymeOpsRemover
     llvm::dbgs() << "whileOp: " << whileOp << "\n";
 
     WhileLoopInfo info(whileOp);
-
-    info.computeInfo();
-    llvm::dbgs() << "info.start: " << info.start << "\n";
-    llvm::dbgs() << "info.step: " << info.step << "\n";
-    llvm::dbgs() << "info.limit: " << info.limit << "\n";
-    // llvm::dbgs() << "info.computeInfo: " << info.computeInfo() << "\n";
-    llvm::dbgs() << "info.isValid: " << info.isValid() << "\n";
-    // llvm::dbgs() << "info.isConstant: " << info.isConstant() << "\n";
-    if (info.isValid()) {
-      llvm::dbgs() << info.isConstant() << "\n";
-    }
 
     // TODO: support non-constant loops by using a dynamic dimension
     // ...   should we fail ? i.e. return failure();
@@ -2286,10 +2269,6 @@ struct WhileOpEnzymeOpsRemover
     auto newWhile =
         rewriter.create<stablehlo::WhileOp>(op->getLoc(), newOperands);
 
-    for (auto op : newOperands) {
-      llvm::dbgs() << "new operand: " << op << "\n";
-    }
-
     newWhile.getCond().takeBody(whileOp.getCond());
     newWhile.getBody().takeBody(whileOp.getBody());
 
@@ -2355,14 +2334,6 @@ struct WhileOpEnzymeOpsRemover
 
       rewriter.eraseOp(otherWhileOp);
       otherWhileOp = newOtherWhileOp;
-    }
-
-    if (otherWhileOp) {
-      llvm::errs() << "other while: " << otherWhileOp << "\n";
-    }
-
-    if (newWhile) {
-      llvm::errs() << newWhile << "\n";
     }
 
     // 5. Finally, replace pops with slices.
