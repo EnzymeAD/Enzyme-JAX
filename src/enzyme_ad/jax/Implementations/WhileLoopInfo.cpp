@@ -27,7 +27,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
     return failure();
 
-  auto bodyTerm = cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
+  auto bodyTerm =
+      cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
   if (!inc)
@@ -42,12 +43,14 @@ LogicalResult WhileLoopInfo::computeInfo() {
 
   bool found = false;
 
-  if (incba0 && (incba0.getOwner() == loopBodyBlock) && (incba0.getArgNumber() == induct.getArgNumber())) {
+  if (incba0 && (incba0.getOwner() == loopBodyBlock) &&
+      (incba0.getArgNumber() == induct.getArgNumber())) {
     step = inc.getOperand(1);
     found = true;
   }
 
-  if (!found && incba1 && (incba1.getOwner() == loopBodyBlock) && (incba1.getArgNumber() == induct.getArgNumber())) {
+  if (!found && incba1 && (incba1.getOwner() == loopBodyBlock) &&
+      (incba1.getArgNumber() == induct.getArgNumber())) {
     step = inc.getOperand(0);
     found = true;
   }

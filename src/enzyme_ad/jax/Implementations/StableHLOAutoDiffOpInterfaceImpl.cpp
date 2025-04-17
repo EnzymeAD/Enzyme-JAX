@@ -406,14 +406,13 @@ public:
     Value numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
-    auto iterVar =
-        builder
-            .create<ConstantOp>(
-                orig->getLoc(), unrankedTensorType,
-                SplatElementsAttr::get(unrankedTensorType,
-                                       ArrayRef<Attribute>(IntegerAttr::get(
-                                           builder.getI64Type(), 0))))
-            .getResult();
+    auto iterVarOp = builder.create<ConstantOp>(
+        orig->getLoc(), unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
+    ;
+    auto iterVar = iterVarOp.getResult();
 
     SmallVector<Value> operands;
     operands.reserve(orig->getNumResults() + 1);
@@ -451,8 +450,10 @@ public:
       auto numItersElemType =
           cast<RankedTensorType>(numIters.getType()).getElementType();
       if (numItersElemType != condIterVarElemType) {
-        numIters = condBuilder.create<ConvertOp>(orig->getLoc(), numIters,
-                                                 condIterVarElemType);
+        builder.setInsertionPointAfter(iterVarOp);
+        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                             condIterVarElemType);
+        builder.setInsertionPointAfter(revWhile);
       }
 
       condBuilder.create<ReturnOp>(
