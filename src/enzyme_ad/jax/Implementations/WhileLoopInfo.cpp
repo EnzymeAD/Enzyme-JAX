@@ -22,8 +22,6 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (induct.getOwner() != &condBlk)
     return failure();
 
-  llvm::errs() << "induct: " << induct << "\n";
-
   if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
     return failure();
 
@@ -33,8 +31,6 @@ LogicalResult WhileLoopInfo::computeInfo() {
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
   if (!inc)
     return failure();
-
-  llvm::errs() << "inc: " << inc << "\n";
 
   auto loopBodyBlock = &op.getBody().front();
 
@@ -58,13 +54,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (!found)
     return failure();
 
-  // step = inc.getOperand(1);
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
-
-  llvm::errs() << "step: " << step << "\n";
-  llvm::errs() << "start: " << start << "\n";
-  llvm::errs() << "limit: " << limit << "\n";
 
   return success();
 }

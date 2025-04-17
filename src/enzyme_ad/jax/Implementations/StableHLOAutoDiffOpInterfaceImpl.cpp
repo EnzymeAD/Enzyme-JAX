@@ -2100,6 +2100,14 @@ struct WhileOpEnzymeOpsRemover
       caches.push_back(info);
     }
 
+    WhileLoopInfo info(whileOp);
+
+    // TODO: support non-constant loops by using a dynamic dimension
+    // ...   should we fail ? i.e. return failure();
+    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
+      return success();
+    }
+
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
@@ -2150,16 +2158,6 @@ struct WhileOpEnzymeOpsRemover
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    llvm::dbgs() << "whileOp: " << whileOp << "\n";
-
-    WhileLoopInfo info(whileOp);
-
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
-    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return success();
-    }
-
     auto numIters = info.getConstantNumIters();
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
