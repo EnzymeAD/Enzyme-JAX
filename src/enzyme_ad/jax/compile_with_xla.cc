@@ -39,8 +39,8 @@
 #include "xla/printer.h"
 #include "xla/service/cpu/backend_config.pb.h"
 #include "xla/service/cpu/cpu_executable.h"
-#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
-#include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
+#include "xla/hlo/translate/mhlo_to_hlo/type_to_shape.h"
 
 #include "compile_with_xla.h"
 
