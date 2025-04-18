@@ -195,6 +195,11 @@ def ApplySquareAbsSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["SquareAbsSimplify"];
 }
 
+def ApplyDivideDivideSimplifyPatterns : EnzymeHLOPatternOp<
+    "divide_divide_simplify"> {
+  let patterns = ["DivideDivideSimplify"];
+}
+
 // regular benefit
 def ApplyConvertConcatPatterns : EnzymeHLOPatternOp<
     "convert_concat"> {
