@@ -32,8 +32,8 @@ func.func @divide3(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor
 }
 
 // CHECK: func.func @divide3(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>, %arg3: tensor<2x2xf32>) -> tensor<2x2xf32> {
-// CHECK-NEXT:   %0 = stablehlo.multiply %arg1, %arg2 : tensor<2x2xf32>
-// CHECK-NEXT:   %1 = stablehlo.multiply %arg0, %arg3 : tensor<2x2xf32>
-// CHECK-NEXT:   %2 = stablehlo.divide %1, %0 : tensor<2x2xf32>
-// CHECK-NEXT:   return %2 : tensor<2x2xf32>
-// CHECK-NEXT: }
+// CHECK-DAG: %[[MUL1:.*]] = stablehlo.multiply %arg1, %arg2 : tensor<2x2xf32>
+// CHECK-DAG: %[[MUL2:.*]] = stablehlo.multiply %arg0, %arg3 : tensor<2x2xf32>
+// CHECK:     %[[DIV:.*]] = stablehlo.divide %[[MUL2]], %[[MUL1]] : tensor<2x2xf32>
+// CHECK-NEXT:     return %[[DIV]] : tensor<2x2xf32>
+// CHECK-NEXT:   }
