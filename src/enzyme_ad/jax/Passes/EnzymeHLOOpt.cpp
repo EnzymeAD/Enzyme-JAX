@@ -17905,6 +17905,44 @@ struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::MulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (lhs != rhs)
+      return failure();
+
+    auto absOp = lhs.getDefiningOp<stablehlo::AbsOp>();
+    if (!absOp)
+      return failure();
+
+    auto operand = absOp.getOperand();
+    auto operandType = operand.getType().dyn_cast<RankedTensorType>();
+    if (!operandType)
+      return failure();
+
+    if (operandType.getElementType().isa<ComplexType>()) {
+      // abs(z)^2 = real(z * conj(z)) -- only applied if abs(z) is used in this
+      // operation
+      if (!isOnlyUsedInOperation(absOp, op))
+        return failure();
+      rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
+          op, rewriter.create<stablehlo::MulOp>(
+                  op.getLoc(), operand,
+                  rewriter.create<mlir::chlo::ConjOp>(op.getLoc(), operand)));
+      return success();
+    } else {
+      // abs(x)^2 = x * x
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, operand, operand);
+      return success();
+    }
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -18333,7 +18371,8 @@ struct EnzymeHLOOptPass
         BroadcastIota,
         BroadcastCompare,
         NotCompare,
-        SliceInternal
+        SliceInternal,
+        SquareAbsSimplify
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
