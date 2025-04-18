@@ -9898,6 +9898,60 @@ struct DUSToConcat final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
   }
 };
 
+// I.   (div a (div b c)) -> (div (mul a c) b)
+// II.  (div (div a b) c) -> (div a (mul b c))
+// III. (div (div a b) (div c d)) -> (div (mul a d) (mul b c))
+struct DivideDivideSimplify : public OpRewritePattern<stablehlo::DivOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DivOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (auto lhsDivOp = lhs.getDefiningOp<stablehlo::DivOp>()) {
+      if (!lhsDivOp->hasOneUse())
+        return failure();
+
+      if (auto rhsDivOp = rhs.getDefiningOp<stablehlo::DivOp>()) {
+        if (!rhsDivOp->hasOneUse())
+          return failure();
+
+        // Case III.
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::MulOp>(
+                op.getLoc(), lhsDivOp->getOperand(0), rhsDivOp->getOperand(1)),
+            rewriter.create<stablehlo::MulOp>(
+                op.getLoc(), lhsDivOp->getOperand(1), rhsDivOp->getOperand(0)));
+        return success();
+      } else {
+        // Case II.
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op, lhsDivOp->getOperand(0),
+            rewriter.create<stablehlo::MulOp>(op.getLoc(),
+                                              lhsDivOp->getOperand(1), rhs));
+        return success();
+      }
+    } else {
+      if (auto rhsDivOp = rhs.getDefiningOp<stablehlo::DivOp>()) {
+        if (!rhsDivOp->hasOneUse())
+          return failure();
+
+        // Case I.
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::MulOp>(op.getLoc(), lhs,
+                                              rhsDivOp->getOperand(1)),
+            rhsDivOp->getOperand(0));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 //////////////// Imported from stablehlo
 static bool isIotaRange(ArrayRef<int64_t> dims) {
   return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
@@ -18372,7 +18426,8 @@ struct EnzymeHLOOptPass
         BroadcastCompare,
         NotCompare,
         SliceInternal,
-        SquareAbsSimplify
+        SquareAbsSimplify,
+        DivideDivideSimplify
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
