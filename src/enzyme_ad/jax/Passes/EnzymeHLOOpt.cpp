@@ -26,6 +26,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
@@ -9508,11 +9509,36 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           continue;
         if (!isa<T>(nop))
           continue;
-        if (!OperationEquivalence::isEquivalentTo(
-                op, nop, OperationEquivalence::IgnoreLocations))
-          continue;
         if (nop->getBlock() != op->getBlock())
           continue;
+
+        if (!OperationEquivalence::isEquivalentTo(
+                op, nop, OperationEquivalence::IgnoreLocations)) {
+          // stablehlo defines a special trait for commutative operations.
+          // check for that here.
+          if (op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>()) {
+            auto opRange = op->getOperands();
+            auto nopRange = nop->getOperands();
+
+            if (opRange.size() != nopRange.size())
+              continue;
+
+            auto sortValues = [](ValueRange values) {
+              SmallVector<Value> sortedValues = llvm::to_vector(values);
+              llvm::sort(sortedValues, [](Value a, Value b) {
+                return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+              });
+              return sortedValues;
+            };
+            auto opSorted = sortValues(opRange);
+            auto nopSorted = sortValues(nopRange);
+            if (opSorted != nopSorted)
+              continue;
+          } else {
+            continue;
+          }
+        }
+
         if (nop->isBeforeInBlock(op)) {
           rewriter.replaceOp(op, nop);
           return success();
