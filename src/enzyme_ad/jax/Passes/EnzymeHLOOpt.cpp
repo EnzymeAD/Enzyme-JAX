@@ -9702,8 +9702,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  preSliceOperand.getType().cast<RankedTensorType>().getShape(),
                  preSliceUpdate.getType()
@@ -18023,6 +18022,141 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
   }
 };
 
+struct CollapseSliceReshapeConcatToTranspose
+    : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
+                                PatternRewriter &rewriter) const override {
+    auto concatDim = concatOp.getDimension();
+    auto ndims = concatOp.getType().cast<RankedTensorType>().getRank();
+
+    // Ensure all operands are reshapes of slices
+    SmallVector<stablehlo::SliceOp> sliceOps;
+    SmallVector<stablehlo::ReshapeOp> reshapeOps;
+    Value sourceTensor;
+
+    for (auto operand : concatOp.getOperands()) {
+      auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshape || (!reshape->hasOneUse()))
+        return failure();
+
+      if (cast<RankedTensorType>(reshape.getResult().getType())
+              .getShape()[concatDim] != 1)
+        return failure();
+
+      auto slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if ((!slice) || (!slice->hasOneUse()))
+        return failure();
+
+      // Make sure all slices come from the same source
+      if (!sourceTensor) {
+        sourceTensor = slice.getOperand();
+      } else if (sourceTensor != slice.getOperand()) {
+        return failure();
+      }
+
+      auto sliceStrides = slice.getStrides();
+      for (int64_t i = 0; i < sliceStrides.size(); i++) {
+        if (sliceStrides[i] != 1)
+          return failure();
+      }
+
+      reshapeOps.push_back(reshape);
+      sliceOps.push_back(slice);
+    }
+
+    SmallVector<int64_t> sliceStrides(ndims, 1);
+    SmallVector<int64_t> sliceStarts, sliceLimits;
+    int64_t srcSliceDim = -1;
+    int64_t lastLimitIndex = -1;
+
+    for (auto [sliceOp, reshapeOp] : llvm::zip(sliceOps, reshapeOps)) {
+      auto sliceShape =
+          cast<RankedTensorType>(sliceOp.getResult().getType()).getShape();
+      auto reshapeShape =
+          cast<RankedTensorType>(reshapeOp.getResult().getType()).getShape();
+
+      if (sliceShape.size() != reshapeShape.size())
+        return failure();
+
+      int64_t singletonSliceDim = -1;
+      int64_t nSingletonSlices = 0;
+      for (int64_t i = 0; i < sliceShape.size(); i++) {
+        if (sliceShape[i] == 1) {
+          singletonSliceDim = i;
+          nSingletonSlices++;
+        }
+      }
+
+      if (nSingletonSlices != 1)
+        return failure();
+
+      if (srcSliceDim == -1) {
+        srcSliceDim = singletonSliceDim;
+        sliceStarts = llvm::to_vector(sliceOp.getStartIndices());
+        sliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
+        lastLimitIndex = sliceLimits[singletonSliceDim];
+      } else {
+        if (srcSliceDim != singletonSliceDim)
+          return failure();
+
+        for (int64_t i = 0; i < sliceShape.size(); i++) {
+          if (i == singletonSliceDim) {
+            if (lastLimitIndex != sliceOp.getStartIndices()[i])
+              return failure();
+            lastLimitIndex = sliceOp.getLimitIndices()[i];
+            continue;
+          }
+          if (sliceStarts[i] != sliceOp.getStartIndices()[i] ||
+              sliceLimits[i] != sliceOp.getLimitIndices()[i])
+            return failure();
+        }
+      }
+
+      // Ensure that the reshape is a permutation of the slice
+      SmallVector<int64_t> srcNoSingleton, dstNoSingleton;
+      for (int64_t i = 0; i < sliceShape.size(); i++) {
+        if (i == singletonSliceDim)
+          continue;
+        srcNoSingleton.push_back(sliceShape[i]);
+      }
+      for (int64_t i = 0; i < reshapeShape.size(); i++) {
+        if (i == concatDim)
+          continue;
+        dstNoSingleton.push_back(reshapeShape[i]);
+      }
+
+      if (srcNoSingleton != dstNoSingleton)
+        return failure();
+    }
+
+    int64_t startIndex = sliceOps[0].getStartIndices()[srcSliceDim];
+    int64_t limitIndex =
+        sliceOps[sliceOps.size() - 1].getLimitIndices()[srcSliceDim];
+    sliceStarts[srcSliceDim] = startIndex;
+    sliceLimits[srcSliceDim] = limitIndex;
+
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        concatOp.getLoc(), sourceTensor, sliceStarts, sliceLimits,
+        sliceStrides);
+
+    SmallVector<int64_t> permutation(ndims, 0);
+    for (int64_t i = 0; i < ndims; i++) {
+      if (i == srcSliceDim)
+        permutation[i] = concatDim;
+      else if (i == concatDim)
+        permutation[i] = srcSliceDim;
+      else
+        permutation[i] = i;
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(concatOp, newSlice,
+                                                        permutation);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -18453,7 +18587,8 @@ struct EnzymeHLOOptPass
         NotCompare,
         SliceInternal,
         SquareAbsSimplify,
-        DivideDivideSimplify
+        DivideDivideSimplify,
+        CollapseSliceReshapeConcatToTranspose
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
