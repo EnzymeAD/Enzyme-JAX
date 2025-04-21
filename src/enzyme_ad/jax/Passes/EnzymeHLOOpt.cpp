@@ -18023,8 +18023,20 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
   }
 };
 
-struct CollapseSliceReshapeConcatToTranspose
-    : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
+// if (auto otherSlice =
+//   op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>()) {
+// if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
+// slice = rewriter.create<stablehlo::SliceOp>(
+//   slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
+//   otherSlice.getLimitIndices(), slice.getStrides());
+// changed = true;
+// i++;
+// continue;
+// } else
+// break;
+// }
+
+struct ConcatReshapeSlice : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
@@ -18070,9 +18082,11 @@ struct CollapseSliceReshapeConcatToTranspose
     SmallVector<int64_t> sliceStrides(ndims, 1);
     SmallVector<int64_t> sliceStarts, sliceLimits;
     int64_t srcSliceDim = -1;
-    int64_t lastLimitIndex = -1;
 
-    for (auto [sliceOp, reshapeOp] : llvm::zip(sliceOps, reshapeOps)) {
+    for (int i = 0; i < sliceOps.size(); i++) {
+      auto sliceOp = sliceOps[i];
+      auto reshapeOp = reshapeOps[i];
+
       auto sliceShape =
           cast<RankedTensorType>(sliceOp.getResult().getType()).getShape();
       auto reshapeShape =
@@ -18097,22 +18111,9 @@ struct CollapseSliceReshapeConcatToTranspose
         srcSliceDim = singletonSliceDim;
         sliceStarts = llvm::to_vector(sliceOp.getStartIndices());
         sliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
-        lastLimitIndex = sliceLimits[singletonSliceDim];
       } else {
-        if (srcSliceDim != singletonSliceDim)
+        if (!canMergeSlicesAlongAxis(srcSliceDim, sliceOps[i - 1], sliceOp))
           return failure();
-
-        for (int64_t i = 0; i < sliceShape.size(); i++) {
-          if (i == singletonSliceDim) {
-            if (lastLimitIndex != sliceOp.getStartIndices()[i])
-              return failure();
-            lastLimitIndex = sliceOp.getLimitIndices()[i];
-            continue;
-          }
-          if (sliceStarts[i] != sliceOp.getStartIndices()[i] ||
-              sliceLimits[i] != sliceOp.getLimitIndices()[i])
-            return failure();
-        }
       }
 
       // Ensure that the reshape is a permutation of the slice
@@ -18589,7 +18590,7 @@ struct EnzymeHLOOptPass
         SliceInternal,
         SquareAbsSimplify,
         DivideDivideSimplify,
-        CollapseSliceReshapeConcatToTranspose
+        ConcatReshapeSlice
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
