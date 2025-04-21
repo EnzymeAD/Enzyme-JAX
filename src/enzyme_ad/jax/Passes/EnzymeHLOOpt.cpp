@@ -18036,7 +18036,8 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
 // break;
 // }
 
-struct ConcatReshapeSlice : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
+struct ConcatReshapeSlice
+    : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
