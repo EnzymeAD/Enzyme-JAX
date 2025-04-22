@@ -392,6 +392,11 @@ def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
   let patterns = ["NoNanSelfSubSimplify"];
 }
 
+def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
+    "concat_reshape_slice"> {
+  let patterns = ["ConcatReshapeSlice"];
+}
+
 // benefit 65k + max_constant_expansion flag
 def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_add_sub_simplify"> {
