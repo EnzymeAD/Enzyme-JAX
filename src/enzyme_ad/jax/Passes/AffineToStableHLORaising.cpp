@@ -2037,9 +2037,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(
-                isIndex ? IntegerAttr::get(
-                              ET, cast<IntegerAttr>(constOp).getValue())
-                        : constOp.getValueAttr())));
+                isIndex
+                    ? IntegerAttr::get(
+                          ET, cast<IntegerAttr>(constOp.getValue()).getValue())
+                    : constOp.getValueAttr())));
     auto newVal = newConst.getResult();
     mapping.map(constOp.getResult(), newVal);
     maps[newVal] = accessMap;

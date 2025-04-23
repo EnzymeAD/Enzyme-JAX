@@ -526,7 +526,7 @@ public:
 
     Attribute initialValue = nullptr;
     if (!globalOp.isExternal() && !globalOp.isUninitialized()) {
-      auto elementsAttr = globalOp.getInitialValue()->cast<ElementsAttr>();
+      auto elementsAttr = cast<ElementsAttr>(*globalOp.getInitialValue());
       initialValue = elementsAttr;
 
       // For scalar memrefs, the global variable created is of the element type,
@@ -754,9 +754,8 @@ static SmallVector<NamedAttribute> convertFuncAttributes(
       convertedAttrs.reserve(attrsDict.size());
       for (const NamedAttribute &attr : attrsDict) {
         const auto convert = [&](const NamedAttribute &attr) {
-          return TypeAttr::get(
-              cast<TypeAttr>(typeConverter.convertType(attr.getValue()))
-                  .getValue());
+          return TypeAttr::get(typeConverter.convertType(
+              cast<TypeAttr>(attr.getValue()).getValue()));
         };
         if (attr.getName().getValue() ==
             LLVM::LLVMDialect::getByValAttrName()) {
