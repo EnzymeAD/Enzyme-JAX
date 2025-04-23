@@ -1036,7 +1036,7 @@ public:
 
     auto unrankedTensorType = RankedTensorType::get(
         {},
-        cast<RankedTensorType>(op->getResult(0).getType()).getElementType());
+        cast<RankedTensorType>(op.getResult(0).getType()).getElementType());
 
     Value inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);

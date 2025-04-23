@@ -3142,7 +3142,7 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
         op.getLoc(),
         TypeRange(RankedTensorType::get(
-            shape, cast<RankedTensorType>(pad.getOperand().getType())
+            shape, cast<RankedTensorType>(op->getResultTypes()[0])
                        .getElementType())),
         ValueRange(pad.getOperand()), op.getInitValues(), op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
@@ -3368,7 +3368,7 @@ struct FullReduceReshapeOrTranspose final
 
       auto changeType2 = RankedTensorType::get(
           changeType.getShape(),
-          cast<RankedTensorType>(cur->getOperand(0).getType())
+          cast<RankedTensorType>(cur->getResult(0).getType())
               .getElementType());
       auto res =
           rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
@@ -4487,7 +4487,7 @@ struct ConcatAppendingReshape final
       if (auto t = v.getDefiningOp<stablehlo::ConvertOp>()) {
         v = t.getOperand();
         converts.push_back(
-            cast<RankedTensorType>(t.getType()).getElementType());
+            cast<RankedTensorType>(v.getType()).getElementType());
       } else
         converts.push_back(nullptr);
       if (auto t = v.getDefiningOp<stablehlo::ReshapeOp>()) {
@@ -10605,7 +10605,7 @@ struct SelectOpUsedWithinIf final
     Value pred = op.getPred();
     Value result = op.getResult();
 
-    if (cast<TensorType>(result.getType()).getRank() != 0)
+    if (cast<TensorType>(pred.getType()).getRank() != 0)
       return failure();
 
     auto block = op->getBlock();
