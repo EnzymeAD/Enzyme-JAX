@@ -2256,9 +2256,7 @@ private:
   // a special cut of this graph. This function tries to modifies the boundary
   // of the push/pop to minimize the amount of memory that is live across
   // different loops.
-  //
-  // TODO: move forward and reverse to Block* to prevent domination problems.
-  static void minCutCache(Region &forward, Region &reverse,
+  static void minCutCache(Block *forward, Block *reverse,
                           SmallVector<CacheInfo> &caches,
                           PatternRewriter &rewriter) {
     if (caches.empty())
@@ -2270,7 +2268,7 @@ private:
     Graph G;
 
     LLVM_DEBUG(llvm::dbgs() << "trying min/cut\n");
-    LLVM_DEBUG(forward.getParentOp()->getParentOp()->dump());
+    LLVM_DEBUG(forward->getParentOp()->getParentOp()->dump());
 
     SmallVector<Value> worklist;
     for (auto &cache : caches) {
@@ -2286,7 +2284,7 @@ private:
     while (!worklist.empty()) {
       Value todo = worklist.pop_back_val();
 
-      if (todo.getParentRegion()->isProperAncestor(&forward)) {
+      if (todo.getParentBlock() != forward) {
         roots.insert(todo);
         continue;
       }
@@ -2306,7 +2304,6 @@ private:
 
     worklist.clear();
 
-    // SmallVector<Operation *> worklistOp;
     for (auto &info : caches) {
       // insert use of the push through the pop. These define the existing
       // forward/reverse cut that the min cut is trying to improve.
@@ -2335,7 +2332,6 @@ private:
       Value poped = info.popOp.getResult();
       G[Node(info.pushedValue())].insert(popNode);
       G[popNode].insert(Node(poped));
-      // worklistOp.push_back(info.popOp);
       worklist.push_back(poped);
     }
 
@@ -2346,7 +2342,7 @@ private:
       Value todo = worklist.pop_back_val();
 
       for (auto user : todo.getUsers()) {
-        if (!isMovable(user)) {
+        if (user->getBlock() != reverse && !isMovable(user)) {
           Required.insert(todo);
           continue;
         }
@@ -2366,42 +2362,6 @@ private:
         }
       }
     }
-
-    /*
-    // Walk Forward
-    //
-    // If any op at this point uses values which are not in the compute graph,
-    // then they acts as sinks.
-    while (!worklistOp.empty()) {
-      Operation *todo = worklistOp.pop_back_val();
-
-      if (!isa<enzyme::PopOp>(todo) &&
-          !llvm::all_of(todo->getOperands(), [&G, &forward](Value operand) {
-            return G.count(Node(operand));
-          })) {
-        LLVM_DEBUG(llvm::dbgs() << "skip: " << *todo << "\n");
-        for (Value operand : todo->getOperands()) {
-          if (G.count(Node(operand))) {
-            Required.insert(operand);
-            G[Node(operand)].clear();
-          }
-        }
-        continue;
-      }
-
-      for (Value result : todo->getResults()) {
-        G[Node(todo)].insert(Node(result));
-
-        for (Operation *user : result.getUsers()) {
-          while (user->getParentRegion() != &reverse)
-            user = user->getParentOp();
-
-          G[Node(result)].insert(Node(user));
-          worklistOp.push_back(user);
-        }
-      }
-    }
-    */
 
     if (G.empty())
       return;
@@ -2508,9 +2468,6 @@ private:
     // For all new caches, materialize the path either by moving ops from
     // forward to reverse or reverse to forward.
     for (Value newCache : newCaches) {
-      bool inForward = forward.isAncestor(newCache.getParentRegion());
-      bool inReverse = !inForward;
-
       enzyme::InitOp initOp = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(entry);
@@ -2527,12 +2484,12 @@ private:
       // TODO: This newCache value might not be available here since it might be
       //       a part of the reverse. The operations needed to create newCache
       //       in the forward should be cloned from forward to reverse.
-      assert(newCache.getParentRegion() == &forward && "todo");
+      assert(newCache.getParentBlock() == forward && "todo");
 
       pushOp = rewriter.create<enzyme::PushOp>(newCache.getLoc(),
                                                initOp.getResult(), newCache);
 
-      rewriter.setInsertionPointToStart(&reverse.front());
+      rewriter.setInsertionPointToStart(reverse);
       popOp = rewriter.create<enzyme::PopOp>(
           newCache.getLoc(), newCache.getType(), initOp.getResult());
 
@@ -2720,8 +2677,8 @@ public:
 
     // Run min cut partitioning to limit the amount of values to be cached.
     if (!caches.empty()) {
-      Region &forward = whileOp.getBody();
-      Region &reverse = otherWhileOp.getBody();
+      Block *forward = &whileOp.getBody().front();
+      Block *reverse = &otherWhileOp.getBody().front();
       minCutCache(forward, reverse, caches, rewriter);
     }
 
