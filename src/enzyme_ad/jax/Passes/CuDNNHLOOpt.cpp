@@ -29,26 +29,26 @@ using namespace mlir::enzyme;
 constexpr llvm::StringLiteral kCuDNNFusionFuncPrefix =
     "__cudnn_fused_elementwise_dot_";
 
-// TODO: use template to generalize to other elementwise ops
-// TODO: capture intermediate convert ops as well
+// TODO: We can generalize this to capture convert ops as well
+template <typename ElementwiseOpTy>
 struct DotGeneralElementwiseToCuDNNFusion
-    : public OpRewritePattern<stablehlo::AddOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public OpRewritePattern<ElementwiseOpTy> {
+  using OpRewritePattern<ElementwiseOpTy>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::AddOp elemOp,
+  LogicalResult matchAndRewrite(ElementwiseOpTy elemOp,
                                 PatternRewriter &rewriter) const override {
-    auto lhs = elemOp.getLhs();
-    auto rhs = elemOp.getRhs();
+    auto lhs = elemOp.getOperand(0);
+    auto rhs = elemOp.getOperand(1);
 
-    func::FuncOp parentFunc = elemOp->getParentOfType<func::FuncOp>();
+    func::FuncOp parentFunc = elemOp->template getParentOfType<func::FuncOp>();
     if (!parentFunc)
       return rewriter.notifyMatchFailure(elemOp, "No parent func found");
 
     if (parentFunc.getSymName().starts_with(kCuDNNFusionFuncPrefix))
       return failure();
 
-    auto lhsDotGeneral = lhs.getDefiningOp<stablehlo::DotGeneralOp>();
-    auto rhsDotGeneral = rhs.getDefiningOp<stablehlo::DotGeneralOp>();
+    auto lhsDotGeneral = lhs.template getDefiningOp<stablehlo::DotGeneralOp>();
+    auto rhsDotGeneral = rhs.template getDefiningOp<stablehlo::DotGeneralOp>();
 
     if (!lhsDotGeneral && !rhsDotGeneral)
       return failure();
@@ -70,7 +70,7 @@ struct DotGeneralElementwiseToCuDNNFusion
     if (!dotGeneral->hasOneUse())
       return failure();
 
-    ModuleOp mod = elemOp->getParentOfType<ModuleOp>();
+    ModuleOp mod = elemOp->template getParentOfType<ModuleOp>();
     if (!mod)
       return rewriter.notifyMatchFailure(elemOp, "No module found");
 
@@ -134,11 +134,11 @@ struct DotGeneralElementwiseToCuDNNFusion
           dotGeneral.getPrecisionConfigAttr(), dotGeneral.getAlgorithmAttr());
       Value newElementwise;
       if (dotGeneralIsLhs) {
-        newElementwise = rewriter.create<stablehlo::AddOp>(elemOp.getLoc(),
-                                                           newDotGeneral, arg2);
+        newElementwise = rewriter.create<ElementwiseOpTy>(elemOp.getLoc(),
+                                                          newDotGeneral, arg2);
       } else {
-        newElementwise = rewriter.create<stablehlo::AddOp>(elemOp.getLoc(),
-                                                           arg2, newDotGeneral);
+        newElementwise = rewriter.create<ElementwiseOpTy>(elemOp.getLoc(), arg2,
+                                                          newDotGeneral);
       }
       rewriter.create<func::ReturnOp>(elemOp.getLoc(), newElementwise);
     }
@@ -154,7 +154,10 @@ struct CuDNNHLOOptPass : public enzyme::impl::CuDNNHLOOptBase<CuDNNHLOOptPass> {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<DotGeneralElementwiseToCuDNNFusion>(context);
+    patterns.add<DotGeneralElementwiseToCuDNNFusion<stablehlo::AddOp>,
+                 DotGeneralElementwiseToCuDNNFusion<stablehlo::MulOp>,
+                 DotGeneralElementwiseToCuDNNFusion<stablehlo::SubtractOp>>(
+        context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
