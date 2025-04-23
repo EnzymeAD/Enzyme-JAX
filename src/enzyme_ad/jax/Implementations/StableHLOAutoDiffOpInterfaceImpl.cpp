@@ -2626,6 +2626,98 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
+struct SHLOReduceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
+                                             ReduceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+
+    stablehlo::ReduceOp reduceOp = cast<stablehlo::ReduceOp>(src);
+    if (!reduceOp)
+      return failure();
+
+    // Remap the operands
+    SmallVector<Value, 8> newReduceInputs;
+    newReduceInputs.reserve(reduceOp.getInputs().size());
+    for (auto opValue : reduceOp.getInputs())
+      newReduceInputs.push_back(mapper.lookup(opValue));
+
+    // The init value would have been batched already, we need to slice it.
+    // Constant Folding will fix it up later.
+    SmallVector<Value, 8> newReduceInits;
+    newReduceInits.reserve(reduceOp.getInitValues().size());
+    for (auto opValue : reduceOp.getInitValues()) {
+      auto batchedInit = mapper.lookup(opValue);
+
+      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
+      SmallVector<int64_t> sliceStarts(batchSizes.size());
+      SmallVector<int64_t> sliceLimits(batchSizes.size());
+      for (int i = 0; i < batchSizes.size(); i++) {
+        sliceStarts[i] = batchSizes[i] - 1;
+        sliceLimits[i] = batchSizes[i];
+      }
+
+      auto elemType =
+          cast<RankedTensorType>(batchedInit.getType()).getElementType();
+      auto slicedInit = builder.create<SliceOp>(
+          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
+          batchedInit, sliceStarts, sliceLimits, sliceStrides);
+      auto reshapedInit = builder.create<ReshapeOp>(
+          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
+          slicedInit);
+      newReduceInits.push_back(reshapedInit->getResult(0));
+    }
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduceOp.getDimensions());
+    for (int i = 0; i < reduceDims.size(); i++) {
+      reduceDims[i] += batchSizes.size();
+    }
+
+    auto newReduceOp = builder.create<stablehlo::ReduceOp>(
+        src->getLoc(), resultTypes, newReduceInputs, newReduceInits,
+        reduceDims);
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+
+      Block &oldBlock = reduceOp.getBody().front();
+      Block *newBlock = new Block();
+
+      for (BlockArgument arg : oldBlock.getArguments()) {
+        newBlock->addArgument(arg.getType(), arg.getLoc());
+      }
+
+      IRMapping regionMapper;
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        regionMapper.map(oldArg, newArg);
+      }
+
+      for (Operation &op : oldBlock) {
+        builder.setInsertionPointToEnd(newBlock);
+        builder.clone(op, regionMapper);
+      }
+
+      newReduceOp.getBody().push_back(newBlock);
+    }
+
+    for (int i = 0; i < reduceOp.getResults().size(); i++) {
+      mapper.map(src->getResult(i), newReduceOp.getResult(i));
+    }
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -2674,6 +2766,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
+    ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
