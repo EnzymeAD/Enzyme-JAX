@@ -26,6 +26,7 @@
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include <cstdint>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -2275,7 +2276,8 @@ private:
       worklist.push_back(cache.pushedValue());
     }
 
-    SetVector<Value> roots; // nodes that cannot be recomputed
+    // nodes that cannot be recomputed
+    SetVector<Value> roots;
 
     // Walk Backward
     //
@@ -2401,14 +2403,14 @@ private:
     }
     // Flow is maximum now, find vertices reachable from s
 
-    LLVM_DEBUG(llvm::dbgs() << "minCutGraph: \n";);
+    std::map<Node, Node> parent;
+    bfs(G, roots, parent);
+
+    LLVM_DEBUG(llvm::dbgs() << "residual graph: \n";);
     LLVM_DEBUG(dump(G));
 
     // Those are the new values to cache
     SetVector<Value> newCaches;
-
-    std::map<Node, Node> parent;
-    bfs(G, roots, parent);
 
     // All edges that are from a reachable vertex to non-reachable vertex in the
     // original graph are edges for the minimum cut. The set of values to cache
@@ -2437,13 +2439,6 @@ private:
       }
     }
 
-    LLVM_DEBUG({
-      llvm::dbgs() << "new caches: \n";
-      for (Value v : newCaches) {
-        v.dump();
-      }
-    });
-
     // compute path from new caches to required
     parent.clear();
     bfs(Orig, newCaches, parent);
@@ -2461,6 +2456,77 @@ private:
 
     LLVM_DEBUG(llvm::dbgs() << "revGraph:\n");
     LLVM_DEBUG(dump(revGraph));
+
+    // Refine cached values based on some heuristics
+    for (Value newCache : newCaches.takeVector()) {
+      SetVector<Value> candidates;
+
+      worklist.clear();
+      worklist.push_back(newCache);
+
+      while (!worklist.empty()) {
+        Value candidate = worklist.pop_back_val();
+
+        auto C = revGraph.find(Node(candidate));
+        if (C == revGraph.end())
+          continue;
+
+        if (C->second.size() > 1)
+          continue;
+
+        if (candidate.getParentBlock() == reverse)
+          continue; // TODO: support this
+
+        candidates.insert(candidate);
+        for (auto &N : C->second) {
+          // not eligible
+          if (N.O->getNumResults() > 1)
+            continue;
+
+          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
+        }
+      }
+
+      auto computeSizeOfType = [](Value val) -> int64_t {
+        auto T = cast<RankedTensorType>(val.getType());
+        if (!T.getElementType().isIntOrFloat())
+          return INT64_MAX;
+        int64_t sz = T.getElementType().getIntOrFloatBitWidth();
+        for (auto sh : T.getShape())
+          sz *= sh;
+        return sz;
+      };
+
+      llvm::dbgs() << "candidates: ";
+
+      Value picked = newCache;
+      int64_t curSize = computeSizeOfType(picked);
+      for (Value candidate : candidates) {
+        auto newSize = computeSizeOfType(candidate);
+        if (newSize < curSize ||
+            candidate.getDefiningOp<enzyme::PopOp>() != nullptr) {
+          curSize = newSize;
+          picked = candidate;
+        }
+
+        candidate.dump();
+      }
+
+      auto p = parent.find(Node(picked));
+      while (p != parent.end()) {
+        revGraph.erase(p->second);
+        p = parent.find(p->second);
+      }
+
+      newCaches.insert(picked);
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "new caches: \n";
+      for (Value v : newCaches) {
+        v.dump();
+      }
+    });
 
     SmallVector<CacheInfo> newCacheInfos;
     IRMapping mapping;
@@ -2484,7 +2550,7 @@ private:
       // TODO: This newCache value might not be available here since it might be
       //       a part of the reverse. The operations needed to create newCache
       //       in the forward should be cloned from forward to reverse.
-      assert(newCache.getParentBlock() == forward && "todo");
+      assert(newCache.getParentBlock() != reverse && "todo");
 
       pushOp = rewriter.create<enzyme::PushOp>(newCache.getLoc(),
                                                initOp.getResult(), newCache);
