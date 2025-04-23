@@ -1688,7 +1688,7 @@ concat_to_dus_slice_common(PatternRewriter &rewriter, Location loc,
   if (lhs) {
     starts[dimension] = rewriter.create<stablehlo::ConstantOp>(
         loc, iTy,
-        cast<ElementsAttr>(makeAttr(iTy, lhs.getStartIndices()[dimension])));
+        cast<ElementsAttr>(makeAttr(iTy, lhs.getType().getShape()[dimension])));
   }
 
   auto dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
@@ -5985,7 +5985,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
           }
         }
       }
-    } else if (isa<FloatType>(op.getType().getElementType())) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -9756,8 +9756,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -9807,7 +9806,7 @@ struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
     SmallVector<int64_t> newStartIndicesConst;
     for (auto idx : startIndices) {
-      if (cast<RankedTensorType>(idx.getType()).getElementType() != i32)
+      if (cast<RankedTensorType>(idx.getType()).getElementType() == i32)
         return failure();
 
       llvm::APInt val;
@@ -10241,9 +10240,10 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
     if (!lhsConvert && !rhsConvert)
       return failure();
 
-    auto isConvertFromBool =
-        [elemType](mlir::stablehlo::ConvertOp cvtOp) -> bool {
-      return cvtOp && elemType.isInteger(1);
+    auto isConvertFromBool = [](mlir::stablehlo::ConvertOp cvtOp) -> bool {
+      return cvtOp && cast<RankedTensorType>(cvtOp.getOperand().getType())
+                          .getElementType()
+                          .isInteger(1);
     };
 
     if (isConvertFromBool(lhsConvert) && isConvertFromBool(rhsConvert) &&
