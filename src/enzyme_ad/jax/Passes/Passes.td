@@ -519,10 +519,18 @@ def AffineCFG : Pass<"affine-cfg"> {
   ];
 }
 
+def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
+  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def OptimizeCommunication : Pass<"optimize-communication"> {
   let summary = "Optimize communication";
   let dependentDialects = [
-    "stablehlo::StablehloDialect",  
+    "stablehlo::StablehloDialect",
     "sdy::SdyDialect",
   ];
   let options =
