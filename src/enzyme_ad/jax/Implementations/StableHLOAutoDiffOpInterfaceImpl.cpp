@@ -2160,6 +2160,379 @@ public:
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
+private:
+#define DEBUG_TYPE "while-mincut"
+
+  // A node in the compute graph.
+  // Operation nodes have outgoing edges to value nodes that they produce and
+  // incoming nodes from values they take as operands.
+  struct Node {
+    Operation *O;
+    Value V;
+    enum Type {
+      NONE,
+      VAL,
+      OP,
+    } type;
+
+    Node(Operation *O) : O(O), type(OP) {};
+    Node(Value V) : V(V), type(VAL) {};
+    Node() : type(NONE) {};
+
+    bool operator<(const Node N) const {
+      if (type != N.type)
+        return type < N.type;
+      else if (type == OP)
+        return O < N.O;
+      else if (type == VAL)
+        return V.getAsOpaquePointer() < N.V.getAsOpaquePointer();
+      else
+        return true;
+    }
+    void dump() const {
+      if (type == VAL)
+        llvm::errs() << "[" << V << ", "
+                     << "Value"
+                     << "]\n";
+      else if (type == OP)
+        llvm::errs() << "[" << *O << ", "
+                     << "Operation"
+                     << "]\n";
+      else
+        llvm::errs() << "["
+                     << "NULL"
+                     << ", "
+                     << "None"
+                     << "]\n";
+    }
+  };
+
+  typedef std::map<Node, std::set<Node>> Graph;
+
+  static void dump(Graph &G) {
+    for (auto &pair : G) {
+      pair.first.dump();
+      for (const auto &N : pair.second) {
+        llvm::errs() << "\t";
+        N.dump();
+      }
+    }
+  }
+
+  static inline void bfs(const Graph &G, const llvm::SetVector<Value> &Sources,
+                         std::map<Node, Node> &parent) {
+    std::deque<Node> q;
+    for (auto V : Sources) {
+      Node N(V);
+      parent.emplace(N, Node(nullptr));
+      q.push_back(N);
+    }
+
+    // Standard BFS Loop
+    while (!q.empty()) {
+      auto u = q.front();
+      q.pop_front();
+      auto found = G.find(u);
+      if (found == G.end())
+        continue;
+      for (auto v : found->second) {
+        if (parent.find(v) == parent.end()) {
+          q.push_back(v);
+          parent.emplace(v, u);
+        }
+      }
+    }
+  }
+
+  // Given the full forward/backward compute graph, the push/pop can be seen as
+  // a special cut of this graph. This function tries to modifies the boundary
+  // of the push/pop to minimize the amount of memory that is live across
+  // different loops.
+  //
+  // TODO: move forward and reverse to Block* to prevent domination problems.
+  static void minCutCache(Region &forward, Region &reverse,
+                          SmallVector<CacheInfo> &caches,
+                          PatternRewriter &rewriter) {
+    if (caches.empty())
+      return;
+
+    // where to build the new inits
+    Operation *entry = caches[0].initOp;
+
+    Graph G;
+
+    LLVM_DEBUG(llvm::dbgs() << "trying min/cut\n");
+    LLVM_DEBUG(forward.getParentOp()->getParentOp()->dump());
+
+    SmallVector<Value> worklist;
+    for (auto &cache : caches) {
+      worklist.push_back(cache.pushedValue());
+    }
+
+    SetVector<Value> roots; // nodes that cannot be recomputed
+
+    // Walk Backward
+    //
+    // Roots (sources) are either block arguments or values which are defined
+    // outside of forward.
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (todo.getParentRegion()->isProperAncestor(&forward)) {
+        roots.insert(todo);
+        continue;
+      }
+
+      Operation *owner = todo.getDefiningOp();
+      if (!owner) {
+        roots.insert(todo);
+        continue;
+      }
+
+      G[Node(owner)].insert(Node(todo));
+      for (Value operand : owner->getOperands()) {
+        G[Node(operand)].insert(Node(owner));
+        worklist.push_back(operand);
+      }
+    }
+
+    SmallVector<Operation *> worklistOp;
+    for (auto &info : caches) {
+      // insert use of the push through the pop. These define the existing
+      // forward/reverse cut that the min cut is trying to improve.
+      //
+      // Given the following IR:
+      //
+      // %cache = "enzyme.init"() : () -> !enzyme.Cache<f32>
+      // ^forward:
+      //   %pushed = "operation.someop"(%somevalue) : (f32) -> f32
+      //   "enzyme.push"(%cache, %pushed) : (!enzyme.Cache<f32>, f32) -> ()
+      // ^backward:
+      //   %poped = "enzyme.pop"(%cache) : (!enzyme.Cache<f32>) -> f32
+      //   %use = "operation.use"(%poped) : (f32) -> f32
+      //
+      // will result in the following graph:
+      //
+      // [%somevalue, Value]
+      //   [%pushed, Operation]
+      //     [%pushed, Value]
+      //       [%poped, Operation]
+      //         [%poped, Value]
+      //           [%use, Operation]
+      //             [%use, Value]
+      //
+      G[Node(info.pushedValue())].insert(
+          Node(static_cast<Operation *>(info.popOp)));
+      worklistOp.push_back(info.popOp);
+    }
+
+    SetVector<Value> Required;
+
+    // Walk Forward
+    //
+    // If any op at this point uses values which are not in the compute graph,
+    // then they acts as sinks.
+    while (!worklistOp.empty()) {
+      Operation *todo = worklistOp.pop_back_val();
+
+      if (!isa<enzyme::PopOp>(todo) &&
+          !llvm::all_of(todo->getOperands(), [&G, &forward](Value operand) {
+            return G.count(Node(operand));
+          })) {
+        LLVM_DEBUG(llvm::dbgs() << "skip: " << *todo << "\n");
+        for (Value operand : todo->getOperands()) {
+          if (G.count(Node(operand))) {
+            Required.insert(operand);
+            G[Node(operand)].clear();
+          }
+        }
+        continue;
+      }
+
+      for (Value result : todo->getResults()) {
+        G[Node(todo)].insert(Node(result));
+
+        for (Operation *user : result.getUsers()) {
+          while (user->getParentRegion() != &reverse)
+            user = user->getParentOp();
+
+          G[Node(result)].insert(Node(user));
+          worklistOp.push_back(user);
+        }
+      }
+    }
+
+    if (G.empty())
+      return;
+
+    LLVM_DEBUG(dump(G));
+
+    Graph Orig = G;
+
+    // Augment the flow while there is a path from source to sink
+    while (1) {
+      std::map<Node, Node> parent;
+      bfs(G, roots, parent);
+      Node end;
+      for (auto req : Required) {
+        if (parent.find(Node(req)) != parent.end()) {
+          end = Node(req);
+          break;
+        }
+      }
+      if (end.type == Node::NONE)
+        break;
+      // update residual capacities of the edges and reverse edges
+      // along the path
+      Node v = end;
+      while (1) {
+        assert(parent.find(v) != parent.end());
+        Node u = parent.find(v)->second;
+        assert(u.type != Node::NONE);
+        assert(G[u].count(v) == 1);
+        assert(G[v].count(u) == 0);
+        G[u].erase(v);
+        G[v].insert(u);
+        if (u.type == Node::VAL && roots.contains(u.V))
+          break;
+        v = u;
+      }
+    }
+    // Flow is maximum now, find vertices reachable from s
+
+    // Those are the new values to cache
+    SetVector<Value> newCaches;
+
+    std::map<Node, Node> parent;
+    bfs(G, roots, parent);
+
+    // All edges that are from a reachable vertex to non-reachable vertex in the
+    // original graph are edges for the minimum cut. The set of values to cache
+    // are the values transported along those edges (either. Value -> Operation
+    // or Operation -> Value).
+    for (auto &pair : Orig) {
+      if (parent.find(pair.first) != parent.end()) {
+        for (auto N : pair.second) {
+          if (parent.find(N) == parent.end()) {
+            Value newCache;
+            if (pair.first.type == Node::VAL) {
+              assert(N.type == Node::OP);
+              newCache = pair.first.V;
+            } else {
+              assert(N.type == Node::VAL);
+              newCache = N.V;
+            }
+            newCaches.insert(newCache);
+          }
+        }
+      }
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "new caches: \n";
+      for (Value v : newCaches) {
+        v.dump();
+      }
+    });
+
+    SmallVector<CacheInfo> newCacheInfos;
+    IRMapping mapping;
+
+    // For all new caches, materialize the path either by moving ops from
+    // forward to reverse or reverse to forward.
+    for (Value newCache : newCaches) {
+      bool inForward = forward.isAncestor(newCache.getParentRegion());
+      bool inReverse = !inForward;
+
+      enzyme::InitOp initOp = ({
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(entry);
+        rewriter.create<enzyme::InitOp>(
+            newCache.getLoc(),
+            enzyme::CacheType::get(newCache.getContext(), newCache.getType()));
+      });
+      enzyme::PushOp pushOp;
+      enzyme::PopOp popOp;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfterValue(newCache);
+
+      // TODO: This newCache value might not be available here since it might be
+      //       a part of the reverse. The operations needed to create newCache
+      //       in the forward should be cloned from forward to reverse.
+      pushOp = rewriter.create<enzyme::PushOp>(newCache.getLoc(),
+                                               initOp.getResult(), newCache);
+
+      rewriter.setInsertionPointToStart(&reverse.front());
+      popOp = rewriter.create<enzyme::PopOp>(
+          newCache.getLoc(), newCache.getType(), initOp.getResult());
+
+      mapping.map(newCache, popOp.getResult());
+
+      CacheInfo info;
+      info.initOp = initOp;
+      info.pushOp = pushOp;
+      info.popOp = popOp;
+      newCacheInfos.push_back(info);
+    }
+
+    worklist.clear();
+    worklist.assign(newCaches.begin(), newCaches.end());
+
+    // Clone ops in the reverse part using a topological sort to make sure all
+    // edges have been mapped.
+    //
+    // TODO: topo sort to make sure all operands have been mapped.
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (Required.count(todo)) {
+        rewriter.replaceAllUsesWith(todo, mapping.lookup(todo));
+        continue;
+      }
+
+      for (auto N : Orig.find(Node(todo))->second) {
+        assert(N.type == Node::OP);
+
+        // Special case for across forward/reverse boundary.
+        if (isa<enzyme::PopOp>(N.O)) {
+          rewriter.replaceAllOpUsesWith(N.O, mapping.lookup(todo));
+          continue;
+        }
+
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointAfterValue(mapping.lookup(todo));
+        Operation *newO = rewriter.clone(*N.O, mapping);
+
+        for (auto [oldRes, newRes] :
+             llvm::zip_equal(N.O->getResults(), newO->getResults()))
+          mapping.map(oldRes, newRes);
+
+        auto pair = Orig.find(N);
+        if (pair == Orig.end())
+          continue;
+
+        for (auto NN : pair->second) {
+          assert(NN.type == Node::VAL);
+          worklist.push_back(NN.V);
+        }
+      }
+    }
+
+    // Remove old caches
+    for (auto &info : caches) {
+      rewriter.eraseOp(info.popOp);
+      rewriter.eraseOp(info.pushOp);
+      rewriter.eraseOp(info.initOp);
+    }
+
+    // Set new caches
+    caches.assign(newCacheInfos.begin(), newCacheInfos.end());
+  }
+
+#undef DEBUG_TYPE
+
+public:
   LogicalResult removeEnzymeOps(Operation *op,
                                 PatternRewriter &rewriter) const {
     auto whileOp = cast<stablehlo::WhileOp>(op);
@@ -2278,6 +2651,13 @@ struct WhileOpEnzymeOpsRemover
     }
 
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
+
+    // Run min cut partitioning to limit the amount of values to be cached.
+    if (!caches.empty()) {
+      Region &forward = whileOp.getBody();
+      Region &reverse = otherWhileOp.getBody();
+      minCutCache(forward, reverse, caches, rewriter);
+    }
 
     for (auto &info : caches) {
       Value cache = info.initOp.getResult();
