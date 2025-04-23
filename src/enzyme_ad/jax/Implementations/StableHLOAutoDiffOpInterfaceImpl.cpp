@@ -2497,8 +2497,6 @@ private:
         return sz;
       };
 
-      llvm::dbgs() << "candidates: ";
-
       Value picked = newCache;
       int64_t curSize = computeSizeOfType(picked);
       for (Value candidate : candidates) {
@@ -2508,8 +2506,6 @@ private:
           curSize = newSize;
           picked = candidate;
         }
-
-        candidate.dump();
       }
 
       auto p = parent.find(Node(picked));
