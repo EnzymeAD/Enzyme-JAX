@@ -3142,8 +3142,8 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
         op.getLoc(),
         TypeRange(RankedTensorType::get(
-            shape, cast<RankedTensorType>(op->getResultTypes()[0])
-                       .getElementType())),
+            shape,
+            cast<RankedTensorType>(op->getResultTypes()[0]).getElementType())),
         ValueRange(pad.getOperand()), op.getInitValues(), op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
@@ -3368,8 +3368,7 @@ struct FullReduceReshapeOrTranspose final
 
       auto changeType2 = RankedTensorType::get(
           changeType.getShape(),
-          cast<RankedTensorType>(cur->getResult(0).getType())
-              .getElementType());
+          cast<RankedTensorType>(cur->getResult(0).getType()).getElementType());
       auto res =
           rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
                           TypeRange(changeType2), cur->getAttrs(), {}, {});
@@ -9756,7 +9755,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
