@@ -2038,7 +2038,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             unrankedTensorType,
             ArrayRef<Attribute>(
                 isIndex ? IntegerAttr::get(
-                              ET, cast<AffineConstantExpr>(constOp).getValue())
+                              ET, cast<IntegerAttr>(constOp).getValue())
                         : constOp.getValueAttr())));
     auto newVal = newConst.getResult();
     mapping.map(constOp.getResult(), newVal);
