@@ -2161,7 +2161,7 @@ struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
 private:
-#define DEBUG_TYPE "while-mincut"
+#define DEBUG_TYPE "enzymexla-stablehlo-while-mincut"
 
   // A node in the compute graph.
   // Operation nodes have outgoing edges to value nodes that they produce and
@@ -2246,6 +2246,12 @@ private:
     }
   }
 
+  // Whether or not an operation can be moved from the forward region to the
+  // reverse region or vice-versa.
+  static inline bool isMovable(Operation *op) {
+    return mlir::isPure(op) && op->getNumRegions() == 0;
+  }
+
   // Given the full forward/backward compute graph, the push/pop can be seen as
   // a special cut of this graph. This function tries to modifies the boundary
   // of the push/pop to minimize the amount of memory that is live across
@@ -2286,7 +2292,7 @@ private:
       }
 
       Operation *owner = todo.getDefiningOp();
-      if (!owner) {
+      if (!owner || !isMovable(owner)) {
         roots.insert(todo);
         continue;
       }
@@ -2298,7 +2304,9 @@ private:
       }
     }
 
-    SmallVector<Operation *> worklistOp;
+    worklist.clear();
+
+    // SmallVector<Operation *> worklistOp;
     for (auto &info : caches) {
       // insert use of the push through the pop. These define the existing
       // forward/reverse cut that the min cut is trying to improve.
@@ -2323,13 +2331,43 @@ private:
       //           [%use, Operation]
       //             [%use, Value]
       //
-      G[Node(info.pushedValue())].insert(
-          Node(static_cast<Operation *>(info.popOp)));
-      worklistOp.push_back(info.popOp);
+      Node popNode = Node(static_cast<Operation *>(info.popOp));
+      Value poped = info.popOp.getResult();
+      G[Node(info.pushedValue())].insert(popNode);
+      G[popNode].insert(Node(poped));
+      // worklistOp.push_back(info.popOp);
+      worklist.push_back(poped);
     }
 
     SetVector<Value> Required;
 
+    // Walk Forward
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      for (auto user : todo.getUsers()) {
+        if (!isMovable(user)) {
+          Required.insert(todo);
+          continue;
+        }
+
+        if (!llvm::all_of(user->getOperands(), [&G, &todo](Value operand) {
+              return operand == todo || G.count(Node(operand));
+            })) {
+          Required.insert(todo);
+          continue;
+        }
+
+        Node N(user);
+        G[Node(todo)].insert(N);
+        for (Value res : user->getResults()) {
+          G[N].insert(Node(res));
+          worklist.push_back(res);
+        }
+      }
+    }
+
+    /*
     // Walk Forward
     //
     // If any op at this point uses values which are not in the compute graph,
@@ -2363,6 +2401,7 @@ private:
         }
       }
     }
+    */
 
     if (G.empty())
       return;
@@ -2417,7 +2456,8 @@ private:
     // or Operation -> Value).
     //
     // Note: we could use more heuristics here to select the actual cached value
-    //       based on sizes, existing caches, number of users in the fwd, etc...
+    //       based on sizes, existing caches, number of users in the fwd as to
+    //       not duplicate work, etc...
     for (auto &pair : Orig) {
       if (parent.find(pair.first) != parent.end()) {
         for (auto N : pair.second) {
@@ -2444,7 +2484,7 @@ private:
       }
     });
 
-    // compute path from source to sinks
+    // compute path from new caches to required
     parent.clear();
     bfs(Orig, newCaches, parent);
 
@@ -2454,13 +2494,13 @@ private:
     for (Value req : Required) {
       auto p = parent.find(Node(req));
       while (p != parent.end()) {
-        subGraph[p->second].insert(p->first);
+        revGraph[p->second].insert(p->first);
         p = parent.find(p->second);
       }
     }
 
-    LLVM_DEBUG(llvm::dbgs() << "subGraph:\n");
-    LLVM_DEBUG(dump(subGraph));
+    LLVM_DEBUG(llvm::dbgs() << "revGraph:\n");
+    LLVM_DEBUG(dump(revGraph));
 
     SmallVector<CacheInfo> newCacheInfos;
     IRMapping mapping;
@@ -2487,6 +2527,8 @@ private:
       // TODO: This newCache value might not be available here since it might be
       //       a part of the reverse. The operations needed to create newCache
       //       in the forward should be cloned from forward to reverse.
+      assert(newCache.getParentRegion() == &forward && "todo");
+
       pushOp = rewriter.create<enzyme::PushOp>(newCache.getLoc(),
                                                initOp.getResult(), newCache);
 
@@ -2515,7 +2557,7 @@ private:
         continue;
       }
 
-      for (auto N : subGraph.find(Node(todo))->second) {
+      for (auto N : revGraph.find(Node(todo))->second) {
         assert(N.type == Node::OP);
 
         // Special case for across forward/reverse boundary.
@@ -2532,8 +2574,8 @@ private:
              llvm::zip_equal(N.O->getResults(), newO->getResults()))
           mapping.map(oldRes, newRes);
 
-        auto pair = subGraph.find(N);
-        if (pair == subGraph.end())
+        auto pair = revGraph.find(N);
+        if (pair == revGraph.end())
           continue;
 
         for (auto NN : pair->second) {
