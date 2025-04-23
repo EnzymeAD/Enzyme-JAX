@@ -80,6 +80,28 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
+                                   IRMapping &mapper,
+                                   TypeRange newResultTypes) {
+  OperationState state(op->getLoc(), op->getName());
+  state.addTypes(newResultTypes);
+
+  SmallVector<Value, 8> operands;
+  operands.reserve(op->getNumOperands());
+  for (auto opValue : op->getOperands())
+    operands.push_back(mapper.lookup(opValue));
+  state.addOperands(operands);
+
+  state.addAttributes(op->getAttrs());
+
+  for (Region &region : op->getRegions()) {
+    Region *newRegion = state.addRegion();
+    region.cloneInto(newRegion, mapper);
+  }
+
+  return builder.create(state);
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
@@ -217,7 +239,30 @@ public:
                         << ", op=" << operand.get() << ")\n";
       return failure();
     }
-    Operation *shadow = builder.clone(*orig, map);
+
+    Operation *shadow;
+    SmallVector<Type> newResultTypes;
+    if (gutils->width > 1) { // batched forward mode
+      SmallVector<Type> newResultTypes;
+      for (auto result : orig->getResults()) {
+        auto oldType = result.getType().dyn_cast<RankedTensorType>();
+        if (!oldType || !oldType.hasStaticShape()) {
+          orig->emitError("Unsupported result type for batched reduce\n");
+          return failure();
+        }
+
+        SmallVector<int64_t> newShape;
+        newShape.push_back(gutils->width); // prepend batch dim
+        newShape.append(oldType.getShape().begin(), oldType.getShape().end());
+
+        newResultTypes.push_back(
+            RankedTensorType::get(newShape, oldType.getElementType()));
+      }
+
+      shadow = cloneWithNewResultTypes(orig, builder, map, newResultTypes);
+    } else {
+      shadow = builder.clone(*orig, map);
+    }
 
     auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
     gutils->invertedPointers.erase(innerOp.getResult(0));
@@ -229,6 +274,22 @@ public:
       baToErase.set(invBA.getArgNumber());
     }
     cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+
+    if (gutils->width > 1) { // batched forward mode
+      auto dimsAttr =
+          shadow->getAttr("dimensions").dyn_cast<DenseI64ArrayAttr>();
+      if (!dimsAttr) {
+        shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
+        return failure();
+      }
+
+      SmallVector<int64_t> dims;
+      for (int64_t d : dimsAttr.asArrayRef())
+        dims.push_back(d + 1);
+
+      shadow->setAttr("dimensions",
+                      DenseI64ArrayAttr::get(builder.getContext(), dims));
+    }
 
     size_t shadowCnt = 0;
     for (auto origRes : orig->getResults()) {
