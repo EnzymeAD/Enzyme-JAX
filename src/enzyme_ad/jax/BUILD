@@ -690,6 +690,7 @@ pybind_library(
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
 
         # XLA stuff
         "@xla//xla/mlir_hlo:all_passes",
