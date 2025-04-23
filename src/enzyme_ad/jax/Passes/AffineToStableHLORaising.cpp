@@ -55,7 +55,7 @@ using namespace mlir;
 using namespace mlir::enzyme;
 
 Type makeIndexToI64(Type ty) {
-  if (ty.isa<IndexType>())
+  if (isa<IndexType>(ty))
     return IntegerType::get(ty.getContext(), 64);
 
   if (auto tenTy = dyn_cast<RankedTensorType>(ty))
@@ -137,9 +137,9 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
     auto rhs = binExpr.getRHS();
     auto lhs = binExpr.getLHS();
 
-    auto rhsConst = rhs.dyn_cast<AffineConstantExpr>();
+    auto rhsConst = dyn_cast<AffineConstantExpr>(rhs);
     auto constantSide =
-        rhsConst ? rhsConst : lhs.dyn_cast<AffineConstantExpr>();
+        rhsConst ? rhsConst : dyn_cast<AffineConstantExpr>(lhs);
     auto dynSide = rhsConst ? lhs : rhs;
 
     auto rangeDyn = computeExprRange(map, dynSide);
@@ -2011,7 +2011,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Type ET = op->getResult(0).getType();
     auto unrankedTensorType = RankedTensorType::get({}, ET);
 
-    if (!ET.isInteger() && !ET.isa<FloatType>())
+    if (!ET.isInteger() && !isa<FloatType>(ET))
       return failure();
 
     auto newConst = builder.create<stablehlo::ConstantOp>(
@@ -2032,7 +2032,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
     affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
-    auto isIndex = constOp.getType().isa<IndexType>();
+    auto isIndex = isa<IndexType>(constOp.getType());
     auto ET = isIndex ? builder.getI64Type() : constOp.getType();
     auto unrankedTensorType = RankedTensorType::get({}, ET);
     auto newConst = builder.create<stablehlo::ConstantOp>(
@@ -2436,12 +2436,12 @@ struct AffineToStableHLORaisingPass
     auto op = getOperation();
 
     op->walk([&](func::FuncOp func) {
-      auto FT = func.getFunctionType().dyn_cast<FunctionType>();
+      auto FT = dyn_cast<FunctionType>(func.getFunctionType());
 
       // Identify raised kernels which takes in memrefs instead of tensors
       if (FT &&
           llvm::all_of(FT.getInputs(),
-                       [](Type argTy) { return argTy.isa<MemRefType>(); }) &&
+                       [](Type argTy) { return isa<MemRefType>(argTy); }) &&
           FT.getNumResults() == 0) {
         funcs.push_back(func);
       }

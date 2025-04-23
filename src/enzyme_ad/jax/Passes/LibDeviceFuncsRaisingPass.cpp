@@ -161,7 +161,7 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
     if (!callee)
       return failure();
 
@@ -187,7 +187,7 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
     if (!callee)
       return failure();
 
@@ -223,7 +223,7 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
     if (!callee)
       return failure();
 

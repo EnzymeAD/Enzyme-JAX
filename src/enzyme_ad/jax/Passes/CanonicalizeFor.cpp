@@ -326,7 +326,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!step.getType().isa<IndexType>()) {
+          if (!isa<IndexType>(step.getType())) {
             step = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                                 replacement.getType(), step);
           }
@@ -366,7 +366,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!step.getType().isa<IndexType>()) {
+          if (!isa<IndexType>(step.getType())) {
             step = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                                 replacement.getType(), step);
           }
@@ -593,7 +593,7 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +    bool changed = false;
 +
 +    if (llvm::all_of(op.results(), [](Value v) {
-+          return v.getType().isa<IntegerType>() &&
++          return isa<IntegerType>(v.getType()) &&
 +                 v.getType().cast<IntegerType>().getWidth() == 1;
 +        })) {
 +      if (op.thenRegion().getBlocks().size() == 1 &&
@@ -1088,7 +1088,7 @@ bool areValuesConnected(Value startVal, Value endVal,
   if (!visited.insert(endVal).second)
     return false;
 
-  if (auto blockArg = endVal.dyn_cast<BlockArgument>()) {
+  if (auto blockArg = dyn_cast<BlockArgument>(endVal)) {
     return false;
   }
   if (Operation *defOp = endVal.getDefiningOp()) {

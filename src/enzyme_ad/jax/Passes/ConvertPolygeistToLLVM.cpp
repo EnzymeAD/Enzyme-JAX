@@ -110,7 +110,7 @@ struct Memref2PointerOpLowering
 
     auto LPT = op.getType().cast<LLVM::LLVMPointerType>();
     auto space0 = op.getSource().getType().getMemorySpaceAsInt();
-    if (transformed.getSource().getType().isa<LLVM::LLVMPointerType>()) {
+    if (isa<LLVM::LLVMPointerType>(transformed.getSource().getType())) {
       mlir::Value ptr = rewriter.create<LLVM::BitcastOp>(
           loc, LLVM::LLVMPointerType::get(op.getContext(), space0),
           transformed.getSource());
@@ -966,8 +966,8 @@ struct ReconcileUnrealizedPointerCasts
       return failure();
     auto inputTy = inputs[0].getType();
     auto outputTy = results[0].getType();
-    if (!(inputTy.isa<LLVM::LLVMPointerType>() &&
-          outputTy.isa<LLVM::LLVMPointerType>()))
+    if (!(isa<LLVM::LLVMPointerType>(inputTy) &&
+          isa<LLVM::LLVMPointerType>(outputTy)))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(ucc, outputTy, inputs[0]);
     return success();

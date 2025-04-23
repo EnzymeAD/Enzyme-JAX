@@ -131,7 +131,7 @@ private:
 };
 
 static bool isAffineForArg(Value val) {
-  if (!val.isa<BlockArgument>())
+  if (!isa<BlockArgument>(val))
     return false;
   Operation *parentOp = val.cast<BlockArgument>().getOwner()->getParentOp();
   return (
@@ -1215,13 +1215,13 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   }
   assert(rhs.size());
   for (auto &lhspack : lhs)
-    if (!lhspack.getType().isa<IndexType>()) {
+    if (!isa<IndexType>(lhspack.getType())) {
       lhspack = b.create<arith::IndexCastOp>(
           cmpi.getLoc(), IndexType::get(cmpi.getContext()), lhspack);
     }
 
   for (auto &rhspack : rhs)
-    if (!rhspack.getType().isa<IndexType>()) {
+    if (!isa<IndexType>(rhspack.getType())) {
       rhspack = b.create<arith::IndexCastOp>(
           cmpi.getLoc(), IndexType::get(cmpi.getContext()), rhspack);
     }
@@ -2148,10 +2148,10 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
     bool knownFalse = false;
     bool removed = false;
     for (auto cst : llvm::enumerate(op.getIntegerSet().getConstraints())) {
-      auto opd = cst.value().dyn_cast<AffineConstantExpr>();
+      auto opd = dyn_cast<AffineConstantExpr>(cst.value());
       if (!opd) {
         if (op.getIntegerSet().isEq(cst.index())) {
-          if (auto bop = cst.value().dyn_cast<AffineBinaryOpExpr>()) {
+          if (auto bop = dyn_cast<AffineBinaryOpExpr>(cst.value())) {
             if (bop.getKind() == AffineExprKind::Mul &&
                 bop.getRHS().getKind() == AffineExprKind::Constant) {
               removed = true;
@@ -2207,8 +2207,8 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
             for (auto tup : llvm::enumerate(paren.getSteps())) {
               bool found = false;
               for (auto ub : paren.getUpperBoundMap(tup.index()).getResults()) {
-                if (auto exprS = expr.dyn_cast<AffineSymbolExpr>()) {
-                  if (auto ubS = ub.dyn_cast<AffineSymbolExpr>()) {
+                if (auto exprS = dyn_cast<AffineSymbolExpr>(expr)) {
+                  if (auto ubS = dyn_cast<AffineSymbolExpr>(ub)) {
                     if (op.getOperands()[exprS.getPosition() +
                                          op.getIntegerSet().getNumDims()] ==
                         paren.getUpperBoundsOperands()[ubS.getPosition() +
@@ -2231,7 +2231,7 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
               break;
             }
           }
-          if (auto bop = cst.value().dyn_cast<AffineBinaryOpExpr>()) {
+          if (auto bop = dyn_cast<AffineBinaryOpExpr>(cst.value())) {
             if (bop.getKind() == AffineExprKind::Add) {
             }
           }
@@ -2696,11 +2696,11 @@ struct MergeNestedAffineParallelIf
         while (todo.size()) {
           auto cur = todo.back();
           todo.pop_back();
-          if (cur.isa<AffineConstantExpr>() || cur.isa<AffineSymbolExpr>()) {
+          if (isa<AffineConstantExpr, AffineSymbolExpr>(cur)) {
             rhs = rhs + cur;
             continue;
           }
-          if (auto dim = cur.dyn_cast<AffineDimExpr>()) {
+          if (auto dim = dyn_cast<AffineDimExpr>(cur)) {
             auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
             if (!ival || ival.getOwner()->getParentOp() != op) {
               rhs = rhs + dim;
@@ -2716,20 +2716,19 @@ struct MergeNestedAffineParallelIf
                 getAffineConstantExpr(1, op.getContext());
             continue;
           }
-          if (auto bop = cur.dyn_cast<AffineBinaryOpExpr>()) {
+          if (auto bop = dyn_cast<AffineBinaryOpExpr>(cur)) {
             if (bop.getKind() == AffineExprKind::Add) {
               todo.push_back(bop.getLHS());
               todo.push_back(bop.getRHS());
               continue;
             }
             if (bop.getKind() == AffineExprKind::Mul) {
-              if (!(bop.getRHS().isa<AffineConstantExpr>() ||
-                    bop.getRHS().isa<AffineSymbolExpr>())) {
+              if (!isa<AffineConstantExpr, AffineSymbolExpr>(bop.getRHS())) {
                 legal = false;
                 continue;
               }
 
-              if (auto dim = bop.getLHS().dyn_cast<AffineDimExpr>()) {
+              if (auto dim = dyn_cast<AffineDimExpr>(bop.getLHS())) {
                 auto ival =
                     dyn_cast<BlockArgument>(operands[dim.getPosition()]);
                 if (!ival || ival.getOwner()->getParentOp() != op) {
@@ -2772,7 +2771,7 @@ struct MergeNestedAffineParallelIf
         continue;
       }
       auto pair = *indUsage.begin();
-      auto affCst = pair.second.dyn_cast<AffineConstantExpr>();
+      auto affCst = dyn_cast<AffineConstantExpr>(pair.second);
       if (!affCst) {
         remaining.push_back(cst.value());
         isEq.push_back(innerOp.getIntegerSet().isEq(cst.index()));
@@ -2795,10 +2794,10 @@ struct MergeNestedAffineParallelIf
         for (size_t i = 0; i < pair.first; i++)
           off += uboundGroup[i];
 
-        if (auto newCst = rhs.dyn_cast<AffineConstantExpr>()) {
+        if (auto newCst = dyn_cast<AffineConstantExpr>(rhs)) {
           bool seen = false;
           for (size_t i = 0; i < uboundGroup[pair.first]; i++) {
-            if (auto oldCst = ubounds[off + i].dyn_cast<AffineConstantExpr>()) {
+            if (auto oldCst = dyn_cast<AffineConstantExpr>(ubounds[off + i])) {
               seen = true;
               if (newCst.getValue() < oldCst.getValue())
                 ubounds[off + i] = rhs;
@@ -2825,7 +2824,7 @@ struct MergeNestedAffineParallelIf
 
           bool seen = false;
           for (size_t i = 0; i < lboundGroup[pair.first]; i++) {
-            if (auto oldCst = lbounds[off + i].dyn_cast<AffineConstantExpr>()) {
+            if (auto oldCst = dyn_cast<AffineConstantExpr>(lbounds[off + i])) {
               if (cst.getValue() <= oldCst.getValue()) {
                 seen = true;
               } else if ((cst.getValue() - oldCst.getValue()) %
@@ -3121,7 +3120,7 @@ struct SplitParallelInductions
       bool legal = true;
 
       for (auto lb : op.getLowerBoundMap(iv.getArgNumber()).getResults()) {
-        if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
+        if (auto cst = dyn_cast<AffineConstantExpr>(lb)) {
           if (cst.getValue() != 0) {
             legal = false;
             break;
@@ -3139,7 +3138,7 @@ struct SplitParallelInductions
           break;
         }
         seenub = true;
-        if (!ub.isa<AffineConstantExpr>()) {
+        if (!isa<AffineConstantExpr>(ub)) {
           legal = false;
         }
       }
@@ -3602,11 +3601,11 @@ struct MergeParallelInductions
       while (todo.size()) {
         auto cur = todo.back();
         todo.pop_back();
-        if (cur.isa<AffineConstantExpr>() || cur.isa<AffineSymbolExpr>()) {
+        if (isa<AffineConstantExpr, AffineSymbolExpr>(cur)) {
           rhs = rhs + cur;
           continue;
         }
-        if (auto dim = cur.dyn_cast<AffineDimExpr>()) {
+        if (auto dim = dyn_cast<AffineDimExpr>(cur)) {
           auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
           if (!ival || ival.getOwner()->getParentOp() != op) {
             rhs = rhs + dim;
@@ -3620,20 +3619,19 @@ struct MergeParallelInductions
               getAffineConstantExpr(1, op.getContext());
           continue;
         }
-        if (auto bop = cur.dyn_cast<AffineBinaryOpExpr>()) {
+        if (auto bop = dyn_cast<AffineBinaryOpExpr>(cur)) {
           if (bop.getKind() == AffineExprKind::Add) {
             todo.push_back(bop.getLHS());
             todo.push_back(bop.getRHS());
             continue;
           }
           if (bop.getKind() == AffineExprKind::Mul) {
-            if (!(bop.getRHS().isa<AffineConstantExpr>() ||
-                  bop.getRHS().isa<AffineSymbolExpr>())) {
+            if (!isa<AffineConstantExpr, AffineSymbolExpr>(bop.getRHS())) {
               legal = false;
               continue;
             }
 
-            if (auto dim = bop.getLHS().dyn_cast<AffineDimExpr>()) {
+            if (auto dim = dyn_cast<AffineDimExpr>(bop.getLHS())) {
               auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
               if (!ival || ival.getOwner()->getParentOp() != op) {
                 rhs = rhs + bop;
@@ -3666,7 +3664,7 @@ struct MergeParallelInductions
       bool legal = true;
 
       for (auto lb : op.getLowerBoundMap(iv.getArgNumber()).getResults()) {
-        if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
+        if (auto cst = dyn_cast<AffineConstantExpr>(lb)) {
           if (cst.getValue() != 0) {
             legal = false;
             break;
@@ -3679,12 +3677,12 @@ struct MergeParallelInductions
       auto ubMap = op.getUpperBoundMap(iv.getArgNumber());
       if (ubMap.getNumResults() == 1) {
         auto ub = ubMap.getResult(0);
-        if (auto cst = ub.dyn_cast<AffineConstantExpr>()) {
+        if (auto cst = dyn_cast<AffineConstantExpr>(ub)) {
           fixedUpperBounds.push_back(ValueOrInt(cst.getValue()));
-        } else if (auto dim = ub.dyn_cast<AffineDimExpr>()) {
+        } else if (auto dim = dyn_cast<AffineDimExpr>(ub)) {
           fixedUpperBounds.push_back(
               ValueOrInt(op.getUpperBoundsOperands()[dim.getPosition()]));
-        } else if (auto sym = ub.dyn_cast<AffineSymbolExpr>()) {
+        } else if (auto sym = dyn_cast<AffineSymbolExpr>(ub)) {
           fixedUpperBounds.push_back(ValueOrInt(
               op.getUpperBoundsOperands()[op.getUpperBoundsMap().getNumDims() +
                                           sym.getPosition()]));
@@ -4741,7 +4739,7 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
       bool legal = true;
 
       for (auto lb : par.getLowerBoundMap(iv.getArgNumber()).getResults()) {
-        if (auto cst = lb.dyn_cast<AffineConstantExpr>()) {
+        if (auto cst = dyn_cast<AffineConstantExpr>(lb)) {
           if (cst.getValue() != 0) {
             return failure();
           }
@@ -5308,7 +5306,7 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
 bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
               ValueOrInt val) {
 
-  if (auto opd = expr.dyn_cast<AffineConstantExpr>()) {
+  if (auto opd = dyn_cast<AffineConstantExpr>(expr)) {
     switch (cmp) {
     case Cmp::EQ:
       return val == opd.getValue();
@@ -5322,14 +5320,14 @@ bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
       return val <= opd.getValue();
     }
   }
-  if (auto opd = expr.dyn_cast<AffineDimExpr>()) {
+  if (auto opd = dyn_cast<AffineDimExpr>(expr)) {
     return valueCmp(cmp, operands[opd.getPosition()], val);
   }
-  if (auto opd = expr.dyn_cast<AffineSymbolExpr>()) {
+  if (auto opd = dyn_cast<AffineSymbolExpr>(expr)) {
     return valueCmp(cmp, operands[opd.getPosition() + numDim], val);
   }
 
-  if (auto bop = expr.dyn_cast<AffineBinaryOpExpr>()) {
+  if (auto bop = dyn_cast<AffineBinaryOpExpr>(expr)) {
     if (bop.getKind() == AffineExprKind::Add) {
       switch (cmp) {
       case Cmp::EQ:

@@ -730,7 +730,7 @@ private:
     if (!cond)
       return builder.getI64Type();
 
-    auto lhsType = cond.getOperand(0).getType().dyn_cast<RankedTensorType>();
+    auto lhsType = cast<RankedTensorType>(cond.getOperand(0).getType());
     if (!lhsType)
       return builder.getI64Type();
 

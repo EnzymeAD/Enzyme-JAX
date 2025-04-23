@@ -594,7 +594,7 @@ public:
     auto dstTy = dst.getSource().getType().cast<MemRefType>();
     Type elTy = dstTy.getElementType();
 
-    if (!elTy.isa<IntegerType, FloatType>())
+    if (!isa<IntegerType, FloatType>(elTy))
       return failure();
 
     size_t width = 1;

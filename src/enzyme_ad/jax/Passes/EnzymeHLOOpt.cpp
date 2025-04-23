@@ -2599,7 +2599,7 @@ struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
     // Find which dimension has window size > 1 (the reduction dimension)
     int64_t reductionDim = -1;
     auto inputType =
-        reduceWindow.getInputs()[0].getType().dyn_cast<ShapedType>();
+        dyn_cast<ShapedType>(reduceWindow.getInputs()[0].getType());
     if (!inputType || !inputType.hasStaticShape())
       return failure();
     ArrayRef<int64_t> inputShape = inputType.getShape();
@@ -3201,9 +3201,9 @@ struct ConvertConvertFloat final
       return failure();
 
     auto prev = conv0.getOperand();
-    if (prev.getType().getElementType().isa<FloatType>() &&
-        op.getType().getElementType().isa<FloatType>() &&
-        conv0.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(prev.getType().getElementType()) &&
+        isa<FloatType>(op.getType().getElementType()) &&
+        isa<FloatType>(conv0.getType().getElementType())) {
       if (prev.getType() == op.getType()) {
         rewriter.replaceOp(op, prev);
         return success();
@@ -5281,7 +5281,7 @@ struct ScatterToDynamicUpdateSlice final
     Value update = nullptr;
     DenseElementsAttr splatAttr;
 
-    auto retop = innerOp.getOperand(0).dyn_cast<BlockArgument>();
+    auto retop = dyn_cast<BlockArgument>(innerOp.getOperand(0));
     if (retop) {
       if (retop.getOwner() != &body)
         return failure();
@@ -5470,7 +5470,7 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5483,7 +5483,7 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -5551,7 +5551,7 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5564,7 +5564,7 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -5611,7 +5611,7 @@ struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res =
               mlir::constFoldUnaryOpConditional<FloatAttr, FloatAttr::ValueType,
                                                 void>(
@@ -5812,7 +5812,7 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5825,7 +5825,7 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -5869,7 +5869,7 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5882,7 +5882,7 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -5915,7 +5915,7 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5928,7 +5928,7 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -5956,7 +5956,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -5993,7 +5993,7 @@ struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
           }
         }
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -6866,8 +6866,7 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
-
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -6878,7 +6877,7 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -6908,8 +6907,7 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
     for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
       matchPattern(op->getOperand(i), m_Constant(&constants[i]));
 
-    if (op.getType().getElementType().isa<FloatType>()) {
-
+    if (isa<FloatType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<FloatAttr,
                                                   FloatAttr::ValueType, void>(
               constants,
@@ -6920,7 +6918,7 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
             op, op.getType(), res.cast<ElementsAttr>());
         return success();
       }
-    } else if (op.getType().getElementType().isa<IntegerType>()) {
+    } else if (isa<IntegerType>(op.getType().getElementType())) {
       if (auto res = constFoldBinaryOpConditional<IntegerAttr,
                                                   IntegerAttr::ValueType, void>(
               constants,
@@ -9141,12 +9139,12 @@ struct ReshapeReduceWindow final
         }))
       return failure();
 
-    auto reduceWindowType = reduceWindow.getType(0).dyn_cast<ShapedType>();
+    auto reduceWindowType = dyn_cast<ShapedType>(reduceWindow.getType(0));
     if (!reduceWindowType || !reduceWindowType.hasStaticShape())
       return failure();
     ArrayRef<int64_t> reduceWindowShape = reduceWindowType.getShape();
 
-    auto reshapeType = reshapeOp.getType().dyn_cast<ShapedType>();
+    auto reshapeType = dyn_cast<ShapedType>(reshapeOp.getType());
     if (!reshapeType || !reshapeType.hasStaticShape())
       return failure();
     ArrayRef<int64_t> reshapeShape = reshapeType.getShape();
@@ -11882,7 +11880,7 @@ private:
         return false;
 
       // Check if one side is a block argument (our counter)
-      if (auto blockArg = compareOp.getLhs().dyn_cast<BlockArgument>()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(compareOp.getLhs())) {
         if (blockArg.getOwner() == &condBlock) {
           counterIdx = blockArg.getArgNumber();
           limitValue = compareOp.getRhs();
@@ -11890,7 +11888,7 @@ private:
         }
       }
 
-      if (auto blockArg = compareOp.getRhs().dyn_cast<BlockArgument>()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(compareOp.getRhs())) {
         if (blockArg.getOwner() == &condBlock) {
           counterIdx = blockArg.getArgNumber();
           limitValue = compareOp.getLhs();
@@ -12708,7 +12706,7 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
 
   // Verify the slices are taking border elements
   // Get the shapes
-  auto middleTensorType = middleTensor.getType().dyn_cast<RankedTensorType>();
+  auto middleTensorType = dyn_cast<RankedTensorType>(middleTensor.getType());
   if (!middleTensorType || !middleTensorType.hasStaticShape())
     return nullptr;
 
@@ -14619,7 +14617,7 @@ struct DynamicGatherOpIsNotDynamic
 
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
-  auto type = t.dyn_cast<RankedTensorType>();
+  auto type = dyn_cast<RankedTensorType>(t);
   if (type && type.hasStaticShape() && type.getNumElements() == 0)
     return type;
   return std::nullopt;
@@ -15101,7 +15099,7 @@ struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
     auto scatterIndices = op.getScatterIndices();
     Attribute scatterIndicesAttr;
     if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
-      auto denseAttr = scatterIndicesAttr.dyn_cast<DenseIntElementsAttr>();
+      auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
 
       auto shape = scatterIndices.getType().cast<ShapedType>().getShape();
       if (shape.empty())
@@ -17980,11 +17978,11 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
       return failure();
 
     auto operand = absOp.getOperand();
-    auto operandType = operand.getType().dyn_cast<RankedTensorType>();
+    auto operandType = dyn_cast<RankedTensorType>(operand.getType());
     if (!operandType)
       return failure();
 
-    if (operandType.getElementType().isa<ComplexType>()) {
+    if (isa<ComplexType>(operandType.getElementType())) {
       // abs(z)^2 = real(z * conj(z)) -- only applied if abs(z) is used in this
       // operation
       if (!isOnlyUsedInOperation(absOp, op))
