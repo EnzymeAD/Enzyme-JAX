@@ -255,7 +255,7 @@ public:
     if (gutils->width > 1) { // batched forward mode
       SmallVector<Type> newResultTypes;
       for (auto result : orig->getResults()) {
-        auto oldType = result.getType().dyn_cast<RankedTensorType>();
+        auto oldType = dyn_cast<RankedTensorType>(result.getType());
         if (!oldType || !oldType.hasStaticShape()) {
           orig->emitError("Unsupported result type for batched reduce\n");
           return failure();
@@ -287,7 +287,7 @@ public:
 
     if (gutils->width > 1) { // batched forward mode
       auto dimsAttr =
-          shadow->getAttr("dimensions").dyn_cast<DenseI64ArrayAttr>();
+          dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
       if (!dimsAttr) {
         shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
         return failure();
