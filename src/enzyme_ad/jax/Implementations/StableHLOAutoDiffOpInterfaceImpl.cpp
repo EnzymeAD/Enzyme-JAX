@@ -80,6 +80,28 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
+                                   IRMapping &mapper,
+                                   TypeRange newResultTypes) {
+  OperationState state(op->getLoc(), op->getName());
+  state.addTypes(newResultTypes);
+
+  SmallVector<Value, 8> operands;
+  operands.reserve(op->getNumOperands());
+  for (auto opValue : op->getOperands())
+    operands.push_back(mapper.lookup(opValue));
+  state.addOperands(operands);
+
+  state.addAttributes(op->getAttrs());
+
+  for (Region &region : op->getRegions()) {
+    Region *newRegion = state.addRegion();
+    region.cloneInto(newRegion, mapper);
+  }
+
+  return builder.create(state);
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
@@ -217,7 +239,30 @@ public:
                         << ", op=" << operand.get() << ")\n";
       return failure();
     }
-    Operation *shadow = builder.clone(*orig, map);
+
+    Operation *shadow;
+    SmallVector<Type> newResultTypes;
+    if (gutils->width > 1) { // batched forward mode
+      SmallVector<Type> newResultTypes;
+      for (auto result : orig->getResults()) {
+        auto oldType = result.getType().dyn_cast<RankedTensorType>();
+        if (!oldType || !oldType.hasStaticShape()) {
+          orig->emitError("Unsupported result type for batched reduce\n");
+          return failure();
+        }
+
+        SmallVector<int64_t> newShape;
+        newShape.push_back(gutils->width); // prepend batch dim
+        newShape.append(oldType.getShape().begin(), oldType.getShape().end());
+
+        newResultTypes.push_back(
+            RankedTensorType::get(newShape, oldType.getElementType()));
+      }
+
+      shadow = cloneWithNewResultTypes(orig, builder, map, newResultTypes);
+    } else {
+      shadow = builder.clone(*orig, map);
+    }
 
     auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
     gutils->invertedPointers.erase(innerOp.getResult(0));
@@ -229,6 +274,22 @@ public:
       baToErase.set(invBA.getArgNumber());
     }
     cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+
+    if (gutils->width > 1) { // batched forward mode
+      auto dimsAttr =
+          shadow->getAttr("dimensions").dyn_cast<DenseI64ArrayAttr>();
+      if (!dimsAttr) {
+        shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
+        return failure();
+      }
+
+      SmallVector<int64_t> dims;
+      for (int64_t d : dimsAttr.asArrayRef())
+        dims.push_back(d + 1);
+
+      shadow->setAttr("dimensions",
+                      DenseI64ArrayAttr::get(builder.getContext(), dims));
+    }
 
     size_t shadowCnt = 0;
     for (auto origRes : orig->getResults()) {
@@ -2626,6 +2687,98 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
+struct SHLOReduceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
+                                             ReduceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+
+    stablehlo::ReduceOp reduceOp = cast<stablehlo::ReduceOp>(src);
+    if (!reduceOp)
+      return failure();
+
+    // Remap the operands
+    SmallVector<Value, 8> newReduceInputs;
+    newReduceInputs.reserve(reduceOp.getInputs().size());
+    for (auto opValue : reduceOp.getInputs())
+      newReduceInputs.push_back(mapper.lookup(opValue));
+
+    // The init value would have been batched already, we need to slice it.
+    // Constant Folding will fix it up later.
+    SmallVector<Value, 8> newReduceInits;
+    newReduceInits.reserve(reduceOp.getInitValues().size());
+    for (auto opValue : reduceOp.getInitValues()) {
+      auto batchedInit = mapper.lookup(opValue);
+
+      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
+      SmallVector<int64_t> sliceStarts(batchSizes.size());
+      SmallVector<int64_t> sliceLimits(batchSizes.size());
+      for (int i = 0; i < batchSizes.size(); i++) {
+        sliceStarts[i] = batchSizes[i] - 1;
+        sliceLimits[i] = batchSizes[i];
+      }
+
+      auto elemType =
+          cast<RankedTensorType>(batchedInit.getType()).getElementType();
+      auto slicedInit = builder.create<SliceOp>(
+          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
+          batchedInit, sliceStarts, sliceLimits, sliceStrides);
+      auto reshapedInit = builder.create<ReshapeOp>(
+          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
+          slicedInit);
+      newReduceInits.push_back(reshapedInit->getResult(0));
+    }
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduceOp.getDimensions());
+    for (int i = 0; i < reduceDims.size(); i++) {
+      reduceDims[i] += batchSizes.size();
+    }
+
+    auto newReduceOp = builder.create<stablehlo::ReduceOp>(
+        src->getLoc(), resultTypes, newReduceInputs, newReduceInits,
+        reduceDims);
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+
+      Block &oldBlock = reduceOp.getBody().front();
+      Block *newBlock = new Block();
+
+      for (BlockArgument arg : oldBlock.getArguments()) {
+        newBlock->addArgument(arg.getType(), arg.getLoc());
+      }
+
+      IRMapping regionMapper;
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        regionMapper.map(oldArg, newArg);
+      }
+
+      for (Operation &op : oldBlock) {
+        builder.setInsertionPointToEnd(newBlock);
+        builder.clone(op, regionMapper);
+      }
+
+      newReduceOp.getBody().push_back(newBlock);
+    }
+
+    for (int i = 0; i < reduceOp.getResults().size(); i++) {
+      mapper.map(src->getResult(i), newReduceOp.getResult(i));
+    }
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -2674,6 +2827,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
+    ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
