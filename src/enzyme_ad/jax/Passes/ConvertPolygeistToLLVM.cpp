@@ -108,7 +108,7 @@ struct Memref2PointerOpLowering
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    auto LPT = op.getType().cast<LLVM::LLVMPointerType>();
+    auto LPT = cast<LLVM::LLVMPointerType>(op.getType());
     auto space0 = op.getSource().getType().getMemorySpaceAsInt();
     if (isa<LLVM::LLVMPointerType>(transformed.getSource().getType())) {
       mlir::Value ptr = rewriter.create<LLVM::BitcastOp>(
@@ -750,12 +750,13 @@ static SmallVector<NamedAttribute> convertFuncAttributes(
       // LLVMFuncOp conversion these types may have changed. Account for that
       // change by converting attributes' types as well.
       SmallVector<NamedAttribute, 4> convertedAttrs;
-      auto attrsDict = argAttrDicts[i].cast<DictionaryAttr>();
+      auto attrsDict = cast<DictionaryAttr>(argAttrDicts[i]);
       convertedAttrs.reserve(attrsDict.size());
       for (const NamedAttribute &attr : attrsDict) {
         const auto convert = [&](const NamedAttribute &attr) {
-          return TypeAttr::get(typeConverter.convertType(
-              attr.getValue().cast<TypeAttr>().getValue()));
+          return TypeAttr::get(
+              cast<TypeAttr>(typeConverter.convertType(attr.getValue()))
+                  .getValue());
         };
         if (attr.getName().getValue() ==
             LLVM::LLVMDialect::getByValAttrName()) {
@@ -866,7 +867,7 @@ public:
     LLVM::Linkage linkage = LLVM::Linkage::External;
     if (funcOp->hasAttr(kLLVMLinkageAttrName)) {
       auto attr =
-          funcOp->getAttr(kLLVMLinkageAttrName).cast<mlir::LLVM::LinkageAttr>();
+          cast<mlir::LLVM::LinkageAttr>(funcOp->getAttr(kLLVMLinkageAttrName));
       linkage = attr.getLinkage();
     }
     auto newFuncOp = rewriter.create<LLVM::LLVMFuncOp>(

@@ -133,7 +133,7 @@ private:
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
     return false;
-  Operation *parentOp = val.cast<BlockArgument>().getOwner()->getParentOp();
+  Operation *parentOp = cast<BlockArgument>(val).getOwner()->getParentOp();
   return (
       isa_and_nonnull<affine::AffineForOp, affine::AffineParallelOp>(parentOp));
 }
@@ -296,7 +296,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         if (front)
           assert(front->getBlock());
       } else {
-        auto BA = o.cast<BlockArgument>();
+        auto BA = cast<BlockArgument>(o);
         if (index && isAffineForArg(BA)) {
         } else if (!isValidSymbolInt(o, /*recur*/ false)) {
           operationContext.pop_back();
@@ -672,8 +672,7 @@ AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
   if (inserted) {
     reorderedDims.push_back(v);
   }
-  return getAffineDimExpr(iterPos->second, v.getContext())
-      .cast<AffineDimExpr>();
+  return cast<AffineDimExpr>(getAffineDimExpr(iterPos->second, v.getContext()));
 }
 
 static void composeAffineMapAndOperands(AffineMap *map,
@@ -744,7 +743,7 @@ void fully2ComposeAffineMapAndOperands(PatternRewriter &builder, AffineMap *map,
       if (auto *o = op.getDefiningOp())
         toInsert = o->getNextNode();
       else {
-        auto BA = op.cast<BlockArgument>();
+        auto BA = cast<BlockArgument>(op);
         toInsert = &BA.getOwner()->front();
       }
 
@@ -799,7 +798,7 @@ void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
       if (auto *o = op.getDefiningOp())
         toInsert = o->getNextNode();
       else {
-        auto BA = op.cast<BlockArgument>();
+        auto BA = cast<BlockArgument>(op);
         toInsert = &BA.getOwner()->front();
       }
 
@@ -1406,7 +1405,7 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
       }
     }
 
-    auto memrefType = load.getMemRef().getType().cast<MemRefType>();
+    auto memrefType = cast<MemRefType>(load.getMemRef().getType());
     int64_t rank = memrefType.getRank();
 
     // Create identity map for memrefs with at least one dimension or () -> ()
@@ -1449,7 +1448,7 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
     if (!llvm::all_of(store.getIndices(), isValidIndex))
       return failure();
 
-    auto memrefType = store.getMemRef().getType().cast<MemRefType>();
+    auto memrefType = cast<MemRefType>(store.getMemRef().getType());
     int64_t rank = memrefType.getRank();
 
     // Create identity map for memrefs with at least one dimension or () -> ()
@@ -2155,7 +2154,7 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
             if (bop.getKind() == AffineExprKind::Mul &&
                 bop.getRHS().getKind() == AffineExprKind::Constant) {
               removed = true;
-              if (bop.getRHS().cast<AffineConstantExpr>().getValue() != 0) {
+              if (cast<AffineConstantExpr>(bop.getRHS()).getValue() != 0) {
                 todo.push_back(bop.getLHS());
                 eqFlags.push_back(op.getIntegerSet().isEq(cst.index()));
               }
@@ -3446,10 +3445,10 @@ struct SplitParallelInductions
                      minorExpr = mlir::getAffineDimExpr(oldMap.getNumDims(),
                                                         iv.getContext());
 
-          dimDescriptors[majorExpr.cast<AffineDimExpr>().getPosition()] =
+          dimDescriptors[cast<AffineDimExpr>(majorExpr).getPosition()] =
               AffineDimDescriptor(
                   0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
-          dimDescriptors[minorExpr.cast<AffineDimExpr>().getPosition()] =
+          dimDescriptors[cast<AffineDimExpr>(minorExpr).getPosition()] =
               AffineDimDescriptor(0, base.i_val, 1);
 
           return optimizeMap(
@@ -3496,10 +3495,10 @@ struct SplitParallelInductions
             SmallVector<AffineDimDescriptor> dimDescriptors(
                 is.getNumDims() + 1, AffineDimDescriptor());
 
-            dimDescriptors[majorExpr.cast<AffineDimExpr>().getPosition()] =
+            dimDescriptors[cast<AffineDimExpr>(majorExpr).getPosition()] =
                 AffineDimDescriptor(
                     0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
-            dimDescriptors[minorExpr.cast<AffineDimExpr>().getPosition()] =
+            dimDescriptors[cast<AffineDimExpr>(minorExpr).getPosition()] =
                 AffineDimDescriptor(0, base.i_val, 1);
 
             SmallVector<AffineExpr> newConstraints;

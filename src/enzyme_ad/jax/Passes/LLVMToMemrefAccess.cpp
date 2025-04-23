@@ -24,8 +24,8 @@ using PtrVal = TypedValue<LLVM::LLVMPointerType>;
 namespace mlir {
 MemRefType recoverMemRefTypeFromKernelCall(enzymexla::KernelCallOp kernelCallOp,
                                            unsigned argIndex) {
-  auto tensorType = dyn_cast<RankedTensorType>(
-      kernelCallOp.getInputs()[argIndex].getType());
+  auto tensorType =
+      dyn_cast<RankedTensorType>(kernelCallOp.getInputs()[argIndex].getType());
   if (!tensorType) {
     return nullptr;
   }

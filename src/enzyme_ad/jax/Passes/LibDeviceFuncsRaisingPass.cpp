@@ -196,8 +196,8 @@ public:
 
     auto newOp = rewriter.create<TargetOp>(
         op->getLoc(), op->getOperand(0).getType(), op->getOperands());
-    auto sourceType = op->getOperand(0).getType().cast<IntegerType>();
-    auto targetType = op->getResultTypes()[0].cast<IntegerType>();
+    auto sourceType = cast<IntegerType>(op->getOperand(0).getType());
+    auto targetType = cast<IntegerType>(op->getResultTypes()[0]);
     if (targetType.getWidth() > sourceType.getWidth()) {
       rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, targetType,
                                                   newOp->getResult(0));

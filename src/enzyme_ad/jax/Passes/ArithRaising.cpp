@@ -207,8 +207,7 @@ struct ArithRaisingPass
 
     op->walk([=](arith::MaxNumFOp maxOp) {
       // maxnumf %a,%b -> select(isnan(%a), %b, max(%a, %b))
-      if (!use_stablehlo ||
-          !isa<RankedTensorType>(maxOp.getResult().getType()))
+      if (!use_stablehlo || !isa<RankedTensorType>(maxOp.getResult().getType()))
         return;
 
       OpBuilder builder(maxOp);
@@ -223,8 +222,7 @@ struct ArithRaisingPass
     });
     op->walk([=](arith::MinNumFOp minOp) {
       // maxnumf %a,%b -> select(isnan(%a), %b, min(%a, %b))
-      if (!use_stablehlo ||
-          !isa<RankedTensorType>(minOp.getResult().getType()))
+      if (!use_stablehlo || !isa<RankedTensorType>(minOp.getResult().getType()))
         return;
 
       OpBuilder builder(minOp);
@@ -238,8 +236,7 @@ struct ArithRaisingPass
       minOp.erase();
     });
     op->walk([=](math::IsNaNOp nanOp) {
-      if (!use_stablehlo ||
-          !isa<RankedTensorType>(nanOp.getResult().getType()))
+      if (!use_stablehlo || !isa<RankedTensorType>(nanOp.getResult().getType()))
         return;
 
       OpBuilder builder(nanOp);
@@ -288,9 +285,7 @@ struct ArithRaisingPass
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
@@ -302,9 +297,7 @@ struct ArithRaisingPass
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
@@ -320,9 +313,7 @@ struct ArithRaisingPass
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
@@ -333,7 +324,7 @@ struct ArithRaisingPass
       assert(use_stablehlo);
       SmallVector<int64_t> broadcastDims;
       auto shape =
-          broadcastOp.getInput().getType().cast<TensorType>().getShape();
+          cast<TensorType>(broadcastOp.getInput().getType()).getShape();
       broadcastDims.reserve(shape.size());
       for (auto en : llvm::enumerate(shape)) {
         // original dimensions end up one further because the batch dimension

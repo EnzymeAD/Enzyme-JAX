@@ -166,7 +166,7 @@ struct ForBreakAddUpgrade : public OpRewritePattern<scf::ForOp> {
         if (ifcond == trueYield) {
           // If never used, can always pick the "continue" value
           if (res.use_empty()) {
-            auto idx = topOp.cast<OpResult>().getResultNumber();
+            auto idx = cast<OpResult>(topOp).getResultNumber();
             Value val =
                 (negated ? innerIfOp.elseYield() : innerIfOp.thenYield())
                     .getOperand(idx);
@@ -497,7 +497,7 @@ struct RemoveUnusedArgs : public OpRewritePattern<ForOp> {
     // Replace the operation's results with the new ones.
     SmallVector<Value, 4> repResults(op.getNumResults());
     for (auto en : llvm::enumerate(usedResults))
-      repResults[en.value().cast<OpResult>().getResultNumber()] =
+      repResults[cast<OpResult>(en.value()).getResultNumber()] =
           newForOp.getResult(en.index());
 
     rewriter.replaceOp(op, repResults);
@@ -706,7 +706,7 @@ public:
     if (!ifOp)
       return failure();
 
-    auto idx = op.getIn().cast<OpResult>().getResultNumber();
+    auto idx = cast<OpResult>(op.getIn()).getResultNumber();
     bool change = false;
     for (auto v :
          {ifOp.thenYield().getOperand(idx), ifOp.elseYield().getOperand(idx)}) {
@@ -1349,7 +1349,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       }
       Value res;
       if (isTopLevelArgValue(arg, &loop.getBefore())) {
-        auto blockArg = arg.cast<BlockArgument>();
+        auto blockArg = cast<BlockArgument>(arg);
         auto pos = blockArg.getArgNumber();
         res = loop.getInits()[pos];
       } else
@@ -1888,7 +1888,7 @@ struct MoveWhileInvariantIfResult : public OpRewritePattern<WhileOp> {
       if (!std::get<0>(pair).use_empty()) {
         if (auto ifOp = std::get<1>(pair).getDefiningOp<scf::IfOp>()) {
           if (ifOp.getCondition() == term.getCondition()) {
-            auto idx = std::get<1>(pair).cast<OpResult>().getResultNumber();
+            auto idx = cast<OpResult>(std::get<1>(pair)).getResultNumber();
             Value returnWith = ifOp.elseYield().getResults()[idx];
             if (!op.getBefore().isAncestor(returnWith.getParentRegion())) {
               rewriter.modifyOpInPlace(op, [&] {
