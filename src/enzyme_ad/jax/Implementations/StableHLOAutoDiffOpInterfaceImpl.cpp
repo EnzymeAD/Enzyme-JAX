@@ -2219,12 +2219,14 @@ private:
     }
   }
 
+  // parent is populated with a path from each connected leaf node of G to one
+  // of the Value in Source.
   static inline void bfs(const Graph &G, const llvm::SetVector<Value> &Sources,
                          std::map<Node, Node> &parent) {
     std::deque<Node> q;
     for (auto V : Sources) {
       Node N(V);
-      parent.emplace(N, Node(nullptr));
+      parent.emplace(N, Node());
       q.push_back(N);
     }
 
@@ -2400,6 +2402,9 @@ private:
     }
     // Flow is maximum now, find vertices reachable from s
 
+    LLVM_DEBUG(llvm::dbgs() << "minCutGraph: \n";);
+    LLVM_DEBUG(dump(G));
+
     // Those are the new values to cache
     SetVector<Value> newCaches;
 
@@ -2410,6 +2415,9 @@ private:
     // original graph are edges for the minimum cut. The set of values to cache
     // are the values transported along those edges (either. Value -> Operation
     // or Operation -> Value).
+    //
+    // Note: we could use more heuristics here to select the actual cached value
+    //       based on sizes, existing caches, number of users in the fwd, etc...
     for (auto &pair : Orig) {
       if (parent.find(pair.first) != parent.end()) {
         for (auto N : pair.second) {
@@ -2419,6 +2427,7 @@ private:
               assert(N.type == Node::OP);
               newCache = pair.first.V;
             } else {
+              assert(pair.first.type == Node::OP);
               assert(N.type == Node::VAL);
               newCache = N.V;
             }
@@ -2434,6 +2443,24 @@ private:
         v.dump();
       }
     });
+
+    // compute path from source to sinks
+    parent.clear();
+    bfs(Orig, newCaches, parent);
+
+    // The reverse graph is a sub graph of Orig with only pathes from Required
+    // to "dominating" caches.
+    Graph revGraph;
+    for (Value req : Required) {
+      auto p = parent.find(Node(req));
+      while (p != parent.end()) {
+        subGraph[p->second].insert(p->first);
+        p = parent.find(p->second);
+      }
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "subGraph:\n");
+    LLVM_DEBUG(dump(subGraph));
 
     SmallVector<CacheInfo> newCacheInfos;
     IRMapping mapping;
@@ -2479,10 +2506,7 @@ private:
     worklist.clear();
     worklist.assign(newCaches.begin(), newCaches.end());
 
-    // Clone ops in the reverse part using a topological sort to make sure all
-    // edges have been mapped.
-    //
-    // TODO: topo sort to make sure all operands have been mapped.
+    // Clone ops in the reverse graph to make sure all edges have been mapped.
     while (!worklist.empty()) {
       Value todo = worklist.pop_back_val();
 
@@ -2491,7 +2515,7 @@ private:
         continue;
       }
 
-      for (auto N : Orig.find(Node(todo))->second) {
+      for (auto N : subGraph.find(Node(todo))->second) {
         assert(N.type == Node::OP);
 
         // Special case for across forward/reverse boundary.
@@ -2508,8 +2532,8 @@ private:
              llvm::zip_equal(N.O->getResults(), newO->getResults()))
           mapping.map(oldRes, newRes);
 
-        auto pair = Orig.find(N);
-        if (pair == Orig.end())
+        auto pair = subGraph.find(N);
+        if (pair == subGraph.end())
           continue;
 
         for (auto NN : pair->second) {
