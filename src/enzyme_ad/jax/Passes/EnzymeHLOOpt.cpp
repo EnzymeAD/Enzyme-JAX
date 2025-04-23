@@ -4571,9 +4571,8 @@ template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
     auto val = pad.getOperand();
     auto val2 = rewriter.create<T>(
         op.getLoc(),
-        RankedTensorType::get(
-            val.getType().template cast<RankedTensorType>().getShape(),
-            op.getType().getElementType()),
+        RankedTensorType::get(cast<RankedTensorType>(val.getType()).getShape(),
+                              op.getType().getElementType()),
         val);
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
@@ -5320,7 +5319,7 @@ struct ScatterToDynamicUpdateSlice final
         if (v != nullptr)
           continue;
         v = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), ity, makeAttr(ity, 0).template cast<ElementsAttr>());
+            op.getLoc(), ity, cast<ElementsAttr>(makeAttr(ity, 0)));
       }
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
           op, op.getResult(0).getType(), input, update, start);
@@ -6574,7 +6573,7 @@ struct BroadcastIotaSimplify
         // find the dimension to broadcast in
         int broadcast_dim = -1;
         auto result_shape =
-            result_type.front().template cast<mlir::ShapedType>().getShape();
+            cast<mlir::ShapedType>(result_type.front()).getShape();
         auto max_dims = result_shape.size();
 
         if (broadcast.getType().getElementType().isInteger(1)) {
@@ -6735,7 +6734,7 @@ struct BroadcastIotaSimplify
               auto cmp1 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
                   rewriter.create<stablehlo::ConstantOp>(
-                      loc, ITy, cast<ElementsAttr>(makeAttr(ITy, frstTrue))),
+                      loc, ITy, cast<ElementsAttr>(makeAttr(ITy, firstTrue))),
                   stablehlo::ComparisonDirection::GE);
               auto cmp2 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -7669,7 +7668,7 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     ArrayRef<int64_t> broadcastDims = broadcast.getBroadcastDimensions();
     SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
     auto broadcastSourceType =
-        cast<TensorType>(broadcast.getSource().getType());
+        cast<TensorType>(broadcast.getOperand().getType());
     for (int64_t reductionDim : op.getDimensions()) {
       if (inputType.isDynamicDim(reductionDim))
         continue;
@@ -7768,14 +7767,14 @@ template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
       auto pval = pad.getPaddingValue();
       auto pval_cst = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), pval.getType(),
-          inp.resizeSplat(pval.getType().template cast<ShapedType>()));
+          inp.resizeSplat(cast<ShapedType>(pval.getType())));
       auto pval2 = rewriter.create<T>(op.getLoc(), (i == 0) ? pval_cst : pval,
                                       (i == 0) ? pval : pval_cst);
 
       auto val = pad.getOperand();
       auto val_cst = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), val.getType(),
-          inp.resizeSplat(val.getType().template cast<ShapedType>()));
+          inp.resizeSplat(cast<ShapedType>(val.getType())));
       auto val2 = rewriter.create<T>(op.getLoc(), (i == 0) ? val_cst : val,
                                      (i == 0) ? val : val_cst);
 
@@ -8053,37 +8052,29 @@ template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
         if (inp1 && inp2)
           continue;
 
-        auto p1val =
-            pad1 ? pad1.getPaddingValue()
-                 : rewriter.create<stablehlo::ConstantOp>(
-                       op.getLoc(), pad2.getPaddingValue().getType(),
-                       inp1.resizeSplat(pad2.getPaddingValue()
-                                            .getType()
-                                            .template cast<ShapedType>()));
-        auto p2val =
-            pad2 ? pad2.getPaddingValue()
-                 : rewriter.create<stablehlo::ConstantOp>(
-                       op.getLoc(), pad1.getPaddingValue().getType(),
-                       inp2.resizeSplat(pad1.getPaddingValue()
-                                            .getType()
-                                            .template cast<ShapedType>()));
+        auto p1val = pad1 ? pad1.getPaddingValue()
+                          : rewriter.create<stablehlo::ConstantOp>(
+                                op.getLoc(), pad2.getPaddingValue().getType(),
+                                inp1.resizeSplat(cast<ShapedType>(
+                                    pad2.getPaddingValue().getType())));
+        auto p2val = pad2 ? pad2.getPaddingValue()
+                          : rewriter.create<stablehlo::ConstantOp>(
+                                op.getLoc(), pad1.getPaddingValue().getType(),
+                                inp2.resizeSplat(cast<ShapedType>(
+                                    pad1.getPaddingValue().getType())));
 
         auto pval = rewriter.create<T>(op.getLoc(), p1val, p2val);
 
-        auto o1val =
-            pad1 ? pad1.getOperand()
-                 : rewriter.create<stablehlo::ConstantOp>(
-                       op.getLoc(), pad2.getOperand().getType(),
-                       inp1.resizeSplat(pad2.getOperand()
-                                            .getType()
-                                            .template cast<ShapedType>()));
-        auto o2val =
-            pad2 ? pad2.getOperand()
-                 : rewriter.create<stablehlo::ConstantOp>(
-                       op.getLoc(), pad1.getOperand().getType(),
-                       inp2.resizeSplat(pad1.getOperand()
-                                            .getType()
-                                            .template cast<ShapedType>()));
+        auto o1val = pad1 ? pad1.getOperand()
+                          : rewriter.create<stablehlo::ConstantOp>(
+                                op.getLoc(), pad2.getOperand().getType(),
+                                inp1.resizeSplat(cast<ShapedType>(
+                                    pad2.getOperand().getType())));
+        auto o2val = pad2 ? pad2.getOperand()
+                          : rewriter.create<stablehlo::ConstantOp>(
+                                op.getLoc(), pad1.getOperand().getType(),
+                                inp2.resizeSplat(cast<ShapedType>(
+                                    pad1.getOperand().getType())));
 
         auto val = rewriter.create<T>(op.getLoc(), o1val, o2val);
 
@@ -9079,7 +9070,7 @@ struct ReshapeOfConcatToConcatOfReshape final
     // Create reshaped operands for the concat operation
     SmallVector<Value> concatOperands;
     for (auto operand : concatOp.getOperands()) {
-      auto operandShape = cast<RankedTensorType>(operand.getType());
+      auto operandType = cast<RankedTensorType>(operand.getType());
       if (!operandType)
         return failure();
 
@@ -9833,7 +9824,7 @@ struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
          llvm::zip_equal(newStartIndicesConst, startIndices)) {
       newStartIndices.push_back(rewriter.create<stablehlo::ConstantOp>(
           idx.getLoc(), unrankedI32,
-          cast<ElementsAttr>(makeAttr(unrankedI32, val)));
+          cast<ElementsAttr>(makeAttr(unrankedI32, val))));
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
@@ -10249,7 +10240,8 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
     if (!lhsConvert && !rhsConvert)
       return failure();
 
-    auto isConvertFromBool = [](mlir::stablehlo::ConvertOp cvtOp) -> bool {
+    auto isConvertFromBool =
+        [elemType](mlir::stablehlo::ConvertOp cvtOp) -> bool {
       return cvtOp && elemType.isInteger(1);
     };
 
@@ -13603,8 +13595,8 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
               update_starts.push_back(rewriter.create<stablehlo::ConstantOp>(
                   pair.argOperand.getLoc(), itype,
                   cast<ElementsAttr>(
-                    makeAttr(itype,
-                           pair.lowerUpdateBounds[i] - pair.lowerBounds[i])));
+                      makeAttr(itype, pair.lowerUpdateBounds[i] -
+                                          pair.lowerBounds[i]))));
             }
 
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
@@ -13687,8 +13679,8 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
               update_starts.push_back(rewriter.create<stablehlo::ConstantOp>(
                   pair.argOperand.getLoc(), itype,
                   cast<ElementsAttr>(
-                    makeAttr(itype,
-                           pair.lowerUpdateBounds[i] - pair.lowerBounds[i])));
+                      makeAttr(itype, pair.lowerUpdateBounds[i] -
+                                          pair.lowerBounds[i]))));
             }
 
             newArg = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
@@ -16913,12 +16905,8 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(),
         ValueRange(op.getOperand()),
-        TypeRange(elem->getResult(0)
-                      .getType()
-                      .template cast<RankedTensorType>()
-                      .clone(op.getOperand()
-                                 .getType()
-                                 .template cast<RankedTensorType>()
+        TypeRange(cast<RankedTensorType>(elem->getResult(0).getType())
+                      .clone(cast<RankedTensorType>(op.getOperand().getType())
                                  .getShape())),
         elem->getAttrs(), {}, {});
     rewriter.replaceOpWithNewOp<EnzymeOp>(
