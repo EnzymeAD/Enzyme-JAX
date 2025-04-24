@@ -123,6 +123,19 @@ Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
 
+// Follows that of stablehlo.custom_call
+void JITCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto hasSideEffect = getHasSideEffectAttr();
+  if (hasSideEffect && !hasSideEffect.getValue())
+    return;
+  effects.emplace_back(MemoryEffects::Allocate::get());
+  effects.emplace_back(MemoryEffects::Free::get());
+  effects.emplace_back(MemoryEffects::Write::get());
+  effects.emplace_back(MemoryEffects::Read::get());
+}
+
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
 template <typename OpTy>
