@@ -370,6 +370,37 @@ public:
   }
 };
 
+class RemoveUnusedJitCall final : public OpRewritePattern<JITCallOp> {
+public:
+  using OpRewritePattern<JITCallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(JITCallOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getHasSideEffect())
+      return failure();
+
+    auto results = op.getResults();
+    if (results.size() == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    bool anyResultUsed = false;
+    for (auto result : results) {
+      if (!result.use_empty()) {
+        anyResultUsed = true;
+        break;
+      }
+    }
+
+    if (anyResultUsed)
+      return failure();
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {
   results.insert<ReadOnlyArg<KernelCallOp>, ReadNoneArg<KernelCallOp>>(context);
@@ -377,7 +408,8 @@ void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
-  results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
+  results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>,
+                 RemoveUnusedJitCall>(context);
 }
 
 /// Simplify pointer2memref(memref2pointer(x)) to cast(x)
