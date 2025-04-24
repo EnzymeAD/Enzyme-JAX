@@ -612,8 +612,8 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform a Wrap with Padding to optimize the communication">,
        Option<
-       /*C++ variable name=*/"reorder_commutative_associative",
-       /*CLI argument=*/"reorder_commutative_associative",
+       /*C++ variable name=*/"reorder_associative",
+       /*CLI argument=*/"reorder_associative",
        /*type=*/"int",
        /*default=*/"1",
        /*description=*/"Reorder associative operations to minimize communication">];
