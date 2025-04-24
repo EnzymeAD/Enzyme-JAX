@@ -3377,6 +3377,108 @@ struct ConcatToPadCommOptimize
   }
 };
 
+// See https://github.com/EnzymeAD/Enzyme-JAX/issues/854 for the motivation
+// TODO: At some point if we can come up with a cost model for this, we can do a
+//       greedy search for the best ordering
+template <typename opTy>
+struct ReorderCommutativeAssociativeOp : public OpRewritePattern<opTy> {
+  using OpRewritePattern<opTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(opTy op,
+                                PatternRewriter &rewriter) const override {
+    auto lhsOp = op.getLhs();
+    auto rhsOp = op.getRhs();
+
+    auto opSharding = mlir::sdy::getSharding(op);
+    if (!opSharding)
+      return failure();
+
+    auto lhsSharding = mlir::sdy::getSharding(lhsOp);
+    if (!lhsSharding && !lhsOp.hasOneUse())
+      return failure();
+
+    auto rhsSharding = mlir::sdy::getSharding(rhsOp);
+    if (!rhsSharding && !rhsOp.hasOneUse())
+      return failure();
+
+    // Already in the right order
+    if (lhsSharding == rhsSharding && lhsSharding == opSharding)
+      return failure();
+
+    auto lhsDefOp = lhsOp.template getDefiningOp<opTy>();
+    if (!lhsDefOp) {
+      auto rhsDefOp = rhsOp.template getDefiningOp<opTy>();
+      if (!rhsDefOp)
+        return failure();
+
+      // op a (op b c)
+      auto aOp = lhsOp;
+      auto aOpSharding = lhsSharding;
+
+      auto bOp = rhsDefOp.getLhs();
+      auto bOpSharding = mlir::sdy::getSharding(bOp);
+      if (!bOpSharding)
+        return failure();
+
+      auto cOp = rhsDefOp.getRhs();
+      auto cOpSharding = mlir::sdy::getSharding(cOp);
+      if (!cOpSharding)
+        return failure();
+
+      // TODO
+      // if (aOpSharding != bOpSharding && bOpSharding == cOpSharding && cShar
+      //   if ()
+      // }
+    } else {
+      auto rhsDefOp = rhsOp.template getDefiningOp<opTy>();
+      if (!rhsDefOp) {
+        // op (op a b) c
+        auto aOp = lhsDefOp.getLhs();
+        auto aOpSharding = mlir::sdy::getSharding(aOp);
+        if (!aOpSharding)
+          return failure();
+
+        auto bOp = lhsDefOp.getRhs();
+        auto bOpSharding = mlir::sdy::getSharding(bOp);
+        if (!bOpSharding)
+          return failure();
+
+        auto cOp = rhsOp;
+        auto cOpSharding = rhsSharding;
+
+        // good ordering
+        if (aOpSharding == bOpSharding)
+          return failure();
+
+        if (aOpSharding == cOpSharding) {
+          auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          sdy::setSharding(newOp, aOpSharding);
+          auto newFinalOp =
+              rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+          sdy::setSharding(newFinalOp, opSharding);
+          rewriter.replaceOp(op, newFinalOp); // op (op a c) b
+          return success();
+        }
+
+        if (bOpSharding == cOpSharding) {
+          auto newOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          sdy::setSharding(newOp, bOpSharding);
+          auto newFinalOp =
+              rewriter.template create<opTy>(op.getLoc(), aOp, newOp);
+          sdy::setSharding(newFinalOp, opSharding);
+          rewriter.replaceOp(op, newFinalOp); // op a (op b c)
+          return success();
+        }
+      } else {
+        // op (op a b) (op c d)
+        // TODO
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -3443,6 +3545,17 @@ struct OptimizeCommunicationPass
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+
+    if (reorder_commutative_associative > 0) {
+      patterns.add<ReorderCommutativeAssociativeOp<stablehlo::AddOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::MulOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::MinOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::MaxOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::AndOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::OrOp>,
+                   ReorderCommutativeAssociativeOp<stablehlo::XorOp>>(
+          context, PatternBenefit(reorder_commutative_associative));
+    }
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
