@@ -29,3 +29,23 @@ module @sideeffect {
     return
   }
 }
+
+module @nosideeffect_nouse {
+  llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+    llvm.return
+  }
+
+  func.func @main(%arg0: tensor<64xi64>, %arg1: tensor<32xi64>) -> (tensor<32xi64>) {
+    // CHECK-NOT: enzymexla.jit_call @foo (%arg0) {
+    %0 = enzymexla.jit_call @foo (%arg0) {
+        output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+        operand_index = 0, operand_tuple_indices = []>]
+      } : (tensor<64xi64>) -> tensor<64xi64>
+    // CHECK: enzymexla.jit_call @foo (%arg1) {
+    %1 = enzymexla.jit_call @foo (%arg1) {
+        output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+        operand_index = 0, operand_tuple_indices = []>]
+      } : (tensor<32xi64>) -> tensor<32xi64>
+    return %1 : tensor<32xi64>
+  }
+}

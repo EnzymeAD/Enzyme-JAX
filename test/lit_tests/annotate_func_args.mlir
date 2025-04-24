@@ -169,11 +169,11 @@ llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture
 
 func.func @main(%arg0: tensor<64xi64>, %arg1: tensor<32xi64>) -> (tensor<64xi64>, tensor<32xi64>) {
   %0 = enzymexla.jit_call @foo (%arg0) {
-      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [],
       operand_index = 0, operand_tuple_indices = []>]
     } : (tensor<64xi64>) -> tensor<64xi64>
   %1 = enzymexla.jit_call @foo (%arg1) {
-      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], 
+      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [],
       operand_index = 0, operand_tuple_indices = []>]
     } : (tensor<32xi64>) -> tensor<32xi64>
   return %0, %1 : tensor<64xi64>, tensor<32xi64>
