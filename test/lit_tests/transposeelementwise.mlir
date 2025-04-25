@@ -21,9 +21,9 @@ module {
 }
 
 // SINGLE-USER:  func.func @main(%arg0: tensor<100x200x300xbf16>, %arg1: tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16> {
-// SINGLE-USER-NEXT:    %0 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// SINGLE-USER-NEXT:    %1 = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// SINGLE-USER-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<300x100x200xbf16>
+// SINGLE-USER-NEXT:    %[[a1:.+]] = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// SINGLE-USER-NEXT:    %[[a0:.+]] = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// SINGLE-USER-NEXT:    %2 = stablehlo.subtract %[[a0]], %[[a1]] : tensor<300x100x200xbf16>
 // SINGLE-USER-NEXT:    return %2 : tensor<300x100x200xbf16>
 // SINGLE-USER-NEXT:  }
 // SINGLE-USER:  func.func @main2(%arg0: tensor<100x200x300xbf16>) -> tensor<300x100x200xf32> {
@@ -39,9 +39,9 @@ module {
 // SINGLE-USER-NEXT:  }
 
 // AGG:  func.func @main(%arg0: tensor<100x200x300xbf16>, %arg1: tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16> {
-// AGG-NEXT:    %0 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// AGG-NEXT:    %1 = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// AGG-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<300x100x200xbf16>
+// AGG-NEXT:    %[[a1:.+]] = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// AGG-NEXT:    %[[a0:.+]] = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// AGG-NEXT:    %2 = stablehlo.subtract %[[a0]], %[[a1]] : tensor<300x100x200xbf16>
 // AGG-NEXT:    return %2 : tensor<300x100x200xbf16>
 // AGG-NEXT:  }
 // AGG:  func.func @main2(%arg0: tensor<100x200x300xbf16>) -> tensor<300x100x200xf32> {
@@ -50,10 +50,10 @@ module {
 // AGG-NEXT:    return %1 : tensor<300x100x200xf32>
 // AGG-NEXT:  }
 // AGG:  func.func @main3(%arg0: tensor<100x200x300xbf16>, %arg1: tensor<100x200x300xbf16>) -> (tensor<300x100x200xbf16>, tensor<100x200x300xbf16>) {
-// AGG-NEXT:    %0 = stablehlo.subtract %arg0, %arg1 : tensor<100x200x300xbf16>
-// AGG-NEXT:    %1 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// AGG-NEXT:    %2 = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
-// AGG-NEXT:    %3 = stablehlo.subtract %1, %2 : tensor<300x100x200xbf16>
-// AGG-NEXT:    %4 = stablehlo.negate %0 : tensor<100x200x300xbf16>
+// AGG-NEXT:    %[[a2:.+]] = stablehlo.transpose %arg1, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// AGG-NEXT:    %[[a1:.+]] = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<100x200x300xbf16>) -> tensor<300x100x200xbf16>
+// AGG-NEXT:    %[[a0:.+]] = stablehlo.subtract %arg0, %arg1 : tensor<100x200x300xbf16>
+// AGG-NEXT:    %3 = stablehlo.subtract %[[a1]], %[[a2]] : tensor<300x100x200xbf16>
+// AGG-NEXT:    %4 = stablehlo.negate %[[a0]] : tensor<100x200x300xbf16>
 // AGG-NEXT:    return %3, %4 : tensor<300x100x200xbf16>, tensor<100x200x300xbf16>
 // AGG-NEXT:  }

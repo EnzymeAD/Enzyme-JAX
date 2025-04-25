@@ -944,6 +944,7 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         permutedStartIndices);
 
     rewriter.replaceOp(op, newDus);
+    rewriter.eraseOp(dus);
     return success();
   }
 };
@@ -2689,6 +2690,8 @@ struct TransposeDynamicSlice final
         op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
     if (!dynamicSlice)
       return failure();
+    bool singleUser = dynamicSlice->getResult(0).hasOneUse();
+    if (!singleUser) return failure();
 
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), dynamicSlice.getOperand(), op.getPermutation());
@@ -2708,6 +2711,7 @@ struct TransposeDynamicSlice final
     // Create a new dynamic slice
     rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
         op, newTranspose, startIndices, sliceSizes);
+    if (singleUser) rewriter.eraseOp(dynamicSlice);
     return success();
   }
 };
@@ -2726,6 +2730,8 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
     if (!slice)
       return failure();
+    
+    bool singleUser = slice->getResult(0).hasOneUse();
 
     // First create transpose of the slice's operand
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
@@ -2775,6 +2781,7 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         rewriter.getDenseI64ArrayAttr(permutedStrides));
 
     rewriter.replaceOp(op, newSlice);
+    if (singleUser) rewriter.eraseOp(slice);
     return success();
   }
 };
@@ -4595,6 +4602,7 @@ struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(op, val2, padval, low, high,
                                                   inner);
+    rewriter.eraseOp(pad);
     return success();
   }
 };
@@ -7517,7 +7525,6 @@ struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
       einsum.getResult().setType(transpose.getType());
     });
     rewriter.replaceAllUsesWith(transpose.getResult(), einsum.getResult());
-
     return success();
   }
 };
@@ -8855,21 +8862,36 @@ struct TransposeElementwise final
     if (!elem)
       return failure();
 
-    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
       return failure();
 
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    bool singleUser = llvm::hasSingleElement(elem->getUsers());
+    if (onlySingleUser && !singleUser)
       return failure();
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
+        if (auto rop = v.getDefiningOp()) {
+          rewriter.setInsertionPointAfter(rop);
+        } else if (auto ba = dyn_cast<BlockArgument>(v)) {
+          rewriter.setInsertionPointToStart(ba.getOwner());
+        }
       ops.push_back(rewriter.create<stablehlo::TransposeOp>(
           op.getLoc(), v, op.getPermutation()));
     }
-    auto newOp = rewriter.create(
+    if (singleUser) {
+      rewriter.modifyOpInPlace(elem, [&]() {
+        elem->setOperands(ops);
+        elem->getResult(0).setType(op.getType());
+      });
+      rewriter.replaceOp(op, elem);
+    } else {
+      rewriter.setInsertionPointAfter(elem);
+      auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
         TypeRange(op.getType()), elem->getAttrs(), {}, {});
-    rewriter.replaceOp(op, newOp);
+      rewriter.replaceOp(op, newOp);
+    }
     return success();
   }
 };
@@ -8896,6 +8918,7 @@ struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     auto dim2 = getInversePermutation(op.getPermutation())[dim];
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, ops, dim2);
+    rewriter.eraseOp(concat);
     return success();
   }
 };
@@ -8916,6 +8939,7 @@ struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     auto dim2 = getInversePermutation(op.getPermutation())[dim];
 
     rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), dim2);
+    rewriter.eraseOp(iota);
     return success();
   }
 };
@@ -10799,6 +10823,7 @@ struct BroadcastInDimTransposeToBroadcastInDim final
     if (!broadcastOp)
       return failure();
 
+    bool singleUser = broadcastOp->getResult(0).hasOneUse();
     auto broadcastDims = broadcastOp.getBroadcastDimensions();
     auto permutation = op.getPermutation();
 
@@ -10817,6 +10842,7 @@ struct BroadcastInDimTransposeToBroadcastInDim final
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), broadcastOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+    if (singleUser) rewriter.eraseOp(broadcastOp);
 
     return success();
   }
@@ -12057,7 +12083,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Finally, replace all uses of the old while op with the new one
     rewriter.replaceOp(whileOp, newWhileOp.getResults());
-
     return success();
   }
 };
