@@ -944,6 +944,7 @@ struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         permutedStartIndices);
 
     rewriter.replaceOp(op, newDus);
+    rewriter.eraseOp(dus);
     return success();
   }
 };
@@ -2689,6 +2690,9 @@ struct TransposeDynamicSlice final
         op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
     if (!dynamicSlice)
       return failure();
+    bool singleUser = dynamicSlice->getResult(0).hasOneUse();
+    if (!singleUser)
+      return failure();
 
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), dynamicSlice.getOperand(), op.getPermutation());
@@ -2708,6 +2712,8 @@ struct TransposeDynamicSlice final
     // Create a new dynamic slice
     rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
         op, newTranspose, startIndices, sliceSizes);
+    if (singleUser)
+      rewriter.eraseOp(dynamicSlice);
     return success();
   }
 };
@@ -2726,6 +2732,8 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
     if (!slice)
       return failure();
+
+    bool singleUser = slice->getResult(0).hasOneUse();
 
     // First create transpose of the slice's operand
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
@@ -2775,6 +2783,8 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         rewriter.getDenseI64ArrayAttr(permutedStrides));
 
     rewriter.replaceOp(op, newSlice);
+    if (singleUser)
+      rewriter.eraseOp(slice);
     return success();
   }
 };
@@ -3943,6 +3953,13 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
+  static bool hasReturn(const SetVector<Operation *> &ops) {
+    for (auto op : ops)
+      if (isa<stablehlo::ReturnOp>(op))
+        return true;
+    return false;
+  }
+
   LogicalResult matchAndRewrite(mlir::stablehlo::WhileOp op,
                                 PatternRewriter &rewriter) const override {
     SmallVector<int64_t> deadResults;
@@ -3976,10 +3993,31 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
 
     condSlice = mlir::topologicalSort(condSlice);
     bodySlice = mlir::topologicalSort(bodySlice);
-    for (Operation *erasable : llvm::reverse(condSlice))
-      rewriter.eraseOp(erasable);
-    for (Operation *erasable : llvm::reverse(bodySlice))
-      rewriter.eraseOp(erasable);
+
+    if (hasReturn(condSlice)) {
+      for (int64_t i : deadResults) {
+        auto arg = op.getCond().getArgument(i);
+        auto ty = arg.getType();
+        auto cst = rewriter.create<stablehlo::ConstantOp>(
+            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
+        rewriter.replaceAllUsesWith(arg, cst);
+      }
+    } else {
+      for (Operation *erasable : llvm::reverse(condSlice))
+        rewriter.eraseOp(erasable);
+    }
+    if (hasReturn(bodySlice)) {
+      for (int64_t i : deadResults) {
+        auto arg = op.getBody().getArgument(i);
+        auto ty = arg.getType();
+        auto cst = rewriter.create<stablehlo::ConstantOp>(
+            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
+        rewriter.replaceAllUsesWith(arg, cst);
+      }
+    } else {
+      for (Operation *erasable : llvm::reverse(bodySlice))
+        rewriter.eraseOp(erasable);
+    }
 
     SmallVector<Value> operands;
     SmallVector<Type> resultTypes;
@@ -4570,6 +4608,7 @@ struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(op, val2, padval, low, high,
                                                   inner);
+    rewriter.eraseOp(pad);
     return success();
   }
 };
@@ -7492,7 +7531,6 @@ struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
       einsum.getResult().setType(transpose.getType());
     });
     rewriter.replaceAllUsesWith(transpose.getResult(), einsum.getResult());
-
     return success();
   }
 };
@@ -8830,21 +8868,36 @@ struct TransposeElementwise final
     if (!elem)
       return failure();
 
-    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
+    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
       return failure();
 
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    bool singleUser = llvm::hasSingleElement(elem->getUsers());
+    if (onlySingleUser && !singleUser)
       return failure();
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
+      if (auto rop = v.getDefiningOp()) {
+        rewriter.setInsertionPointAfter(rop);
+      } else if (auto ba = dyn_cast<BlockArgument>(v)) {
+        rewriter.setInsertionPointToStart(ba.getOwner());
+      }
       ops.push_back(rewriter.create<stablehlo::TransposeOp>(
           op.getLoc(), v, op.getPermutation()));
     }
-    auto newOp = rewriter.create(
-        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(op.getType()), elem->getAttrs(), {}, {});
-    rewriter.replaceOp(op, newOp);
+    if (singleUser) {
+      rewriter.modifyOpInPlace(elem, [&]() {
+        elem->setOperands(ops);
+        elem->getResult(0).setType(op.getType());
+      });
+      rewriter.replaceOp(op, elem);
+    } else {
+      rewriter.setInsertionPointAfter(elem);
+      auto newOp = rewriter.create(
+          elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+          TypeRange(op.getType()), elem->getAttrs(), {}, {});
+      rewriter.replaceOp(op, newOp);
+    }
     return success();
   }
 };
@@ -8871,6 +8924,7 @@ struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     auto dim2 = getInversePermutation(op.getPermutation())[dim];
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, ops, dim2);
+    rewriter.eraseOp(concat);
     return success();
   }
 };
@@ -8891,6 +8945,7 @@ struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     auto dim2 = getInversePermutation(op.getPermutation())[dim];
 
     rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), dim2);
+    rewriter.eraseOp(iota);
     return success();
   }
 };
@@ -9498,6 +9553,28 @@ struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
   }
 };
 
+bool opaque_cmp(Value a, Value b) {
+  return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+}
+
+bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+
+  if (lhs.size() == 1) {
+    return lhs[0] == rhs[0];
+  } else if (lhs.size() == 2) {
+    return (lhs[0] == rhs[0] && lhs[1] == rhs[1]) ||
+           (lhs[1] == rhs[0] && lhs[0] == rhs[1]);
+  } else {
+    auto lhsv = llvm::to_vector(lhs);
+    auto rhsv = llvm::to_vector(rhs);
+    llvm::sort(lhsv, opaque_cmp);
+    llvm::sort(rhsv, opaque_cmp);
+    return lhsv == rhsv;
+  }
+}
+
 template <typename T> struct CSE final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
@@ -9512,6 +9589,9 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
         if (nop->getBlock() != op->getBlock())
           continue;
 
+        if (op->getName() != nop->getName())
+          continue;
+
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop, OperationEquivalence::IgnoreLocations)) {
           // stablehlo defines a special trait for commutative operations.
@@ -9519,20 +9599,7 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           if (op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>()) {
             auto opRange = op->getOperands();
             auto nopRange = nop->getOperands();
-
-            if (opRange.size() != nopRange.size())
-              continue;
-
-            auto sortValues = [](ValueRange values) {
-              SmallVector<Value> sortedValues = llvm::to_vector(values);
-              llvm::sort(sortedValues, [](Value a, Value b) {
-                return a.getAsOpaquePointer() < b.getAsOpaquePointer();
-              });
-              return sortedValues;
-            };
-            auto opSorted = sortValues(opRange);
-            auto nopSorted = sortValues(nopRange);
-            if (opSorted != nopSorted)
+            if (!isCommutativeEquivalent(opRange, nopRange))
               continue;
           } else {
             continue;
@@ -10765,6 +10832,7 @@ struct BroadcastInDimTransposeToBroadcastInDim final
     if (!broadcastOp)
       return failure();
 
+    bool singleUser = broadcastOp->getResult(0).hasOneUse();
     auto broadcastDims = broadcastOp.getBroadcastDimensions();
     auto permutation = op.getPermutation();
 
@@ -10783,6 +10851,8 @@ struct BroadcastInDimTransposeToBroadcastInDim final
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), broadcastOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+    if (singleUser)
+      rewriter.eraseOp(broadcastOp);
 
     return success();
   }
@@ -11483,18 +11553,9 @@ struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
     auto *block = &reg.front(); // regions
 
     auto term = block->getTerminator();
-    rewriter.replaceAllOpUsesWith(op, term->getOperands());
+    rewriter.inlineBlockBefore(block, op);
+    rewriter.replaceOp(op, term->getOperands());
     rewriter.eraseOp(term);
-
-    auto newBlock = rewriter.splitBlock(current, Block::iterator(op));
-
-    rewriter.inlineRegionBefore(reg, newBlock);
-
-    rewriter.mergeBlocks(block, current);
-    rewriter.mergeBlocks(newBlock, current);
-
-    rewriter.eraseOp(op);
-
     return success();
   }
 };
@@ -11511,10 +11572,10 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
 
     auto pred = op.getPred();
 
-    auto trueOperands =
-        op.getTrueBranch().front().getTerminator()->getOperands();
-    auto falseOperands =
-        op.getFalseBranch().front().getTerminator()->getOperands();
+    auto trueTerm = op.getTrueBranch().front().getTerminator();
+    auto falseTerm = op.getFalseBranch().front().getTerminator();
+    auto trueOperands = trueTerm->getOperands();
+    auto falseOperands = falseTerm->getOperands();
 
     SmallVector<Type> nonHoistable;
     for (auto [trueVal, falseVal] : llvm::zip(trueOperands, falseOperands)) {
@@ -11557,12 +11618,12 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
     }
 
     rewriter.setInsertionPointToEnd(&replacement.getTrueBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
-        replacement.getTrueBranch().front().getTerminator(), trueReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(trueTerm,
+                                                           trueReturns);
 
     rewriter.setInsertionPointToEnd(&replacement.getFalseBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
-        replacement.getFalseBranch().front().getTerminator(), falseReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(falseTerm,
+                                                           falseReturns);
 
     rewriter.replaceOp(op, results);
     return success();
@@ -11989,95 +12050,41 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
       }
     }
 
-    // Create an IR mapper to map values from old op to new op
-    mlir::IRMapping mapper;
-
-    // Clear the new body block but keep its arguments
     Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock
-        .clear(); // This clears operations but preserves block arguments
-
-    // Clone operations from old body to new body
-    Block &oldBodyBlock = whileOp.getBody().front();
+    newBodyBlock.clear();
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newBodyBlock);
 
-      // Set up operand mapping for the body region
-      for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getBody().getArgument(i);
-        Value newArg = newWhileOp.getBody().getArgument(i);
-        for (auto &pair : outerTransposes) {
-          if (pair.idx == i) {
-            newArg = rewriter.create<stablehlo::TransposeOp>(
-                pair.outerTranspose.getLoc(), newArg,
-                getInversePermutation(pair.outerTranspose.getPermutation()));
-            break;
-          }
-        }
-        mapper.map(oldArg, newArg);
+      SmallVector<Value> replacements;
+      for (auto arg : newBodyBlock.getArguments())
+        replacements.push_back(arg);
+      for (auto &pair : outerTransposes) {
+        replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
+            pair.outerTranspose.getLoc(), replacements[pair.idx],
+            getInversePermutation(pair.outerTranspose.getPermutation()));
       }
-
-      for (auto &op : oldBodyBlock.getOperations()) {
-        // Skip the terminator - we'll add it after all other operations
-        if (isa<stablehlo::ReturnOp>(op))
-          continue;
-
-        // Clone the operation with the value mapping
-        rewriter.clone(op, mapper);
-      }
+      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock,
+                           replacements);
     }
-
-    // Create a new terminator for the body region using new values
-    {
-      SmallVector<Value> newReturnValues;
-
-      // Map old return values to new values using the mapper
-      for (auto oldRetVal : yieldOp.getOperands()) {
-        Value newRetVal = mapper.lookupOrNull(oldRetVal);
-        // If the value isn't in the mapper, maybe it was a block argument or
-        // constant
-        if (!newRetVal)
-          newRetVal = oldRetVal; // Consider more robust handling if needed
-        newReturnValues.push_back(newRetVal);
-      }
-
-      // Create the return op at the end of the body
-      rewriter.setInsertionPointToEnd(&newBodyBlock);
-      rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
-    }
-
-    // Create condition region mapper
-    mlir::IRMapping condMapper;
 
     // Clear and clone condition region
     Block &newCondBlock = newWhileOp.getCond().front();
     newCondBlock.clear();
-    Block &oldCondBlock = whileOp.getCond().front();
-
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
 
-      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getCond().getArgument(i);
-        Value newArg = newWhileOp.getCond().getArgument(i);
-        for (auto &pair : outerTransposes) {
-          if (pair.idx == i) {
-            newArg = rewriter.create<stablehlo::TransposeOp>(
-                pair.outerTranspose.getLoc(), newArg,
-                getInversePermutation(pair.outerTranspose.getPermutation()));
-            break;
-          }
-        }
-        condMapper.map(oldArg, newArg);
+      SmallVector<Value> replacements;
+      for (auto arg : newCondBlock.getArguments())
+        replacements.push_back(arg);
+      for (auto &pair : outerTransposes) {
+        replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
+            pair.outerTranspose.getLoc(), replacements[pair.idx],
+            getInversePermutation(pair.outerTranspose.getPermutation()));
       }
-
-      for (auto &op : oldCondBlock.getOperations()) {
-        // if (isa<stablehlo::ReturnOp>(op))
-        //   continue;
-        rewriter.clone(op, condMapper);
-      }
+      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock,
+                           replacements);
     }
 
     // Step 5. Replace outerTranspose with the newWhileOp results
@@ -12091,7 +12098,6 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
 
     // Finally, replace all uses of the old while op with the new one
     rewriter.replaceOp(whileOp, newWhileOp.getResults());
-
     return success();
   }
 };
@@ -13249,83 +13255,37 @@ struct WhilePadInductionReduction
       }
     }
 
-    // Create an IR mapper to map values from old op to new op
-    mlir::IRMapping mapper;
-
-    // Clear the new body block but keep its arguments
     Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock
-        .clear(); // This clears operations but preserves block arguments
-
-    // Clone operations from old body to new body
-    Block &oldBodyBlock = whileOp.getBody().front();
+    newBodyBlock.clear();
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newBodyBlock);
 
-      // Set up operand mapping for the body region
-      for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getBody().getArgument(i);
-        Value newArg = newWhileOp.getBody().getArgument(i);
-        mapper.map(oldArg, newArg);
-      }
-
+      SmallVector<Value> replacements;
+      for (auto arg : newBodyBlock.getArguments())
+        replacements.push_back(arg);
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
                              newWhileOp.getBody().getArgument(ivInfo.index),
                              newWhileOp.getBody().getArguments(), false)
                ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
-        mapper.map(whileOp.getBody().getArgument(idx), res);
+        replacements[idx] = res;
       }
-
-      for (auto &op : oldBodyBlock.getOperations()) {
-        // Skip the terminator - we'll add it after all other operations
-        if (isa<stablehlo::ReturnOp>(op))
-          continue;
-
-        // Clone the operation with the value mapping
-        rewriter.clone(op, mapper);
-      }
+      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock,
+                           replacements);
     }
-
-    // Create a new terminator for the body region using new values
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      SmallVector<Value> newReturnValues;
-
-      // Map old return values to new values using the mapper
-      for (auto oldRetVal : yieldOp.getOperands()) {
-        Value newRetVal = mapper.lookupOrNull(oldRetVal);
-        // If the value isn't in the mapper, maybe it was a block argument or
-        // constant
-        if (!newRetVal)
-          newRetVal = oldRetVal; // Consider more robust handling if needed
-        newReturnValues.push_back(newRetVal);
-      }
-
-      // Create the return op at the end of the body
-      rewriter.setInsertionPointToEnd(&newBodyBlock);
-      rewriter.create<stablehlo::ReturnOp>(yieldOp.getLoc(), newReturnValues);
-    }
-
-    // Create condition region mapper
-    mlir::IRMapping condMapper;
 
     // Clear and clone condition region
     Block &newCondBlock = newWhileOp.getCond().front();
     newCondBlock.clear();
-    Block &oldCondBlock = whileOp.getCond().front();
-
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
 
-      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
-        auto oldArg = whileOp.getCond().getArgument(i);
-        Value newArg = newWhileOp.getCond().getArgument(i);
-        condMapper.map(oldArg, newArg);
-      }
+      SmallVector<Value> replacements;
+      for (auto arg : newCondBlock.getArguments())
+        replacements.push_back(arg);
 
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
@@ -13333,12 +13293,11 @@ struct WhilePadInductionReduction
                              newWhileOp.getCond().getArguments(), false)
                ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
-        condMapper.map(whileOp.getBody().getArgument(idx), res);
+        replacements[idx] = res;
       }
 
-      for (auto &op : oldCondBlock.getOperations()) {
-        rewriter.clone(op, condMapper);
-      }
+      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock,
+                           replacements);
     }
 
     // Finally, replace all uses of the old while op with the new one
