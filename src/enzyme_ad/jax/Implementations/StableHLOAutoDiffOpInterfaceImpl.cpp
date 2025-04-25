@@ -103,6 +103,17 @@ Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
 }
 
 namespace {
+
+template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
+  if (auto TT = dyn_cast<RankedTensorType>(elemType))
+    return SplatElementsAttr::get(
+        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
+  if (isa<FloatType>(elemType))
+    return FloatAttr::get(elemType, val);
+  else
+    return IntegerAttr::get(elemType, val);
+}
+
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
 // From
@@ -512,8 +523,16 @@ public:
           cast<RankedTensorType>(numIters.getType()).getElementType();
       if (numItersElemType != condIterVarElemType) {
         builder.setInsertionPointAfter(iterVarOp);
-        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                             condIterVarElemType);
+        DenseIntElementsAttr numAttr;
+        if (matchPattern(numIters, m_Constant(&numAttr))) {
+          numIters = builder.create<ConstantOp>(
+              orig->getLoc(), numIters.getType(),
+              makeAttr(numIters.getType(), (*numAttr.begin()).getSExtValue())
+                  .cast<ElementsAttr>());
+        } else {
+          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                               condIterVarElemType);
+        }
         builder.setInsertionPointAfter(revWhile);
       }
 
@@ -2187,7 +2206,8 @@ struct WhileOpEnzymeOpsRemover
     // TODO: support non-constant loops by using a dynamic dimension
     // ...   should we fail ? i.e. return failure();
     if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return success();
+      return rewriter.notifyMatchFailure(
+          op, "WhileOp does not have static iteration count for cache removal");
     }
 
     // 1. Move enzyme.get outside the body if the variable is not used outside
@@ -2278,7 +2298,8 @@ struct WhileOpEnzymeOpsRemover
       }
 
       if (!inductionVariable) {
-        return success();
+        return rewriter.notifyMatchFailure(
+            op, "WhileOp does not have induction variable for cache removal");
 
         // TODO: support adding an induction variable if not present
 

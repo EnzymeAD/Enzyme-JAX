@@ -86,6 +86,16 @@ int64_t WhileLoopInfo::getConstantNumIters() {
          getConstantStep().value();
 }
 
+template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
+  if (auto TT = dyn_cast<RankedTensorType>(elemType))
+    return SplatElementsAttr::get(
+        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
+  if (isa<FloatType>(elemType))
+    return FloatAttr::get(elemType, val);
+  else
+    return IntegerAttr::get(elemType, val);
+}
+
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   auto opReg = op->getParentRegion();
   if (!opReg->isAncestor(limit.getParentRegion()) ||
@@ -94,10 +104,18 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
     return {};
   }
 
-  // numIters = (limit - start) / step;
-  Value numIters = builder.create<stablehlo::DivOp>(
-      op->getLoc(),
-      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+  Value numIters;
+  if (isConstant()) {
+    numIters = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), start.getType(),
+        makeAttr(start.getType(), getConstantNumIters()).cast<ElementsAttr>());
+  } else {
+    // numIters = (limit - start) / step;
+    Value numIters = builder.create<stablehlo::DivOp>(
+        op->getLoc(),
+        builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start),
+        step);
+  }
 
   return numIters;
 }
