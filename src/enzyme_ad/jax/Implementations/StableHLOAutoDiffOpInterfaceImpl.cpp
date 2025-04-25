@@ -2779,6 +2779,55 @@ struct SHLOReduceOpBatchInterface
   }
 };
 
+// struct SHLODotGeneralOpBatchInterface
+//     : public BatchOpInterface::ExternalModel<SHLODotGeneralOpBatchInterface,
+//                                              DotGeneralOp> {
+
+//   mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+//                                   IRMapping &mapper,
+//                                   ArrayRef<int64_t> batchSizes) const {
+//     return success();
+//   }
+// };
+
+struct SHLOBroadcastInDimOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOBroadcastInDimOpBatchInterface,
+                                             BroadcastInDimOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<BroadcastInDimOp>(src);
+    auto resultType = op.getType();
+
+    SmallVector<int64_t> bcastDims;
+    for (int i = 0; i < batchSizes.size(); i++) {
+      bcastDims.push_back(i);
+    }
+    for (auto &dim : op.getBroadcastDimensions()) {
+      bcastDims.push_back(dim + batchSizes.size());
+    }
+
+    SmallVector<int64_t> resultShape;
+    resultShape.reserve(resultType.getShape().size() + batchSizes.size());
+    for (auto &dim : batchSizes) {
+      resultShape.push_back(dim);
+    }
+    for (auto &dim : resultType.getShape()) {
+      resultShape.push_back(dim);
+    }
+
+    auto bcastOp = builder.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, resultType.getElementType()),
+        mapper.lookup(op.getOperand()),
+        builder.getDenseI64ArrayAttr(bcastDims));
+
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -2828,6 +2877,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
+    // DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
+    BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
+        *context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
