@@ -54,7 +54,7 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
 // REVERSE-NEXT:     %c_5 = stablehlo.constant dense<15> : tensor<i32>
 // REVERSE-NEXT:     %c_6 = stablehlo.constant dense<0> : tensor<i32>
 // REVERSE-NEXT:     %cst_7 = stablehlo.constant dense<0.000000e+00> : tensor<12x4xf32>
-// REVERSE-NEXT:     %[[a0]]:2 = stablehlo.while(%iterArg = %c_6, %iterArg_8 = %cst) : tensor<i32>, tensor<15xi32>
+// REVERSE-NEXT:     %[[a0:.+]]:2 = stablehlo.while(%iterArg = %c_6, %iterArg_8 = %cst) : tensor<i32>, tensor<15xi32>
 // REVERSE-NEXT:      cond {
 // REVERSE-NEXT:       %[[a7:.+]] = stablehlo.compare  LT, %iterArg, %c_5 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // REVERSE-NEXT:       stablehlo.return %[[a7]] : tensor<i1>
@@ -87,3 +87,4 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
 // REVERSE-NEXT:     %[[a6:.+]] = stablehlo.concatenate %[[a4]], %[[a5]], dim = 1 : (tensor<12x1x4xf32>, tensor<12x15x4xf32>) -> tensor<12x16x4xf32>
 // REVERSE-NEXT:     return %[[a6]] : tensor<12x16x4xf32>
 // REVERSE-NEXT:   }
+
