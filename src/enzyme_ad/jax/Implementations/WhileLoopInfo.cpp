@@ -108,7 +108,7 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   if (isConstant()) {
     numIters = builder.create<stablehlo::ConstantOp>(
         op->getLoc(), start.getType(),
-        makeAttr(start.getType(), getConstantNumIters()).cast<ElementsAttr>());
+        cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
   } else {
     // numIters = (limit - start) / step;
     numIters = builder.create<stablehlo::DivOp>(

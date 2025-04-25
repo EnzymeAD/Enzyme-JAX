@@ -533,8 +533,16 @@ public:
           cast<RankedTensorType>(numIters.getType()).getElementType();
       if (numItersElemType != condIterVarElemType) {
         builder.setInsertionPointAfter(iterVarOp);
-        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                             condIterVarElemType);
+        DenseIntElementsAttr numAttr;
+        if (matchPattern(numIters, m_Constant(&numAttr))) {
+          numIters = builder.create<ConstantOp>(
+              orig->getLoc(), numIters.getType(),
+              cast<ElementsAttr>(makeAttr(numIters.getType(),
+                                          (*numAttr.begin()).getSExtValue())));
+        } else {
+          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                               condIterVarElemType);
+        }
         builder.setInsertionPointAfter(revWhile);
       }
 
