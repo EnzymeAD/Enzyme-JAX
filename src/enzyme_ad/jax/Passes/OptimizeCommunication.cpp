@@ -144,9 +144,6 @@ generateShiftPairs(const sdy::TensorShardingAttr &shardingAttr, int dimension,
     meshShape.push_back(axis.getSize());
   }
 
-  int64_t numDevicesAlongDimension =
-      getNumDevicesAlongDimension(shardingAttr, dimension, op);
-
   SmallVector<int64_t, 6> strides = computeMeshStrides(meshShape);
 
   auto meshAxes = shardingAttr.getDimShardings()[dimension].getAxes();
@@ -1715,11 +1712,6 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       auto blk = rewriter.createBlock(&manual.getBody(),
                                       manual.getBody().begin(), inTyps, inLocs);
       auto innerArg = blk->getArgument(0);
-      auto partitionId =
-          rewriter.create<stablehlo::PartitionIdOp>(rotate.getLoc());
-
-      auto zero = rewriter.create<stablehlo::ConstantOp>(
-          rotate.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
 
       SmallVector<int64_t> innerStarts(ndims, 0);
       SmallVector<int64_t> innerLimits = llvm::to_vector(
@@ -2354,7 +2346,6 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       auto ndevices = getShardingDevices(sharding, i, op);
       int64_t nDevices = ndevices[i];
 
-      Value idx;
       if (globalSz == localSz || nDevices == 1) {
         multiDimIdxs.push_back(getOrCreateConstant(0));
       } else if (i == localResultType.getShape().size() - 1) {
@@ -2374,8 +2365,6 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
 
   SmallVector<Value> leftSides;
   SmallVector<Value> rightSides;
-
-  auto i1VTy = RankedTensorType::get({}, rewriter.getI1Type());
 
   for (auto &&[i, idx] : llvm::enumerate(updatedShardedDims)) {
     Value leftSide;
@@ -2733,7 +2722,6 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     }
 
     auto ndims = concat.getType().getShape().size();
-    auto concatShape = concat.getType().getShape();
     auto concatDimension = concat.getDimension();
     auto elemType = concat.getType().getElementType();
 
@@ -2823,7 +2811,6 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
     RankedTensorType globalUnPaddedUpdateType =
         cast<RankedTensorType>(concat.getOperands()[1].getType());
-    RankedTensorType globalPaddedUpdateType = globalResultType;
 
     auto localResultType =
         getLocalType(globalResultType, sharding, manualAxes, concat);
@@ -2891,7 +2878,6 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     }
 
     auto ndims = concat.getType().getShape().size();
-    auto concatShape = concat.getType().getShape();
     auto concatDimension = concat.getDimension();
     auto elemType = concat.getType().getElementType();
 
@@ -2939,7 +2925,6 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     SmallVector<int64_t> updatedShardedDims = {(int64_t)concatDimension};
     SmallVector<int64_t> updatedDims = {(int64_t)concatDimension};
     globalResultType = RankedTensorType::get(shape, elemType);
-    auto concatDimSize = globalResultType.getShape()[concatDimension];
 
     SmallVector<int64_t> padInner(ndims, 0);
 
@@ -2956,8 +2941,6 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
 
     for (int i = 0; i < 2; i++) {
       auto operand = concat.getOperand();
-      auto operandConcatDimSize =
-          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
 
       SmallVector<int64_t> padLowLocal(ndims, 0);
       SmallVector<int64_t> padHighLocal = padHigh;
@@ -2981,7 +2964,6 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
 
     RankedTensorType globalUnPaddedUpdateType =
         cast<RankedTensorType>(concat.getOperand().getType());
-    RankedTensorType globalPaddedUpdateType = globalResultType;
 
     auto localResultType =
         getLocalType(globalResultType, sharding, manualAxes, concat);

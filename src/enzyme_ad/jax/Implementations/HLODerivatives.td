@@ -580,7 +580,6 @@ def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :
@@ -692,7 +691,6 @@ def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :

@@ -2931,9 +2931,7 @@ struct MergeNestedAffineParallelIf
     // We include the dims of the affine.if expressios (which include the IVs of
     // the parallel loop) in the new parallel which results in invalid IR. This
     // canonicalizes these dims away.
-    canonicalizeLoopBounds(affineLoop);
-
-    return success();
+    return canonicalizeLoopBounds(affineLoop);
   }
 };
 
@@ -3039,7 +3037,6 @@ optimizeExprMod(llvm::ArrayRef<AffineDimDescriptor> dims, AffineExpr lhs,
 
 AffineExpr optimizeExprWithBounds(AffineExpr expr,
                                   llvm::ArrayRef<AffineDimDescriptor> dims) {
-  std::optional<AffineExpr> replacement;
   auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr);
   if (!binExpr)
     return expr;
@@ -4735,8 +4732,6 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
       if (iv != barg)
         continue;
 
-      bool legal = true;
-
       for (auto lb : par.getLowerBoundMap(iv.getArgNumber()).getResults()) {
         if (auto cst = dyn_cast<AffineConstantExpr>(lb)) {
           if (cst.getValue() != 0) {
@@ -4940,7 +4935,6 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
 
     bool changed = false;
     for (auto store : stores) {
-      Value memref = store.getMemRef();
       Value val = store.getValue();
       affine::AffineYieldOp yld = nullptr;
       bool legal = true;

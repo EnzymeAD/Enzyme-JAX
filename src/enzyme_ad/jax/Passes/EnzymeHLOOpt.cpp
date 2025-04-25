@@ -1134,7 +1134,6 @@ struct DUSConcat final
     auto dusOperandType = cast<RankedTensorType>(dus.getOperand().getType());
     auto updateType = cast<RankedTensorType>(dus.getUpdate().getType());
 
-    ArrayRef<int64_t> dusOperandShape = dusOperandType.getShape();
     ArrayRef<int64_t> updateShape = updateType.getShape();
     SmallVector<Value> startIndices = dus.getStartIndices();
 
@@ -1233,11 +1232,8 @@ struct DUSConcat final
     auto indexElementType = cast<ShapedType>(startIndices[concatDim].getType())
                                 .getElementType(); // Assuming all start indices
                                                    // have same scalar type
-    auto indexScalarType = RankedTensorType::get({}, indexElementType);
 
     int64_t newConcatStartVal = concatStartVal - currentOffset;
-    auto newStartAttr =
-        rewriter.getIntegerAttr(indexElementType, newConcatStartVal);
     newDusStartIndices[concatDim] = rewriter.create<stablehlo::ConstantOp>(
         dus.getLoc(), newDusStartIndices[concatDim].getType(),
         cast<ElementsAttr>(makeAttr(newDusStartIndices[concatDim].getType(),
@@ -1854,9 +1850,6 @@ struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
     ArrayRef<int64_t> originalDataShape = originalDataType.getShape();
     SmallVector<Value> startIndices = dus.getStartIndices();
     ArrayRef<int64_t> lowPadding = padOp.getEdgePaddingLow();
-    // High padding isn't directly used for the check below but needed for
-    // reconstruction
-    ArrayRef<int64_t> highPadding = padOp.getEdgePaddingHigh();
 
     SmallVector<Value> newDusStartIndices;
     Location loc = dus.getLoc();
@@ -3465,8 +3458,6 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
   if (otherSlice.getOperand() != slice.getOperand())
     return false;
 
-  bool canMerge = true;
-
   // Check that both slices are contiguous only in dim
   ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
                     otherSliceStarts = otherSlice.getStartIndices(),
@@ -3954,7 +3945,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(terminator);
-    auto term2 = rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
@@ -9088,11 +9079,8 @@ struct ReshapeOfConcatToConcatOfReshape final
     }
 
     // Create a new concat operation with the reshaped operands
-    auto origReshapeOperand = reshapeOp.getOperand().getType().getShape();
-    auto origReshapeResult = reshapeOp.getResult().getType().getShape();
     rewriter.replaceOpWithNewOp<mlir::stablehlo::ConcatenateOp>(
         reshapeOp, concatOperands, newDim);
-
     return success();
   }
 };
@@ -10434,7 +10422,6 @@ struct SelectCompIotaConstSimplify final
     SmallVector<Value, 3> sliceValues;
     {
       int64_t start = 0;
-      const auto elemType = tensorType.getElementType();
       const auto loc = selectOp.getLoc();
       SmallVector<int64_t> startIndices(shapeLimit.size(), 0);
       SmallVector<int64_t> limitIndices{shapeLimit};
@@ -11521,8 +11508,6 @@ struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
     if (!iszero && !isone)
       return failure();
 
-    auto current = op->getBlock();
-
     auto &reg = isone ? op.getTrueBranch() : op.getFalseBranch();
 
     if (reg.empty()) {
@@ -11620,8 +11605,6 @@ struct SpeculateIfPadToSelect final
     if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
         op.getFalseBranch().empty())
       return failure();
-
-    auto pred = op.getPred();
 
     auto trueOperands =
         op.getTrueBranch().front().getTerminator()->getOperands();
@@ -12093,7 +12076,6 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
   stablehlo::SliceOp lhs = nullptr;
   if (auto lhsSlice =
           outer.getOperands()[0].getDefiningOp<stablehlo::SliceOp>()) {
-    bool legal = lhsSlice.getOperand().getType() == outer.getType();
     for (int i = 0; i < lhsSlice.getType().getShape().size(); i++) {
       if (lhsSlice.getStartIndices()[i] != 0) {
         return false;
@@ -12114,7 +12096,6 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
   stablehlo::SliceOp rhs = nullptr;
   if (auto rhsSlice =
           outer.getOperands().back().getDefiningOp<stablehlo::SliceOp>()) {
-    bool legal = rhsSlice.getOperand().getType() == outer.getType();
     for (int i = 0; i < rhsSlice.getType().getShape().size(); i++) {
       if (rhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
         return false;
@@ -12609,10 +12590,6 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
   auto addOp = updatedIV.getDefiningOp<stablehlo::AddOp>();
   if (!addOp)
     return result;
-
-  // One operand should be the IV, the other the step
-  Value addLhs = addOp.getLhs();
-  Value addRhs = addOp.getRhs();
 
   // Check if one side is a constant (the step)
   for (int i = 0; i < 2; i++) {
@@ -13533,8 +13510,6 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
     {
       auto ctype = RankedTensorType::get({}, rewriter.getI64Type());
       for (auto &candidate : candidates) {
-        unsigned idx = candidate.idx;
-        Value operand = candidate.outerOperand;
         SmallVector<Value> starts;
         for (auto idx : candidate.lowerUpdateBounds) {
           starts.push_back(rewriter.create<stablehlo::ConstantOp>(
@@ -13741,7 +13716,6 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
     };
 
     llvm::SmallVector<Candidate, 4> candidates;
-    bool hasConditional = false;
 
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 

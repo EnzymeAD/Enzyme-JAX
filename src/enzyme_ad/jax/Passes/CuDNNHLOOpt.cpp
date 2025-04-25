@@ -96,7 +96,7 @@ struct DotGeneralElementwiseToCuDNNFusion
     auto resultTy = elemOp.getType();
 
     // Replace with a custom call
-    auto customCall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         elemOp, TypeRange{resultTy},
         ValueRange{dotGeneral.getLhs(), dotGeneral.getRhs(), elemOther},
         rewriter.getStringAttr("__cudnn$fusion"),
