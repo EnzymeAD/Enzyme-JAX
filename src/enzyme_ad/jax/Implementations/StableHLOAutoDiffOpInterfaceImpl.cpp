@@ -2187,7 +2187,7 @@ struct WhileOpEnzymeOpsRemover
     // TODO: support non-constant loops by using a dynamic dimension
     // ...   should we fail ? i.e. return failure();
     if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return success();
+      return rewriter.notifyMatchFailure(op, "WhileOp does not have static iteration count for cache removal");
     }
 
     // 1. Move enzyme.get outside the body if the variable is not used outside
@@ -2278,7 +2278,7 @@ struct WhileOpEnzymeOpsRemover
       }
 
       if (!inductionVariable) {
-        return success();
+        return rewriter.notifyMatchFailure(op, "WhileOp does not have induction variable for cache removal");
 
         // TODO: support adding an induction variable if not present
 

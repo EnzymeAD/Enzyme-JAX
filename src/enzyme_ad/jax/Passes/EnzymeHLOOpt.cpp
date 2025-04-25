@@ -9497,6 +9497,26 @@ struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
     return success(anyCsed);
   }
 };
+              
+bool opaque_cmp(Value a, Value b) {
+       return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+}
+
+bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
+  if (lhs.size() != rhs.size()) return false;
+
+  if (lhs.size() == 1) {
+    return lhs[0] == rhs[0];
+  } else if (lhs.size() == 2) {
+    return (lhs[0] == rhs[0] && lhs[1] == rhs[1]) || (lhs[1] == rhs[0] && lhs[0] == rhs[1]);
+  } else {
+    auto lhsv = llvm::to_vector(lhs);
+    auto rhsv = llvm::to_vector(rhs);
+    llvm::sort(lhsv, opaque_cmp);
+    llvm::sort(rhsv, opaque_cmp);
+    return lhsv == rhsv;
+  }
+}
 
 template <typename T> struct CSE final : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
@@ -9511,6 +9531,8 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           continue;
         if (nop->getBlock() != op->getBlock())
           continue;
+	
+	if (op->getName() != nop->getName()) continue;
 
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop, OperationEquivalence::IgnoreLocations)) {
@@ -9519,20 +9541,7 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           if (op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>()) {
             auto opRange = op->getOperands();
             auto nopRange = nop->getOperands();
-
-            if (opRange.size() != nopRange.size())
-              continue;
-
-            auto sortValues = [](ValueRange values) {
-              SmallVector<Value> sortedValues = llvm::to_vector(values);
-              llvm::sort(sortedValues, [](Value a, Value b) {
-                return a.getAsOpaquePointer() < b.getAsOpaquePointer();
-              });
-              return sortedValues;
-            };
-            auto opSorted = sortValues(opRange);
-            auto nopSorted = sortValues(nopRange);
-            if (opSorted != nopSorted)
+            if (!isCommutativeEquivalent(opRange, nopRange))
               continue;
           } else {
             continue;
@@ -11511,10 +11520,10 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
 
     auto pred = op.getPred();
 
-    auto trueOperands =
-        op.getTrueBranch().front().getTerminator()->getOperands();
-    auto falseOperands =
-        op.getFalseBranch().front().getTerminator()->getOperands();
+    auto trueTerm = op.getTrueBranch().front().getTerminator();
+    auto falseTerm = op.getFalseBranch().front().getTerminator();
+    auto trueOperands = trueTerm->getOperands();
+    auto falseOperands = falseTerm->getOperands();
 
     SmallVector<Type> nonHoistable;
     for (auto [trueVal, falseVal] : llvm::zip(trueOperands, falseOperands)) {
@@ -11557,12 +11566,10 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
     }
 
     rewriter.setInsertionPointToEnd(&replacement.getTrueBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
-        replacement.getTrueBranch().front().getTerminator(), trueReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(trueTerm, trueReturns);
 
     rewriter.setInsertionPointToEnd(&replacement.getFalseBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
-        replacement.getFalseBranch().front().getTerminator(), falseReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(falseTerm, falseReturns);
 
     rewriter.replaceOp(op, results);
     return success();
