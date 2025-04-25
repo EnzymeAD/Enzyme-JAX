@@ -2691,7 +2691,8 @@ struct TransposeDynamicSlice final
     if (!dynamicSlice)
       return failure();
     bool singleUser = dynamicSlice->getResult(0).hasOneUse();
-    if (!singleUser) return failure();
+    if (!singleUser)
+      return failure();
 
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), dynamicSlice.getOperand(), op.getPermutation());
@@ -2711,7 +2712,8 @@ struct TransposeDynamicSlice final
     // Create a new dynamic slice
     rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
         op, newTranspose, startIndices, sliceSizes);
-    if (singleUser) rewriter.eraseOp(dynamicSlice);
+    if (singleUser)
+      rewriter.eraseOp(dynamicSlice);
     return success();
   }
 };
@@ -2730,7 +2732,7 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
     // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
     if (!slice)
       return failure();
-    
+
     bool singleUser = slice->getResult(0).hasOneUse();
 
     // First create transpose of the slice's operand
@@ -2781,7 +2783,8 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         rewriter.getDenseI64ArrayAttr(permutedStrides));
 
     rewriter.replaceOp(op, newSlice);
-    if (singleUser) rewriter.eraseOp(slice);
+    if (singleUser)
+      rewriter.eraseOp(slice);
     return success();
   }
 };
@@ -3950,9 +3953,10 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
-  static bool hasReturn(const SetVector<Operation *> &ops)  {
+  static bool hasReturn(const SetVector<Operation *> &ops) {
     for (auto op : ops)
-	    if (isa<stablehlo::ReturnOp>(op)) return true;
+      if (isa<stablehlo::ReturnOp>(op))
+        return true;
     return false;
   }
 
@@ -3989,28 +3993,30 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
 
     condSlice = mlir::topologicalSort(condSlice);
     bodySlice = mlir::topologicalSort(bodySlice);
-   
+
     if (hasReturn(condSlice)) {
       for (int64_t i : deadResults) {
-	      auto arg = op.getCond().getArgument(i);
-	      auto ty =  arg.getType();
-      auto cst = rewriter.create<stablehlo::ConstantOp>(arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
+        auto arg = op.getCond().getArgument(i);
+        auto ty = arg.getType();
+        auto cst = rewriter.create<stablehlo::ConstantOp>(
+            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
         rewriter.replaceAllUsesWith(arg, cst);
       }
     } else {
-    for (Operation *erasable : llvm::reverse(condSlice))
-      rewriter.eraseOp(erasable);
+      for (Operation *erasable : llvm::reverse(condSlice))
+        rewriter.eraseOp(erasable);
     }
     if (hasReturn(bodySlice)) {
       for (int64_t i : deadResults) {
-	      auto arg = op.getBody().getArgument(i);
-	      auto ty =  arg.getType();
-      auto cst = rewriter.create<stablehlo::ConstantOp>(arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
+        auto arg = op.getBody().getArgument(i);
+        auto ty = arg.getType();
+        auto cst = rewriter.create<stablehlo::ConstantOp>(
+            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
         rewriter.replaceAllUsesWith(arg, cst);
       }
     } else {
-    for (Operation *erasable : llvm::reverse(bodySlice))
-      rewriter.eraseOp(erasable);
+      for (Operation *erasable : llvm::reverse(bodySlice))
+        rewriter.eraseOp(erasable);
     }
 
     SmallVector<Value> operands;
@@ -8871,11 +8877,11 @@ struct TransposeElementwise final
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
-        if (auto rop = v.getDefiningOp()) {
-          rewriter.setInsertionPointAfter(rop);
-        } else if (auto ba = dyn_cast<BlockArgument>(v)) {
-          rewriter.setInsertionPointToStart(ba.getOwner());
-        }
+      if (auto rop = v.getDefiningOp()) {
+        rewriter.setInsertionPointAfter(rop);
+      } else if (auto ba = dyn_cast<BlockArgument>(v)) {
+        rewriter.setInsertionPointToStart(ba.getOwner());
+      }
       ops.push_back(rewriter.create<stablehlo::TransposeOp>(
           op.getLoc(), v, op.getPermutation()));
     }
@@ -8888,8 +8894,8 @@ struct TransposeElementwise final
     } else {
       rewriter.setInsertionPointAfter(elem);
       auto newOp = rewriter.create(
-        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(op.getType()), elem->getAttrs(), {}, {});
+          elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
+          TypeRange(op.getType()), elem->getAttrs(), {}, {});
       rewriter.replaceOp(op, newOp);
     }
     return success();
@@ -9546,18 +9552,20 @@ struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
     return success(anyCsed);
   }
 };
-              
+
 bool opaque_cmp(Value a, Value b) {
-       return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+  return a.getAsOpaquePointer() < b.getAsOpaquePointer();
 }
 
 bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
-  if (lhs.size() != rhs.size()) return false;
+  if (lhs.size() != rhs.size())
+    return false;
 
   if (lhs.size() == 1) {
     return lhs[0] == rhs[0];
   } else if (lhs.size() == 2) {
-    return (lhs[0] == rhs[0] && lhs[1] == rhs[1]) || (lhs[1] == rhs[0] && lhs[0] == rhs[1]);
+    return (lhs[0] == rhs[0] && lhs[1] == rhs[1]) ||
+           (lhs[1] == rhs[0] && lhs[0] == rhs[1]);
   } else {
     auto lhsv = llvm::to_vector(lhs);
     auto rhsv = llvm::to_vector(rhs);
@@ -9580,8 +9588,9 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
           continue;
         if (nop->getBlock() != op->getBlock())
           continue;
-	
-	if (op->getName() != nop->getName()) continue;
+
+        if (op->getName() != nop->getName())
+          continue;
 
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop, OperationEquivalence::IgnoreLocations)) {
@@ -10842,7 +10851,8 @@ struct BroadcastInDimTransposeToBroadcastInDim final
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), broadcastOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(newBroadcastDims));
-    if (singleUser) rewriter.eraseOp(broadcastOp);
+    if (singleUser)
+      rewriter.eraseOp(broadcastOp);
 
     return success();
   }
@@ -11608,10 +11618,12 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
     }
 
     rewriter.setInsertionPointToEnd(&replacement.getTrueBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(trueTerm, trueReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(trueTerm,
+                                                           trueReturns);
 
     rewriter.setInsertionPointToEnd(&replacement.getFalseBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(falseTerm, falseReturns);
+    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(falseTerm,
+                                                           falseReturns);
 
     rewriter.replaceOp(op, results);
     return success();
@@ -12037,7 +12049,7 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
         bodyBlock->addArgument(type, whileOp.getLoc());
       }
     }
-    
+
     Block &newBodyBlock = newWhileOp.getBody().front();
     newBodyBlock.clear();
     {
@@ -12045,13 +12057,15 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
       rewriter.setInsertionPointToStart(&newBodyBlock);
 
       SmallVector<Value> replacements;
-      for (auto arg : newBodyBlock.getArguments()) replacements.push_back(arg);
-        for (auto &pair : outerTransposes) {
-            replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
-                pair.outerTranspose.getLoc(), replacements[pair.idx],
-                getInversePermutation(pair.outerTranspose.getPermutation()));
+      for (auto arg : newBodyBlock.getArguments())
+        replacements.push_back(arg);
+      for (auto &pair : outerTransposes) {
+        replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
+            pair.outerTranspose.getLoc(), replacements[pair.idx],
+            getInversePermutation(pair.outerTranspose.getPermutation()));
       }
-      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock, replacements);
+      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock,
+                           replacements);
     }
 
     // Clear and clone condition region
@@ -12060,17 +12074,18 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
-      
-      SmallVector<Value> replacements;
-      for (auto arg : newCondBlock.getArguments()) replacements.push_back(arg);
-      for (auto &pair : outerTransposes) {
-            replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
-                pair.outerTranspose.getLoc(), replacements[pair.idx],
-                getInversePermutation(pair.outerTranspose.getPermutation()));
-      }
-      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock, replacements);
-    }
 
+      SmallVector<Value> replacements;
+      for (auto arg : newCondBlock.getArguments())
+        replacements.push_back(arg);
+      for (auto &pair : outerTransposes) {
+        replacements[pair.idx] = rewriter.create<stablehlo::TransposeOp>(
+            pair.outerTranspose.getLoc(), replacements[pair.idx],
+            getInversePermutation(pair.outerTranspose.getPermutation()));
+      }
+      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock,
+                           replacements);
+    }
 
     // Step 5. Replace outerTranspose with the newWhileOp results
     for (auto &candidate : outerTransposes) {
@@ -13247,16 +13262,18 @@ struct WhilePadInductionReduction
       rewriter.setInsertionPointToStart(&newBodyBlock);
 
       SmallVector<Value> replacements;
-      for (auto arg : newBodyBlock.getArguments()) replacements.push_back(arg);
+      for (auto arg : newBodyBlock.getArguments())
+        replacements.push_back(arg);
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
                              newWhileOp.getBody().getArgument(ivInfo.index),
                              newWhileOp.getBody().getArguments(), false)
                ->getResults()) {
         auto idx = candidates[res.getResultNumber()].idx;
-	replacements[idx] = res;
+        replacements[idx] = res;
       }
-      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock, replacements);
+      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock,
+                           replacements);
     }
 
     // Clear and clone condition region
@@ -13265,9 +13282,10 @@ struct WhilePadInductionReduction
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&newCondBlock);
-      
+
       SmallVector<Value> replacements;
-      for (auto arg : newCondBlock.getArguments()) replacements.push_back(arg);
+      for (auto arg : newCondBlock.getArguments())
+        replacements.push_back(arg);
 
       for (auto res :
            createConditional(rewriter, whileOp, ivInfo, candidates,
@@ -13278,7 +13296,8 @@ struct WhilePadInductionReduction
         replacements[idx] = res;
       }
 
-      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock, replacements);
+      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock,
+                           replacements);
     }
 
     // Finally, replace all uses of the old while op with the new one

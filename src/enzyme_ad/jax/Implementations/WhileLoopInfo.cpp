@@ -86,7 +86,6 @@ int64_t WhileLoopInfo::getConstantNumIters() {
          getConstantStep().value();
 }
 
-
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
     return SplatElementsAttr::get(
@@ -107,12 +106,15 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
 
   Value numIters;
   if (isConstant()) {
-    numIters = builder.create<stablehlo::ConstantOp>(op->getLoc(), start.getType(), makeAttr(start.getType(), getConstantNumIters()).cast<ElementsAttr>());
+    numIters = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), start.getType(),
+        makeAttr(start.getType(), getConstantNumIters()).cast<ElementsAttr>());
   } else {
     // numIters = (limit - start) / step;
     Value numIters = builder.create<stablehlo::DivOp>(
-      op->getLoc(),
-      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+        op->getLoc(),
+        builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start),
+        step);
   }
 
   return numIters;
