@@ -337,13 +337,25 @@ def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-op.getPermutation();
+  SmallVector<int64_t> res(op.getPermutation().size(), 0);
+  for (auto en : llvm::enumerate(op.getPermutation())) {
+    res[en.index()] = to_i64(en.value()) + (gutils->width > 1);
+  }
+  if (gutils->width > 1) {
+    res.insert(res.begin(), 0);
+  }
+  getI64Attr(builder, res);
 }]>;
 
 def InversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  SmallVector<int64_t> res(op.getPermutation().size(), 0);
+  auto sz = op.getPermutation().size() + (gutils->width > 1);
+  SmallVector<int64_t> res(sz, 0);
   for (auto en : llvm::enumerate(op.getPermutation())) {
-    res[to_i64(en.value())] = en.index();
+    auto idx = to_i64(en.value()) + (gutils->width > 1);
+    res[idx] = en.index() + (gutils->width > 1);
+  }
+  if (gutils->width > 1) {
+    res.insert(res.begin(), 0);
   }
   getI64Attr(builder, res);
 }]>;
@@ -1232,5 +1244,5 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     [
                         (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
                     ],
-                    (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
+                    (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
