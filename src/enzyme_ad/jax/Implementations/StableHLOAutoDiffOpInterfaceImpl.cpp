@@ -2800,6 +2800,99 @@ struct SHLOReduceOpBatchInterface
   }
 };
 
+struct SHLODotGeneralOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLODotGeneralOpBatchInterface,
+                                             DotGeneralOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<DotGeneralOp>(src);
+    auto dimensionNumbers = op.getDotDimensionNumbers();
+
+    SmallVector<int64_t> lhsBatchingDimensions, rhsBatchingDimensions,
+        lhsContractingDimensions, rhsContractingDimensions;
+
+    for (int i = 0; i < batchSizes.size(); i++) {
+      lhsBatchingDimensions.push_back(i);
+      rhsBatchingDimensions.push_back(i);
+    }
+    for (auto &dim : dimensionNumbers.getLhsBatchingDimensions()) {
+      lhsBatchingDimensions.push_back(dim + batchSizes.size());
+    }
+    for (auto &dim : dimensionNumbers.getRhsBatchingDimensions()) {
+      rhsBatchingDimensions.push_back(dim + batchSizes.size());
+    }
+
+    for (auto &dim : dimensionNumbers.getLhsContractingDimensions()) {
+      lhsContractingDimensions.push_back(dim + batchSizes.size());
+    }
+    for (auto &dim : dimensionNumbers.getRhsContractingDimensions()) {
+      rhsContractingDimensions.push_back(dim + batchSizes.size());
+    }
+
+    auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), lhsBatchingDimensions, rhsBatchingDimensions,
+        lhsContractingDimensions, rhsContractingDimensions);
+
+    SmallVector<int64_t> resultShape;
+    resultShape.reserve(op.getType().getShape().size() + batchSizes.size());
+    for (auto &dim : batchSizes) {
+      resultShape.push_back(dim);
+    }
+    for (auto &dim : op.getType().getShape()) {
+      resultShape.push_back(dim);
+    }
+
+    auto dotOp = builder.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, op.getType().getElementType()),
+        mapper.lookup(op.getLhs()), mapper.lookup(op.getRhs()), dotDimsAttr,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    mapper.map(src->getResult(0), dotOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOBroadcastInDimOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOBroadcastInDimOpBatchInterface,
+                                             BroadcastInDimOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<BroadcastInDimOp>(src);
+    auto resultType = op.getType();
+
+    SmallVector<int64_t> bcastDims;
+    for (int i = 0; i < batchSizes.size(); i++) {
+      bcastDims.push_back(i);
+    }
+    for (auto &dim : op.getBroadcastDimensions()) {
+      bcastDims.push_back(dim + batchSizes.size());
+    }
+
+    SmallVector<int64_t> resultShape;
+    resultShape.reserve(resultType.getShape().size() + batchSizes.size());
+    for (auto &dim : batchSizes) {
+      resultShape.push_back(dim);
+    }
+    for (auto &dim : resultType.getShape()) {
+      resultShape.push_back(dim);
+    }
+
+    auto bcastOp = builder.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, resultType.getElementType()),
+        mapper.lookup(op.getOperand()),
+        builder.getDenseI64ArrayAttr(bcastDims));
+
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -2849,6 +2942,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
+    DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
+    BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
+        *context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
