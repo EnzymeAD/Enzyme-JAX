@@ -475,7 +475,19 @@ public:
 
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
-    Value numIters = gutils->popCache(caches[0], builder);
+    Value numIters;
+    if (caches.empty()) {
+      WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
+      bool res = info.computeInfo().succeeded();
+      assert(res && info.isValid() && info.isConstant());
+      (void)res;
+
+      auto iterType = orig->getOperand(0).getType();
+      numIters = builder.create<stablehlo::ConstantOp>(
+          orig->getLoc(), iterType,
+          cast<ElementsAttr>(makeAttr(iterType, info.getConstantNumIters())));
+    } else
+      numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
     auto iterVarOp = builder.create<ConstantOp>(
@@ -483,7 +495,6 @@ public:
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
-    ;
     auto iterVar = iterVarOp.getResult();
 
     SmallVector<Value> operands;
@@ -523,16 +534,8 @@ public:
           cast<RankedTensorType>(numIters.getType()).getElementType();
       if (numItersElemType != condIterVarElemType) {
         builder.setInsertionPointAfter(iterVarOp);
-        DenseIntElementsAttr numAttr;
-        if (matchPattern(numIters, m_Constant(&numAttr))) {
-          numIters = builder.create<ConstantOp>(
-              orig->getLoc(), numIters.getType(),
-              makeAttr(numIters.getType(), (*numAttr.begin()).getSExtValue())
-                  .cast<ElementsAttr>());
-        } else {
-          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                               condIterVarElemType);
-        }
+        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                             condIterVarElemType);
         builder.setInsertionPointAfter(revWhile);
       }
 
@@ -641,6 +644,10 @@ public:
 
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
+      // no need to cache number of iterations if it is a known constant.
+      if (info.isValid() && info.isConstant())
+        return {};
+
       numIters = info.getNumIters(revBuilder);
     }
 
