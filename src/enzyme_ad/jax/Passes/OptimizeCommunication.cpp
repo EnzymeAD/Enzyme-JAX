@@ -3377,6 +3377,176 @@ struct ConcatToPadCommOptimize
   }
 };
 
+// See https://github.com/EnzymeAD/Enzyme-JAX/issues/854 for the motivation
+// TODO: At some point if we can come up with a cost model for this, we can do a
+//       greedy search for the best ordering
+template <typename opTy>
+struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
+  using OpRewritePattern<opTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(opTy op,
+                                PatternRewriter &rewriter) const override {
+    bool isCommutative =
+        op->template hasTrait<OpTrait::IsCommutative>() ||
+        op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>();
+
+    auto lhsOp = op.getLhs();
+    auto rhsOp = op.getRhs();
+
+    auto opSharding = mlir::sdy::getSharding(op);
+    if (!opSharding)
+      return failure();
+
+    auto lhsSharding = mlir::sdy::getSharding(lhsOp);
+    if (!lhsSharding && !lhsOp.hasOneUse())
+      return failure();
+
+    auto rhsSharding = mlir::sdy::getSharding(rhsOp);
+    if (!rhsSharding && !rhsOp.hasOneUse())
+      return failure();
+
+    auto lhsDefOp = lhsOp.template getDefiningOp<opTy>();
+    if (!lhsDefOp) {
+      auto rhsDefOp = rhsOp.template getDefiningOp<opTy>();
+      if (!rhsDefOp)
+        return failure();
+
+      // op a (op b c)
+      auto aOp = lhsOp;
+      auto aOpSharding = lhsSharding;
+
+      auto bOp = rhsDefOp.getLhs();
+      auto bOpSharding = mlir::sdy::getSharding(bOp);
+      if (!bOpSharding)
+        return failure();
+
+      auto cOp = rhsDefOp.getRhs();
+      auto cOpSharding = mlir::sdy::getSharding(cOp);
+      if (!cOpSharding)
+        return failure();
+
+      // good ordering
+      if (bOpSharding == cOpSharding)
+        return failure();
+
+      if (aOpSharding == cOpSharding && isCommutative) {
+        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+        sdy::setSharding(newOp, aOpSharding);
+        auto newFinalOp =
+            rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+        sdy::setSharding(newFinalOp, opSharding);
+        rewriter.replaceOp(op, newFinalOp); // op (op a c) b
+        return success();
+      }
+
+      if (aOpSharding == bOpSharding) {
+        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, bOp);
+        sdy::setSharding(newOp, aOpSharding);
+        auto newFinalOp =
+            rewriter.template create<opTy>(op.getLoc(), newOp, cOp);
+        sdy::setSharding(newFinalOp, opSharding);
+        rewriter.replaceOp(op, newFinalOp); // op (op a b) c
+        return success();
+      }
+    } else {
+      auto rhsDefOp = rhsOp.template getDefiningOp<opTy>();
+      if (!rhsDefOp) {
+        // op (op a b) c
+        auto aOp = lhsDefOp.getLhs();
+        auto aOpSharding = mlir::sdy::getSharding(aOp);
+        if (!aOpSharding)
+          return failure();
+
+        auto bOp = lhsDefOp.getRhs();
+        auto bOpSharding = mlir::sdy::getSharding(bOp);
+        if (!bOpSharding)
+          return failure();
+
+        auto cOp = rhsOp;
+        auto cOpSharding = rhsSharding;
+
+        // good ordering
+        if (aOpSharding == bOpSharding)
+          return failure();
+
+        if (aOpSharding == cOpSharding && isCommutative) {
+          auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          sdy::setSharding(newOp, aOpSharding);
+          auto newFinalOp =
+              rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+          sdy::setSharding(newFinalOp, opSharding);
+          rewriter.replaceOp(op, newFinalOp); // op (op a c) b
+          return success();
+        }
+
+        if (bOpSharding == cOpSharding) {
+          auto newOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          sdy::setSharding(newOp, bOpSharding);
+          auto newFinalOp =
+              rewriter.template create<opTy>(op.getLoc(), aOp, newOp);
+          sdy::setSharding(newFinalOp, opSharding);
+          rewriter.replaceOp(op, newFinalOp); // op a (op b c)
+          return success();
+        }
+      } else {
+        // op (op a b) (op c d)
+        auto aOp = lhsDefOp.getLhs();
+        auto aOpSharding = sdy::getSharding(aOp);
+        if (!aOpSharding)
+          return failure();
+
+        auto bOp = lhsDefOp.getRhs();
+        auto bOpSharding = sdy::getSharding(bOp);
+        if (!bOpSharding)
+          return failure();
+
+        auto cOp = rhsDefOp.getLhs();
+        auto cOpSharding = sdy::getSharding(cOp);
+        if (!cOpSharding)
+          return failure();
+
+        auto dOp = rhsDefOp.getRhs();
+        auto dOpSharding = sdy::getSharding(dOp);
+        if (!dOpSharding)
+          return failure();
+
+        // good ordering
+        if ((aOpSharding == bOpSharding) || (cOpSharding == dOpSharding))
+          return failure();
+
+        if (!isCommutative) // all nicer variants need to be commutative
+          return failure();
+
+        if (aOpSharding == cOpSharding && bOpSharding == dOpSharding) {
+          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          sdy::setSharding(newLhsOp, aOpSharding);
+          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, dOp);
+          sdy::setSharding(newRhsOp, bOpSharding);
+          auto newOp =
+              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          sdy::setSharding(newOp, opSharding);
+          rewriter.replaceOp(op, newOp); // op (op a c) (op b d)
+          return success();
+        }
+
+        if (aOpSharding == dOpSharding && bOpSharding == cOpSharding) {
+          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, dOp);
+          sdy::setSharding(newLhsOp, aOpSharding);
+          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          sdy::setSharding(newRhsOp, bOpSharding);
+          auto newOp =
+              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          sdy::setSharding(newOp, opSharding);
+          rewriter.replaceOp(op, newOp); // op (op a d) (op b c)
+          return success();
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -3443,6 +3613,17 @@ struct OptimizeCommunicationPass
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+
+    if (reorder_associative > 0) {
+      patterns.add<ReorderAssociativeOp<stablehlo::AddOp>,
+                   ReorderAssociativeOp<stablehlo::MulOp>,
+                   ReorderAssociativeOp<stablehlo::MinOp>,
+                   ReorderAssociativeOp<stablehlo::MaxOp>,
+                   ReorderAssociativeOp<stablehlo::AndOp>,
+                   ReorderAssociativeOp<stablehlo::OrOp>,
+                   ReorderAssociativeOp<stablehlo::XorOp>>(
+          context, PatternBenefit(reorder_associative));
+    }
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),

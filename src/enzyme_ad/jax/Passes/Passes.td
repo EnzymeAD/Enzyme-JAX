@@ -610,7 +610,13 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"wrap_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Perform a Wrap with Padding to optimize the communication">];
+       /*description=*/"Perform a Wrap with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"reorder_associative",
+       /*CLI argument=*/"reorder_associative",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Reorder associative operations to minimize communication">];
 }
 
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
