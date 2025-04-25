@@ -524,12 +524,15 @@ public:
       if (numItersElemType != condIterVarElemType) {
         builder.setInsertionPointAfter(iterVarOp);
         DenseIntElementsAttr numAttr;
-	if (matchPattern(numIters, m_Constant(&numAttr))) {
-	  numIters = builder.create<ConstantOp>(orig->getLoc(), numIters.getType(), makeAttr(numIters.getType(), (*numAttr.begin()).getSExtValue()).cast<ElementsAttr>());
-	} else {
+        if (matchPattern(numIters, m_Constant(&numAttr))) {
+          numIters = builder.create<ConstantOp>(
+              orig->getLoc(), numIters.getType(),
+              makeAttr(numIters.getType(), (*numAttr.begin()).getSExtValue())
+                  .cast<ElementsAttr>());
+        } else {
           numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                             condIterVarElemType);
-	}
+                                               condIterVarElemType);
+        }
         builder.setInsertionPointAfter(revWhile);
       }
 
