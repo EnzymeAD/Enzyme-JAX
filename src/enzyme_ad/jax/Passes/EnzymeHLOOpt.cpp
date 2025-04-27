@@ -17982,19 +17982,6 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
   }
 };
 
-// if (auto otherSlice =
-//   op->getOperand(i + 1).getDefiningOp<stablehlo::SliceOp>()) {
-// if (canMergeSlicesAlongAxis(op.getDimension(), slice, otherSlice)) {
-// slice = rewriter.create<stablehlo::SliceOp>(
-//   slice->getLoc(), slice.getOperand(), slice.getStartIndices(),
-//   otherSlice.getLimitIndices(), slice.getStrides());
-// changed = true;
-// i++;
-// continue;
-// } else
-// break;
-// }
-
 struct ConcatReshapeSlice
     : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -18103,14 +18090,24 @@ struct ConcatReshapeSlice
         concatOp.getLoc(), sourceTensor, sliceStarts, sliceLimits,
         sliceStrides);
 
+    SmallVector<int64_t> mapping(ndims, 0);
+    for (int64_t i = 0; i < ndims; i++) {
+      mapping[i] = i;
+    }
+    mapping[srcSliceDim] = concatDim;
+    if (srcSliceDim > concatDim) {
+      for (int64_t i = concatDim; i < srcSliceDim; i++) { // shift right
+        mapping[i]++;
+      }
+    } else {
+      for (int64_t i = srcSliceDim + 1; i <= concatDim; i++) { // shift left
+        mapping[i]--;
+      }
+    }
+
     SmallVector<int64_t> permutation(ndims, 0);
     for (int64_t i = 0; i < ndims; i++) {
-      if (i == srcSliceDim)
-        permutation[i] = concatDim;
-      else if (i == concatDim)
-        permutation[i] = srcSliceDim;
-      else
-        permutation[i] = i;
+      permutation[mapping[i]] = i;
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(concatOp, newSlice,
