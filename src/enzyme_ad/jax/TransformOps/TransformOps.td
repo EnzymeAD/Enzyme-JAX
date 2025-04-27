@@ -847,6 +847,16 @@ def IfPredPropagation : EnzymeHLOPatternOp<
   let patterns = ["IfPredPropagation"];
 }
 
+def ApplyTransposeReversePatterns : EnzymeHLOPatternOp<
+    "transpose_reverse"> {
+  let patterns = ["TransposeReverse"];
+}
+
+def ApplyReverseTransposePatterns : EnzymeHLOPatternOp<
+    "reverse_transpose"> {
+  let patterns = ["ReverseTranspose"];
+}
+
 // benefit 65k + max_constant_expansion flag
 def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "while_simplify"> {
