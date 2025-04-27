@@ -18116,6 +18116,63 @@ struct ConcatReshapeSlice
   }
 };
 
+// reverse(transpose x) -> transpose(reverse x)
+struct ReverseTranspose final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ReverseOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    if (!transposeOp->getResult(0).hasOneUse())
+      return failure();
+
+    SmallVector<int64_t> permutation =
+        llvm::to_vector(transposeOp.getPermutation());
+
+    SmallVector<int64_t> newReverseDims(op.getDimensions().size(), 0);
+    for (int64_t i = 0; i < op.getDimensions().size(); i++) {
+      newReverseDims[i] = permutation[op.getDimensions()[i]];
+    }
+
+    auto newReverseOp = rewriter.create<stablehlo::ReverseOp>(
+        op.getLoc(), transposeOp.getOperand(), newReverseDims);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, newReverseOp,
+                                                        permutation);
+    return success();
+  }
+};
+
+// transpose(reverse x) -> reverse(transpose x)
+struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reverseOp = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
+    if (!reverseOp)
+      return failure();
+
+    if (!reverseOp->getResult(0).hasOneUse())
+      return failure();
+
+    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+
+    SmallVector<int64_t> newReverseDims(reverseOp.getDimensions().size(), 0);
+    for (int64_t i = 0; i < reverseOp.getDimensions().size(); i++) {
+      newReverseDims[i] = permutation[reverseOp.getDimensions()[i]];
+    }
+
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), reverseOp.getOperand(), permutation);
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, newTranspose,
+                                                      newReverseDims);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -18456,10 +18513,11 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
-                   TransposeDUS, TransposeIota, TransposeReduceWindow,
-                   TransposeReduce, TransposeSelect, TransposeDynamicSlice>(
-          context);
+      patterns
+          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
+               TransposeIota, TransposeReduceWindow, TransposeReduce,
+               TransposeSelect, TransposeDynamicSlice, TransposeReverse>(
+              context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
