@@ -2176,9 +2176,9 @@ private:
       OP,
     } type;
 
-    Node(Operation *O) : O(O), type(OP){};
-    Node(Value V) : V(V), type(VAL){};
-    Node() : type(NONE){};
+    Node(Operation *O) : O(O), type(OP) {};
+    Node(Value V) : V(V), type(VAL) {};
+    Node() : type(NONE) {};
 
     bool operator<(const Node N) const {
       if (type != N.type)
@@ -2738,7 +2738,7 @@ public:
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
     // Run min cut partitioning to limit the amount of values to be cached.
-    if (!caches.empty()) {
+    if (!caches.empty() && !whileOp->hasAttr("enzymexla.disable_min_cut")) {
       Block *forward = &whileOp.getBody().front();
       Block *reverse = &otherWhileOp.getBody().front();
       minCutCache(forward, reverse, caches, rewriter);
