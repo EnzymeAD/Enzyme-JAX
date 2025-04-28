@@ -911,13 +911,49 @@ def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto op_type = op->getResult(0).getType().cast<RankedTensorType>();
-  auto lengths = op.getFftLength();
+  auto lengths = op.getFftLengthAttr().getValues<int64_t>();
   auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
 
-  auto ret_constant = builder.create<ConstantOp>(op.getLoc(), builder.getDenseI64ArrayAttr(ArrayRef<int64_t>({N})));
-  auto ret_broadcast = builder.create<BroadcastInDimOp>(op.getLoc(), op_type.clone(op_type.getShape(), builder.getI64Type()), ret_constant, builder.getI64VectorAttr(op_type.getShape()));
-  builder.create<ConvertOp>(op.getLoc(), op->getResult(0).getType(), ret_broadcast);
+  double value = N;
+  switch (op.getFftType()) {
+    case FftType::FFT: 
+	break;
+    case FftType::IFFT:
+	value = 1 / value;
+	break;
+    case FftType::RFFT:
+	value /= 2;
+	break;
+    case FftType::IRFFT:
+	value = 2 / value;
+	break;
+  }
+  auto resTy = op->getResult(0).getType().cast<RankedTensorType>();
+  mlir::Value ret_constant = builder.create<ConstantOp>(op.getLoc(), SplatElementsAttr::get(
+        resTy, FloatAttr::get(resTy.getElementType(), value)));
+
+  if (op.getFftType() == FftType::RFFT || op.getFftType() == FftType::IRFFT) {
+    auto RT = RankedTensorType::get({1}, resTy.getElementType());
+    auto zero_constant = builder.create<ConstantOp>(op.getLoc(), SplatElementsAttr::get(
+        RT, FloatAttr::get(resTy.getElementType(), 0)));
+    auto end_constant = builder.create<ConstantOp>(op.getLoc(), SplatElementsAttr::get(
+        RT, FloatAttr::get(resTy.getElementType(), lengths[lengths.size()-1]-1)));
+    
+    auto RT64 = RankedTensorType::get({1}, builder.getIntegerType(64));
+
+    Value start[] = {
+       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, rewriter.getI64IntegerAttr(0)))
+    };
+    Value end[] = {
+       builder.create<stablehlo::ConstantOp>(op.getLoc(), SplatElementsAttr::get(RT64, rewriter.getI64IntegerAttr(lengths.size()-1)))
+    };
+    ret_constant = builder.create<stablehlo::DynamicUpdateSliceOp>(op.getLoc(), resTy, ret_constant, zero_constant, start);
+    ret_constant = builder.create<stablehlo::DynamicUpdateSliceOp>(op.getLoc(), resTy, ret_constant, end_constant, end);
+  }
+  ret_constant;
 }]>;
+
+def SelectIfIRFFT : StaticSelect<"op.getFftType() == FftType::IRFFT">;
 
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
@@ -1088,12 +1124,22 @@ def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
-// TODO fix `rfft` and `irfft` derivatives:
-// - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` =>
 def : HLODerivative<"FftOp", (Op $x),
                     [
-                      (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
+                      (Mul
+                        // multiplier
+                        // (FftMultiplier), // TODO fix this
+                        (HLOConstantFP<"1">),
+                        // inverse fft
+                        (Fft
+                          (SelectIfIRFFT
+                            (Real (DiffeRet)), // IRFFT is complex to real, so reverse-mode needs to pass a real diff
+                            (DiffeRet)
+                          ),
+                          (FftTypeInverse),
+                          (FftLength) // TODO revise
+                        )
+                      )
                     ],
                     (Fft (Shadow $x), (FftType), (FftLength))
                   >;
