@@ -280,7 +280,7 @@ static isl::schedule_node test_schedule_tree_generic(isl::ctx ctx)
 	auto schedule = construct_schedule_tree(ctx);
 	auto root = schedule.root();
 
-	assert(IS_TRUE(root.isa<isl::schedule_node_domain>()));
+	assert(IS_TRUE(isa<isl::schedule_node_domain>(root)));
 	root = root.as<isl::schedule_node_domain>().child(0).parent();
 
 	int count = 0;
@@ -304,7 +304,7 @@ static void test_ast_build_unroll(isl::schedule schedule)
 {
 	auto root = schedule.root();
 	auto mark_unroll = [](isl::schedule_node node) {
-		if (IS_TRUE(node.isa<isl::schedule_node_band>())) {
+		if (IS_TRUE(isa<isl::schedule_node_band>(node))) {
 			auto band = node.as<isl::schedule_node_band>();
 			node = band.member_set_ast_loop_unroll(0);
 		}
@@ -369,6 +369,6 @@ static void test_ast_build_expr(isl::ctx ctx)
 
 	auto expr = build.expr_from(pa);
 	auto op = expr.as<isl::ast_expr_op>();
-	assert(IS_TRUE(op.isa<isl::ast_expr_op_add>()));
+	assert(IS_TRUE(isa<isl::ast_expr_op_add>(op)));
 	assert(SIZE_VAL(op.n_arg()) == 2);
 }

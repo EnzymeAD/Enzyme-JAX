@@ -16,7 +16,7 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (!cond)
     return failure();
 
-  auto induct = cond.getOperand(0).dyn_cast<BlockArgument>();
+  auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
   if (!induct)
     return failure();
   if (induct.getOwner() != &condBlk)
@@ -34,8 +34,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
 
   auto loopBodyBlock = &op.getBody().front();
 
-  auto incba0 = inc.getOperand(0).dyn_cast<BlockArgument>();
-  auto incba1 = inc.getOperand(1).dyn_cast<BlockArgument>();
+  auto incba0 = dyn_cast<BlockArgument>(inc.getOperand(0));
+  auto incba1 = dyn_cast<BlockArgument>(inc.getOperand(1));
 
   bool found = false;
 
@@ -108,7 +108,7 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
   if (isConstant()) {
     numIters = builder.create<stablehlo::ConstantOp>(
         op->getLoc(), start.getType(),
-        makeAttr(start.getType(), getConstantNumIters()).cast<ElementsAttr>());
+        cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
   } else {
     // numIters = (limit - start) / step;
     numIters = builder.create<stablehlo::DivOp>(

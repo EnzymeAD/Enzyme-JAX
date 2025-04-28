@@ -89,10 +89,10 @@ struct RemoveAffineParallelSingleIter
       for (size_t i = 0; i < idx; i++)
         uoff += uboundGroup[i];
 
-      auto lb = lbounds[loff].dyn_cast<AffineConstantExpr>();
+      auto lb = dyn_cast<AffineConstantExpr>(lbounds[loff]);
       if (!lb)
         continue;
-      auto ub = ubounds[uoff].dyn_cast<AffineConstantExpr>();
+      auto ub = dyn_cast<AffineConstantExpr>(ubounds[uoff]);
       if (!ub)
         continue;
       if (lb.getValue() >= ub.getValue())
@@ -224,8 +224,8 @@ public:
       uoff += uboundGroup[j];
 
     // Get the constant bounds if available
-    auto lb = lbounds[loff].dyn_cast<AffineConstantExpr>();
-    auto ub = ubounds[uoff].dyn_cast<AffineConstantExpr>();
+    auto lb = dyn_cast<AffineConstantExpr>(lbounds[loff]);
+    auto ub = dyn_cast<AffineConstantExpr>(ubounds[uoff]);
 
     if (lb && ub) {
       // Create APInt values with 64 bit.
@@ -367,7 +367,7 @@ std::optional<int64_t> maxSize(mlir::Value v) {
           par.getUpperBoundsMap().getResults().begin(),
           par.getUpperBoundsMap().getResults().end());
 
-      auto ub = ubounds[uoff].dyn_cast<AffineConstantExpr>();
+      auto ub = dyn_cast<AffineConstantExpr>(ubounds[uoff]);
       if (!ub)
         return {};
       return ub.getValue() - 1;
@@ -987,7 +987,7 @@ struct CanonicalizeLoopsPass
         // Let's evaluate the range of the lhs and try to figure out if the
         // condition is true or false.
         auto pred = cmpiOp.getPredicate();
-        APInt cstRhs = cst.getValue().cast<IntegerAttr>().getValue();
+        APInt cstRhs = cast<IntegerAttr>(cst.getValue()).getValue();
         if (pred == arith::CmpIPredicate::ne) {
           std::optional<APInt> constantRangeValue =
               range.getValue().getConstantValue();

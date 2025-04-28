@@ -66,8 +66,7 @@ static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
-  auto elemType =
-      op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto elemType = cast<ShapedType>(op->getResult(0).getType()).getElementType();
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
@@ -156,7 +155,7 @@ static bool isEligibleForCompactPrint(ReduceOp op) {
     return false;
 
   auto elemType =
-      op.getInputs()[0].getType().cast<ShapedType>().getElementType();
+      cast<ShapedType>(op.getInputs()[0].getType()).getElementType();
   auto expectedInnerOpType = RankedTensorType::get(/*shape=*/{}, elemType);
   if (innerOp.getOperands()[0].getType() != expectedInnerOpType)
     return false;
@@ -238,7 +237,7 @@ public:
               dyn_cast<AutoDiffTypeInterface>(operand.get().getType())) {
         if (!iface.isMutable()) {
           Type retTy = iface.getShadowType();
-          auto toret = retTy.cast<AutoDiffTypeInterface>().createNullValue(
+          auto toret = cast<AutoDiffTypeInterface>(retTy).createNullValue(
               builder, operand.get().getLoc());
           map.map(operand.get(), toret);
           continue;
@@ -256,7 +255,7 @@ public:
     if (gutils->width > 1) { // batched forward mode
       SmallVector<Type> newResultTypes;
       for (auto result : orig->getResults()) {
-        auto oldType = result.getType().dyn_cast<RankedTensorType>();
+        auto oldType = dyn_cast<RankedTensorType>(result.getType());
         if (!oldType || !oldType.hasStaticShape()) {
           orig->emitError("Unsupported result type for batched reduce\n");
           return failure();
@@ -288,7 +287,7 @@ public:
 
     if (gutils->width > 1) { // batched forward mode
       auto dimsAttr =
-          shadow->getAttr("dimensions").dyn_cast<DenseI64ArrayAttr>();
+          dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
       if (!dimsAttr) {
         shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
         return failure();
@@ -534,8 +533,16 @@ public:
           cast<RankedTensorType>(numIters.getType()).getElementType();
       if (numItersElemType != condIterVarElemType) {
         builder.setInsertionPointAfter(iterVarOp);
-        numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                             condIterVarElemType);
+        DenseIntElementsAttr numAttr;
+        if (matchPattern(numIters, m_Constant(&numAttr))) {
+          numIters = builder.create<ConstantOp>(
+              orig->getLoc(), condIterVar.getType(),
+              cast<ElementsAttr>(makeAttr(condIterVar.getType(),
+                                          (*numAttr.begin()).getSExtValue())));
+        } else {
+          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                               condIterVarElemType);
+        }
         builder.setInsertionPointAfter(revWhile);
       }
 
@@ -730,7 +737,7 @@ private:
     if (!cond)
       return builder.getI64Type();
 
-    auto lhsType = cond.getOperand(0).getType().dyn_cast<RankedTensorType>();
+    auto lhsType = cast<RankedTensorType>(cond.getOperand(0).getType());
     if (!lhsType)
       return builder.getI64Type();
 
@@ -805,8 +812,7 @@ public:
     auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
     auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
 
-    Value zero = gutils->getShadowType(bodyTy)
-                     .cast<AutoDiffTypeInterface>()
+    Value zero = cast<AutoDiffTypeInterface>(gutils->getShadowType(bodyTy))
                      .createNullValue(builder, op.getLoc());
 
     auto red = builder.create<ReduceOp>(
@@ -955,8 +961,8 @@ public:
       interior_padding.push_back(stride - 1);
     }
 
-    auto zeroPad = RankedTensorType::get({}, inTy.getElementType())
-                       .cast<AutoDiffTypeInterface>()
+    auto zeroPad = cast<AutoDiffTypeInterface>(
+                       RankedTensorType::get({}, inTy.getElementType()))
                        .createNullValue(builder, op.getLoc());
     auto red = builder.create<stablehlo::PadOp>(
         op.getLoc(), inDiffe, zeroPad, builder.getDenseI64ArrayAttr(starts),
@@ -1037,18 +1043,17 @@ public:
     }
 
     auto unrankedTensorType = RankedTensorType::get(
-        {},
-        op.getResult(0).getType().cast<RankedTensorType>().getElementType());
+        {}, cast<RankedTensorType>(op.getResult(0).getType()).getElementType());
 
     Value inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
     if (isadd) {
-      auto operandType = op->getOperand(0).getType().cast<RankedTensorType>();
-      auto outputType = op->getResult(0).getType().cast<RankedTensorType>();
+      auto operandType = cast<RankedTensorType>(op->getOperand(0).getType());
+      auto outputType = cast<RankedTensorType>(op->getResult(0).getType());
 
       // Compute padding similarly to conv lhs grad.
-      int64_t N = operandType.cast<RankedTensorType>().getShape().size();
+      int64_t N = cast<RankedTensorType>(operandType).getShape().size();
 
       SmallVector<int64_t> paddingValues(2 * N, 0);
 
@@ -1104,9 +1109,8 @@ public:
 
       SmallVector<int64_t> newBaseDilation(N, 1);
 
-      auto zero =
-          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
-              builder, op.getLoc());
+      auto zero = cast<AutoDiffTypeInterface>(unrankedTensorType)
+                      .createNullValue(builder, op.getLoc());
 
       auto paddedIndiffe =
           builder
@@ -1144,8 +1148,8 @@ public:
       auto revOp = builder.create<SelectAndScatterOp>(
           op.getLoc(), op.getOperand(0).getType(),
           gutils->popCache(caches[0], builder), inDiffe,
-          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
-              builder, op.getLoc()),
+          cast<AutoDiffTypeInterface>(unrankedTensorType)
+              .createNullValue(builder, op.getLoc()),
           op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
           op.getPaddingAttr());
 
@@ -1193,9 +1197,9 @@ public:
 
     Operation &innerOp = op.getBody().front().front();
 
-    auto inTy = op->getOperand(0).getType().cast<RankedTensorType>();
-    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
-                                                                   op.getLoc());
+    auto inTy = cast<RankedTensorType>(op->getOperand(0).getType());
+    auto zero =
+        cast<AutoDiffTypeInterface>(inTy).createNullValue(builder, op.getLoc());
     auto inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
@@ -1247,9 +1251,8 @@ public:
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
         auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
 
-        auto zeroI =
-            inDiffe.getType().cast<AutoDiffTypeInterface>().createNullValue(
-                builder, op.getLoc());
+        auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
+                         .createNullValue(builder, op.getLoc());
 
         auto cmp = builder.create<CompareOp>(op.getLoc(), ores, oprev,
                                              ComparisonDirection::EQ);
@@ -1295,7 +1298,7 @@ public:
       SmallVector<int64_t> limit;
       SmallVector<int64_t> strides;
       SmallVector<int64_t> tys;
-      auto RT = inTy.cast<RankedTensorType>();
+      auto RT = cast<RankedTensorType>(inTy);
       for (auto i = 0; i < RT.getShape().size(); i++) {
         tys.push_back(RT.getShape()[i]);
         if (i == dim) {
@@ -2047,12 +2050,10 @@ public:
         if (!gutils->isConstantValue(operand.get())) {
           newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
         } else {
-          Type retTy = operand.get()
-                           .getType()
-                           .cast<AutoDiffTypeInterface>()
+          Type retTy = cast<AutoDiffTypeInterface>(operand.get().getType())
                            .getShadowType();
           newOperands.push_back(
-              retTy.cast<AutoDiffTypeInterface>().createNullValue(
+              cast<AutoDiffTypeInterface>(retTy).createNullValue(
                   builder, origTerminator->getLoc()));
         }
       }
@@ -2330,12 +2331,11 @@ struct WhileOpEnzymeOpsRemover
         // }
       }
 
-      auto newType = info.cachedType()
-                         .cast<AutoDiffTypeInterface>()
-                         .getShadowType(numIters)
-                         .cast<ShapedType>();
+      auto newType =
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+                               .getShadowType(numIters));
 
-      Value initValue = newType.cast<AutoDiffTypeInterface>().createNullValue(
+      Value initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
           rewriter, info.initOp->getLoc());
 
       newOperands.push_back(initValue);
@@ -2453,8 +2453,8 @@ struct WhileOpEnzymeOpsRemover
       Value cache = info.initOp.getResult();
 
       auto newType =
-          info.cachedType().cast<AutoDiffTypeInterface>().getShadowType(
-              numIters);
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+                               .getShadowType(numIters));
       enzyme::InitOp newInit = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(info.initOp);
@@ -2645,7 +2645,7 @@ struct IfOpEnzymeOpsRemover
       if (!trueValue) {
         trueValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
-            grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
+            cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       trueTerm->insertOperands(trueTerm->getNumOperands(),
                                ValueRange(trueValue));
@@ -2654,16 +2654,15 @@ struct IfOpEnzymeOpsRemover
       if (!falseValue) {
         falseValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
-            grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
+            cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       falseTerm->insertOperands(falseTerm->getNumOperands(),
                                 ValueRange(falseValue));
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      Value dummy =
-          pushedValue.getType().cast<AutoDiffTypeInterface>().createNullValue(
-              rewriter, pushedValue.getLoc());
+      Value dummy = cast<AutoDiffTypeInterface>(pushedValue.getType())
+                        .createNullValue(rewriter, pushedValue.getLoc());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;

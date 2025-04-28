@@ -166,7 +166,7 @@ struct ForBreakAddUpgrade : public OpRewritePattern<scf::ForOp> {
         if (ifcond == trueYield) {
           // If never used, can always pick the "continue" value
           if (res.use_empty()) {
-            auto idx = topOp.cast<OpResult>().getResultNumber();
+            auto idx = cast<OpResult>(topOp).getResultNumber();
             Value val =
                 (negated ? innerIfOp.elseYield() : innerIfOp.thenYield())
                     .getOperand(idx);
@@ -326,7 +326,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!step.getType().isa<IndexType>()) {
+          if (!isa<IndexType>(step.getType())) {
             step = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                                 replacement.getType(), step);
           }
@@ -366,7 +366,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!step.getType().isa<IndexType>()) {
+          if (!isa<IndexType>(step.getType())) {
             step = rewriter.create<IndexCastOp>(forOp.getLoc(),
                                                 replacement.getType(), step);
           }
@@ -497,7 +497,7 @@ struct RemoveUnusedArgs : public OpRewritePattern<ForOp> {
     // Replace the operation's results with the new ones.
     SmallVector<Value, 4> repResults(op.getNumResults());
     for (auto en : llvm::enumerate(usedResults))
-      repResults[en.value().cast<OpResult>().getResultNumber()] =
+      repResults[cast<OpResult>(en.value()).getResultNumber()] =
           newForOp.getResult(en.index());
 
     rewriter.replaceOp(op, repResults);
@@ -593,7 +593,7 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +    bool changed = false;
 +
 +    if (llvm::all_of(op.results(), [](Value v) {
-+          return v.getType().isa<IntegerType>() &&
++          return isa<IntegerType>(v.getType()) &&
 +                 v.getType().cast<IntegerType>().getWidth() == 1;
 +        })) {
 +      if (op.thenRegion().getBlocks().size() == 1 &&
@@ -706,7 +706,7 @@ public:
     if (!ifOp)
       return failure();
 
-    auto idx = op.getIn().cast<OpResult>().getResultNumber();
+    auto idx = cast<OpResult>(op.getIn()).getResultNumber();
     bool change = false;
     for (auto v :
          {ifOp.thenYield().getOperand(idx), ifOp.elseYield().getOperand(idx)}) {
@@ -1088,7 +1088,7 @@ bool areValuesConnected(Value startVal, Value endVal,
   if (!visited.insert(endVal).second)
     return false;
 
-  if (auto blockArg = endVal.dyn_cast<BlockArgument>()) {
+  if (auto blockArg = dyn_cast<BlockArgument>(endVal)) {
     return false;
   }
   if (Operation *defOp = endVal.getDefiningOp()) {
@@ -1349,7 +1349,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       }
       Value res;
       if (isTopLevelArgValue(arg, &loop.getBefore())) {
-        auto blockArg = arg.cast<BlockArgument>();
+        auto blockArg = cast<BlockArgument>(arg);
         auto pos = blockArg.getArgNumber();
         res = loop.getInits()[pos];
       } else
@@ -1888,7 +1888,7 @@ struct MoveWhileInvariantIfResult : public OpRewritePattern<WhileOp> {
       if (!std::get<0>(pair).use_empty()) {
         if (auto ifOp = std::get<1>(pair).getDefiningOp<scf::IfOp>()) {
           if (ifOp.getCondition() == term.getCondition()) {
-            auto idx = std::get<1>(pair).cast<OpResult>().getResultNumber();
+            auto idx = cast<OpResult>(std::get<1>(pair)).getResultNumber();
             Value returnWith = ifOp.elseYield().getResults()[idx];
             if (!op.getBefore().isAncestor(returnWith.getParentRegion())) {
               rewriter.modifyOpInPlace(op, [&] {

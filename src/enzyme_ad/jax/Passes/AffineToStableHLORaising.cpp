@@ -55,7 +55,7 @@ using namespace mlir;
 using namespace mlir::enzyme;
 
 Type makeIndexToI64(Type ty) {
-  if (ty.isa<IndexType>())
+  if (isa<IndexType>(ty))
     return IntegerType::get(ty.getContext(), 64);
 
   if (auto tenTy = dyn_cast<RankedTensorType>(ty))
@@ -137,9 +137,8 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
     auto rhs = binExpr.getRHS();
     auto lhs = binExpr.getLHS();
 
-    auto rhsConst = rhs.dyn_cast<AffineConstantExpr>();
-    auto constantSide =
-        rhsConst ? rhsConst : lhs.dyn_cast<AffineConstantExpr>();
+    auto rhsConst = dyn_cast<AffineConstantExpr>(rhs);
+    auto constantSide = rhsConst ? rhsConst : dyn_cast<AffineConstantExpr>(lhs);
     auto dynSide = rhsConst ? lhs : rhs;
 
     auto rangeDyn = computeExprRange(map, dynSide);
@@ -453,7 +452,7 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
     }
   }
 
-  auto TA = a.getType().cast<RankedTensorType>();
+  auto TA = cast<RankedTensorType>(a.getType());
 
   if (needsBroadcastA) {
     a = builder
@@ -463,7 +462,7 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   }
 
   for (size_t i = 0; i < dsts.size(); i++) {
-    auto TB = bs[i].getType().cast<RankedTensorType>();
+    auto TB = cast<RankedTensorType>(bs[i].getType());
 
     bool needsBroadcast = false;
     if (TB.getShape().size() == outputShape.size()) {
@@ -555,7 +554,7 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
       {
         Value remainder = builder.create<stablehlo::RemOp>(loc, lhs, rhs);
         Value negative = builder.create<stablehlo::CompareOp>(
-            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            loc, lhs, makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
             stablehlo::ComparisonDirection::LT);
         result = builder.create<stablehlo::SelectOp>(
             loc, negative,
@@ -570,9 +569,9 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
       //         negative ? -quotient - 1 : quotient
       {
         Value negative = builder.create<stablehlo::CompareOp>(
-            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            loc, lhs, makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
             stablehlo::ComparisonDirection::LE);
-        Value one = makeI64Constant(lhs.getType().cast<ShapedType>(), 1);
+        Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
         Value absolute = builder.create<stablehlo::SelectOp>(
             loc, negative,
             builder.create<stablehlo::SubtractOp>(
@@ -594,9 +593,9 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
       //         negative ? -quotient : quotient + 1
       {
         Value negative = builder.create<stablehlo::CompareOp>(
-            loc, lhs, makeI64Constant(lhs.getType().cast<ShapedType>(), 0),
+            loc, lhs, makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
             stablehlo::ComparisonDirection::LE);
-        Value one = makeI64Constant(lhs.getType().cast<ShapedType>(), 1);
+        Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
         Value absolute = builder.create<stablehlo::SelectOp>(
             loc, negative, builder.create<stablehlo::NegOp>(loc, lhs),
             builder.create<stablehlo::AddOp>(loc, lhs, one));
@@ -720,7 +719,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     c = dsts[1];
     assert(b.getType() == c.getType());
 
-    auto IT = b.getType().cast<RankedTensorType>();
+    auto IT = cast<RankedTensorType>(b.getType());
     Type result = b.getType();
 
     auto newOp = builder.create<stablehlo::SelectOp>(ifOp->getLoc(), a, b, c);
@@ -743,7 +742,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   for (auto raisedIdx : lIndices) {
     startIndexMap.push_back(startIndexMap.size());
 
-    auto Ty = raisedIdx.getType().cast<RankedTensorType>();
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
     SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
                                       Ty.getShape().end());
@@ -789,7 +788,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     }
 
     if (indices) {
-      auto indicesTy = indices.getType().cast<RankedTensorType>();
+      auto indicesTy = cast<RankedTensorType>(indices.getType());
 
       SmallVector<int64_t> raisedIdxShape(
           indicesTy.getShape().drop_back().begin(),
@@ -824,7 +823,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
       indices = builder.create<stablehlo::BroadcastInDimOp>(
           loc, Ty.clone(shape), indices, bDims);
 
-      indicesTy = indices.getType().cast<RankedTensorType>();
+      indicesTy = cast<RankedTensorType>(indices.getType());
       SmallVector<int64_t> newIndicesShape(
           indicesTy.getShape().drop_back().begin(),
           indicesTy.getShape().drop_back().end());
@@ -836,7 +835,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
           (int64_t)newIndicesShape.size() - 1);
     } else {
 
-      auto S = raisedIdx.getType().cast<RankedTensorType>().getShape();
+      auto S = cast<RankedTensorType>(raisedIdx.getType()).getShape();
       SmallVector<int64_t> shape(S.begin(), S.end());
       shape.push_back(1);
 
@@ -845,7 +844,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     }
   }
 
-  auto Ty = indices.getType().cast<RankedTensorType>();
+  auto Ty = cast<RankedTensorType>(indices.getType());
   SmallVector<int64_t> productOfIndices = {1, (int64_t)lIndices.size()};
 
   for (auto s : Ty.getShape().drop_back()) {
@@ -867,7 +866,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
           /*indexVectorDim*/ 1),
       sliceSizes);
 
-  auto OT = res.getType().cast<RankedTensorType>();
+  auto OT = cast<RankedTensorType>(res.getType());
   res = builder.create<stablehlo::ReshapeOp>(loc, OT.clone(outputShape), res);
 
   affine::AffineValueMap outputMap(
@@ -886,7 +885,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
-  auto UTy = update.getType().cast<RankedTensorType>();
+  auto UTy = cast<RankedTensorType>(update.getType());
   SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
   SmallVector<int64_t> updateShape;
   SmallVector<int64_t> scatterDimsToOperandDims;
@@ -894,7 +893,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
     auto idxMap = maps.lookup(raisedIdx);
 
-    auto Ty = raisedIdx.getType().cast<RankedTensorType>();
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
     SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
                                       Ty.getShape().end());
     indicesShape.push_back(1);
@@ -911,7 +910,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       auto iv = getIVForExpr(idxMap, idxMap.getAffineMap().getResult(0));
 
       updateShape.push_back(
-          raisedIdx.getType().cast<RankedTensorType>().getShape()[0]);
+          cast<RankedTensorType>(raisedIdx.getType()).getShape()[0]);
 
       for (auto [updateIdx, E] :
            llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
@@ -933,11 +932,10 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
     if (indices) {
       int64_t indicesSize =
-                  indices.getType().cast<RankedTensorType>().getShape()[0],
-              numDims =
-                  indices.getType().cast<RankedTensorType>().getShape()[1],
+                  cast<RankedTensorType>(indices.getType()).getShape()[0],
+              numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
               newSize =
-                  raisedIdx.getType().cast<RankedTensorType>().getShape()[0];
+                  cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
 
       indices = builder.create<stablehlo::BroadcastInDimOp>(
           loc, Ty.clone({indicesSize, newSize, numDims}), indices,
@@ -963,17 +961,17 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   }
 
   update = builder.create<stablehlo::BroadcastInDimOp>(
-      loc, update.getType().cast<RankedTensorType>().clone(updateShape), update,
+      loc, cast<RankedTensorType>(update.getType()).clone(updateShape), update,
       broadcastDims);
 
   update = builder.create<stablehlo::ReshapeOp>(
       loc,
       RankedTensorType::get(
-          {indices.getType().cast<RankedTensorType>().getShape()[0]},
-          update.getType().cast<RankedTensorType>().getElementType()),
+          {cast<RankedTensorType>(indices.getType()).getShape()[0]},
+          cast<RankedTensorType>(update.getType()).getElementType()),
       update);
 
-  auto Ty = input.getType().cast<RankedTensorType>();
+  auto Ty = cast<RankedTensorType>(input.getType());
   stablehlo::ScatterOp scatter = builder.create<stablehlo::ScatterOp>(
       loc, llvm::ArrayRef<Type>{Ty}, ValueRange{input}, indices,
       ValueRange{update},
@@ -993,7 +991,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   scatter.getUpdateComputation().push_back(updateBody);
 
   auto unrankedTy = RankedTensorType::get(
-      {}, update.getType().cast<RankedTensorType>().getElementType());
+      {}, cast<RankedTensorType>(update.getType()).getElementType());
   updateBody->addArgument(unrankedTy, loc);
   Value updateInBody = updateBody->addArgument(unrankedTy, loc);
 
@@ -1694,7 +1692,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto T = RankedTensorType::get(
         outputShape,
-        inputTen.getType().cast<RankedTensorType>().getElementType());
+        cast<RankedTensorType>(inputTen.getType()).getElementType());
 
     Value newVal;
 
@@ -1729,7 +1727,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       for (auto [E, stride, sz] : llvm::zip_equal(
                accessValueMap.getAffineMap().getResults(), strides,
-               inputTen.getType().cast<RankedTensorType>().getShape())) {
+               cast<RankedTensorType>(inputTen.getType()).getShape())) {
         int64_t start, limit;
         if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
           start = constOp.getValue();
@@ -1775,7 +1773,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     newVal = builder
                  .create<stablehlo::ReshapeOp>(
                      newVal.getLoc(),
-                     newVal.getType().cast<RankedTensorType>().clone(dynShape),
+                     cast<RankedTensorType>(newVal.getType()).clone(dynShape),
                      newVal)
                  .getResult();
     mapping.map(val, newVal);
@@ -1860,7 +1858,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // for each dim in update, where it will
     // be located in broadcastedupdate
     SmallVector<int64_t> broadcastDims(
-        update.getType().cast<RankedTensorType>().getShape().size(), -1);
+        cast<RankedTensorType>(update.getType()).getShape().size(), -1);
     SmallVector<int64_t> updateShape;
 
     for (auto [E, stride] :
@@ -1875,7 +1873,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                     SplatElementsAttr::get(
                         unrankedTensorType,
                         ArrayRef<Attribute>(IntegerAttr::get(
-                            Ty, E.cast<AffineConstantExpr>().getValue()))))
+                            Ty, cast<AffineConstantExpr>(E).getValue()))))
                 .getResult();
         updateShape.push_back(1);
       } else {
@@ -1948,7 +1946,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     update = builder.create<stablehlo::BroadcastInDimOp>(
         op->getLoc(),
-        update.getType().cast<RankedTensorType>().clone(updateShape), update,
+        cast<RankedTensorType>(update.getType()).clone(updateShape), update,
         broadcastDims);
 
     if (!update)
@@ -2011,7 +2009,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Type ET = op->getResult(0).getType();
     auto unrankedTensorType = RankedTensorType::get({}, ET);
 
-    if (!ET.isInteger() && !ET.isa<FloatType>())
+    if (!ET.isInteger() && !isa<FloatType>(ET))
       return failure();
 
     auto newConst = builder.create<stablehlo::ConstantOp>(
@@ -2032,7 +2030,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
     affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
-    auto isIndex = constOp.getType().isa<IndexType>();
+    auto isIndex = isa<IndexType>(constOp.getType());
     auto ET = isIndex ? builder.getI64Type() : constOp.getType();
     auto unrankedTensorType = RankedTensorType::get({}, ET);
     auto newConst = builder.create<stablehlo::ConstantOp>(
@@ -2042,7 +2040,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             ArrayRef<Attribute>(
                 isIndex
                     ? IntegerAttr::get(
-                          ET, constOp.getValue().cast<IntegerAttr>().getValue())
+                          ET, cast<IntegerAttr>(constOp.getValue()).getValue())
                     : constOp.getValueAttr())));
     auto newVal = newConst.getResult();
     mapping.map(constOp.getResult(), newVal);
@@ -2081,7 +2079,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto operand = op->getOperand(0);
     auto newOperand = mapping.lookup(operand);
 
-    auto IT = newOperand.getType().cast<RankedTensorType>();
+    auto IT = cast<RankedTensorType>(newOperand.getType());
     auto T = RankedTensorType::get(IT.getShape(),
                                    makeIndexToI64(op->getResult(0).getType()));
 
@@ -2113,7 +2111,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc);
     assert(a.getType() == b.getType());
 
-    auto IT = a.getType().cast<RankedTensorType>();
+    auto IT = cast<RankedTensorType>(a.getType());
     Type result = RankedTensorType::get(
         IT.getShape(), makeIndexToI64(op->getResult(0).getType()));
 
@@ -2149,7 +2147,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     c = dsts[1];
     assert(b.getType() == c.getType());
 
-    auto IT = b.getType().cast<RankedTensorType>();
+    auto IT = cast<RankedTensorType>(b.getType());
     Type result = b.getType();
 
     auto newOp =
@@ -2226,9 +2224,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder, ifOp.getLoc(), constraint, constraintMap.getOperands(),
           mapping, constraintMap.getNumDims(), pc);
       Value zero = builder.create<stablehlo::ConstantOp>(
-          ifOp.getLoc(), expandedExpr.getType().cast<ShapedType>(),
+          ifOp.getLoc(), cast<ShapedType>(expandedExpr.getType()),
           SplatElementsAttr::get(
-              expandedExpr.getType().cast<ShapedType>(),
+              cast<ShapedType>(expandedExpr.getType()),
               ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
       Value newCond = builder.create<stablehlo::CompareOp>(
           ifOp.getLoc(), expandedExpr, zero,
@@ -2325,7 +2323,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   SmallVector<Type> tensorTypes;
   for (auto arg : body->getArguments()) {
-    auto MT = arg.getType().cast<MemRefType>();
+    auto MT = cast<MemRefType>(arg.getType());
     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
     auto newArg = newBlock->addArgument(TT, arg.getLoc());
     mapping.map(arg, newArg);
@@ -2436,12 +2434,12 @@ struct AffineToStableHLORaisingPass
     auto op = getOperation();
 
     op->walk([&](func::FuncOp func) {
-      auto FT = func.getFunctionType().dyn_cast<FunctionType>();
+      auto FT = dyn_cast<FunctionType>(func.getFunctionType());
 
       // Identify raised kernels which takes in memrefs instead of tensors
       if (FT &&
           llvm::all_of(FT.getInputs(),
-                       [](Type argTy) { return argTy.isa<MemRefType>(); }) &&
+                       [](Type argTy) { return isa<MemRefType>(argTy); }) &&
           FT.getNumResults() == 0) {
         funcs.push_back(func);
       }
