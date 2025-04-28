@@ -1225,6 +1225,7 @@ struct DUSConcat final
       concatOp = lowerRotate(rotate, rewriter, /*replace*/ false);
     }
     assert(concatOp);
+    assert(concatOp.getType() == dus.getOperand().getType());
 
     SmallVector<Value> newDusStartIndices =
         llvm::to_vector(dus.getStartIndices());
@@ -1263,8 +1264,10 @@ struct DUSConcat final
     auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
         concatOp
             .getLoc(), // Use concatOp's location, maybe dus.getLoc() is better?
-        dus.getType(), // The result type should match the original DUS result
         newConcatOperands, concatDim);
+    assert(
+        newConcat.getType() ==
+        dus.getType()); // The result type should match the original DUS result
 
     // Replace the original DUS with the new concatenate op.
     rewriter.replaceOp(dus, newConcat.getResult());
@@ -12127,7 +12130,8 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
         return false;
       }
       if (i != outer.getDimension()) {
-        if (lhsSlice.getLimitIndices()[i] != outer.getType().getShape()[i]) {
+        if (cast<RankedTensorType>(lhsSlice.getType()).getShape()[i] !=
+            outer.getType().getShape()[i]) {
           return false;
         }
       }
@@ -12232,12 +12236,20 @@ concatToOneDimDUS(PatternRewriter &rewriter,
   }
 
   auto OT = outer.getType();
-  auto dus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-      outer, operand, innerConcat, starts);
+  assert(operand.getType() == OT);
+  if (operand.getType() != OT) {
+    llvm_unreachable("invalid replacement (0)\n");
+  }
+  auto dus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+      outer.getLoc(), operand, innerConcat, starts);
   assert(dus.getType() == OT);
+  if (dus.getType() != OT) {
+    llvm_unreachable("invalid replacement\n");
+  }
   if (shard) {
     sdy::setShardings(dus, shard);
   }
+  rewriter.replaceOp(outer, dus);
   return dus;
 }
 
