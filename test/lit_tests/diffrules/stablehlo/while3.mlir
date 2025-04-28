@@ -80,9 +80,9 @@ module {
 // REVERSE-NEXT:      %[[a6:.+]] = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // REVERSE-NEXT:      stablehlo.return %[[a6]] : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.add %iterArg, %c_1 : tensor<i64>
 // REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_slice %[[a2]]#2, %iterArg_5, sizes = [1] : (tensor<3xf64>, tensor<i64>) -> tensor<1xf64>
 // REVERSE-NEXT:      %[[a8:.+]] = stablehlo.reshape %[[a7]] : (tensor<1xf64>) -> tensor<f64>
+// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.add %iterArg, %c_1 : tensor<i64>
 // REVERSE-NEXT:      %[[a9:.+]] = stablehlo.multiply %iterArg_4, %[[a8]] : tensor<f64>
 // REVERSE-NEXT:      %[[a10:.+]] = arith.addf %[[a9]], %cst_3 : tensor<f64>
 // REVERSE-NEXT:      %[[a11:.+]] = stablehlo.multiply %iterArg_4, %[[a8]] : tensor<f64>
