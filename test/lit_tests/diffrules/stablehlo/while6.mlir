@@ -71,10 +71,10 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
 // REVERSE-NEXT:     } do {
 // REVERSE-NEXT:       %[[a7:.+]] = stablehlo.compare  EQ, %iterArg, %[[c_3]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // REVERSE-NEXT:       %[[a8:.+]] = stablehlo.select %[[a7]], %arg1, %[[cst_7]] : tensor<i1>, tensor<12x4xf32>
-// REVERSE-NEXT:       %[[a9:.+]] = stablehlo.add %iterArg, %[[c_2]] : tensor<i64>
-// REVERSE-NEXT:       %[[a10:.+]] = stablehlo.reshape %[[a8]] : (tensor<12x4xf32>) -> tensor<12x1x4xf32>
 // REVERSE-NEXT:       %[[a11:.+]] = stablehlo.dynamic_slice %[[a0]]#1, %iterArg_8, sizes = [1] : (tensor<15xi32>, tensor<i64>) -> tensor<1xi32>
 // REVERSE-NEXT:       %[[a12:.+]] = stablehlo.reshape %[[a11]] : (tensor<1xi32>) -> tensor<i32>
+// REVERSE-NEXT:       %[[a9:.+]] = stablehlo.add %iterArg, %[[c_2]] : tensor<i64>
+// REVERSE-NEXT:       %[[a10:.+]] = stablehlo.reshape %[[a8]] : (tensor<12x4xf32>) -> tensor<12x1x4xf32>
 // REVERSE-NEXT:       %[[a13:.+]] = stablehlo.dynamic_update_slice %[[cst_1]], %[[a10]], %[[c_6]], %[[a12]], %[[c_6]] : (tensor<12x16x4xf32>, tensor<12x1x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x16x4xf32>
 // REVERSE-NEXT:       %[[a14:.+]] = stablehlo.add %iterArg_9, %[[a13]] : tensor<12x16x4xf32>
 // REVERSE-NEXT:       %[[a15:.+]] = stablehlo.subtract %iterArg_8, %[[c_2]] : tensor<i64>
