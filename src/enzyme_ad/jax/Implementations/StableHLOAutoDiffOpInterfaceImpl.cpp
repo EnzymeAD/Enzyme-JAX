@@ -536,8 +536,8 @@ public:
         DenseIntElementsAttr numAttr;
         if (matchPattern(numIters, m_Constant(&numAttr))) {
           numIters = builder.create<ConstantOp>(
-              orig->getLoc(), numIters.getType(),
-              cast<ElementsAttr>(makeAttr(numIters.getType(),
+              orig->getLoc(), condIterVarElemType,
+              cast<ElementsAttr>(makeAttr(condIterVarElemType,
                                           (*numAttr.begin()).getSExtValue())));
         } else {
           numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
