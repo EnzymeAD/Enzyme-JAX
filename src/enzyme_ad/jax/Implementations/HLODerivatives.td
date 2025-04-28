@@ -540,8 +540,15 @@ def GradDataFilterReshape2 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto lhsDilation = op.getLhsDilation();
   int64_t N = op.getType().getShape().size() - 2;
   llvm::SmallVector<int64_t> windowStrides(N, 1);
+
+  if (lhsDilation.has_value()) {
+    for (unsigned i = 0; i < N; ++i)
+      windowStrides[i] = getI64Value(*lhsDilation, i);
+  }
+
   auto windowStridesAttr = getI64Attr(builder, windowStrides);
   windowStridesAttr;
 }]>;
