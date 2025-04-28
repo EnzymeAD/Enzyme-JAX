@@ -24,14 +24,19 @@ module @sideeffect {
     return
   }
   func.func @main() {
-    // CHECK: enzymexla.jit_call @enzymexla_wrapper_MPI_Barrier () {has_side_effect = true} : () -> ()
-    enzymexla.jit_call @enzymexla_wrapper_MPI_Barrier () {has_side_effect = true} : () -> ()
+    // CHECK: enzymexla.jit_call @enzymexla_wrapper_MPI_Barrier () {has_side_effect} : () -> ()
+    enzymexla.jit_call @enzymexla_wrapper_MPI_Barrier () {has_side_effect} : () -> ()
     return
   }
 }
 
 module @nosideeffect_nouse {
   llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
+    %c1 = llvm.mlir.constant(1 : index) : i64
+    %ptr = llvm.getelementptr %arg0[%c1, %c1] : (!llvm.ptr<1>, i64, i64) -> !llvm.ptr<1>, !llvm.array<8 x i64>
+    %val = llvm.load %ptr : !llvm.ptr<1> -> i64
+    %ptr_str = llvm.getelementptr %arg0[%c1, %c1] : (!llvm.ptr<1>, i64, i64) -> !llvm.ptr<1>, !llvm.array<8 x i64>
+    llvm.store %val, %ptr_str : i64, !llvm.ptr<1>
     llvm.return
   }
 

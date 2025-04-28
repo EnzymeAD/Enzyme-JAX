@@ -230,7 +230,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), /*has_side_effect*/ rewriter.getBoolAttr(false),
+      kcall.getInputs(), /*has_side_effect*/ nullptr,
       kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
       kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);
@@ -372,7 +372,7 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), /*has_side_effect*/ rewriter.getBoolAttr(false),
+      kcall.getInputs(), /*has_side_effect*/ nullptr,
       kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
       kcall.getResultLayoutsAttr(), kcall.getOutputOperandAliasesAttr());
   kcall.replaceAllUsesWith(replacement);

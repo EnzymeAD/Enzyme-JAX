@@ -128,12 +128,13 @@ void JITCallOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   auto hasSideEffect = getHasSideEffectAttr();
-  if (hasSideEffect && !hasSideEffect.getValue())
-    return;
-  effects.emplace_back(MemoryEffects::Allocate::get());
-  effects.emplace_back(MemoryEffects::Free::get());
-  effects.emplace_back(MemoryEffects::Write::get());
-  effects.emplace_back(MemoryEffects::Read::get());
+  if (hasSideEffect) {
+    effects.emplace_back(MemoryEffects::Allocate::get());
+    effects.emplace_back(MemoryEffects::Free::get());
+    effects.emplace_back(MemoryEffects::Write::get());
+    effects.emplace_back(MemoryEffects::Read::get());
+  }
+  return;
 }
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
@@ -253,7 +254,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<enzymexla::JITCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
-      launchOp.getHasSideEffect(), launchOp.getBackendConfigAttr(),
+      launchOp.getHasSideEffectAttr(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(),
       /*resultLayouts*/ nullptr, outputAliases);
 }
@@ -376,7 +377,7 @@ public:
 
   LogicalResult matchAndRewrite(JITCallOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getHasSideEffect())
+    if (op.getHasSideEffectAttr())
       return failure();
 
     auto results = op.getResults();
@@ -385,16 +386,10 @@ public:
       return success();
     }
 
-    bool anyResultUsed = false;
     for (auto result : results) {
-      if (!result.use_empty()) {
-        anyResultUsed = true;
-        break;
-      }
+      if (!result.use_empty())
+        return failure();
     }
-
-    if (anyResultUsed)
-      return failure();
 
     rewriter.eraseOp(op);
     return success();
