@@ -12122,7 +12122,7 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
         return false;
       }
       if (i != outer.getDimension()) {
-        if (cast<RankedTensorType>(lhs.getOperand().getType()).getShape()[i] !=
+        if (cast<RankedTensorType>(lhsSlice.getType()).getShape()[i] !=
             outer.getType().getShape()[i]) {
           return false;
         }
