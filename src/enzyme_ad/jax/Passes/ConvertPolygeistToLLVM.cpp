@@ -441,8 +441,9 @@ public:
     } else {
       FailureOr<LLVM::LLVMFuncOp> mallocFunc =
           getTypeConverter()->getOptions().useGenericFunctions
-              ? LLVM::lookupOrCreateGenericAllocFn(module, getIndexType())
-              : LLVM::lookupOrCreateMallocFn(module, getIndexType());
+              ? LLVM::lookupOrCreateGenericAllocFn(rewriter, module,
+                                                   getIndexType())
+              : LLVM::lookupOrCreateMallocFn(rewriter, module, getIndexType());
       if (failed(mallocFunc))
         return failure();
       Value allocated =
@@ -472,8 +473,8 @@ public:
     } else {
       FailureOr<LLVM::LLVMFuncOp> freeFunc =
           getTypeConverter()->getOptions().useGenericFunctions
-              ? LLVM::lookupOrCreateGenericFreeFn(module)
-              : LLVM::lookupOrCreateFreeFn(module);
+              ? LLVM::lookupOrCreateGenericFreeFn(rewriter, module)
+              : LLVM::lookupOrCreateFreeFn(rewriter, module);
       if (failed(freeFunc))
         return failure();
       rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc.value(),
