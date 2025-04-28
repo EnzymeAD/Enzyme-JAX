@@ -3352,6 +3352,14 @@ struct FullReduceReshapeOrTranspose final
         return failure();
       }
     }
+
+    for (auto cur : todo) {
+      for (auto curOp : cur->getOperands()) {
+        if (!map.contains(curOp))
+          return failure();
+      }
+    }
+
     while (todo.size()) {
       auto cur = todo.pop_back_val();
 
