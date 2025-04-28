@@ -42,6 +42,10 @@ def PropagateConstantBoundsPass
   ];
 }
 
+def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp"> {
+  let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
+}
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
