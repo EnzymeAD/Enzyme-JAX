@@ -2458,7 +2458,42 @@ private:
     LLVM_DEBUG(dump(revGraph));
 
     // Refine cached values based on some heuristics
-    for (Value newCache : newCaches.takeVector()) {
+    auto newCacheVec = newCaches.takeVector();
+
+    {
+      // sort caches to provide determinism.
+      auto sorter = [](const Value &a, const Value &b) -> bool {
+        if (a == b)
+          return true;
+
+        auto ba = dyn_cast<BlockArgument>(a);
+        auto bb = dyn_cast<BlockArgument>(b);
+        if (ba && bb) {
+          if (ba.getOwner() == bb.getOwner())
+            return ba.getArgNumber() < bb.getArgNumber();
+
+          return ba.getOwner()->getParent()->isProperAncestor(
+              bb.getOwner()->getParent());
+        }
+
+        if (ba)
+          return true;
+
+        if (bb)
+          return false;
+
+        OpResult ra = cast<OpResult>(a);
+        OpResult rb = cast<OpResult>(b);
+
+        if (ra.getParentBlock() == rb.getParentBlock())
+          return ra.getDefiningOp()->isBeforeInBlock(rb.getDefiningOp());
+
+        return ra.getParentRegion()->isProperAncestor(rb.getParentRegion());
+      };
+      std::sort(newCacheVec.begin(), newCacheVec.end(), sorter);
+    };
+
+    for (Value newCache : newCacheVec) {
       SetVector<Value> candidates;
 
       worklist.clear();
@@ -2498,12 +2533,15 @@ private:
       };
 
       Value picked = newCache;
-      int64_t curSize = computeSizeOfType(picked);
+      int64_t curSize = computeSizeOfType(picked),
+              curRank = cast<RankedTensorType>(picked.getType()).getRank();
       for (Value candidate : candidates) {
-        auto newSize = computeSizeOfType(candidate);
-        if (newSize < curSize ||
+        int64_t newSize = computeSizeOfType(candidate),
+                newRank = cast<RankedTensorType>(candidate.getType()).getRank();
+        if (newSize < curSize && newRank < curRank ||
             candidate.getDefiningOp<enzyme::PopOp>() != nullptr) {
           curSize = newSize;
+          curRank = newRank;
           picked = candidate;
         }
       }
