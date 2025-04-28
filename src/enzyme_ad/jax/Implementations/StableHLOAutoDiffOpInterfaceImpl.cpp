@@ -2538,7 +2538,7 @@ private:
       for (Value candidate : candidates) {
         int64_t newSize = computeSizeOfType(candidate),
                 newRank = cast<RankedTensorType>(candidate.getType()).getRank();
-        if (newSize < curSize && newRank < curRank ||
+        if (newSize < curSize || (newSize == curSize && newRank < curRank) ||
             candidate.getDefiningOp<enzyme::PopOp>() != nullptr) {
           curSize = newSize;
           curRank = newRank;
