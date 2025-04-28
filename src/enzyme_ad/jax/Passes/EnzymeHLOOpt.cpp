@@ -1262,9 +1262,12 @@ struct DUSConcat final
 
     // Create the new concatenate op.
     auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        concatOp.getLoc(), // Use concatOp's location, maybe dus.getLoc() is better?
+        concatOp
+            .getLoc(), // Use concatOp's location, maybe dus.getLoc() is better?
         newConcatOperands, concatDim);
-    assert(newConcat.getType() == dus.getType()); // The result type should match the original DUS result
+    assert(
+        newConcat.getType() ==
+        dus.getType()); // The result type should match the original DUS result
 
     // Replace the original DUS with the new concatenate op.
     rewriter.replaceOp(dus, newConcat.getResult());
@@ -12119,7 +12122,8 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
         return false;
       }
       if (i != outer.getDimension()) {
-        if (cast<RankedTensorType>(lhs.getOperand().getType()).getShape()[i] != outer.getType().getShape()[i]) {
+        if (cast<RankedTensorType>(lhs.getOperand().getType()).getShape()[i] !=
+            outer.getType().getShape()[i]) {
           return false;
         }
       }
