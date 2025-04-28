@@ -44,6 +44,19 @@ def PropagateConstantBoundsPass
 
 def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp"> {
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_iterations",
+      /*CLI argument=*/"max_iterations",
+      /*type=*/"int32_t",
+      /*default=*/"8",
+      /*description=*/"propgate memory effects up to this many iterations (only for call graphs with cycles)">,
+    Option<
+      /*C++ variable name=*/"assume_no_memory_effects",
+      /*CLI argument=*/"assume_no_memory_effects",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"assume no memory effects for ops not implementing MemoryEffectOpInterface">];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {

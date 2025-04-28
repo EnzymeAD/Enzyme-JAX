@@ -1,5 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "mlir/Analysis/CallGraph.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -16,55 +17,167 @@ using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
+
+enum class VisitState { NotVisited, Visiting, Visited };
+
 struct MarkFunctionMemoryEffectsPass
     : public enzyme::impl::MarkFunctionMemoryEffectsPassBase<
           MarkFunctionMemoryEffectsPass> {
+  using Base::Base;
+
+  DenseMap<CallGraphNode *, VisitState> visitState;
+  SmallVector<CallGraphNode *> topoOrder;
+
+  bool dfs(CallGraphNode *node) {
+    auto it = visitState.find(node);
+    if (it != visitState.end()) {
+      if (it->second == VisitState::Visiting)
+        return true; // cycle detected
+      return false;
+    }
+    visitState[node] = VisitState::Visiting;
+    for (auto &edge : *node) {
+      CallGraphNode *target = edge.getTarget();
+      if (dfs(target))
+        return true;
+    }
+    visitState[node] = VisitState::Visited;
+    topoOrder.push_back(node);
+    return false;
+  }
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto *ctx = module->getContext();
     OpBuilder builder(ctx);
 
-    module.walk([&](FunctionOpInterface funcOp) {
-      bool hasRead = false;
-      bool hasWrite = false;
-      bool hasAllocate = false;
-      bool hasFree = false;
+    DenseMap<SymbolRefAttr, llvm::SmallDenseSet<StringRef>> funcEffects;
+
+    CallGraph callGraph(module);
+
+    bool hasCycle = false;
+    for (CallGraphNode *node : callGraph) {
+      if (!visitState.count(node))
+        hasCycle |= dfs(node);
+    }
+
+    // First pass: collect direct effects
+    for (CallGraphNode *node : topoOrder) {
+      Region *region = node->getCallableRegion();
+      if (!region)
+        return;
+
+      Operation *parentOp = region->getParentOp();
+      auto funcOp = dyn_cast<FunctionOpInterface>(parentOp);
+      if (!funcOp)
+        return;
+
+      llvm::SmallDenseSet<StringRef> effects;
 
       funcOp.walk([&](Operation *op) {
         if (auto memOp = dyn_cast<MemoryEffectOpInterface>(op)) {
-          SmallVector<MemoryEffects::EffectInstance, 4> effects;
-          memOp.getEffects(effects);
-
-          for (auto &effect : effects) {
-            if (effect.getEffect() == MemoryEffects::Read::get())
-              hasRead = true;
-            else if (effect.getEffect() == MemoryEffects::Write::get())
-              hasWrite = true;
-            else if (effect.getEffect() == MemoryEffects::Allocate::get())
-              hasAllocate = true;
-            else if (effect.getEffect() == MemoryEffects::Free::get())
-              hasFree = true;
+          SmallVector<MemoryEffects::EffectInstance> memEffects;
+          memOp.getEffects(memEffects);
+          for (auto &effect : memEffects) {
+            if (effect.getEffect() == MemoryEffects::Read::get()) {
+              effects.insert("read");
+            } else if (effect.getEffect() == MemoryEffects::Write::get()) {
+              effects.insert("write");
+            } else if (effect.getEffect() == MemoryEffects::Allocate::get()) {
+              effects.insert("allocate");
+            } else if (effect.getEffect() == MemoryEffects::Free::get()) {
+              effects.insert("free");
+            } else {
+              assert(false && "unknown memory effect");
+            }
           }
+        } else if (!assume_no_memory_effects) { // Operation doesn't define
+                                                // memory effects
+          effects.insert("read");
+          effects.insert("write");
+          effects.insert("allocate");
+          effects.insert("free");
         }
       });
 
-      if (!hasRead && !hasWrite && !hasAllocate && !hasFree)
-        return; // No effects, don't attach attribute
+      funcEffects[SymbolRefAttr::get(funcOp.getOperation())] =
+          std::move(effects);
+    }
 
-      SmallVector<Attribute> effects;
-      if (hasRead)
-        effects.push_back(builder.getStringAttr("read"));
-      if (hasWrite)
-        effects.push_back(builder.getStringAttr("write"));
-      if (hasAllocate)
-        effects.push_back(builder.getStringAttr("allocate"));
-      if (hasFree)
-        effects.push_back(builder.getStringAttr("free"));
+    auto propagate = [&](FunctionOpInterface funcOp,
+                         llvm::SmallDenseSet<StringRef> &effects) {
+      funcOp.walk([&](Operation *op) {
+        if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+          if (auto calleeAttr = callOp.getCallableForCallee()) {
+            if (auto symRef = dyn_cast<SymbolRefAttr>(calleeAttr)) {
 
-      funcOp->setAttr("enzymexla.memory_effects",
-                      builder.getArrayAttr(effects));
-    });
+              for (auto &e : funcEffects.lookup(symRef))
+                effects.insert(e);
+            }
+          }
+        }
+      });
+    };
+
+    if (hasCycle) {
+      // Cycles: fixpoint iterate
+      bool changed = true;
+      int32_t iteration = 0;
+      while (changed && iteration < max_iterations) {
+        changed = false;
+        iteration++;
+
+        for (CallGraphNode *node : llvm::reverse(topoOrder)) {
+          Region *region = node->getCallableRegion();
+          if (!region)
+            continue;
+
+          Operation *parentOp = region->getParentOp();
+          auto funcOp = dyn_cast<FunctionOpInterface>(parentOp);
+          if (!funcOp)
+            continue;
+
+          auto &effects =
+              funcEffects[SymbolRefAttr::get(ctx, funcOp.getName())];
+          size_t before = effects.size();
+          propagate(funcOp, effects);
+          if (effects.size() != before)
+            changed = true;
+        }
+      }
+    } else {
+      // No cycles: reverse topological order and propagate
+      for (CallGraphNode *node : llvm::reverse(topoOrder)) {
+        Region *region = node->getCallableRegion();
+        if (!region)
+          continue;
+
+        Operation *parentOp = region->getParentOp();
+        auto funcOp = dyn_cast<FunctionOpInterface>(parentOp);
+        if (!funcOp)
+          continue;
+
+        auto &effects = funcEffects[SymbolRefAttr::get(ctx, funcOp.getName())];
+        propagate(funcOp, effects);
+      }
+    }
+
+    // Finally, attach attributes
+    for (auto &[symbol, effectsSet] : funcEffects) {
+      auto funcOp = dyn_cast_or_null<FunctionOpInterface>(
+          module.lookupSymbol(symbol.getLeafReference()));
+      if (!funcOp)
+        continue;
+
+      SmallVector<Attribute> effectsAttrs;
+      for (auto effect : effectsSet)
+        effectsAttrs.push_back(builder.getStringAttr(effect));
+
+      if (!effectsAttrs.empty()) {
+        funcOp->setAttr("enzymexla.memory_effects",
+                        builder.getArrayAttr(effectsAttrs));
+      }
+    }
   }
 };
 } // namespace
