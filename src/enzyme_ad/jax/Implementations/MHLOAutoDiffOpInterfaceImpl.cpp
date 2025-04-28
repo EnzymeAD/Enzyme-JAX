@@ -53,8 +53,7 @@ static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
-  auto elemType =
-      op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto elemType = cast<ShapedType>(op->getResult(0).getType()).getElementType();
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);

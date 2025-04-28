@@ -377,8 +377,8 @@ public:
     auto src = op.getSource().getDefiningOp<Memref2PointerOp>();
     if (!src)
       return failure();
-    auto smt = src.getSource().getType().cast<MemRefType>();
-    auto omt = op.getType().cast<MemRefType>();
+    auto smt = cast<MemRefType>(src.getSource().getType());
+    auto omt = cast<MemRefType>(op.getType());
     if (smt.getShape().size() != omt.getShape().size())
       return failure();
     for (unsigned i = 1; i < smt.getShape().size(); i++) {
@@ -408,12 +408,12 @@ public:
     if (!src)
       return failure();
 
-    if (src.getSource().getType().cast<MemRefType>().getShape().size() != 1)
+    if (cast<MemRefType>(src.getSource().getType()).getShape().size() != 1)
       return failure();
 
     Value idx[] = {src.getIndex()};
-    auto PET = op.getType().cast<LLVM::LLVMPointerType>().getElementType();
-    auto MET = src.getSource().getType().cast<MemRefType>().getElementType();
+    auto PET = cast<LLVM::LLVMPointerType>(op.getType()).getElementType();
+    auto MET = cast<MemRefType>(src.getSource().getType()).getElementType();
     if (PET != MET) {
       Value ps;
       if (PET)
@@ -480,13 +480,13 @@ public:
     if (!dst)
       return failure();
 
-    auto dstTy = dst.getSource().getType().cast<MemRefType>();
+    auto dstTy = cast<MemRefType>(dst.getSource().getType());
 
     Value srcv = op.getSrc();
     auto src = srcv.getDefiningOp<enzymexla::Memref2PointerOp>();
     if (!src)
       return failure();
-    auto srcTy = src.getSource().getType().cast<MemRefType>();
+    auto srcTy = cast<MemRefType>(src.getSource().getType());
     if (srcTy.getShape().size() != dstTy.getShape().size())
       return failure();
 
@@ -591,10 +591,10 @@ public:
     if (!dst)
       return failure();
 
-    auto dstTy = dst.getSource().getType().cast<MemRefType>();
+    auto dstTy = cast<MemRefType>(dst.getSource().getType());
     Type elTy = dstTy.getElementType();
 
-    if (!elTy.isa<IntegerType, FloatType>())
+    if (!isa<IntegerType, FloatType>(elTy))
       return failure();
 
     size_t width = 1;
@@ -655,7 +655,7 @@ public:
       val =
           rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, IT.getWidth());
     else {
-      auto FT = elTy.cast<FloatType>();
+      auto FT = cast<FloatType>(elTy);
       val = rewriter.create<arith::ConstantFloatOp>(
           op.getLoc(), APFloat(FT.getFloatSemantics(), "0"), FT);
     }
@@ -773,13 +773,13 @@ public:
     if (!src)
       return failure();
 
-    auto mt = src.getType().cast<MemRefType>();
+    auto mt = cast<MemRefType>(src.getType());
 
     // Fantastic optimization, disabled for now to make a hard debug case easier
     // to find.
     if (auto before =
             src.getSource().getDefiningOp<enzymexla::Memref2PointerOp>()) {
-      auto mt0 = before.getSource().getType().cast<MemRefType>();
+      auto mt0 = cast<MemRefType>(before.getSource().getType());
       if (mt0.getElementType() == mt.getElementType()) {
         auto sh0 = mt0.getShape();
         auto sh = mt.getShape();

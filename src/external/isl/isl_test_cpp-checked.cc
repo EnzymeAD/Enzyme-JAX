@@ -211,7 +211,7 @@ static void test_schedule_tree(isl::ctx ctx)
 	assert(count == 1);
 
 	auto is_not_domain = [](isl::schedule_node node) {
-		return !node.isa<isl::schedule_node_domain>();
+		return !isa<isl::schedule_node_domain>(node);
 	};
 	assert(root.child(0).every_descendant(is_not_domain).is_true());
 	assert(root.every_descendant(is_not_domain).is_false());
@@ -224,7 +224,7 @@ static void test_schedule_tree(isl::ctx ctx)
 	auto domain = root.as<isl::schedule_node_domain>().domain();
 	auto filters = isl::union_set(ctx, "{}");
 	auto collect_filters = [&filters](isl::schedule_node node) {
-		if (node.isa<isl::schedule_node_filter>().is_true()) {
+		if (isa<isl::schedule_node_filter>(node).is_true()) {
 			auto filter = node.as<isl::schedule_node_filter>();
 			filters = filters.unite(filter.filter());
 		}

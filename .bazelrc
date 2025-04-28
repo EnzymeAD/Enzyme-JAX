@@ -9,6 +9,7 @@ common --announce_rc
 common --experimental_repo_remote_exec
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 common --cxxopt=-w --host_cxxopt=-w
+# common --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024
 common --define=grpc_no_ares=true
 common --define=tsl_link_protobuf=true
 common --define open_source_build=true
@@ -19,4 +20,3 @@ common --define=use_fast_cpp_protos=true
 common --define=allow_oversize_protos=true
 
 build -c opt
-

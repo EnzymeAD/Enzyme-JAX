@@ -108,9 +108,9 @@ struct Memref2PointerOpLowering
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    auto LPT = op.getType().cast<LLVM::LLVMPointerType>();
+    auto LPT = cast<LLVM::LLVMPointerType>(op.getType());
     auto space0 = op.getSource().getType().getMemorySpaceAsInt();
-    if (transformed.getSource().getType().isa<LLVM::LLVMPointerType>()) {
+    if (isa<LLVM::LLVMPointerType>(transformed.getSource().getType())) {
       mlir::Value ptr = rewriter.create<LLVM::BitcastOp>(
           loc, LLVM::LLVMPointerType::get(op.getContext(), space0),
           transformed.getSource());
@@ -441,8 +441,9 @@ public:
     } else {
       FailureOr<LLVM::LLVMFuncOp> mallocFunc =
           getTypeConverter()->getOptions().useGenericFunctions
-              ? LLVM::lookupOrCreateGenericAllocFn(module, getIndexType())
-              : LLVM::lookupOrCreateMallocFn(module, getIndexType());
+              ? LLVM::lookupOrCreateGenericAllocFn(rewriter, module,
+                                                   getIndexType())
+              : LLVM::lookupOrCreateMallocFn(rewriter, module, getIndexType());
       if (failed(mallocFunc))
         return failure();
       Value allocated =
@@ -472,8 +473,8 @@ public:
     } else {
       FailureOr<LLVM::LLVMFuncOp> freeFunc =
           getTypeConverter()->getOptions().useGenericFunctions
-              ? LLVM::lookupOrCreateGenericFreeFn(module)
-              : LLVM::lookupOrCreateFreeFn(module);
+              ? LLVM::lookupOrCreateGenericFreeFn(rewriter, module)
+              : LLVM::lookupOrCreateFreeFn(rewriter, module);
       if (failed(freeFunc))
         return failure();
       rewriter.replaceOpWithNewOp<LLVM::CallOp>(deallocOp, freeFunc.value(),
@@ -526,7 +527,7 @@ public:
 
     Attribute initialValue = nullptr;
     if (!globalOp.isExternal() && !globalOp.isUninitialized()) {
-      auto elementsAttr = globalOp.getInitialValue()->cast<ElementsAttr>();
+      auto elementsAttr = cast<ElementsAttr>(*globalOp.getInitialValue());
       initialValue = elementsAttr;
 
       // For scalar memrefs, the global variable created is of the element type,
@@ -750,12 +751,12 @@ static SmallVector<NamedAttribute> convertFuncAttributes(
       // LLVMFuncOp conversion these types may have changed. Account for that
       // change by converting attributes' types as well.
       SmallVector<NamedAttribute, 4> convertedAttrs;
-      auto attrsDict = argAttrDicts[i].cast<DictionaryAttr>();
+      auto attrsDict = cast<DictionaryAttr>(argAttrDicts[i]);
       convertedAttrs.reserve(attrsDict.size());
       for (const NamedAttribute &attr : attrsDict) {
         const auto convert = [&](const NamedAttribute &attr) {
           return TypeAttr::get(typeConverter.convertType(
-              attr.getValue().cast<TypeAttr>().getValue()));
+              cast<TypeAttr>(attr.getValue()).getValue()));
         };
         if (attr.getName().getValue() ==
             LLVM::LLVMDialect::getByValAttrName()) {
@@ -866,7 +867,7 @@ public:
     LLVM::Linkage linkage = LLVM::Linkage::External;
     if (funcOp->hasAttr(kLLVMLinkageAttrName)) {
       auto attr =
-          funcOp->getAttr(kLLVMLinkageAttrName).cast<mlir::LLVM::LinkageAttr>();
+          cast<mlir::LLVM::LinkageAttr>(funcOp->getAttr(kLLVMLinkageAttrName));
       linkage = attr.getLinkage();
     }
     auto newFuncOp = rewriter.create<LLVM::LLVMFuncOp>(
@@ -966,8 +967,8 @@ struct ReconcileUnrealizedPointerCasts
       return failure();
     auto inputTy = inputs[0].getType();
     auto outputTy = results[0].getType();
-    if (!(inputTy.isa<LLVM::LLVMPointerType>() &&
-          outputTy.isa<LLVM::LLVMPointerType>()))
+    if (!(isa<LLVM::LLVMPointerType>(inputTy) &&
+          isa<LLVM::LLVMPointerType>(outputTy)))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(ucc, outputTy, inputs[0]);
     return success();

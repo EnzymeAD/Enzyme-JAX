@@ -46,7 +46,7 @@ struct ArithRaisingPass
 
 #define RAISE_BINARY(BinaryOp, StableHLOOp, MHLOOp)                            \
   op->walk([=](BinaryOp origOp) {                                              \
-    if (!origOp->getResult(0).getType().isa<RankedTensorType>())               \
+    if (!isa<RankedTensorType>(origOp->getResult(0).getType()))                \
       return;                                                                  \
     OpBuilder builder(origOp);                                                 \
     Value newOp;                                                               \
@@ -96,7 +96,7 @@ struct ArithRaisingPass
 
 #define RAISE_UNARY(InputOp, StableHLOOp, MHLOOp)                              \
   op->walk([=](InputOp inpOp) {                                                \
-    if (!inpOp.getType().isa<RankedTensorType>())                              \
+    if (!isa<RankedTensorType>(inpOp.getType()))                               \
       return;                                                                  \
     OpBuilder builder(inpOp);                                                  \
     Value newAddOp;                                                            \
@@ -207,8 +207,7 @@ struct ArithRaisingPass
 
     op->walk([=](arith::MaxNumFOp maxOp) {
       // maxnumf %a,%b -> select(isnan(%a), %b, max(%a, %b))
-      if (!use_stablehlo ||
-          !maxOp.getResult().getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(maxOp.getResult().getType()))
         return;
 
       OpBuilder builder(maxOp);
@@ -223,8 +222,7 @@ struct ArithRaisingPass
     });
     op->walk([=](arith::MinNumFOp minOp) {
       // maxnumf %a,%b -> select(isnan(%a), %b, min(%a, %b))
-      if (!use_stablehlo ||
-          !minOp.getResult().getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(minOp.getResult().getType()))
         return;
 
       OpBuilder builder(minOp);
@@ -238,8 +236,7 @@ struct ArithRaisingPass
       minOp.erase();
     });
     op->walk([=](math::IsNaNOp nanOp) {
-      if (!use_stablehlo ||
-          !nanOp.getResult().getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(nanOp.getResult().getType()))
         return;
 
       OpBuilder builder(nanOp);
@@ -260,7 +257,7 @@ struct ArithRaisingPass
       nanOp.erase();
     });
     op->walk([=](complex::ConjOp addOp) {
-      if (!addOp->getResultTypes()[0].isa<RankedTensorType>())
+      if (!isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
@@ -270,7 +267,7 @@ struct ArithRaisingPass
       addOp.erase();
     });
     op->walk([=](arith::ConstantOp constOp) {
-      if (!use_stablehlo || !constOp.getType().isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(constOp.getType()))
         return;
       auto CT = constOp.getType();
       if (isa<TensorType>(CT)) {
@@ -282,35 +279,31 @@ struct ArithRaisingPass
       }
     });
     op->walk([=](arith::FPToSIOp addOp) {
-      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
     op->walk([=](arith::SIToFPOp addOp) {
-      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
     op->walk([=](arith::ExtUIOp addOp) {
-      if (!use_stablehlo || !addOp->getResultTypes()[0].isa<RankedTensorType>())
+      if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
       if (!cast<RankedTensorType>(addOp.getOperand().getType())
                .getElementType()
@@ -320,9 +313,7 @@ struct ArithRaisingPass
       Value newAddOp;
       newAddOp = builder.create<stablehlo::ConvertOp>(
           addOp.getLoc(), addOp->getOperand(0),
-          addOp->getResult(0)
-              .getType()
-              .cast<RankedTensorType>()
+          cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
@@ -333,7 +324,7 @@ struct ArithRaisingPass
       assert(use_stablehlo);
       SmallVector<int64_t> broadcastDims;
       auto shape =
-          broadcastOp.getInput().getType().cast<TensorType>().getShape();
+          cast<TensorType>(broadcastOp.getInput().getType()).getShape();
       broadcastDims.reserve(shape.size());
       for (auto en : llvm::enumerate(shape)) {
         // original dimensions end up one further because the batch dimension
@@ -349,7 +340,7 @@ struct ArithRaisingPass
     op->walk([=](arith::SelectOp selectOp) {
       if (!use_stablehlo ||
           llvm::any_of(selectOp->getOperandTypes(),
-                       [](Type ty) { return !ty.isa<RankedTensorType>(); }))
+                       [](Type ty) { return !isa<RankedTensorType>(ty); }))
         return;
 
       OpBuilder builder(selectOp);

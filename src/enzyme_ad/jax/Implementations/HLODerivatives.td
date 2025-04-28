@@ -170,7 +170,7 @@ def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = op->getResult(0).getType().cast<RankedTensorType>();
+  auto prev = cast<RankedTensorType>(op->getResult(0).getType());
   SmallVector<int64_t> shapes;
   // Result order is batches, lhs results, rhs results  [in this case contracting dims]
 
@@ -266,7 +266,7 @@ def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = op->getResult(0).getType().cast<RankedTensorType>();
+  auto prev = cast<RankedTensorType>(op->getResult(0).getType());
   SmallVector<int64_t> shapes;
   // Result order is batches, lhs results [in this case contracting dims], rhs results
 
@@ -580,7 +580,6 @@ def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :
@@ -692,7 +691,6 @@ def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :
@@ -910,7 +908,7 @@ def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto op_type = op->getResult(0).getType().cast<RankedTensorType>();
+  auto op_type = cast<RankedTensorType>(op->getResult(0).getType());
   auto lengths = op.getFftLength();
   auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
 
