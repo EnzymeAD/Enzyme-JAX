@@ -7695,8 +7695,44 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
       newReduceDimensions.push_back(reductionDim - numRemoved);
     }
 
+    assert(numRemoved == broadcastFromNothingDims.size());
+
+    Value operand = broadcast.getOperand();
+    // Some of the broadcasted values aren't being reduced over
+    // if (broadcastFromNothingDims.size() + broadcastFromOneDims.size() +
+    // cast<RankedTensorType>(op.getType(0)).getShape().size() !=
+    // inputType.getShape().size()) {
+    SmallVector<int64_t> newBroadcast(
+        cast<RankedTensorType>(broadcast.getOperand().getType())
+            .getShape()
+            .size(),
+        -1);
+    SmallVector<int64_t> newShape;
+    for (int i = 0; i < inputType.getShape().size(); i++) {
+      // These dimensions are removed
+      if (llvm::is_contained(broadcastFromNothingDims, i)) {
+        continue;
+      }
+      auto it = llvm::find(broadcastDims, i);
+      if (llvm::is_contained(broadcastFromOneDims, i))
+        newShape.push_back(1);
+      else
+        newShape.push_back(inputType.getShape()[i]);
+      if (it == broadcastDims.end()) {
+        // This dimension does not come from an earlier input
+      } else {
+        size_t originalDim = std::distance(broadcastDims.begin(), it);
+        newBroadcast[originalDim] = newShape.size() - 1;
+      }
+    }
+    operand = rewriter.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(newShape, inputType.getElementType()), operand,
+        newBroadcast);
+    // }
+
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
-        op.getLoc(), op->getResultTypes(), ValueRange{broadcast.getOperand()},
+        op.getLoc(), op->getResultTypes(), ValueRange{operand},
         op.getInitValues(), newReduceDimensions);
     newReduction.getRegion().takeBody(op.getRegion());
 
@@ -7706,6 +7742,8 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
         makeAttr(newResultType.clone(rewriter.getI64Type()), size));
     auto converted = rewriter.create<stablehlo::ConvertOp>(
         op.getLoc(), constantInt, newResultType.getElementType());
+    assert(op.getType(0) == newReduction.getResult(0).getType());
+    assert(op.getType(0) == converted.getType());
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
                                                   converted.getResult());
 
