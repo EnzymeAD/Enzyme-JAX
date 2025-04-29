@@ -7699,27 +7699,36 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     Value operand = broadcast.getOperand();
     // Some of the broadcasted values aren't being reduced over
-    // if (broadcastFromNothingDims.size() + broadcastFromOneDims.size() + cast<RankedTensorType>(op.getType(0)).getShape().size() != inputType.getShape().size()) {
-	 SmallVector<int64_t> newBroadcast(cast<RankedTensorType>(broadcast.getOperand().getType()).getShape().size(), -1);
-	 SmallVector<int64_t> newShape;
-	 for (int i=0; i<inputType.getShape().size(); i++) {
-	   // These dimensions are removed
-	   if (llvm::is_contained(broadcastFromNothingDims, i)) {
-	     continue;
-	   }
-      	   auto it = llvm::find(broadcastDims, i);
-	   if (llvm::is_contained(broadcastFromOneDims, i))
-	     newShape.push_back(1);
-	   else
-	     newShape.push_back(inputType.getShape()[i]);
-	   if (it == broadcastDims.end()) {
-	     // This dimension does not come from an earlier input
-	   } else {
-             size_t originalDim = std::distance(broadcastDims.begin(), it);
-             newBroadcast[originalDim] = newShape.size() - 1;
-	   }
-	 }
-	 operand = rewriter.create<stablehlo::BroadcastInDimOp>(op.getLoc(), RankedTensorType::get(newShape, inputType.getElementType()), operand, newBroadcast);
+    // if (broadcastFromNothingDims.size() + broadcastFromOneDims.size() +
+    // cast<RankedTensorType>(op.getType(0)).getShape().size() !=
+    // inputType.getShape().size()) {
+    SmallVector<int64_t> newBroadcast(
+        cast<RankedTensorType>(broadcast.getOperand().getType())
+            .getShape()
+            .size(),
+        -1);
+    SmallVector<int64_t> newShape;
+    for (int i = 0; i < inputType.getShape().size(); i++) {
+      // These dimensions are removed
+      if (llvm::is_contained(broadcastFromNothingDims, i)) {
+        continue;
+      }
+      auto it = llvm::find(broadcastDims, i);
+      if (llvm::is_contained(broadcastFromOneDims, i))
+        newShape.push_back(1);
+      else
+        newShape.push_back(inputType.getShape()[i]);
+      if (it == broadcastDims.end()) {
+        // This dimension does not come from an earlier input
+      } else {
+        size_t originalDim = std::distance(broadcastDims.begin(), it);
+        newBroadcast[originalDim] = newShape.size() - 1;
+      }
+    }
+    operand = rewriter.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(newShape, inputType.getElementType()), operand,
+        newBroadcast);
     // }
 
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
