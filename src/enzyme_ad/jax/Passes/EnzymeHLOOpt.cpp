@@ -12081,8 +12081,8 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
         return false;
       }
       if (i != outer.getDimension()) {
-        if (cast<RankedTensorType>(lhsSlice.getType()).getShape()[i] !=
-            outer.getType().getShape()[i]) {
+        if (cast<RankedTensorType>(lhsSlice.getOperand().getType())
+                .getShape()[i] != outer.getType().getShape()[i]) {
           return false;
         }
       }
@@ -12101,7 +12101,8 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
         return false;
       }
       if (i != outer.getDimension()) {
-        if (rhsSlice.getStartIndices()[i] != 0) {
+        if (cast<RankedTensorType>(rhsSlice.getOperand().getType())
+                .getShape()[i] != outer.getType().getShape()[i]) {
           return false;
         }
       }
