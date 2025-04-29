@@ -781,6 +781,7 @@ pybind_extension(
         "@llvm-project//mlir:LLVMIRToLLVMTranslation",
         "@llvm-project//mlir:LLVMIRToNVVMTranslation",
         "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:chlo_ops",
