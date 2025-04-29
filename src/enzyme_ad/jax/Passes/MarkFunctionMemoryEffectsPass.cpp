@@ -46,6 +46,32 @@ struct MarkFunctionMemoryEffectsPass
     return false;
   }
 
+  void insertMemoryEffectsAsStringRefs(
+      llvm::SmallDenseSet<StringRef> &effects,
+      SmallVector<MemoryEffects::EffectInstance> memEffects) {
+    for (auto &effect : memEffects) {
+      if (effect.getEffect() == MemoryEffects::Read::get()) {
+        effects.insert("read");
+      } else if (effect.getEffect() == MemoryEffects::Write::get()) {
+        effects.insert("write");
+      } else if (effect.getEffect() == MemoryEffects::Allocate::get()) {
+        effects.insert("allocate");
+      } else if (effect.getEffect() == MemoryEffects::Free::get()) {
+        effects.insert("free");
+      } else {
+        assert(false && "unknown memory effect");
+      }
+    }
+  }
+
+  void
+  insertMemoryEffectsAsStringRefs(llvm::SmallDenseSet<StringRef> &effects) {
+    effects.insert("read");
+    effects.insert("write");
+    effects.insert("allocate");
+    effects.insert("free");
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto *ctx = module->getContext();
@@ -75,29 +101,27 @@ struct MarkFunctionMemoryEffectsPass
       llvm::SmallDenseSet<StringRef> effects;
 
       funcOp.walk([&](Operation *op) {
+        if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
+          auto maybeEffects = getEffectsRecursively(op);
+          if (maybeEffects.has_value()) {
+            insertMemoryEffectsAsStringRefs(effects, maybeEffects.value());
+          } else {
+            insertMemoryEffectsAsStringRefs(effects);
+          }
+
+          return WalkResult::skip();
+        }
+
         if (auto memOp = dyn_cast<MemoryEffectOpInterface>(op)) {
           SmallVector<MemoryEffects::EffectInstance> memEffects;
           memOp.getEffects(memEffects);
-          for (auto &effect : memEffects) {
-            if (effect.getEffect() == MemoryEffects::Read::get()) {
-              effects.insert("read");
-            } else if (effect.getEffect() == MemoryEffects::Write::get()) {
-              effects.insert("write");
-            } else if (effect.getEffect() == MemoryEffects::Allocate::get()) {
-              effects.insert("allocate");
-            } else if (effect.getEffect() == MemoryEffects::Free::get()) {
-              effects.insert("free");
-            } else {
-              assert(false && "unknown memory effect");
-            }
-          }
+          insertMemoryEffectsAsStringRefs(effects, memEffects);
         } else if (!assume_no_memory_effects) { // Operation doesn't define
                                                 // memory effects
-          effects.insert("read");
-          effects.insert("write");
-          effects.insert("allocate");
-          effects.insert("free");
+          insertMemoryEffectsAsStringRefs(effects);
         }
+
+        return WalkResult::advance();
       });
 
       funcEffects[SymbolRefAttr::get(funcOp.getOperation())] =
