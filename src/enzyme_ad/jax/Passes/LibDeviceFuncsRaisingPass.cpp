@@ -568,6 +568,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_log2", "__nv_fast_log2f");
   populateOpPatterns<math::PowFOp>(converter, patterns, "__nv_powf", "__nv_pow",
                                    "__nv_fast_powf");
+  populateOpPatterns<arith::DivFOp>(converter, patterns, "__nv_fdividef",
+                                    "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
                                     "__nv_round");
   populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
