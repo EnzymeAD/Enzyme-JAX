@@ -11,7 +11,7 @@ func.func @single_dim(%output: memref<3xi64>, %values: memref<3xi64>) {
     return
 }
 // ASSUME: func.func @main(%arg0: memref<3xi64>, %arg1: memref<3xi64>) attributes {enzymexla.memory_effects = ["write", "allocate", "read"]} {
-// ASSUME: func.func @main(%arg0: memref<3xi64>, %arg1: memref<3xi64>) attributes {enzymexla.memory_effects = ["write", "free", "allocate", "read"]} {
+// NOASSUME: func.func @main(%arg0: memref<3xi64>, %arg1: memref<3xi64>) attributes {enzymexla.memory_effects = ["write", "free", "allocate", "read"]} {
 func.func @main(%output: memref<3xi64>, %values: memref<3xi64>) {
     %0 = memref.alloc() {alignment = 8 : i64} : memref<3xi64>
     func.call @single_dim(%output, %values) : (memref<3xi64>, memref<3xi64>) -> ()
