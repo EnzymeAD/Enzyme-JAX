@@ -84,6 +84,48 @@ Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
+void addMemoryEffectsFromAttr(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects,
+    ArrayAttr effectsAttr) {
+  for (auto attr : effectsAttr) {
+    auto strAttr = dyn_cast<StringAttr>(attr);
+    assert(strAttr &&
+           "enzymexla.memory_effects must be a ArrayAttr<StringAttr>");
+
+    StringRef kind = strAttr.getValue();
+    if (kind == "allocate")
+      effects.emplace_back(MemoryEffects::Allocate::get());
+    else if (kind == "free")
+      effects.emplace_back(MemoryEffects::Free::get());
+    else if (kind == "write")
+      effects.emplace_back(MemoryEffects::Write::get());
+    else if (kind == "read")
+      effects.emplace_back(MemoryEffects::Read::get());
+    else
+      assert(false && "enzymexla.memory_effects has an invalid value");
+  }
+}
+
+void KernelCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
+  assert(moduleOp && "KernelCallOp must be inside a ModuleOp");
+
+  auto callee =
+      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  assert(callee && "KernelCallOp must have a valid function");
+
+  auto effectsAttr =
+      callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
+  if (!effectsAttr)
+    return; // No annotation, treat as pure --> ensure
+            // `--mark-func-memory-effects` pass is run
+
+  addMemoryEffectsFromAttr(effects, effectsAttr);
+}
+
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
@@ -122,6 +164,25 @@ void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
 Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
+
+void JITCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
+  assert(moduleOp && "JITCallOp must be inside a ModuleOp");
+
+  auto callee =
+      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  assert(callee && "JITCallOp must have a valid function");
+
+  auto effectsAttr =
+      callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
+  if (!effectsAttr)
+    return; // No annotation, treat as pure --> ensure
+            // `--mark-func-memory-effects` pass is run
+
+  addMemoryEffectsFromAttr(effects, effectsAttr);
+}
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
@@ -690,7 +751,8 @@ public:
 void Memref2PointerOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<
-      // Memref2Pointer2MemrefCast, Memref2PointerIndex, Memref2PointerBitCast,
+      // Memref2Pointer2MemrefCast, Memref2PointerIndex,
+      // Memref2PointerBitCast,
       Memref2Pointer2MemrefCast, Memref2PointerBitCast,
 
       SetSimplification<LLVM::MemsetOp>, CopySimplification<LLVM::MemcpyOp>,
@@ -775,8 +837,8 @@ public:
 
     auto mt = cast<MemRefType>(src.getType());
 
-    // Fantastic optimization, disabled for now to make a hard debug case easier
-    // to find.
+    // Fantastic optimization, disabled for now to make a hard debug case
+    // easier to find.
     if (auto before =
             src.getSource().getDefiningOp<enzymexla::Memref2PointerOp>()) {
       auto mt0 = cast<MemRefType>(before.getSource().getType());

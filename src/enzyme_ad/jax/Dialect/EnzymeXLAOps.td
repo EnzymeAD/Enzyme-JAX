@@ -31,11 +31,11 @@ def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::c
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
-def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
+def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn, 
+    FlatSymbolRefAttr:$fn,
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
@@ -61,11 +61,11 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let hasCanonicalizer = 1;
 }
 
-def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
+def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn, 
+    FlatSymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,

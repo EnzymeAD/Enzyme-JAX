@@ -89,6 +89,9 @@ struct MarkFunctionMemoryEffectsPass
 
     // First pass: collect direct effects
     for (CallGraphNode *node : topoOrder) {
+      if (node->isExternal())
+        continue;
+
       Region *region = node->getCallableRegion();
       if (!region)
         return;
@@ -152,6 +155,9 @@ struct MarkFunctionMemoryEffectsPass
         iteration++;
 
         for (CallGraphNode *node : llvm::reverse(topoOrder)) {
+          if (node->isExternal())
+            continue;
+
           Region *region = node->getCallableRegion();
           if (!region)
             continue;
@@ -172,6 +178,9 @@ struct MarkFunctionMemoryEffectsPass
     } else {
       // No cycles: reverse topological order and propagate
       for (CallGraphNode *node : llvm::reverse(topoOrder)) {
+        if (node->isExternal())
+          continue;
+
         Region *region = node->getCallableRegion();
         if (!region)
           continue;
