@@ -84,8 +84,8 @@ Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
-void addMemoryEffectsFromAttr(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+static void addMemoryEffectsFromAttr(
+    SmallVectorImpl<MemoryEffects::EffectInstance>
         &effects,
     ArrayAttr effectsAttr) {
   for (auto attr : effectsAttr) {
@@ -108,7 +108,7 @@ void addMemoryEffectsFromAttr(
 }
 
 void KernelCallOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+    SmallVectorImpl<MemoryEffects::EffectInstance>
         &effects) {
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
   assert(moduleOp && "KernelCallOp must be inside a ModuleOp");
