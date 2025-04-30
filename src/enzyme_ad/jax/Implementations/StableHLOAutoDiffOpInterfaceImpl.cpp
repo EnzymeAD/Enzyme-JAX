@@ -3427,10 +3427,10 @@ struct StablehloAddSimplifyMathInterface
 
 struct StablehloSubSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
-          StablehloSubSimplifyMathInterface, stablehlo::SubOp> {
+          StablehloSubSimplifyMathInterface, stablehlo::SubtractOp> {
   mlir::LogicalResult simplifyMath(Operation *src,
                                    PatternRewriter &rewriter) const {
-    auto op = cast<stablehlo::SubOp>(src);
+    auto op = cast<stablehlo::SubtractOp>(src);
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getRhs(), m_Zero())) {
@@ -3509,6 +3509,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context); // TODO: simpler version with newly named dims
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
-    SubOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
+    SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
   });
 }
