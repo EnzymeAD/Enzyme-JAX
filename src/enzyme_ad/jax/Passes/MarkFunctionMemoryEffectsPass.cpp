@@ -94,12 +94,12 @@ struct MarkFunctionMemoryEffectsPass
 
       Region *region = node->getCallableRegion();
       if (!region)
-        return;
+        return signalPassFailure();
 
       Operation *parentOp = region->getParentOp();
       auto funcOp = dyn_cast<FunctionOpInterface>(parentOp);
       if (!funcOp)
-        return;
+        return signalPassFailure();
 
       llvm::SmallDenseSet<StringRef> effects;
 
