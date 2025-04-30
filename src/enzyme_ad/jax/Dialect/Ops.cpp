@@ -310,7 +310,8 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return rewriter.create<enzymexla::JITCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, outputAliases, launchOp.getXlaSideEffectFreeAttr());
+      /*resultLayouts*/ nullptr, outputAliases,
+      launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <typename OpTy>
