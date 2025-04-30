@@ -46,30 +46,40 @@ struct MarkFunctionMemoryEffectsPass
     return false;
   }
 
-  void insertMemoryEffectsAsStringRefs(
-      llvm::SmallDenseSet<StringRef> &effects,
-      SmallVector<MemoryEffects::EffectInstance> memEffects) {
-    for (auto &effect : memEffects) {
-      if (effect.getEffect() == MemoryEffects::Read::get()) {
-        effects.insert("read");
-      } else if (effect.getEffect() == MemoryEffects::Write::get()) {
-        effects.insert("write");
-      } else if (effect.getEffect() == MemoryEffects::Allocate::get()) {
-        effects.insert("allocate");
-      } else if (effect.getEffect() == MemoryEffects::Free::get()) {
-        effects.insert("free");
-      } else {
-        assert(false && "unknown memory effect");
-      }
+  void
+  insertMemoryEffects(SmallVector<u_int8_t, 4> &effects,
+                      SmallVector<MemoryEffects::EffectInstance> memEffects) {
+    for (auto &effect : memEffects)
+      insertMemoryEffects(effects, effect);
+  }
+
+  void insertMemoryEffects(SmallVector<u_int8_t, 4> &effects) {
+    for (int i = 0; i < effects.size(); i++)
+      effects[i] = 1;
+  }
+
+  void insertMemoryEffects(SmallVector<u_int8_t, 4> &effects,
+                           MemoryEffects::EffectInstance effect) {
+    if (effect.getEffect() == MemoryEffects::Read::get()) {
+      effects[0] = 1;
+    } else if (effect.getEffect() == MemoryEffects::Write::get()) {
+      effects[1] = 1;
+    } else if (effect.getEffect() == MemoryEffects::Allocate::get()) {
+      effects[2] = 1;
+    } else if (effect.getEffect() == MemoryEffects::Free::get()) {
+      effects[3] = 1;
+    } else {
+      assert(false && "unknown memory effect");
     }
   }
 
-  void
-  insertMemoryEffectsAsStringRefs(llvm::SmallDenseSet<StringRef> &effects) {
-    effects.insert("read");
-    effects.insert("write");
-    effects.insert("allocate");
-    effects.insert("free");
+  int64_t getNumEffects(SmallVector<u_int8_t, 4> &effects) {
+    int64_t numEffects = 0;
+    for (int i = 0; i < effects.size(); i++) {
+      if (effects[i])
+        numEffects++;
+    }
+    return numEffects;
   }
 
   void runOnOperation() override {
@@ -77,7 +87,7 @@ struct MarkFunctionMemoryEffectsPass
     auto *ctx = module->getContext();
     OpBuilder builder(ctx);
 
-    DenseMap<SymbolRefAttr, llvm::SmallDenseSet<StringRef>> funcEffects;
+    DenseMap<SymbolRefAttr, SmallVector<u_int8_t, 4>> funcEffects;
 
     CallGraph callGraph(module);
 
@@ -101,15 +111,15 @@ struct MarkFunctionMemoryEffectsPass
       if (!funcOp)
         return signalPassFailure();
 
-      llvm::SmallDenseSet<StringRef> effects;
+      SmallVector<u_int8_t, 4> effects(4, 0);
 
       funcOp.walk([&](Operation *op) {
         if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
           auto maybeEffects = getEffectsRecursively(op);
           if (maybeEffects.has_value()) {
-            insertMemoryEffectsAsStringRefs(effects, maybeEffects.value());
+            insertMemoryEffects(effects, maybeEffects.value());
           } else {
-            insertMemoryEffectsAsStringRefs(effects);
+            insertMemoryEffects(effects);
           }
 
           return WalkResult::skip();
@@ -118,10 +128,10 @@ struct MarkFunctionMemoryEffectsPass
         if (auto memOp = dyn_cast<MemoryEffectOpInterface>(op)) {
           SmallVector<MemoryEffects::EffectInstance> memEffects;
           memOp.getEffects(memEffects);
-          insertMemoryEffectsAsStringRefs(effects, memEffects);
+          insertMemoryEffects(effects, memEffects);
         } else if (!assume_no_memory_effects) { // Operation doesn't define
                                                 // memory effects
-          insertMemoryEffectsAsStringRefs(effects);
+          insertMemoryEffects(effects);
         }
 
         return WalkResult::advance();
@@ -132,14 +142,17 @@ struct MarkFunctionMemoryEffectsPass
     }
 
     auto propagate = [&](FunctionOpInterface funcOp,
-                         llvm::SmallDenseSet<StringRef> &effects) {
+                         SmallVector<u_int8_t, 4> &effects) {
       funcOp.walk([&](Operation *op) {
         if (auto callOp = dyn_cast<CallOpInterface>(op)) {
           if (auto calleeAttr = callOp.getCallableForCallee()) {
             if (auto symRef = dyn_cast<SymbolRefAttr>(calleeAttr)) {
 
-              for (auto &e : funcEffects.lookup(symRef))
-                effects.insert(e);
+              auto funcEffectsSymRef = funcEffects.lookup(symRef);
+              for (int i = 0; i < funcEffectsSymRef.size(); i++) {
+                if (funcEffectsSymRef[i])
+                  effects[i] = 1;
+              }
             }
           }
         }
@@ -169,21 +182,16 @@ struct MarkFunctionMemoryEffectsPass
 
           auto &effects =
               funcEffects[SymbolRefAttr::get(ctx, funcOp.getName())];
-          size_t before = effects.size();
+          size_t before = getNumEffects(effects);
           propagate(funcOp, effects);
-          if (effects.size() != before)
-            changed = true;
+          changed = getNumEffects(effects) != before;
         }
       }
 
       // At this point if we haven't converged, we assume effects for all
       if (changed) {
-        for (auto &[symbol, effectsSet] : funcEffects) {
-          effectsSet.insert("read");
-          effectsSet.insert("write");
-          effectsSet.insert("allocate");
-          effectsSet.insert("free");
-        }
+        for (auto &[symbol, effects] : funcEffects)
+          insertMemoryEffects(effects);
       }
     } else {
       // No cycles: reverse topological order and propagate
@@ -213,8 +221,21 @@ struct MarkFunctionMemoryEffectsPass
         continue;
 
       SmallVector<Attribute> effectsAttrs;
-      for (auto effect : effectsSet)
-        effectsAttrs.push_back(builder.getStringAttr(effect));
+      for (int i = 0; i < effectsSet.size(); i++) {
+        if (effectsSet[i]) {
+          if (i == 0) {
+            effectsAttrs.push_back(builder.getStringAttr("read"));
+          } else if (i == 1) {
+            effectsAttrs.push_back(builder.getStringAttr("write"));
+          } else if (i == 2) {
+            effectsAttrs.push_back(builder.getStringAttr("allocate"));
+          } else if (i == 3) {
+            effectsAttrs.push_back(builder.getStringAttr("free"));
+          } else {
+            assert(false && "unknown memory effect");
+          }
+        }
+      }
 
       funcOp->setAttr("enzymexla.memory_effects",
                       builder.getArrayAttr(effectsAttrs));
