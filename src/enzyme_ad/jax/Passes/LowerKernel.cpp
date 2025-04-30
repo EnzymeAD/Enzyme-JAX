@@ -232,7 +232,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
       kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getOutputOperandAliasesAttr());
+      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -374,7 +374,7 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
       kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getOutputOperandAliasesAttr());
+      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;

@@ -989,8 +989,12 @@ struct LowerJITPass
           NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
-      BoolAttr hasSideEffectAttr =
-          rewriter.getBoolAttr(!isMemoryEffectFree(op));
+      BoolAttr hasSideEffectAttr;
+      if (op.getXlaSideEffectFreeAttr()) {
+        hasSideEffectAttr = rewriter.getBoolAttr(false);
+      } else { // use our analysis if no attribute is provided
+        rewriter.getBoolAttr(!isMemoryEffectFree(op));
+      }
 
       Operation *replacement;
       if (backend == "cuda")

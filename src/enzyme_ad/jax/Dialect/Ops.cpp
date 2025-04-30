@@ -300,7 +300,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-      outputAliases);
+      outputAliases, launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <>
@@ -310,7 +310,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return rewriter.create<enzymexla::JITCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, outputAliases);
+      /*resultLayouts*/ nullptr, outputAliases, launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <typename OpTy>
