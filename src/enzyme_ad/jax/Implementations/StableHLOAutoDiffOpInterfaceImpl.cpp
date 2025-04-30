@@ -3403,9 +3403,10 @@ struct SHLOBroadcastInDimOpBatchInterface
 };
 
 struct StablehloAddSimplifyMathInterface
-    : public MathSimplifyInterface::ExternalModel<StablehloAddSimplifyMathInterface,
-                                             stablehlo::AddOp> {
-  mlir::LogicalResult simplifyMath(Operation *src, PatternRewriter &rewriter) const {
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
     auto op = cast<stablehlo::AddOp>(src);
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
@@ -3425,9 +3426,10 @@ struct StablehloAddSimplifyMathInterface
 };
 
 struct StablehloSubSimplifyMathInterface
-    : public MathSimplifyInterface::ExternalModel<StablehloSubSimplifyMathInterface,
-                                             stablehlo::SubOp> {
-  mlir::LogicalResult simplifyMath(Operation *src, PatternRewriter &rewriter) const {
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloSubSimplifyMathInterface, stablehlo::SubOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
     auto op = cast<stablehlo::SubOp>(src);
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
