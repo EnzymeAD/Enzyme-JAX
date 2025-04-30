@@ -11105,6 +11105,11 @@ struct EmptyReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
     // representatives.
     auto elemTy = cast<RankedTensorType>(op.getInputs().getType().front());
 
+    if (op.getDimensions().empty()) {
+      rewriter.replaceAllOpUsesWith(op, op.getInputs());
+      return success();
+    }
+
     if (!llvm::is_contained(elemTy.getShape(), 0))
       return failure();
 
