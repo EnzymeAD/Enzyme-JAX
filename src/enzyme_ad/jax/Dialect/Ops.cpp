@@ -85,8 +85,7 @@ Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
 Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
 static void addMemoryEffectsFromAttr(
-    SmallVectorImpl<MemoryEffects::EffectInstance>
-        &effects,
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
     ArrayAttr effectsAttr) {
   for (auto attr : effectsAttr) {
     auto strAttr = dyn_cast<StringAttr>(attr);
@@ -107,9 +106,16 @@ static void addMemoryEffectsFromAttr(
   }
 }
 
+static void
+addAllMemoryEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Allocate::get());
+  effects.emplace_back(MemoryEffects::Free::get());
+  effects.emplace_back(MemoryEffects::Write::get());
+  effects.emplace_back(MemoryEffects::Read::get());
+}
+
 void KernelCallOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance>
-        &effects) {
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
   assert(moduleOp && "KernelCallOp must be inside a ModuleOp");
 
@@ -119,9 +125,10 @@ void KernelCallOp::getEffects(
 
   auto effectsAttr =
       callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
-  if (!effectsAttr)
-    return; // No annotation, treat as pure --> ensure
-            // `--mark-func-memory-effects` pass is run
+  if (!effectsAttr) {
+    addAllMemoryEffects(effects);
+    return;
+  }
 
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
@@ -177,9 +184,10 @@ void JITCallOp::getEffects(
 
   auto effectsAttr =
       callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
-  if (!effectsAttr)
-    return; // No annotation, treat as pure --> ensure
-            // `--mark-func-memory-effects` pass is run
+  if (!effectsAttr) {
+    addAllMemoryEffects(effects);
+    return;
+  }
 
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }

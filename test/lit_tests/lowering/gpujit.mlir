@@ -37,7 +37,7 @@ module attributes {gpu.container_module} {
 }
 
 // CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"}, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"}, has_side_effect = true, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }
 // CHECK-NEXT:}

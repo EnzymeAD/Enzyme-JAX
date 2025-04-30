@@ -175,6 +175,16 @@ struct MarkFunctionMemoryEffectsPass
             changed = true;
         }
       }
+
+      // At this point if we haven't converged, we assume effects for all
+      if (changed) {
+        for (auto &[symbol, effectsSet] : funcEffects) {
+          effectsSet.insert("read");
+          effectsSet.insert("write");
+          effectsSet.insert("allocate");
+          effectsSet.insert("free");
+        }
+      }
     } else {
       // No cycles: reverse topological order and propagate
       for (CallGraphNode *node : llvm::reverse(topoOrder)) {
@@ -206,10 +216,8 @@ struct MarkFunctionMemoryEffectsPass
       for (auto effect : effectsSet)
         effectsAttrs.push_back(builder.getStringAttr(effect));
 
-      if (!effectsAttrs.empty()) {
-        funcOp->setAttr("enzymexla.memory_effects",
-                        builder.getArrayAttr(effectsAttrs));
-      }
+      funcOp->setAttr("enzymexla.memory_effects",
+                      builder.getArrayAttr(effectsAttrs));
     }
   }
 };
