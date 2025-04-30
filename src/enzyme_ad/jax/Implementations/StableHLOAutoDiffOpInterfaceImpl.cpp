@@ -3402,6 +3402,52 @@ struct SHLOBroadcastInDimOpBatchInterface
   }
 };
 
+struct StablehloAddSimplifyMathInterface
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
+    auto op = cast<stablehlo::AddOp>(src);
+
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getRhs());
+      return success();
+    }
+
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct StablehloSubSimplifyMathInterface
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloSubSimplifyMathInterface, stablehlo::SubtractOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
+    auto op = cast<stablehlo::SubtractOp>(src);
+
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -3461,5 +3507,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context); // TODO: simpler version with newly named dims
     ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
+
+    AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
+    SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
   });
 }
