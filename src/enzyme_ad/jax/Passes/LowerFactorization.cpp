@@ -37,6 +37,42 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
+// https://github.com/jax-ml/jax/blob/48001a24cb74f311b51d8bcf0891437069db6b95/jax/_src/lax/linalg.py#L2792
+SmallVector<int64_t> columnMajorMatrixLayout(int64_t ndim) {
+  SmallVector<int64_t> layout = {ndim - 2, ndim - 1};
+  for (int64_t i = ndim - 3; i >= 0; i--) {
+    layout.push_back(i);
+  }
+  return layout;
+}
+
+SmallVector<int64_t> rowMajorMatrixLayout(int64_t ndim) {
+  SmallVector<int64_t> layout;
+  for (int64_t i = ndim - 1; i >= 0; i--) {
+    layout.push_back(i);
+  }
+  return layout;
+}
+
+mlir::Attribute getSHLOLayout(PatternRewriter &rewriter, int64_t ndim,
+                              bool isColMajor, int64_t maxNumDims) {
+  if (isColMajor && ndim == maxNumDims) {
+    return rewriter.getI64ArrayAttr(columnMajorMatrixLayout(ndim));
+  }
+  return rewriter.getI64ArrayAttr(rowMajorMatrixLayout(ndim));
+}
+
+mlir::Attribute getSHLOLayout(PatternRewriter &rewriter,
+                              SmallVector<int64_t> ndims,
+                              SmallVector<bool> isColMajorArr,
+                              int64_t maxNumDims) {
+  SmallVector<mlir::Attribute> attrs;
+  for (auto [ndim, isColMajor] : llvm::zip(ndims, isColMajorArr)) {
+    attrs.push_back(getSHLOLayout(rewriter, ndim, isColMajor, maxNumDims));
+  }
+  return rewriter.getArrayAttr(attrs);
+}
+
 struct LUFactorizationOpLowering
     : public OpRewritePattern<enzymexla::LUFactorizationOp> {
 
@@ -84,21 +120,21 @@ struct LUFactorizationOpLowering
     permutationShape.push_back(m);
     auto permutationType = RankedTensorType::get(permutationShape, indexType);
 
-    if (numBatchDims > 0 && (backend == "cuda" || backend == "cpu")) {
-      // TODO: Implement batched LU factorizations???
-      // If we are already linking against MKL we can call
-      // https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html. Or assume this as the call signature and rely on the
-      // downstream user to correctly set the function pointers.
-      // JAX currently lowers to a loop for CPU
-      return rewriter.notifyMatchFailure(
-          op,
-          "Batched LU factorizations not yet implemented for " + backend + ".");
-    }
-
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    static int64_t fnNum = 0;
-
     if (backend == "cpu") {
+      if (numBatchDims > 0) {
+        // TODO: Implement batched LU factorizations
+        // If we are already linking against MKL we can call
+        // https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html.
+        // Or assume this as the call signature and rely on the downstream user
+        // to correctly set the function pointers. JAX currently lowers to a
+        // loop for CPU
+        return rewriter.notifyMatchFailure(
+            op, "Batched LU factorizations not yet implemented on CPU.");
+      }
+
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+      static int64_t fnNum = 0;
+
       auto indexLLVMType = typeConverter.convertType(rewriter.getIndexType());
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
@@ -201,17 +237,27 @@ struct LUFactorizationOpLowering
         aliases.push_back(alias);
       }
 
+      SmallVector<bool> isColMajorArr = {true, true, true};
+      SmallVector<int64_t> operandRanks = {inputRank, pivotShape.size(),
+                                           infoShape.size()};
+      SmallVector<int64_t> outputRanks = {inputRank, pivotShape.size(),
+                                          infoShape.size()};
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op.getResultTypes(),
           mlir::FlatSymbolRefAttr::get(ctx, fnName),
           ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
-          /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+          /*operand_layouts=*/
+          getSHLOLayout(rewriter, operandRanks, isColMajorArr, inputRank),
+          /*result_layouts=*/
+          getSHLOLayout(rewriter, outputRanks, isColMajorArr, inputRank),
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/rewriter.getUnitAttr());
       rewriter.replaceOp(op, jitCall);
 
       return success();
     } else if (backend == "cuda") {
+      // TODO: support batched LU factorizations --> mark frontend attributes?
+
       return rewriter.notifyMatchFailure(
           op, "CUDA backend lowering not yet implemented.");
     } else if (backend == "tpu") {
