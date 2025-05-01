@@ -189,4 +189,17 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
+def LUFactorizationOp: EnzymeXLA_Op<"lu_factorization", [Pure]> {
+  let summary = "LU factorization operation with RowMaximum pivoting";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$pivots
+  );
+}
+
 #endif // ENZYMEXLA_OPS

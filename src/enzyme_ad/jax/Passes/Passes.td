@@ -336,6 +336,23 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
+def LowerFactorizationPass : Pass<"lower-factorization"> {
+  let summary = "Lower factorization to custom call";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [

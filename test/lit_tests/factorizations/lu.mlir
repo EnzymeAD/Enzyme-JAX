@@ -1,0 +1,1 @@
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cpu})" %s | FileCheck %s
