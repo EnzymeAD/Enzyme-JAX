@@ -131,9 +131,9 @@ struct LUFactorizationOpLowering
       {
         OpBuilder::InsertionGuard guard(rewriter);
         auto &region = allFinite.getBody();
-        auto *block = rewriter.createBlock(
-            &region, {}, {initValType, initValType},
-            {op.getLoc(), op.getLoc()});
+        auto *block =
+            rewriter.createBlock(&region, {}, {initValType, initValType},
+                                 {op.getLoc(), op.getLoc()});
 
         rewriter.setInsertionPointToStart(block);
         auto lhs = block->getArgument(0);
@@ -144,8 +144,8 @@ struct LUFactorizationOpLowering
                                              ValueRange{andOp.getResult()});
       }
 
-      auto info = rewriter.create<stablehlo::ConvertOp>(
-          op.getLoc(), infoType, allFinite.getResult(0));
+      auto info = rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
+                                                        allFinite.getResult(0));
 
       rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
       rewriter.replaceAllUsesWith(op.getResult(1), pivots1Indexed);
