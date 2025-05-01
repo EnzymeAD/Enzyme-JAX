@@ -341,6 +341,7 @@ def LowerFactorizationPass : Pass<"lower-factorization"> {
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
   ];
 
   let options = [
