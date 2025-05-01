@@ -1,4 +1,6 @@
 #include "mhlo/IR/hlo_ops.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -45,6 +47,9 @@ struct LUFactorizationOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::LUFactorizationOp op,
                                 PatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
     auto input = op.getOperand();
     auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
     auto inputRank = inputShape.size();
@@ -82,9 +87,119 @@ struct LUFactorizationOpLowering
           "Batched LU factorizations not yet implemented for " + backend + ".");
     }
 
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    static int64_t fnNum = 0;
+
     if (backend == "cpu") {
-      return rewriter.notifyMatchFailure(
-          op, "CPU backend lowering not yet implemented.");
+      auto indexLLVMType = typeConverter.convertType(rewriter.getIndexType());
+      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
+
+      std::string lapackFn;
+      if (inputElementType.isF32()) {
+        lapackFn = "sgetrf_";  // single-precision float
+      } else if (inputElementType.isF64()) {
+        lapackFn = "dgetrf_";  // double-precision float
+      } else if (auto complexType = dyn_cast<ComplexType>(inputElementType)) {
+        auto elem = complexType.getElementType();
+        if (elem.isF32()) {
+          lapackFn = "cgetrf_";  // single-precision complex
+        } else if (elem.isF64()) {
+          lapackFn = "zgetrf_";  // double-precision complex
+        } else {
+          op->emitOpError() << "Unsupported complex element type: " << elem;
+          return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+        }
+      } else {
+        op->emitOpError() << "Unsupported input element type: " << inputElementType;
+        return rewriter.notifyMatchFailure(op, "unsupported input element type");
+      }
+      lapackFn = "enzymexla_lapack_" + lapackFn;
+
+      // Generate the LLVM function body
+      std::string fnName = lapackFn + "wrapper_" + std::to_string(fnNum);
+      fnNum++;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidPtrType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
+
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        auto ptrSize = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), typeConverter.convertType(rewriter.getIndexType()),
+            rewriter.getIndexAttr(1));
+        auto mPtr = rewriter.create<LLVM::AllocaOp>(op.getLoc(), llvmPtrType,
+                                                    indexLLVMType, ptrSize, 0);
+        auto nPtr = rewriter.create<LLVM::AllocaOp>(op.getLoc(), llvmPtrType,
+                                                    indexLLVMType, ptrSize, 0);
+
+        auto mVal = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), indexLLVMType, rewriter.getIndexAttr(m));
+        auto nVal = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), indexLLVMType, rewriter.getIndexAttr(n));
+
+        auto mStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
+        auto nStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
+
+        rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{},
+                                      SymbolRefAttr::get(ctx, lapackFn),
+                                      ValueRange{
+                                          mPtr,
+                                          nPtr,
+                                          func.getArgument(0),
+                                          nPtr,
+                                          func.getArgument(1),
+                                          func.getArgument(2),
+                                      });
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      // Insert function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(lapackFn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidPtrType,
+                                        {llvmPtrType, llvmPtrType, llvmPtrType,
+                                         llvmPtrType, llvmPtrType, llvmPtrType},
+                                        false);
+
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), lapackFn, funcType,
+                                          LLVM::Linkage::External);
+      }
+
+      // Call the LLVM function with enzymexla.jit_call
+      auto pivot = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), pivotType, cast<ElementsAttr>(makeAttr(pivotType, 1)));
+      auto info = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), infoType, cast<ElementsAttr>(makeAttr(infoType, 0)));
+
+      SmallVector<Attribute> aliases;
+      for (int i = 0; i < 3; ++i) {
+        llvm::ArrayRef<int64_t> operandTupleIndices;
+        llvm::ArrayRef<int64_t> outputTupleIndices = {i};
+        auto alias = stablehlo::OutputOperandAliasAttr::get(
+            ctx, outputTupleIndices, i, operandTupleIndices);
+        aliases.push_back(alias);
+      }
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), op.getResultTypes(),
+          mlir::FlatSymbolRefAttr::get(ctx, fnName),
+          ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+      rewriter.replaceOp(op, jitCall);
+
+      return success();
     } else if (backend == "cuda") {
       return rewriter.notifyMatchFailure(
           op, "CUDA backend lowering not yet implemented.");
@@ -124,6 +239,7 @@ struct LUFactorizationOpLowering
           op.getLoc(), initValType,
           cast<ElementsAttr>(makeAttr(initValType, 1)));
 
+      // TODO: reduce only over the non-batch dimensions
       auto allFinite = rewriter.create<stablehlo::ReduceOp>(
           op.getLoc(), initValType, ValueRange{isFinite.getResult()},
           ValueRange{initVal}, rewriter.getDenseI64ArrayAttr(reductionDims));
