@@ -144,6 +144,17 @@ struct ArithRaisingPass
       truncOp.replaceAllUsesWith(res.getResult());
       truncOp.erase();
     });
+    op->walk([=](arith::ExtFOp truncOp) {
+      auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(truncOp);
+      auto res = builder.create<stablehlo::ConvertOp>(truncOp.getLoc(), ty,
+                                                      truncOp.getIn());
+      truncOp.replaceAllUsesWith(res.getResult());
+      truncOp.erase();
+    });
     op->walk([=](math::FmaOp fma) {
       auto ty = dyn_cast<RankedTensorType>(fma.getResult().getType());
       if (!use_stablehlo || !ty)

@@ -648,6 +648,7 @@ pybind_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
+        "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:LLVMIRTransforms",
         "@llvm-project//mlir:NVVMTarget",
