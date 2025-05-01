@@ -57,12 +57,12 @@ SmallVector<int64_t> rowMajorMatrixLayout(int64_t ndim) {
 mlir::Attribute getSHLOLayout(PatternRewriter &rewriter, int64_t ndim,
                               bool isColMajor, int64_t maxNumDims) {
   if (isColMajor && ndim == maxNumDims) {
-    return rewriter.getI64ArrayAttr(columnMajorMatrixLayout(ndim));
+    return rewriter.getIndexTensorAttr(columnMajorMatrixLayout(ndim));
   }
-  return rewriter.getI64ArrayAttr(rowMajorMatrixLayout(ndim));
+  return rewriter.getIndexTensorAttr(rowMajorMatrixLayout(ndim));
 }
 
-mlir::Attribute getSHLOLayout(PatternRewriter &rewriter,
+mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
                               SmallVector<int64_t> ndims,
                               SmallVector<bool> isColMajorArr,
                               int64_t maxNumDims) {
@@ -256,10 +256,33 @@ struct LUFactorizationOpLowering
 
       return success();
     } else if (backend == "cuda") {
-      // TODO: support batched LU factorizations --> mark frontend attributes?
+      SmallVector<Attribute> aliases;
+      llvm::ArrayRef<int64_t> operandTupleIndices;
+      llvm::ArrayRef<int64_t> outputTupleIndices = {0};
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, outputTupleIndices, 0, operandTupleIndices));
 
-      return rewriter.notifyMatchFailure(
-          op, "CUDA backend lowering not yet implemented.");
+      SmallVector<bool> isColMajorArrOperands = {true};
+      SmallVector<int64_t> operandRanks = {inputRank};
+      SmallVector<bool> isColMajorArrOutputs = {true, true, true};
+      SmallVector<int64_t> outputRanks = {inputRank, pivotShape.size(),
+                                          infoShape.size()};
+
+      rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+          op, TypeRange{inputType, pivotType, infoType}, ValueRange{input},
+          rewriter.getStringAttr("cusolver_getrf_ffi"),
+          /*has_side_effect*/ nullptr,
+          /*backend_config*/ nullptr,
+          /*api_version*/ nullptr,
+          /*calledcomputations*/ nullptr,
+          /*operand_layouts*/
+          getSHLOLayout(rewriter, operandRanks, isColMajorArrOperands,
+                        inputRank),
+          /*result_layouts*/
+          getSHLOLayout(rewriter, outputRanks, isColMajorArrOutputs, inputRank),
+          /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+
+      return success();
     } else if (backend == "tpu") {
       // TPU returns (LU, pivots, permutation). info isn't returned. based on
       // how JAX operates, I am assuming info = 0 when there is a nan in the
@@ -296,7 +319,6 @@ struct LUFactorizationOpLowering
           op.getLoc(), initValType,
           cast<ElementsAttr>(makeAttr(initValType, 1)));
 
-      // TODO: reduce only over the non-batch dimensions
       auto allFinite = rewriter.create<stablehlo::ReduceOp>(
           op.getLoc(), RankedTensorType::get(infoShape, rewriter.getI1Type()),
           ValueRange{isFinite.getResult()}, ValueRange{initVal},
