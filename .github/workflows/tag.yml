@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [openstack22]
+        os: [openstack22-large]
         python: ["3.10", "3.11", "3.12"]
     timeout-minutes: 500
     steps:
