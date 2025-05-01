@@ -1,5 +1,5 @@
 // TODO: RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cpu})" %s | FileCheck %s --check-prefix=CPU
-// TODO: RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cuda})" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cuda})" %s | FileCheck %s --check-prefix=CUDA
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=tpu})" %s | FileCheck %s --check-prefix=TPU
 
 module {
@@ -8,6 +8,11 @@ module {
     return %0#0, %0#1, %0#2 : tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>
   }
 }
+
+// CUDA: func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>) {
+// CUDA-NEXT:     %0:3 = stablehlo.custom_call @cusolver_getrf_ffi(%arg0) {operand_layouts = [dense<[2, 3, 1, 0]> : tensor<4xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[2, 3, 1, 0]> : tensor<4xindex>, dense<[2, 1, 0]> : tensor<3xindex>, dense<[1, 0]> : tensor<2xindex>]} : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>)
+// CUDA-NEXT:     return %0#0, %0#1, %0#2 : tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>
+// CUDA-NEXT: }
 
 // TPU: func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>) {
 // TPU-NEXT:     %c = stablehlo.constant dense<true> : tensor<i1>
