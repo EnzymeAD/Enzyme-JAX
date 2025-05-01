@@ -230,11 +230,8 @@ struct LUFactorizationOpLowering
 
       SmallVector<Attribute> aliases;
       for (int i = 0; i < 3; ++i) {
-        llvm::ArrayRef<int64_t> operandTupleIndices;
-        llvm::ArrayRef<int64_t> outputTupleIndices = {i};
-        auto alias = stablehlo::OutputOperandAliasAttr::get(
-            ctx, outputTupleIndices, i, operandTupleIndices);
-        aliases.push_back(alias);
+        aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+            ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
       }
 
       SmallVector<bool> isColMajorArr = {true, true, true};
@@ -256,11 +253,8 @@ struct LUFactorizationOpLowering
 
       return success();
     } else if (backend == "cuda") {
-      SmallVector<Attribute> aliases;
-      llvm::ArrayRef<int64_t> operandTupleIndices;
-      llvm::ArrayRef<int64_t> outputTupleIndices = {0};
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, outputTupleIndices, 0, operandTupleIndices));
+      SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
 
       SmallVector<bool> isColMajorArrOperands = {true};
       SmallVector<int64_t> operandRanks = {inputRank};

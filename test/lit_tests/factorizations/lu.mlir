@@ -21,3 +21,13 @@ module {
 // TPU-NEXT:     %5 = stablehlo.convert %4 : (tensor<i1>) -> tensor<i32>
 // TPU-NEXT:     return %0#0, %1, %5 : tensor<64x64xf32>, tensor<64xi32>, tensor<i32>
 // TPU-NEXT: }
+
+
+module @"reactant_lu!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
+  func.func @main(%arg0: tensor<4x4xf64> {tf.aliasing_output = 0 : i32}) -> (tensor<4x4xf64>, tensor<4xi32>, tensor<i32>) {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<4x4xf64>) -> tensor<4x4xf64>
+    %output, %pivots, %info = enzymexla.lu_factorization %0 : (tensor<4x4xf64>) -> (tensor<4x4xf64>, tensor<4xi32>, tensor<i32>)
+    %1 = stablehlo.transpose %output, dims = [1, 0] : (tensor<4x4xf64>) -> tensor<4x4xf64>
+    return %1, %pivots, %info : tensor<4x4xf64>, tensor<4xi32>, tensor<i32>
+  }
+}
