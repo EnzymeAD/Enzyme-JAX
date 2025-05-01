@@ -150,8 +150,10 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(fma);
-      auto res = builder.create<stablehlo::MulOp>(fma.getLoc(), fma.getOperand(0), fma.getOperand(1));
-      auto res2 = builder.create<stablehlo::AddOp>(fma.getLoc(), res, fma.getOperand(2));
+      auto res = builder.create<stablehlo::MulOp>(
+          fma.getLoc(), fma.getOperand(0), fma.getOperand(1));
+      auto res2 = builder.create<stablehlo::AddOp>(fma.getLoc(), res,
+                                                   fma.getOperand(2));
       fma.replaceAllUsesWith(res2.getResult());
       fma.erase();
     });
