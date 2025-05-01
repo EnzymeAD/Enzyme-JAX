@@ -2131,7 +2131,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // ternary ops
-  if (isa<arith::SelectOp>(op)) {
+  if (isa<arith::SelectOp, math::FmaOp>(op)) {
     assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
