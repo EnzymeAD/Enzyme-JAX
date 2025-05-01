@@ -64,7 +64,11 @@ struct LUFactorizationOpLowering
     auto indexType =
         cast<RankedTensorType>(op.getResult(1).getType()).getElementType();
 
-    auto infoType = RankedTensorType::get({}, indexType);
+    SmallVector<int64_t> infoShape;
+    for (int i = 0; i < numBatchDims; i++) {
+      infoShape.push_back(inputShape[i]);
+    }
+    auto infoType = RankedTensorType::get(infoShape, indexType);
 
     SmallVector<int64_t> pivotShape;
     for (int i = 0; i < numBatchDims; i++) {
@@ -97,22 +101,25 @@ struct LUFactorizationOpLowering
 
       std::string lapackFn;
       if (inputElementType.isF32()) {
-        lapackFn = "sgetrf_";  // single-precision float
+        lapackFn = "sgetrf_"; // single-precision float
       } else if (inputElementType.isF64()) {
-        lapackFn = "dgetrf_";  // double-precision float
+        lapackFn = "dgetrf_"; // double-precision float
       } else if (auto complexType = dyn_cast<ComplexType>(inputElementType)) {
         auto elem = complexType.getElementType();
         if (elem.isF32()) {
-          lapackFn = "cgetrf_";  // single-precision complex
+          lapackFn = "cgetrf_"; // single-precision complex
         } else if (elem.isF64()) {
-          lapackFn = "zgetrf_";  // double-precision complex
+          lapackFn = "zgetrf_"; // double-precision complex
         } else {
           op->emitOpError() << "Unsupported complex element type: " << elem;
-          return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+          return rewriter.notifyMatchFailure(
+              op, "unsupported complex element type");
         }
       } else {
-        op->emitOpError() << "Unsupported input element type: " << inputElementType;
-        return rewriter.notifyMatchFailure(op, "unsupported input element type");
+        op->emitOpError() << "Unsupported input element type: "
+                          << inputElementType;
+        return rewriter.notifyMatchFailure(op,
+                                           "unsupported input element type");
       }
       lapackFn = "enzymexla_lapack_" + lapackFn;
 
@@ -231,7 +238,7 @@ struct LUFactorizationOpLowering
           op.getLoc(), customCall.getResult(0));
 
       SmallVector<int64_t> reductionDims;
-      for (int i = 0; i < inputRank; i++) {
+      for (int i = numBatchDims; i < inputRank; i++) {
         reductionDims.push_back(i);
       }
       auto initValType = RankedTensorType::get({}, rewriter.getI1Type());
@@ -241,8 +248,9 @@ struct LUFactorizationOpLowering
 
       // TODO: reduce only over the non-batch dimensions
       auto allFinite = rewriter.create<stablehlo::ReduceOp>(
-          op.getLoc(), initValType, ValueRange{isFinite.getResult()},
-          ValueRange{initVal}, rewriter.getDenseI64ArrayAttr(reductionDims));
+          op.getLoc(), RankedTensorType::get(infoShape, rewriter.getI1Type()),
+          ValueRange{isFinite.getResult()}, ValueRange{initVal},
+          rewriter.getDenseI64ArrayAttr(reductionDims));
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -260,8 +268,11 @@ struct LUFactorizationOpLowering
                                              ValueRange{andOp.getResult()});
       }
 
-      auto info = rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
-                                                        allFinite.getResult(0));
+      // info == 0 if all finite (success)
+      auto info = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(), infoType,
+          rewriter.create<stablehlo::NotOp>(op.getLoc(),
+                                            allFinite.getResult(0)));
 
       rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
       rewriter.replaceAllUsesWith(op.getResult(1), pivots1Indexed);
