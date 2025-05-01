@@ -989,12 +989,19 @@ struct LowerJITPass
           NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
+      BoolAttr hasSideEffectAttr;
+      if (op.getXlaSideEffectFreeAttr()) {
+        hasSideEffectAttr = rewriter.getBoolAttr(false);
+      } else { // use our analysis if no attribute is provided
+        rewriter.getBoolAttr(!isMemoryEffectFree(op));
+      }
+
       Operation *replacement;
       if (backend == "cuda")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ dattr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
@@ -1006,7 +1013,7 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ backendstr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
