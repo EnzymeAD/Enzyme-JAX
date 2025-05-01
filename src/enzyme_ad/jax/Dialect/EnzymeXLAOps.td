@@ -198,8 +198,13 @@ def LUFactorizationOp: EnzymeXLA_Op<"lu_factorization", [Pure]> {
 
   let results = (outs
     HLO_Tensor:$output,
-    HLO_Tensor:$pivots
+    HLO_Tensor:$pivots,
+    HLO_Tensor:$info
   );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
 }
 
 #endif // ENZYMEXLA_OPS
