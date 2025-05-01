@@ -86,6 +86,10 @@ struct LUFactorizationOpLowering
 
     if (numBatchDims > 0 && (backend == "cuda" || backend == "cpu")) {
       // TODO: Implement batched LU factorizations???
+      // If we are already linking against MKL we can call
+      // https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html. Or assume this as the call signature and rely on the
+      // downstream user to correctly set the function pointers.
+      // JAX currently lowers to a loop for CPU
       return rewriter.notifyMatchFailure(
           op,
           "Batched LU factorizations not yet implemented for " + backend + ".");
