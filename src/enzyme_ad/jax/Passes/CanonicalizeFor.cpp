@@ -3014,6 +3014,6 @@ void CanonicalizeFor::runOnOperation() {
           MoveSideEffectFreeWhile>(getOperation()->getContext());
   //    WhileLICM,
   GreedyRewriteConfig config;
-  config.maxIterations = 247;
+  config.setMaxIterations(247);
   (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
 }

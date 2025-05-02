@@ -18624,8 +18624,8 @@ struct EnzymeHLOOptPass
                                      PatternBenefit(65000));
 
     GreedyRewriteConfig config;
-    config.maxIterations = max_iterations;
-    config.useTopDownTraversal = top_down;
+    config.setMaxIterations(max_iterations);
+    config.setUseTopDownTraversal(top_down);
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
       signalPassFailure();
