@@ -12035,7 +12035,7 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     // Create blocks in both regions first
     {
@@ -12395,7 +12395,7 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -12929,7 +12929,7 @@ struct WhileRepeatedInductionReduction
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -13233,7 +13233,7 @@ struct WhilePadInductionReduction
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -13545,7 +13545,7 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -13893,7 +13893,7 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -14206,7 +14206,7 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
       newResultTypes.push_back(operand.getType());
     }
     auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        whileOp.getLoc(), newResultTypes, newOperands);
+        whileOp.getLoc(), newResultTypes, newOperands, whileOp->getAttrs());
 
     SmallVector<Value> results;
     for (auto res : newWhileOp.getResults())
@@ -14405,7 +14405,7 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
     }
 
     auto newWhile =
-        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands);
+        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands, op->getAttrs());
     newWhile.getCond().takeBody(op.getCond());
     newWhile.getBody().takeBody(op.getBody());
 
@@ -14538,7 +14538,7 @@ struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
     }
 
     auto newWhile =
-        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands);
+        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands, op->getAttrs());
     newWhile.getCond().takeBody(op.getCond());
     newWhile.getBody().takeBody(op.getBody());
 
