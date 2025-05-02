@@ -14404,8 +14404,8 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
       newOperands.push_back(op->getOperand(opOperand));
     }
 
-    auto newWhile =
-        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands, op->getAttrs());
+    auto newWhile = rewriter.create<stablehlo::WhileOp>(
+        op.getLoc(), newOperands, op->getAttrs());
     newWhile.getCond().takeBody(op.getCond());
     newWhile.getBody().takeBody(op.getBody());
 
@@ -14537,8 +14537,8 @@ struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
       newOperands.push_back(op->getOperand(opOperand));
     }
 
-    auto newWhile =
-        rewriter.create<stablehlo::WhileOp>(op.getLoc(), newOperands, op->getAttrs());
+    auto newWhile = rewriter.create<stablehlo::WhileOp>(
+        op.getLoc(), newOperands, op->getAttrs());
     newWhile.getCond().takeBody(op.getCond());
     newWhile.getBody().takeBody(op.getBody());
 
