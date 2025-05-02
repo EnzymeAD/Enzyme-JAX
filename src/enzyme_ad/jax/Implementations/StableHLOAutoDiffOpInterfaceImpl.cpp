@@ -2192,19 +2192,11 @@ private:
     }
     void dump() const {
       if (type == VAL)
-        llvm::errs() << "[" << V << ", "
-                     << "Value"
-                     << "]\n";
+        llvm::errs() << "[" << V << ", " << "Value" << "]\n";
       else if (type == OP)
-        llvm::errs() << "[" << *O << ", "
-                     << "Operation"
-                     << "]\n";
+        llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
       else
-        llvm::errs() << "["
-                     << "NULL"
-                     << ", "
-                     << "None"
-                     << "]\n";
+        llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
     }
   };
 
@@ -2297,10 +2289,12 @@ private:
         continue;
       }
 
-      G[Node(owner)].insert(Node(todo));
-      for (Value operand : owner->getOperands()) {
-        G[Node(operand)].insert(Node(owner));
-        worklist.push_back(operand);
+      auto &&[_, inserted] = G[Node(owner)].insert(Node(todo));
+      if (inserted) {
+        for (Value operand : owner->getOperands()) {
+          G[Node(operand)].insert(Node(owner));
+          worklist.push_back(operand);
+        }
       }
     }
 
@@ -2357,10 +2351,12 @@ private:
         }
 
         Node N(user);
-        G[Node(todo)].insert(N);
-        for (Value res : user->getResults()) {
-          G[N].insert(Node(res));
-          worklist.push_back(res);
+        auto &&[_, inserted] = G[Node(todo)].insert(N);
+        if (inserted) {
+          for (Value res : user->getResults()) {
+            G[N].insert(Node(res));
+            worklist.push_back(res);
+          }
         }
       }
     }
@@ -2614,7 +2610,10 @@ private:
         continue;
       }
 
-      for (auto N : revGraph.find(Node(todo))->second) {
+      auto found = revGraph.find(Node(todo));
+      assert(found != revGraph.end());
+
+      for (auto N : found->second) {
         assert(N.type == Node::OP);
 
         // Special case for across forward/reverse boundary.
