@@ -724,6 +724,7 @@ pybind_extension(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@nanobind",
         ":TransformOps",
         ":clang_compile",
         ":compile_with_xla",
