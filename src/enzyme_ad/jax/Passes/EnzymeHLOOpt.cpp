@@ -18120,6 +18120,47 @@ struct ConcatReshapeSlice
   }
 };
 
+// This doesn't check complete equivalence. It checks that the init values are
+// the same, reduce dimensions are the same, and the reduction op is the same.
+bool areReduceOpsEquivalent(stablehlo::ReduceOp rOp1,
+                            stablehlo::ReduceOp rOp2) {
+  auto nInputs1 = rOp1.getInputs().size();
+  auto nInputs2 = rOp2.getInputs().size();
+  if (nInputs1 != nInputs2)
+    return false;
+
+  // Check return types are the same
+  for (auto [ret1, ret2] :
+       llvm::zip(rOp1.getResultTypes(), rOp2.getResultTypes())) {
+    if (ret1 != ret2)
+      return false;
+  }
+
+  // Check init values are the same
+  for (auto [init1, init2] :
+       llvm::zip(rOp1.getInitValues(), rOp2.getInitValues())) {
+    if (!OperationEquivalence::isEquivalentTo(
+            init1.getDefiningOp(), init2.getDefiningOp(),
+            OperationEquivalence::IgnoreLocations))
+      return false;
+  }
+
+  // Check reduce dimensions are the same
+  auto reduceDims1 = llvm::to_vector(rOp1.getDimensions());
+  auto reduceDims2 = llvm::to_vector(rOp2.getDimensions());
+  if (reduceDims1 != reduceDims2)
+    return false;
+
+  // Check that the region are equivalent
+  mlir::Region *reduce1Region = &rOp1.getBody();
+  mlir::Region *reduce2Region = &rOp2.getBody();
+  if (!OperationEquivalence::isRegionEquivalentTo(
+          reduce1Region, reduce2Region, OperationEquivalence::IgnoreLocations))
+    return false;
+
+  return true;
+}
+
 struct ConcatReshapeReduce final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -18128,33 +18169,20 @@ struct ConcatReshapeReduce final
                                 PatternRewriter &rewriter) const override {
     SmallVector<stablehlo::ReduceOp> allOperands;
     SmallVector<Value> reduceOpOperands;
-    // SmallVector<int64_t> reduceDims = nullptr;
-    Value initValue;
-    for (auto v : concatOp.getOperands()) {
+    for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
         if (cast<RankedTensorType>(reshapeOp.getOperand().getType())
                 .getRank() == 0) {
           if (auto reduceOp =
                   reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>()) {
-            // if (reduceDims) {
-            //   if (reduceDims != llvm::to_vector(reduceOp.getDimensions()))
-            //     return failure();
-            // } else {
-            //   reduceDims = llvm::to_vector(reduceOp.getDimensions());
-            // }
-
             if (reduceOp.getInputs().size() != 1)
               return rewriter.notifyMatchFailure(
                   concatOp, "expected single input in reduce.");
 
-            // if (initValue) {
-            //   if (initValue != reduceOp.getInitValues()[0])
-            //     return failure();
-            // } else {
-            initValue = reduceOp.getInitValues()[0];
-            // }
-
-            // TODO: check that the reduceOp is identical
+            if (i != 0 && !areReduceOpsEquivalent(reduceOp, allOperands[0])) {
+              return rewriter.notifyMatchFailure(
+                  concatOp, "Reduce ops are not equivalent.");
+            }
 
             reduceOpOperands.push_back(reduceOp.getInputs()[0]);
             allOperands.push_back(reduceOp);
@@ -18213,7 +18241,7 @@ struct ConcatReshapeReduce final
     auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
         concatOp.getLoc(),
         TypeRange(RankedTensorType::get({reduceOpOperands.size()}, elemTy)),
-        ValueRange(newConcatOp), ValueRange(initValue),
+        ValueRange(newConcatOp), ValueRange(allOperands[0].getInitValues()[0]),
         rewriter.getDenseI64ArrayAttr(reduceDims));
 
     // Clone the reduction body
