@@ -18120,9 +18120,9 @@ struct ConcatReshapeSlice
   }
 };
 
-bool reshapeOfFullReduce(stablehlo::ReshapeOp reshapeOp,
-                         SmallVector<stablehlo::ReduceOp> &allOperands,
-                         SmallVector<Value> &reduceOpOperands) {
+bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
+                                SmallVector<stablehlo::ReduceOp> &allOperands,
+                                SmallVector<Value> &reduceOpOperands) {
   auto rank =
       cast<RankedTensorType>(reshapeOp.getOperand().getType()).getRank();
   if (rank != 0)
@@ -18220,7 +18220,8 @@ struct ConcatReshapeReduce final
     SmallVector<Value> reduceOpOperands;
     for (auto v : concatOp.getOperands()) {
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
-        if (!reshapeOfFullReduce(reshapeOp, allOperands, reduceOpOperands))
+        if (!reshapeOfEquivalentReduces(reshapeOp, allOperands,
+                                        reduceOpOperands))
           return failure();
       } else {
         return rewriter.notifyMatchFailure(concatOp,
