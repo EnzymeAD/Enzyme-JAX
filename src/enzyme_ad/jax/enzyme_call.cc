@@ -1038,7 +1038,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::registerShapePasses();
   mlir::registerConvertShapeToStandardPass();
   mlir::registerConvertShapeConstraintsPass();
-  mlir::memref::registerResolveShapedTypeResultDims();
+  mlir::memref::registerResolveShapedTypeResultDimsPass();
   mlir::registerLinalgPasses();
   mlir::registerReconcileUnrealizedCastsPass();
   mlir::registerConversionPasses();
