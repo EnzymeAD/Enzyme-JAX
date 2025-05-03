@@ -61,6 +61,7 @@
 #include "Enzyme/MLIR/Passes/Passes.h"
 
 #include "nanobind/nanobind.h"
+#include "nanobind/stl/string.h"
 
 #include "stablehlo/transforms/Passes.h"
 
