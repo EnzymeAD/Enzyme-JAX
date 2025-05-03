@@ -62,6 +62,8 @@
 
 #include "nanobind/nanobind.h"
 #include "nanobind/stl/string.h"
+#include "nanobind/stl/pair.h"
+#include "nanobind/stl/tuple.h"
 
 #include "stablehlo/transforms/Passes.h"
 
@@ -993,7 +995,8 @@ std::unique_ptr<llvm::orc::LLJIT> CpuKernel::JIT = nullptr;
 // CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
 } // namespace
 
-void Callback(void *out, void **ins) {
+void Callback(void *out, void **ins, void *opaque,
+                            size_t opaque_len, void *status) {
   int64_t identifier = *reinterpret_cast<int64_t *>(ins[0]);
   CpuKernel *kernel = CpuKernel::get(identifier);
   if (!kernel) {
@@ -1076,7 +1079,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1087,7 +1090,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1126,7 +1129,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1137,7 +1140,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1178,7 +1181,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1189,7 +1192,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {

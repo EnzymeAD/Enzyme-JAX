@@ -788,7 +788,9 @@ def _enzyme_primal_lowering(
                 out_types = tuple(list(out_types) + [sa])
 
             custom_call = stablehlo.CustomCallOp(
-                out_types, mlir_args, call_target_name="jaxzyme.primal"
+                out_types, mlir_args, call_target_name="jaxzyme.primal",
+                backend_config=ir.StringAttr.get("backend"),
+                api_version=ir.IntegerAttr.get(i32_type, 3),
             )
             results = tuple(t for t in custom_call.results)
 
