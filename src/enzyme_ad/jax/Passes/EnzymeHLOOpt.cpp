@@ -9782,8 +9782,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -18120,113 +18119,52 @@ struct ConcatReshapeSlice
   }
 };
 
-bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
-                                SmallVector<stablehlo::ReduceOp> &allOperands,
-                                SmallVector<Value> &reduceOpOperands) {
-  auto rank =
-      cast<RankedTensorType>(reshapeOp.getOperand().getType()).getRank();
-  if (rank != 0)
-    return false;
-
-  auto reduceOp = reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>();
-  if (!reduceOp)
-    return false;
-
-  if (!isOnlyUsedInOperation(reduceOp, reshapeOp))
-    return false;
-
-  if (reduceOp.getInputs().size() != 1)
-    return false;
-
-  if (allOperands.size() >= 1 &&
-      !OperationEquivalence::isEquivalentTo(
-          reduceOp, allOperands[0],
-          OperationEquivalence::ignoreValueEquivalence, nullptr,
-          OperationEquivalence::IgnoreLocations, nullptr))
-    return false;
-
-  reduceOpOperands.push_back(reduceOp.getInputs()[0]);
-  allOperands.push_back(reduceOp);
-  return true;
-}
-
-struct ConcatElementwise final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
-                                PatternRewriter &rewriter) const override {
-    if (concatOp.getNumOperands() <= 1)
-      return failure();
-
-    SmallVector<Operation *> concatOpOperands;
-
-    for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
-      auto vdefOp = v.getDefiningOp();
-      if (!vdefOp)
-        return failure();
-
-      if (isa<stablehlo::ConvertOp>(vdefOp)) // Conflicts with ConvertConcat
-        return failure();
-
-      if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
-        if (concatOpOperands.size() != 0) {
-          if (!OperationEquivalence::isEquivalentTo(
-                  concatOpOperands[0], vdefOp,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr))
-            return failure();
-        }
-
-        if (!isOnlyUsedInOperation(vdefOp, concatOp))
-          return failure();
-
-        concatOpOperands.push_back(vdefOp);
-      } else {
-        return failure();
-      }
-    }
-
-    SmallVector<Value> elementwiseOperands;
-
-    for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
-      SmallVector<Value> newConcatOperands;
-      for (auto v : concatOpOperands) {
-        newConcatOperands.push_back(v->getOperand(i));
-      }
-      auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
-          concatOp.getLoc(), newConcatOperands, concatOp.getDimension());
-      elementwiseOperands.push_back(newConcatOp.getResult());
-    }
-
-    auto newElementwiseOp = rewriter.create(
-        concatOp.getLoc(), concatOpOperands[0]->getName().getIdentifier(),
-        ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
-        concatOpOperands[0]->getAttrs(), {}, {});
-
-    rewriter.replaceOp(concatOp, newElementwiseOp);
-    return success();
-  }
-};
-
 struct ConcatReshapeReduce final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
                                 PatternRewriter &rewriter) const override {
-    if (concatOp.getNumOperands() <= 1)
-      return failure();
-
     SmallVector<stablehlo::ReduceOp> allOperands;
     SmallVector<Value> reduceOpOperands;
+    // SmallVector<int64_t> reduceDims = nullptr;
+    Value initValue;
     for (auto v : concatOp.getOperands()) {
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
-        if (!isOnlyUsedInOperation(reshapeOp, concatOp))
-          return failure();
-        if (!reshapeOfEquivalentReduces(reshapeOp, allOperands,
-                                        reduceOpOperands))
-          return failure();
+        if (cast<RankedTensorType>(reshapeOp.getOperand().getType())
+                .getRank() == 0) {
+          if (auto reduceOp =
+                  reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>()) {
+            // if (reduceDims) {
+            //   if (reduceDims != llvm::to_vector(reduceOp.getDimensions()))
+            //     return failure();
+            // } else {
+            //   reduceDims = llvm::to_vector(reduceOp.getDimensions());
+            // }
+
+            if (reduceOp.getInputs().size() != 1)
+              return rewriter.notifyMatchFailure(
+                  concatOp, "expected single input in reduce.");
+
+            // if (initValue) {
+            //   if (initValue != reduceOp.getInitValues()[0])
+            //     return failure();
+            // } else {
+            initValue = reduceOp.getInitValues()[0];
+            // }
+
+            // TODO: check that the reduceOp is identical
+
+            reduceOpOperands.push_back(reduceOp.getInputs()[0]);
+            allOperands.push_back(reduceOp);
+          } else {
+            return rewriter.notifyMatchFailure(concatOp,
+                                               "Not a reduce op in reshape.");
+          }
+        } else {
+          return rewriter.notifyMatchFailure(
+              concatOp, "Reshaped operand is not a scalar.");
+        }
       } else {
         return rewriter.notifyMatchFailure(concatOp,
                                            "Operand is not a reshape.");
@@ -18234,6 +18172,9 @@ struct ConcatReshapeReduce final
     }
 
     auto reduceDims = llvm::to_vector(allOperands[0].getDimensions());
+
+    if (allOperands.size() == 0)
+      return failure();
 
     auto concatDim = concatOp.getDimension();
     for (int64_t i = 0; i < reduceDims.size(); i++) {
@@ -18270,9 +18211,8 @@ struct ConcatReshapeReduce final
 
     auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
         concatOp.getLoc(),
-        TypeRange(RankedTensorType::get(
-            {static_cast<int64_t>(reduceOpOperands.size())}, elemTy)),
-        ValueRange(newConcatOp), ValueRange(allOperands[0].getInitValues()[0]),
+        TypeRange(RankedTensorType::get({reduceOpOperands.size()}, elemTy)),
+        ValueRange(newConcatOp), ValueRange(initValue),
         rewriter.getDenseI64ArrayAttr(reduceDims));
 
     // Clone the reduction body
@@ -18775,8 +18715,7 @@ struct EnzymeHLOOptPass
         SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
-        ConcatReshapeReduce,
-        ConcatElementwise
+        ConcatReshapeReduce
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
