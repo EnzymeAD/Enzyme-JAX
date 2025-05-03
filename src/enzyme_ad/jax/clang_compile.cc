@@ -574,7 +574,8 @@ struct tensor<T, n0, N...>
   if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
     throw nanobind::value_error(
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
-            .str().c_str());
+            .str()
+            .c_str());
   }
   MPM.run(*mod, MAM);
 

@@ -365,7 +365,8 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   absl::StatusOr<xla::LocalClient *> local_client_or_error =
       xla::ClientLibrary::GetOrCreateLocalClient();
   if (!local_client_or_error.ok()) {
-    throw nanobind::value_error(local_client_or_error.status().ToString().c_str());
+    throw nanobind::value_error(
+        local_client_or_error.status().ToString().c_str());
   }
   xla::LocalClient *local_client = local_client_or_error.value();
 
@@ -387,7 +388,8 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
           /*(serice) options=*/&local_client->local_service()->options_,
           local_client->mutable_backend());
   if (!module_config_or_error.ok()) {
-    throw nanobind::value_error(module_config_or_error.status().ToString().c_str());
+    throw nanobind::value_error(
+        module_config_or_error.status().ToString().c_str());
   }
   module_config_or_error.value()->set_intra_op_parallelism_threads(1);
 
