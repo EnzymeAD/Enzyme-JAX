@@ -1,6 +1,6 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
-load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
+load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 load("@rules_python//python:py_library.bzl", "py_library")
 
 exports_files([
@@ -39,7 +39,7 @@ cc_library(
     ],
 )
 
-pybind_library(
+cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
@@ -51,6 +51,7 @@ pybind_library(
         "-Wno-unused-variable",
     ],
     deps = [
+        "@nanobind",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -566,7 +567,7 @@ cc_library(
     ],
 )
 
-pybind_library(
+cc_library(
     name = "compile_with_xla",
     srcs = [
         "RegistryUtils.cpp",
@@ -587,6 +588,7 @@ pybind_library(
         "-Wno-vla-cxx-extension",
     ],
     deps = [
+        "@nanobind",
         ":XLADerivatives",
         ":TransformOps",
         "@com_google_protobuf//:protobuf",
