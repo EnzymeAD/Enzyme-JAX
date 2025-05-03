@@ -70,8 +70,8 @@
 
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 
-#include <Python.h>
 #include "nanobind/nanobind.h"
+#include <Python.h>
 
 #include "Enzyme/Enzyme.h"
 #include "Enzyme/Utils.h"
