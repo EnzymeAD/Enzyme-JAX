@@ -772,6 +772,7 @@ pybind_extension(
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:UBDialect",
         "@llvm-project//mlir:VectorDialect",
