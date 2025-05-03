@@ -61,8 +61,8 @@
 #include "Enzyme/MLIR/Passes/Passes.h"
 
 #include "nanobind/nanobind.h"
-#include "nanobind/stl/string.h"
 #include "nanobind/stl/pair.h"
+#include "nanobind/stl/string.h"
 #include "nanobind/stl/tuple.h"
 
 #include "stablehlo/transforms/Passes.h"
@@ -470,7 +470,8 @@ public:
             for (size_t i = 0; i < out_idxs.size(); i++) {
               if (i != 0)
                 ss << ", ";
-              ss << " " << "(void*)&out_" << i;
+              ss << " "
+                 << "(void*)&out_" << i;
             }
             ss << "};\n";
           }
@@ -485,24 +486,30 @@ public:
             if (buf.index() != 0)
               ss << ", ";
             if (buf.is_entry_computation_parameter()) {
-              ss << " " << "(void*)&in_" << buf.parameter_number();
+              ss << " "
+                 << "(void*)&in_" << buf.parameter_number();
             } else if (buf.IsPreallocatedTempBuffer()) {
-              ss << " " << "(void*)&tmpBuf";
+              ss << " "
+                 << "(void*)&tmpBuf";
             } else if (buf.maybe_live_out()) {
               if (buf.is_tuple()) {
                 assert(out_shapes.size() != 1);
-                ss << " " << "(void*)&tup_" << buf.index();
+                ss << " "
+                   << "(void*)&tup_" << buf.index();
                 continue;
               }
               auto it =
                   std::find(out_idxs.begin(), out_idxs.end(), buf.index());
               assert(it != out_idxs.end());
               int index = it - out_idxs.begin();
-              ss << " " << "(void*)&out_" << index;
+              ss << " "
+                 << "(void*)&out_" << index;
             } else if (buf.is_constant()) {
-              ss << " " << "(void*)&const_" << buf.index();
+              ss << " "
+                 << "(void*)&const_" << buf.index();
             } else if (buf.is_thread_local()) {
-              ss << " " << "(void*)&local_" << buf.index();
+              ss << " "
+                 << "(void*)&local_" << buf.index();
             } else {
               std::string err;
               llvm::raw_string_ostream ess(err);
@@ -520,19 +527,22 @@ public:
           for (size_t i = 0; i < out_shapes.size(); i++) {
             if (comma)
               ss << ", ";
-            ss << " " << "(void*)&out_" << i;
+            ss << " "
+               << "(void*)&out_" << i;
             comma = true;
           }
           for (size_t i = 0; i < in_shapes.size(); i++) {
             if (comma)
               ss << ", ";
-            ss << " " << "(void*)&in_" << i;
+            ss << " "
+               << "(void*)&in_" << i;
             comma = true;
           }
           if (tmpBuf != 0) {
             if (comma)
               ss << ", ";
-            ss << " " << "(void*)&tmpBuf";
+            ss << " "
+               << "(void*)&tmpBuf";
             comma = true;
           }
         }
@@ -572,19 +582,22 @@ public:
       for (size_t i = 0; i < out_shapes.size(); i++) {
         if (comma)
           ss << ", ";
-        ss << " " << "out_" << i;
+        ss << " "
+           << "out_" << i;
         comma = true;
       }
       if (tmpBuf != 0) {
         if (comma)
           ss << ", ";
-        ss << " " << "tmpBuf";
+        ss << " "
+           << "tmpBuf";
         comma = true;
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         if (comma)
           ss << ", ";
-        ss << " " << "in_" << i;
+        ss << " "
+           << "in_" << i;
         comma = true;
       }
       ss << ");\n";
@@ -600,30 +613,31 @@ public:
     size_t in_off = 0;
 
     if (mode == ABI::Reverse) {
-      ss << " void*& tape = " << "*(void**)ins[" << in_off << "];\n";
+      ss << " void*& tape = "
+         << "*(void**)ins[" << in_off << "];\n";
       in_off++;
     }
 
     for (size_t i = 0; i < out_shapes.size(); i++) {
       if (mode != ABI::Reverse && mode != ABI::Tape) {
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
-           << "& out_" << i << " = " << "*("
-           << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs["
-           << out_off << "];\n";
+           << "& out_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
       if (mode == ABI::Forward) {
         ss << " " << make_type(out_names[i], out_shapes[i], false, lang)
-           << "& dout_" << i << " = " << "*("
-           << make_type(out_names[i], out_shapes[i], false, lang) << "*)outs["
-           << out_off << "];\n";
+           << "& dout_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
       if (mode == ABI::Reverse) {
         ss << " " << make_type(out_names[i], out_shapes[i], true, lang)
-           << "& dout_" << i << " = " << "*("
-           << make_type(out_names[i], out_shapes[i], true, lang) << "*)ins["
-           << in_off << "];\n";
+           << "& dout_" << i << " = "
+           << "*(" << make_type(out_names[i], out_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
     }
@@ -631,65 +645,64 @@ public:
     for (size_t i = 0; i < in_shapes.size(); i++) {
       if (mode != ABI::Reverse && mode != ABI::Tape) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
-           << i << " = " << "*("
-           << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins["
-           << in_off << "];\n";
+           << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
       if (mode == ABI::Forward) {
         ss << " " << make_type(in_names[i], in_shapes[i], true, lang)
-           << "& din_" << i << " = " << "*("
-           << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins["
-           << in_off << "];\n";
+           << "& din_" << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], true, lang)
+           << "*)ins[" << in_off << "];\n";
         in_off++;
       }
       if (mode == ABI::Reverse) {
         ss << " " << make_type(in_names[i], in_shapes[i], false, lang)
-           << "& din_" << i << " = " << "*("
-           << make_type(in_names[i], in_shapes[i], false, lang) << "*)outs["
-           << out_off << "];\n";
+           << "& din_" << i << " = "
+           << "*(" << make_type(in_names[i], in_shapes[i], false, lang)
+           << "*)outs[" << out_off << "];\n";
         out_off++;
       }
     }
     if (mode == ABI::Augmented) {
-      ss << " void*& tape = " << "*(void**)outs[" << out_off << "];\n";
+      ss << " void*& tape = "
+         << "*(void**)outs[" << out_off << "];\n";
       out_off++;
     }
     if (mode != ABI::Tape && mode != ABI::Reverse && tmpBuf != 0) {
-      ss << " enzyme::tensor<char, " << tmpBuf
-         << ">& tmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs["
-         << out_off << "];\n";
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
+         << "];\n";
       out_off++;
     }
     // forward mode, we have undef dtmpbuf
     if (mode == ABI::Forward && tmpBuf != 0) {
-      ss << " enzyme::tensor<char, " << tmpBuf
-         << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs["
-         << out_off << "];\n";
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
+         << "];\n";
       out_off++;
     }
     // augmented forward mode, we have nullptr dtmpBuf
     if (mode == ABI::Augmented && tmpBuf != 0) {
       ss << "#pragma clang diagnostic push\n";
       ss << "#pragma clang diagnostic ignored \"-Wnull-dereference\"\n";
-      ss << " enzyme::tensor<char, " << tmpBuf
-         << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf
-         << ">*)(nullptr);\n";
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
       ss << "#pragma clang diagnostic pop\n";
     }
     // reverse mode, we have zero'd
     if (mode == ABI::Reverse && tmpBuf != 0) {
       ss << "#pragma clang diagnostic push\n";
       ss << "#pragma clang diagnostic ignored \"-Wnull-dereference\"\n";
-      ss << " enzyme::tensor<char, " << tmpBuf
-         << ">& tmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf
-         << ">*)(nullptr);\n";
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& tmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)(nullptr);\n";
       ss << "#pragma clang diagnostic pop\n";
       ss << " __builtin_memset(outs[" << out_off << "], 0, " << tmpBuf
          << ");\n";
-      ss << " enzyme::tensor<char, " << tmpBuf
-         << ">& dtmpBuf = " << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs["
-         << out_off << "];\n";
+      ss << " enzyme::tensor<char, " << tmpBuf << ">& dtmpBuf = "
+         << "*(enzyme::tensor<char, " << tmpBuf << ">*)outs[" << out_off
+         << "];\n";
       out_off++;
     }
 
@@ -995,8 +1008,8 @@ std::unique_ptr<llvm::orc::LLJIT> CpuKernel::JIT = nullptr;
 // CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
 } // namespace
 
-void Callback(void *out, void **ins, void *opaque,
-                            size_t opaque_len, void *status) {
+void Callback(void *out, void **ins, void *opaque, size_t opaque_len,
+              void *status) {
   int64_t identifier = *reinterpret_cast<int64_t *>(ins[0]);
   CpuKernel *kernel = CpuKernel::get(identifier);
   if (!kernel) {
