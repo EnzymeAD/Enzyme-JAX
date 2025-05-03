@@ -1079,7 +1079,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1090,7 +1090,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1129,7 +1129,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
@@ -1140,7 +1140,7 @@ NB_MODULE(enzyme_call, m) {
             auto se = nanobind::cast<nanobind::tuple>(element);
             auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
             target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
