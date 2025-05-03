@@ -9782,8 +9782,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -18120,6 +18119,112 @@ struct ConcatReshapeSlice
   }
 };
 
+struct ConcatReshapeReduce final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<stablehlo::ReduceOp> allOperands;
+    SmallVector<Value> reduceOpOperands;
+    // SmallVector<int64_t> reduceDims = nullptr;
+    Value initValue;
+    for (auto v : concatOp.getOperands()) {
+      if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (cast<RankedTensorType>(reshapeOp.getOperand().getType())
+                .getRank() == 0) {
+          if (auto reduceOp =
+                  reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>()) {
+            // if (reduceDims) {
+            //   if (reduceDims != llvm::to_vector(reduceOp.getDimensions()))
+            //     return failure();
+            // } else {
+            //   reduceDims = llvm::to_vector(reduceOp.getDimensions());
+            // }
+
+            if (reduceOp.getInputs().size() != 1)
+              return rewriter.notifyMatchFailure(
+                  concatOp, "expected single input in reduce.");
+
+            // if (initValue) {
+            //   if (initValue != reduceOp.getInitValues()[0])
+            //     return failure();
+            // } else {
+            initValue = reduceOp.getInitValues()[0];
+            // }
+
+            // TODO: check that the reduceOp is identical
+
+            reduceOpOperands.push_back(reduceOp.getInputs()[0]);
+            allOperands.push_back(reduceOp);
+          } else {
+            return rewriter.notifyMatchFailure(concatOp,
+                                               "Not a reduce op in reshape.");
+          }
+        } else {
+          return rewriter.notifyMatchFailure(
+              concatOp, "Reshaped operand is not a scalar.");
+        }
+      } else {
+        return rewriter.notifyMatchFailure(concatOp,
+                                           "Operand is not a reshape.");
+      }
+    }
+
+    auto reduceDims = llvm::to_vector(allOperands[0].getDimensions());
+
+    if (allOperands.size() == 0)
+      return failure();
+
+    auto concatDim = concatOp.getDimension();
+    for (int64_t i = 0; i < reduceDims.size(); i++) {
+      if (reduceDims[i] >= concatDim)
+        reduceDims[i]++;
+    }
+
+    SmallVector<Value> newConcatOperands;
+    auto elemTy =
+        cast<RankedTensorType>(reduceOpOperands[0].getType()).getElementType();
+
+    SmallVector<int64_t> oldShape = llvm::to_vector(
+        cast<RankedTensorType>(reduceOpOperands[0].getType()).getShape());
+
+    SmallVector<int64_t> preConcatShape(oldShape.size() + 1, 0);
+    for (int64_t i = 0; i < preConcatShape.size(); i++) {
+      if (i == concatDim) {
+        preConcatShape[i] = 1;
+      } else if (i < concatDim) {
+        preConcatShape[i] = oldShape[i];
+      } else {
+        preConcatShape[i] = oldShape[i - 1];
+      }
+    }
+
+    for (int64_t i = 0; i < reduceOpOperands.size(); i++) {
+      newConcatOperands.push_back(rewriter.create<stablehlo::ReshapeOp>(
+          concatOp.getLoc(), RankedTensorType::get(preConcatShape, elemTy),
+          reduceOpOperands[i]));
+    }
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        concatOp.getLoc(), newConcatOperands, concatDim);
+
+    auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+        concatOp.getLoc(),
+        TypeRange(RankedTensorType::get({reduceOpOperands.size()}, elemTy)),
+        ValueRange(newConcatOp), ValueRange(initValue),
+        rewriter.getDenseI64ArrayAttr(reduceDims));
+
+    // Clone the reduction body
+    rewriter.inlineRegionBefore(allOperands[0].getBody(), reduceOp.getBody(),
+                                reduceOp.getBody().end());
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+        concatOp, concatOp.getType(), reduceOp.getResult(0));
+    return success();
+  }
+};
+
 // reverse(transpose x) -> transpose(reverse x)
 struct ReverseTranspose final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -18609,7 +18714,8 @@ struct EnzymeHLOOptPass
         SliceInternal,
         SquareAbsSimplify,
         DivideDivideSimplify,
-        ConcatReshapeSlice
+        ConcatReshapeSlice,
+        ConcatReshapeReduce
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
