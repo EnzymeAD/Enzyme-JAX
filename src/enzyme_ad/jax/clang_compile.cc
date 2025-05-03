@@ -71,7 +71,7 @@
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 
 #include <Python.h>
-#include <pybind11/pybind11.h>
+#include "nanobind/nanobind.h"
 
 #include "Enzyme/Enzyme.h"
 #include "Enzyme/Utils.h"
@@ -553,7 +553,7 @@ struct tensor<T, n0, N...>
       llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple()))
           .createTargetMachine();
   if (!ETM) {
-    throw pybind11::value_error("failed to create targetmachine");
+    throw nanobind::value_error("failed to create targetmachine");
   }
   auto TM = std::move(ETM.get());
 
@@ -572,7 +572,7 @@ struct tensor<T, n0, N...>
 
   ModulePassManager MPM;
   if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
-    throw pybind11::value_error(
+    throw nanobind::value_error(
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
             .str());
   }
@@ -648,7 +648,7 @@ struct tensor<T, n0, N...>
         ss << *mod << "\n";
         ss << " unsupported value to erase:\n";
         ss << " cur: " << *cur << " prev: " << *prev << "\n";
-        throw pybind11::value_error(ss.str());
+        throw nanobind::value_error(ss.str());
       }
       for (auto I : toErase) {
         I->eraseFromParent();

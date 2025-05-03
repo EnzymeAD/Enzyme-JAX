@@ -26,7 +26,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
-#include "pybind11/pybind11.h"
+#include "nanobind/nanobind.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
@@ -46,7 +46,7 @@
 
 #include "TransformOps/TransformOps.h"
 
-#include "pybind11/stl.h"
+// #include "nanobind/stl"
 
 #include "RegistryUtils.h"
 
