@@ -18147,9 +18147,6 @@ bool reshapeOfFullReduce(stablehlo::ReshapeOp reshapeOp,
   return true;
 }
 
-// note that this is not a good optimization in general since it increases the
-// number of concats. However, we only do this when we know that a pattern like
-// ConcatReshapeReduce can cleanup those concats & reduces.
 struct ConcatElementwise final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -18158,8 +18155,6 @@ struct ConcatElementwise final
                                 PatternRewriter &rewriter) const override {
     SmallVector<Operation *> concatOpOperands;
 
-    SmallVector<SmallVector<stablehlo::ReduceOp>> allReduceOperands;
-    SmallVector<SmallVector<Value>> reduceOpOperands;
     for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
       auto vdefOp = v.getDefiningOp();
       if (!vdefOp)
@@ -18174,21 +18169,9 @@ struct ConcatElementwise final
             return failure();
         }
 
-        if (i == 0) {
-          for (int j = 0; j < vdefOp->getNumOperands(); j++) {
-            SmallVector<stablehlo::ReduceOp> allReduceOperandsi;
-            SmallVector<Value> reduceOpOperandsi;
-            allReduceOperands.push_back(allReduceOperandsi);
-            reduceOpOperands.push_back(reduceOpOperandsi);
-          }
-        }
-
-        for (auto [j, op] : llvm::enumerate(vdefOp->getOperands())) {
-          if (auto reshapeOp = op.getDefiningOp<stablehlo::ReshapeOp>()) {
-            if (!reshapeOfFullReduce(reshapeOp, allReduceOperands[j],
-                                     reduceOpOperands[j]))
-              return failure();
-          } else {
+        // Check if all users are stablehlo::ConcatenateOp
+        for (auto u : vdefOp->getUsers()) {
+          if (!isa<stablehlo::ConcatenateOp>(u)) {
             return failure();
           }
         }
@@ -18199,8 +18182,6 @@ struct ConcatElementwise final
       }
     }
 
-    // We know that if we make the ops into elementwise(concat) this will later
-    // be cleaned up
     SmallVector<Value> elementwiseOperands;
 
     for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
