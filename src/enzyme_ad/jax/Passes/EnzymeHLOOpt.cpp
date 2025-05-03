@@ -18132,6 +18132,9 @@ bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
   if (!reduceOp)
     return false;
 
+  if (!isOnlyUsedInOperation(reduceOp, reshapeOp))
+    return false;
+
   if (reduceOp.getInputs().size() != 1)
     return false;
 
@@ -18172,12 +18175,8 @@ struct ConcatElementwise final
             return failure();
         }
 
-        // Check if all users are stablehlo::ConcatenateOp
-        for (auto u : vdefOp->getUsers()) {
-          if (!isa<stablehlo::ConcatenateOp>(u)) {
-            return failure();
-          }
-        }
+        if (!isOnlyUsedInOperation(vdefOp, concatOp))
+          return failure();
 
         concatOpOperands.push_back(vdefOp);
       } else {
@@ -18220,6 +18219,9 @@ struct ConcatReshapeReduce final
     SmallVector<Value> reduceOpOperands;
     for (auto v : concatOp.getOperands()) {
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (!isOnlyUsedInOperation(reshapeOp, concatOp))
+          return failure();
+
         if (!reshapeOfEquivalentReduces(reshapeOp, allOperands,
                                         reduceOpOperands))
           return failure();
