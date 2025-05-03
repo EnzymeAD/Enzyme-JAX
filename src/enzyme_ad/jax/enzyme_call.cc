@@ -18,7 +18,6 @@
 
 #include "absl/status/statusor.h"
 #include "clang_compile.h"
-#include "pybind11/pybind11.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
@@ -60,6 +59,11 @@
 
 #include "Enzyme/FunctionUtils.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
+
+#include "nanobind/nanobind.h"
+#include "nanobind/stl/pair.h"
+#include "nanobind/stl/string.h"
+#include "nanobind/stl/tuple.h"
 
 #include "stablehlo/transforms/Passes.h"
 
@@ -143,7 +147,7 @@ public:
           ss << " Number of mhlo inputs (" << num_in
              << ") != number of jax inputs (" << in_shapes.size() << "):\n";
           ss << source << "\n";
-          throw pybind11::value_error(ss.str());
+          throw nanobind::value_error(ss.str().c_str());
         }
         for (size_t i = 0; i < in_shapes.size(); i++) {
           ssize_t idx = -1;
@@ -161,7 +165,7 @@ public:
             ss << " Could not find input parameter (" << i
                << ") as hlo parameter:\n";
             ss << source << "\n";
-            throw pybind11::value_error(ss.str());
+            throw nanobind::value_error(ss.str().c_str());
           }
         }
       }
@@ -180,7 +184,8 @@ public:
         std::string err_str;
         llvm::raw_string_ostream ss(err_str);
         Err.print("llvmsource", ss, false);
-        throw pybind11::value_error("failed to compile LLVM: " + ss.str());
+        throw nanobind::value_error(
+            ("failed to compile LLVM: " + ss.str()).c_str());
       }
       assert(linkMod);
       if (lang == Language::MHLO) {
@@ -849,7 +854,7 @@ public:
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
     if (!mod) {
       llvm::errs() << "Source:\n" << ss.str() << "\n";
-      throw pybind11::value_error("failed to compile C++");
+      throw nanobind::value_error("failed to compile C++");
     }
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
@@ -937,7 +942,7 @@ public:
               .create();
       if (!tJIT) {
         llvm::errs() << tJIT.takeError() << "\n";
-        throw pybind11::value_error("failed to create jit");
+        throw nanobind::value_error("failed to create jit");
       }
       JIT = std::move(tJIT.get());
       assert(JIT);
@@ -953,14 +958,14 @@ public:
             LibA.get(),
             llvm::orc::ThreadSafeModule(std::move(mod), std::move(llvm_ctx)))) {
       llvm::errs() << " error " << Err << "\n";
-      throw pybind11::value_error("failed to add IR module");
+      throw nanobind::value_error("failed to add IR module");
     }
 
     // Look up the JIT'd code entry point.
     auto EntrySym = JIT->lookup(LibA.get(), "entry");
     if (!EntrySym) {
       llvm::errs() << EntrySym.takeError() << "\n";
-      throw pybind11::value_error("failed to lookup function called 'entry'");
+      throw nanobind::value_error("failed to lookup function called 'entry'");
     }
 
     // Cast the entry point address to a function pointer.
@@ -1003,12 +1008,13 @@ std::unique_ptr<llvm::orc::LLJIT> CpuKernel::JIT = nullptr;
 // CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
 } // namespace
 
-void Callback(void *out, void **ins) {
+void Callback(void *out, void **ins, void *opaque, size_t opaque_len,
+              void *status) {
   int64_t identifier = *reinterpret_cast<int64_t *>(ins[0]);
   CpuKernel *kernel = CpuKernel::get(identifier);
   if (!kernel) {
     if (identifier == CpuKernel::UNKNOWN_PLATFORM) {
-      throw pybind11::value_error(
+      throw nanobind::value_error(
           "Unknown platform callback could not be executed");
     }
     // TODO: find a way to fail more gracefully.
@@ -1020,7 +1026,7 @@ void Callback(void *out, void **ins) {
 extern "C" void RegisterEnzymeXLAGPUHandler();
 extern "C" void RegisterEnzymeXLACPUHandler();
 
-PYBIND11_MODULE(enzyme_call, m) {
+NB_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmPrinters();
@@ -1052,12 +1058,12 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::enzyme::registerRemoveTransformPass();
   mlir::stablehlo::registerPasses();
 
-  pybind11::enum_<Language>(m, "Language")
+  nanobind::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
       .value("LLVM", Language::LLVM)
       .value("MHLO", Language::MHLO);
 
-  pybind11::enum_<ABI>(m, "ABI")
+  nanobind::enum_<ABI>(m, "ABI")
       .value("Primal", ABI::Primal)
       .value("Forward", ABI::Forward)
       .value("Augmented", ABI::Augmented)
@@ -1066,42 +1072,42 @@ PYBIND11_MODULE(enzyme_call, m) {
 
   m.def("create_enzyme_kernel",
         [](const std::string &source, const std::string &fn,
-           const pybind11::list &py_out_shapes,
-           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           const nanobind::list &py_out_shapes,
+           const nanobind::list &py_in_shapes, nanobind::object pyargv,
            ABI mode, Language lang, bool xla_runtime,
            const std::string &pass_pipeline,
            const std::string &platform) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
-          out_shapes.reserve(pybind11::len(py_out_shapes));
+          out_shapes.reserve(nanobind::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
-          in_shapes.reserve(pybind11::len(py_in_shapes));
+          in_shapes.reserve(nanobind::len(py_in_shapes));
 
           llvm::SmallVector<std::string> out_types;
-          out_types.reserve(pybind11::len(py_out_shapes));
+          out_types.reserve(nanobind::len(py_out_shapes));
 
           llvm::SmallVector<std::string> in_types;
-          in_types.reserve(pybind11::len(py_in_shapes));
+          in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
@@ -1118,40 +1124,40 @@ PYBIND11_MODULE(enzyme_call, m) {
 
   m.def("compile_to_llvm",
         [](const std::string outfile, const std::string &source,
-           const std::string &fn, const pybind11::list &py_out_shapes,
-           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           const std::string &fn, const nanobind::list &py_out_shapes,
+           const nanobind::list &py_in_shapes, nanobind::object pyargv,
            Language lang, bool xla_runtime, const std::string &pass_pipeline) {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
-          out_shapes.reserve(pybind11::len(py_out_shapes));
+          out_shapes.reserve(nanobind::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
-          in_shapes.reserve(pybind11::len(py_in_shapes));
+          in_shapes.reserve(nanobind::len(py_in_shapes));
 
           llvm::SmallVector<std::string> out_types;
-          out_types.reserve(pybind11::len(py_out_shapes));
+          out_types.reserve(nanobind::len(py_out_shapes));
 
           llvm::SmallVector<std::string> in_types;
-          in_types.reserve(pybind11::len(py_in_shapes));
+          in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
 
@@ -1169,41 +1175,41 @@ PYBIND11_MODULE(enzyme_call, m) {
 
   m.def("tape_and_tmp_size",
         [](const std::string &source, const std::string &fn,
-           const pybind11::list &py_out_shapes,
-           const pybind11::list &py_in_shapes, pybind11::object pyargv,
+           const nanobind::list &py_out_shapes,
+           const nanobind::list &py_in_shapes, nanobind::object pyargv,
            Language lang, bool xla_runtime,
            const std::string &pass_pipeline) -> std::pair<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
-          out_shapes.reserve(pybind11::len(py_out_shapes));
+          out_shapes.reserve(nanobind::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
-          in_shapes.reserve(pybind11::len(py_in_shapes));
+          in_shapes.reserve(nanobind::len(py_in_shapes));
 
           llvm::SmallVector<std::string> out_types;
-          out_types.reserve(pybind11::len(py_out_shapes));
+          out_types.reserve(nanobind::len(py_out_shapes));
 
           llvm::SmallVector<std::string> in_types;
-          in_types.reserve(pybind11::len(py_in_shapes));
+          in_types.reserve(nanobind::len(py_in_shapes));
 
           for (const auto &element : py_out_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             out_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           for (const auto &element : py_in_shapes) {
-            auto se = element.cast<pybind11::tuple>();
-            auto dtype = se[0].cast<std::string>();
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
             in_types.push_back(dtype);
-            auto nested = se[1].cast<pybind11::list>();
+            auto nested = nanobind::cast<nanobind::tuple>(se[1]);
             llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
-            target.reserve(pybind11::len(nested));
+            target.reserve(nanobind::len(nested));
             for (const auto &nested_element : nested) {
-              target.push_back(nested_element.cast<int64_t>());
+              target.push_back(nanobind::cast<int64_t>(nested_element));
             }
           }
           return CpuKernel::tapeAndTempSize(
@@ -1212,7 +1218,7 @@ PYBIND11_MODULE(enzyme_call, m) {
         });
 
   m.def("get_callback", []() {
-    return pybind11::capsule(reinterpret_cast<void *>(&Callback),
+    return nanobind::capsule(reinterpret_cast<void *>(&Callback),
                              "xla._CUSTOM_CALL_TARGET");
   });
 
@@ -1221,7 +1227,7 @@ PYBIND11_MODULE(enzyme_call, m) {
           run_pass_pipeline(unwrap(cmod), pass_pipeline);
         });
   m.def("run_pass_pipeline",
-        [](pybind11::object pyoldsyms, const std::string &mlir,
+        [](nanobind::object pyoldsyms, const std::string &mlir,
            const std::string &pass_pipeline) {
           auto pyargv = pyoldsyms.ptr();
           std::vector<std::string> oldsyms;
