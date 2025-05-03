@@ -732,7 +732,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   for (auto arg : op.getArguments()) {
     LLVM::GEPArg args[1] = {arg.getArgNumber()};
     auto gep = builder.create<LLVM::GEPOp>(loc, ptrty, ptrty, buffers, args,
-                                           mlir::LLVM::GEPNoWrapFlags(true));
+                                           mlir::LLVM::GEPNoWrapFlags(mlir::LLVM::GEPNoWrapFlags::inbounds));
     auto argTy = arg.getType();
     if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
       argTy = AT.getElementType();
