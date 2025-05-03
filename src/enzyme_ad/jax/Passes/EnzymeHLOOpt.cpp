@@ -18153,6 +18153,9 @@ struct ConcatElementwise final
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
                                 PatternRewriter &rewriter) const override {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+
     SmallVector<Operation *> concatOpOperands;
 
     for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
@@ -18210,6 +18213,9 @@ struct ConcatReshapeReduce final
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
                                 PatternRewriter &rewriter) const override {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+
     SmallVector<stablehlo::ReduceOp> allOperands;
     SmallVector<Value> reduceOpOperands;
     for (auto v : concatOp.getOperands()) {
@@ -18223,9 +18229,6 @@ struct ConcatReshapeReduce final
     }
 
     auto reduceDims = llvm::to_vector(allOperands[0].getDimensions());
-
-    if (allOperands.size() == 0)
-      return failure();
 
     auto concatDim = concatOp.getDimension();
     for (int64_t i = 0; i < reduceDims.size(); i++) {
