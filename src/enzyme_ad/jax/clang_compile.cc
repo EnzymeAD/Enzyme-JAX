@@ -574,7 +574,7 @@ struct tensor<T, n0, N...>
   if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
     throw nanobind::value_error(
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
-            .str());
+            .str().c_str());
   }
   MPM.run(*mod, MAM);
 
@@ -648,7 +648,7 @@ struct tensor<T, n0, N...>
         ss << *mod << "\n";
         ss << " unsupported value to erase:\n";
         ss << " cur: " << *cur << " prev: " << *prev << "\n";
-        throw nanobind::value_error(ss.str());
+        throw nanobind::value_error(ss.str().c_str());
       }
       for (auto I : toErase) {
         I->eraseFromParent();
