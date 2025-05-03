@@ -1,7 +1,6 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
 
 module {
-
   func.func @main(%a : tensor<3x4xf32>, %b : tensor<3x4xf32>) -> tensor<2x3x4xf32> {
     %u = stablehlo.reshape %a : (tensor<3x4xf32>) -> tensor<1x3x4xf32>
     %v = stablehlo.reshape %b : (tensor<3x4xf32>) -> tensor<1x3x4xf32>
@@ -32,7 +31,6 @@ module {
     %concat = stablehlo.concatenate %u, %v, dim = 0 : (tensor<1xf32>, tensor<1xf32>) -> tensor<2xf32>
     return %concat : tensor<2xf32>
   }
-
 }
 
 

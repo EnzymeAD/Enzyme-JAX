@@ -18166,6 +18166,9 @@ struct ConcatElementwise final
       if (!vdefOp)
         return failure();
 
+      if (isa<stablehlo::ConvertOp>(vdefOp)) // Conflicts with ConvertConcat
+        return failure();
+
       if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
         if (concatOpOperands.size() != 0) {
           if (!OperationEquivalence::isEquivalentTo(
@@ -18221,7 +18224,6 @@ struct ConcatReshapeReduce final
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
         if (!isOnlyUsedInOperation(reshapeOp, concatOp))
           return failure();
-
         if (!reshapeOfEquivalentReduces(reshapeOp, allOperands,
                                         reduceOpOperands))
           return failure();
