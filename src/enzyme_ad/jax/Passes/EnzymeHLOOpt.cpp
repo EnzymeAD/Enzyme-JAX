@@ -9608,7 +9608,8 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
                 op, nop, OperationEquivalence::IgnoreLocations)) {
           // stablehlo defines a special trait for commutative operations.
           // check for that here.
-          if (op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>()) {
+          if constexpr (std::is_base_of_v<
+                            ::mlir::hlo::OpTrait::IsCommutative<T>, T>) {
             auto opRange = op->getOperands();
             auto nopRange = nop->getOperands();
             if (!isCommutativeEquivalent(opRange, nopRange))
