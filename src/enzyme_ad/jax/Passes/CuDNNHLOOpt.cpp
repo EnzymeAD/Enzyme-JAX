@@ -118,8 +118,7 @@ struct DotGeneralElementwiseToCuDNNFusion
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(mod.getBody());
 
-      auto funcOp =
-          rewriter.create<func::FuncOp>(elemLoc, fnSym, funcTy);
+      auto funcOp = rewriter.create<func::FuncOp>(elemLoc, fnSym, funcTy);
       funcOp.setVisibility(SymbolTable::Visibility::Private);
       funcOp.setNoInlineAttr(rewriter.getUnitAttr());
       auto &entryBlock = *funcOp.addEntryBlock();
@@ -135,11 +134,11 @@ struct DotGeneralElementwiseToCuDNNFusion
           dotGeneral.getPrecisionConfigAttr(), dotGeneral.getAlgorithmAttr());
       Value newElementwise;
       if (dotGeneralIsLhs) {
-        newElementwise = rewriter.create<ElementwiseOpTy>(elemLoc,
-                                                          newDotGeneral, arg2);
+        newElementwise =
+            rewriter.create<ElementwiseOpTy>(elemLoc, newDotGeneral, arg2);
       } else {
-        newElementwise = rewriter.create<ElementwiseOpTy>(elemLoc, arg2,
-                                                          newDotGeneral);
+        newElementwise =
+            rewriter.create<ElementwiseOpTy>(elemLoc, arg2, newDotGeneral);
       }
       rewriter.create<func::ReturnOp>(elemLoc, newElementwise);
     }
