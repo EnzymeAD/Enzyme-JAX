@@ -722,8 +722,15 @@ pybind_extension(
         "-Wno-unused-variable",
         "-Wno-vla-cxx-extension",
     ],
+    linkopts = select({
+    "@platforms//os:macos":[
+	"-undefined", "dynamic_lookup"
+    ],
+    "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"],
     deps = [
+        "@nanobind",
         ":TransformOps",
         ":clang_compile",
         ":compile_with_xla",

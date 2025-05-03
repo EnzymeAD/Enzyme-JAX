@@ -787,8 +787,13 @@ def _enzyme_primal_lowering(
                 sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
                 out_types = tuple(list(out_types) + [sa])
 
+            i32_type = ir.IntegerType.get_signless(32)
             custom_call = stablehlo.CustomCallOp(
-                out_types, mlir_args, call_target_name="jaxzyme.primal"
+                out_types,
+                mlir_args,
+                call_target_name="jaxzyme.primal",
+                backend_config=ir.StringAttr.get("backend"),
+                api_version=ir.IntegerAttr.get(i32_type, 3),
             )
             results = tuple(t for t in custom_call.results)
 
@@ -969,8 +974,14 @@ def _enzyme_aug_lowering(
         out_types = out_types + (sa,)
 
     mlir_args = (identifier_op,) + in_args
+
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        out_types, mlir_args, call_target_name="jaxzyme.aug"
+        out_types,
+        mlir_args,
+        call_target_name="jaxzyme.aug",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
 
     results = custom_call.results
@@ -1043,8 +1054,13 @@ def _enzyme_rev_lowering(
         sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
         rev_return_types = rev_return_types + (sa,)
 
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        rev_return_types, mlir_args, call_target_name="jaxzyme.rev"
+        rev_return_types,
+        mlir_args,
+        call_target_name="jaxzyme.rev",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
     results = custom_call.results
     if tmpBuf != 0:
