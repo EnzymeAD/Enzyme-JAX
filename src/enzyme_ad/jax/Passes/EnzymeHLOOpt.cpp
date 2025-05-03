@@ -18120,46 +18120,108 @@ struct ConcatReshapeSlice
   }
 };
 
-// This doesn't check complete equivalence. It checks that the init values are
-// the same, reduce dimensions are the same, and the reduction op is the same.
-bool areReduceOpsEquivalent(stablehlo::ReduceOp rOp1,
-                            stablehlo::ReduceOp rOp2) {
-  auto nInputs1 = rOp1.getInputs().size();
-  auto nInputs2 = rOp2.getInputs().size();
-  if (nInputs1 != nInputs2)
+bool reshapeOfFullReduce(stablehlo::ReshapeOp reshapeOp,
+                         SmallVector<stablehlo::ReduceOp> &allOperands,
+                         SmallVector<Value> &reduceOpOperands) {
+  auto rank =
+      cast<RankedTensorType>(reshapeOp.getOperand().getType()).getRank();
+  if (rank != 0)
     return false;
 
-  // Check return types are the same
-  for (auto [ret1, ret2] :
-       llvm::zip(rOp1.getResultTypes(), rOp2.getResultTypes())) {
-    if (ret1 != ret2)
-      return false;
-  }
-
-  // Check init values are the same
-  for (auto [init1, init2] :
-       llvm::zip(rOp1.getInitValues(), rOp2.getInitValues())) {
-    if (!OperationEquivalence::isEquivalentTo(
-            init1.getDefiningOp(), init2.getDefiningOp(),
-            OperationEquivalence::IgnoreLocations))
-      return false;
-  }
-
-  // Check reduce dimensions are the same
-  auto reduceDims1 = llvm::to_vector(rOp1.getDimensions());
-  auto reduceDims2 = llvm::to_vector(rOp2.getDimensions());
-  if (reduceDims1 != reduceDims2)
+  auto reduceOp = reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>();
+  if (!reduceOp)
     return false;
 
-  // Check that the region are equivalent
-  mlir::Region *reduce1Region = &rOp1.getBody();
-  mlir::Region *reduce2Region = &rOp2.getBody();
-  if (!OperationEquivalence::isRegionEquivalentTo(
-          reduce1Region, reduce2Region, OperationEquivalence::IgnoreLocations))
+  if (reduceOp.getInputs().size() != 1)
     return false;
 
+  if (allOperands.size() >= 1 &&
+      !OperationEquivalence::isEquivalentTo(
+          reduceOp, allOperands[0],
+          OperationEquivalence::ignoreValueEquivalence, nullptr,
+          OperationEquivalence::IgnoreLocations, nullptr))
+    return false;
+
+  reduceOpOperands.push_back(reduceOp.getInputs()[0]);
+  allOperands.push_back(reduceOp);
   return true;
 }
+
+// note that this is not a good optimization in general since it increases the
+// number of concats. However, we only do this when we know that a pattern like
+// ConcatReshapeReduce can cleanup those concats & reduces.
+struct ConcatElementwise final
+    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Operation *> concatOpOperands;
+
+    SmallVector<SmallVector<stablehlo::ReduceOp>> allReduceOperands;
+    SmallVector<SmallVector<Value>> reduceOpOperands;
+    for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
+      auto vdefOp = v.getDefiningOp();
+      if (!vdefOp)
+        return failure();
+
+      if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
+        if (concatOpOperands.size() != 0) {
+          if (!OperationEquivalence::isEquivalentTo(
+                  concatOpOperands[0], vdefOp,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr))
+            return failure();
+        }
+
+        if (i == 0) {
+          for (int j = 0; j < vdefOp->getNumOperands(); j++) {
+            SmallVector<stablehlo::ReduceOp> allReduceOperandsi;
+            SmallVector<Value> reduceOpOperandsi;
+            allReduceOperands.push_back(allReduceOperandsi);
+            reduceOpOperands.push_back(reduceOpOperandsi);
+          }
+        }
+
+        for (auto [j, op] : llvm::enumerate(vdefOp->getOperands())) {
+          if (auto reshapeOp = op.getDefiningOp<stablehlo::ReshapeOp>()) {
+            if (!reshapeOfFullReduce(reshapeOp, allReduceOperands[j],
+                                     reduceOpOperands[j]))
+              return failure();
+          } else {
+            return failure();
+          }
+        }
+
+        concatOpOperands.push_back(vdefOp);
+      } else {
+        return failure();
+      }
+    }
+
+    // We know that if we make the ops into elementwise(concat) this will later
+    // be cleaned up
+    SmallVector<Value> elementwiseOperands;
+
+    for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
+      SmallVector<Value> newConcatOperands;
+      for (auto v : concatOpOperands) {
+        newConcatOperands.push_back(v->getOperand(i));
+      }
+      auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+          concatOp.getLoc(), newConcatOperands, concatOp.getDimension());
+      elementwiseOperands.push_back(newConcatOp.getResult());
+    }
+
+    auto newElementwiseOp = rewriter.create(
+        concatOp.getLoc(), concatOpOperands[0]->getName().getIdentifier(),
+        ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
+        concatOpOperands[0]->getAttrs(), {}, {});
+
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
 
 struct ConcatReshapeReduce final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
@@ -18169,31 +18231,10 @@ struct ConcatReshapeReduce final
                                 PatternRewriter &rewriter) const override {
     SmallVector<stablehlo::ReduceOp> allOperands;
     SmallVector<Value> reduceOpOperands;
-    for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
+    for (auto v : concatOp.getOperands()) {
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
-        if (cast<RankedTensorType>(reshapeOp.getOperand().getType())
-                .getRank() == 0) {
-          if (auto reduceOp =
-                  reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>()) {
-            if (reduceOp.getInputs().size() != 1)
-              return rewriter.notifyMatchFailure(
-                  concatOp, "expected single input in reduce.");
-
-            if (i != 0 && !areReduceOpsEquivalent(reduceOp, allOperands[0])) {
-              return rewriter.notifyMatchFailure(
-                  concatOp, "Reduce ops are not equivalent.");
-            }
-
-            reduceOpOperands.push_back(reduceOp.getInputs()[0]);
-            allOperands.push_back(reduceOp);
-          } else {
-            return rewriter.notifyMatchFailure(concatOp,
-                                               "Not a reduce op in reshape.");
-          }
-        } else {
-          return rewriter.notifyMatchFailure(
-              concatOp, "Reshaped operand is not a scalar.");
-        }
+        if (!reshapeOfFullReduce(reshapeOp, allOperands, reduceOpOperands))
+          return failure();
       } else {
         return rewriter.notifyMatchFailure(concatOp,
                                            "Operand is not a reshape.");
@@ -18744,7 +18785,8 @@ struct EnzymeHLOOptPass
         SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
-        ConcatReshapeReduce
+        ConcatReshapeReduce,
+        ConcatElementwise
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
