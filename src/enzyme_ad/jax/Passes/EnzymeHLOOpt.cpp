@@ -18266,7 +18266,8 @@ struct ConcatReshapeReduce final
 
     auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
         concatOp.getLoc(),
-        TypeRange(RankedTensorType::get({reduceOpOperands.size()}, elemTy)),
+        TypeRange(RankedTensorType::get(
+            {static_cast<int64_t>(reduceOpOperands.size())}, elemTy)),
         ValueRange(newConcatOp), ValueRange(allOperands[0].getInitValues()[0]),
         rewriter.getDenseI64ArrayAttr(reduceDims));
 
