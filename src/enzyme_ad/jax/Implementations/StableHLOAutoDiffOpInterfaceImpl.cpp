@@ -3455,6 +3455,15 @@ struct StablehloSubSimplifyMathInterface
   }
 };
 
+struct GatherActivityInterface
+    : public ActivityOpInterface::ExternalModel<GatherActivityInterface,
+                                                GatherOp> {
+  bool isInactive(Operation *op) const { return false; }
+  bool isArgInactive(Operation *op, size_t i) const { 
+    return i != 0;
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -3471,6 +3480,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
     ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
+    GatherOp::attachInterface<GatherActivityInterface>(*context);
     ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
 
     CaseOp::attachInterface<RegionBranchCaseOp>(*context);
