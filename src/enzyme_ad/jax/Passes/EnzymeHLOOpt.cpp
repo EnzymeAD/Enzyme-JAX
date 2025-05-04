@@ -18400,11 +18400,25 @@ struct ConcatReshapeToInsertDimConcatReshape
       return failure();
 
     SmallVector<Value> reshapeOperands;
+    stablehlo::ReshapeOp reshapeOp = nullptr;
     for (auto operand : op.getOperands()) {
       if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
         if (cast<RankedTensorType>(reshape.getType()).getShape()[concatDim] !=
             1)
           return rewriter.notifyMatchFailure(op, "reshape has non-unit dim");
+
+        if (!reshapeOp) {
+          reshapeOp = reshape;
+        } else {
+          if (!OperationEquivalence::isEquivalentTo(
+                  reshapeOp, reshape,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            return rewriter.notifyMatchFailure(
+                op, "reshape operations are not equivalent");
+          }
+        }
+
         reshapeOperands.push_back(reshape.getOperand());
       } else {
         return rewriter.notifyMatchFailure(op, "not a reshape");
@@ -18445,6 +18459,108 @@ struct ConcatReshapeToInsertDimConcatReshape
   }
 };
 
+struct ConcatBcastInDimToInsertDimConcatBcastInDim
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() <= 1)
+      return failure();
+
+    auto concatDim = op.getDimension();
+    bool concatFirst = concatDim == 0;
+    bool concatLast =
+        concatDim == cast<RankedTensorType>(op.getType()).getRank() - 1;
+    if (!concatFirst && !concatLast)
+      return failure();
+
+    SmallVector<Value> bcastInDimOperands;
+    stablehlo::BroadcastInDimOp bcastInDimOp = nullptr;
+
+    for (auto operand : op.getOperands()) {
+      if (auto bcastInDim =
+              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (cast<RankedTensorType>(bcastInDim.getType())
+                .getShape()[concatDim] != 1)
+          return rewriter.notifyMatchFailure(op,
+                                             "broadcastindim has non-unit dim");
+
+        for (auto dim : bcastInDim.getBroadcastDimensions()) {
+          if (dim == concatDim)
+            return rewriter.notifyMatchFailure(
+                op, "broadcastindim contains concatDim");
+        }
+
+        if (!bcastInDimOp) {
+          bcastInDimOp = bcastInDim;
+        } else {
+          if (!OperationEquivalence::isEquivalentTo(
+                  bcastInDimOp, bcastInDim,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            return rewriter.notifyMatchFailure(
+                op, "broadcastindim operations are not equivalent");
+          }
+        }
+
+        bcastInDimOperands.push_back(bcastInDim.getOperand());
+      } else {
+        return rewriter.notifyMatchFailure(op, "not a reshape");
+      }
+    }
+
+    int64_t newConcatDim = -1;
+
+    SmallVector<Value> newConcatOperands;
+    for (auto operand : bcastInDimOperands) {
+      SmallVector<int64_t> newShape;
+      auto operandType = cast<RankedTensorType>(operand.getType());
+      auto elemType = operandType.getElementType();
+
+      if (newConcatDim == -1) {
+        newConcatDim = concatFirst ? 0 : operandType.getRank();
+      }
+
+      if (concatFirst) {
+        newShape.push_back(1);
+        for (auto dim : operandType.getShape())
+          newShape.push_back(dim);
+      } else {
+        newShape = llvm::to_vector(operandType.getShape());
+        newShape.push_back(1);
+      }
+
+      newConcatOperands.push_back(rewriter.create<enzymexla::InsertDimOp>(
+          op.getLoc(), RankedTensorType::get(newShape, elemType), operand,
+          newConcatDim));
+    }
+
+    auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(newConcatOperands), newConcatDim);
+
+    auto oldBcastInDimDimensions =
+        llvm::to_vector(bcastInDimOp.getBroadcastDimensions());
+    SmallVector<int64_t> newBcastInDimDimensions;
+
+    if (concatFirst) {
+      newBcastInDimDimensions.push_back(0);
+      for (auto dim : oldBcastInDimDimensions)
+        newBcastInDimDimensions.push_back(dim + 1);
+    } else {
+      for (auto dim : oldBcastInDimDimensions)
+        newBcastInDimDimensions.push_back(dim);
+      newBcastInDimDimensions.push_back(
+          cast<RankedTensorType>(op.getType()).getRank() - 1);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), concatOp.getResult(),
+        rewriter.getDenseI64ArrayAttr(newBcastInDimDimensions));
+    return success();
+  }
+};
+
 struct RecognizeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
   using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
 
@@ -18462,13 +18578,14 @@ struct RecognizeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
   }
 };
 
-// TODO: Implement this
 struct LowerInsertDim : public OpRewritePattern<enzymexla::InsertDimOp> {
   using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
                                 PatternRewriter &rewriter) const override {
-    return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      op.getOperand());
+    return success();
   }
 };
 
@@ -18489,13 +18606,14 @@ struct RecognizeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
   }
 };
 
-// TODO: Implement this
 struct LowerDropDim : public OpRewritePattern<enzymexla::DropDimOp> {
   using OpRewritePattern<enzymexla::DropDimOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(enzymexla::DropDimOp op,
                                 PatternRewriter &rewriter) const override {
-    return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      op.getOperand());
+    return success();
   }
 };
 
@@ -18970,7 +19088,8 @@ struct EnzymeHLOOptPass
         ConcatReshapeSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
-        InsertDimBroadcastInDim
+        InsertDimBroadcastInDim,
+        ConcatBcastInDimToInsertDimConcatBcastInDim
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);

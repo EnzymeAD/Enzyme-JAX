@@ -1620,6 +1620,11 @@ def ApplyInsertDimBroadcastInDimPatterns : EnzymeHLOPatternOp<
   let patterns = ["InsertDimBroadcastInDim"];
 }
 
+def ApplyConcatBcastInDimToInsertDimConcatBcastInDimPatterns : EnzymeHLOPatternOp<
+    "concat_bcastindim_to_insertdim_concat_bcastindim"> {
+  let patterns = ["ConcatBcastInDimToInsertDimConcatBcastInDim"];
+}
+
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "extend_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
