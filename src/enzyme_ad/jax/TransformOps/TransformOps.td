@@ -1770,3 +1770,8 @@ def ElementwiseReshapeLike : EnzymeHLOPatternOp<
     "elementwise_reshape_like"> {
   let patterns = ["ElementwiseReshapeLike"];
 }
+
+def TransposeAllUsersSlice : EnzymeHLOPatternOp<
+    "transpose_all_users_slice"> {
+  let patterns = ["TransposeAllUsersSlice"];
+}
