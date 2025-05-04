@@ -113,9 +113,9 @@ class JAXMD(EnzymeJaxTest):
         self.dins = [x.copy() for x in self.ins]
         self.douts = tuple(x.copy() for x in self.ins)
         self.AllPipelines = pipelines()
-        # No support for stablehlo.while atm
+        # No support for stablehlo.scatter atm
         # self.revfilter = justjax
-        # self.mlirad_rev = False
+        self.mlirad_rev = False
 
         # TODO: Reduction-region must take 2 parameters, but takes 4 parameter(s)
         # self.mlirad_fwd = False
