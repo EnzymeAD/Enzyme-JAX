@@ -1061,3 +1061,49 @@ void CommRegionOp::getSuccessorRegions(
   // Otherwise, the region branches back to the parent operation.
   regions.push_back(RegionSuccessor(getResults()));
 }
+
+LogicalResult InsertDimOp::verify() {
+  auto inTy = cast<RankedTensorType>(getOperand().getType());
+  auto outTy = cast<RankedTensorType>(getResult().getType());
+  auto dim = getDim();
+  if (dim < 0 || dim > inTy.getRank())
+    return emitOpError("dim must be in range [0, rank]");
+
+  if (inTy.getRank() != outTy.getRank() - 1)
+    return emitOpError("rank of input must be equal to rank of output - 1");
+
+  if (outTy.getShape()[dim] != 1)
+    return emitOpError("inserted dim must be of size 1");
+
+  for (int i = 0; i < inTy.getRank(); i++) {
+    if (i < dim && inTy.getShape()[i] != outTy.getShape()[i])
+      return emitOpError("shape mismatch");
+    if (i >= dim && inTy.getShape()[i] != outTy.getShape()[i + 1])
+      return emitOpError("shape mismatch");
+  }
+
+  return success();
+}
+
+LogicalResult DropDimOp::verify() {
+  auto inTy = cast<RankedTensorType>(getOperand().getType());
+  auto outTy = cast<RankedTensorType>(getResult().getType());
+  auto dim = getDim();
+  if (dim < 0 || dim >= inTy.getRank())
+    return emitOpError("dim must be in range [0, rank)");
+
+  if (inTy.getRank() != outTy.getRank() + 1)
+    return emitOpError("rank of input must be equal to rank of output + 1");
+
+  if (inTy.getShape()[dim] != 1)
+    return emitOpError("dropped dim must be of size 1");
+
+  for (int i = 0; i < inTy.getRank(); i++) {
+    if (i < dim && inTy.getShape()[i] != outTy.getShape()[i])
+      return emitOpError("shape mismatch");
+    if (i > dim && inTy.getShape()[i] != outTy.getShape()[i - 1])
+      return emitOpError("shape mismatch");
+  }
+
+  return success();
+}

@@ -18342,6 +18342,122 @@ struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+struct RecognizeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto insertionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getOperand().getType()),
+        cast<RankedTensorType>(op.getType()));
+    if (insertionDims.size() != 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<enzymexla::InsertDimOp>(
+        op, op.getType(), op.getOperand(), insertionDims[0]);
+    return success();
+  }
+};
+
+struct LowerInsertDim : public OpRewritePattern<enzymexla::InsertDimOp> {
+  using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      op.getOperand());
+    return success();
+  }
+};
+
+struct RecognizeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto deletionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getType()),
+        cast<RankedTensorType>(op.getOperand().getType()));
+    if (deletionDims.size() != 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<enzymexla::DropDimOp>(
+        op, op.getType(), op.getOperand(), deletionDims[0]);
+    return success();
+  }
+};
+
+struct LowerDropDim : public OpRewritePattern<enzymexla::DropDimOp> {
+  using OpRewritePattern<enzymexla::DropDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::DropDimOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      op.getOperand());
+    return success();
+  }
+};
+
+struct InsertDimReshape : public OpRewritePattern<enzymexla::InsertDimOp> {
+  using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      reshapeOp.getOperand());
+    return success();
+  }
+};
+
+struct ReshapeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto insertDimOp = op.getOperand().getDefiningOp<enzymexla::InsertDimOp>();
+    if (!insertDimOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      insertDimOp.getOperand());
+    return success();
+  }
+};
+
+struct DropDimReshape : public OpRewritePattern<enzymexla::DropDimOp> {
+  using OpRewritePattern<enzymexla::DropDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::DropDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      reshapeOp.getOperand());
+    return success();
+  }
+};
+
+struct ReshapeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dropDimOp = op.getOperand().getDefiningOp<enzymexla::DropDimOp>();
+    if (!dropDimOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      dropDimOp.getOperand());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
