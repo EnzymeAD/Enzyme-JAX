@@ -18402,29 +18402,9 @@ struct ConcatReshapeToInsertDimConcatReshape
     SmallVector<Value> reshapeOperands;
     for (auto operand : op.getOperands()) {
       if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
-        auto reshapeType = cast<RankedTensorType>(reshape.getType());
-        auto reshapeShape = reshapeType.getShape();
-        if (reshapeShape[concatDim] != 1)
+        if (cast<RankedTensorType>(reshape.getType()).getShape()[concatDim] !=
+            1)
           return rewriter.notifyMatchFailure(op, "reshape has non-unit dim");
-
-        if (concatFirst) {
-          SmallVector<int64_t> oldShape = {1};
-          for (auto dim : cast<RankedTensorType>(reshape.getOperand().getType())
-                              .getShape())
-            oldShape.push_back(dim);
-          if (oldShape == llvm::to_vector(reshapeShape))
-            return rewriter.notifyMatchFailure(op,
-                                               "already singleton insertion");
-        } else {
-          SmallVector<int64_t> oldShape = llvm::to_vector(
-              cast<RankedTensorType>(reshape.getOperand().getType())
-                  .getShape());
-          oldShape.push_back(1);
-          if (oldShape == llvm::to_vector(reshapeShape))
-            return rewriter.notifyMatchFailure(op,
-                                               "already singleton insertion");
-        }
-
         reshapeOperands.push_back(reshape.getOperand());
       } else {
         return rewriter.notifyMatchFailure(op, "not a reshape");
