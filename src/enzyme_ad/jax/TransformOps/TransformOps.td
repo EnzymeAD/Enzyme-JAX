@@ -1625,6 +1625,26 @@ def ApplyConcatBcastInDimToInsertDimConcatBcastInDimPatterns : EnzymeHLOPatternO
   let patterns = ["ConcatBcastInDimToInsertDimConcatBcastInDim"];
 }
 
+def ApplyReshapeInsertDimPatterns : EnzymeHLOPatternOp<
+    "reshape_insertdim"> {
+  let patterns = ["ReshapeInsertDim"];
+}
+
+def ApplyInsertDimReshapePatterns : EnzymeHLOPatternOp<
+    "insertdim_reshape"> {
+  let patterns = ["InsertDimReshape"];
+}
+
+def ApplyReshapeDropDimPatterns : EnzymeHLOPatternOp<
+    "reshape_dropdim"> {
+  let patterns = ["ReshapeDropDim"];
+}
+
+def ApplyDropDimReshapePatterns : EnzymeHLOPatternOp<
+    "dropdim_reshape"> {
+  let patterns = ["DropDimReshape"];
+}
+
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "extend_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
