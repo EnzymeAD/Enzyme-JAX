@@ -18380,24 +18380,14 @@ struct ElementwiseReshapeLike
     if (parentOperands.size() == 0)
       return failure();
 
-    auto elemOp = rewriter.create(op->getLoc(), op->getName().getIdentifier(),
-                                  ValueRange(parentOperands),
-                                  TypeRange{parentOperands[0].getType()},
-                                  op->getAttrs(), {}, {});
-
-    llvm::errs() << "elemOp: " << *elemOp << "\n";
-
-    auto reshapeLikeOp = rewriter.create(op->getLoc(), operandOp->getName().getIdentifier(),
-                                         ValueRange{elemOp->getResult(0)},
-                                         TypeRange{op->getResult(0).getType()},
-                                         operandOp->getAttrs(), {}, {});
-
-    llvm::errs() << "reshapeLikeOp: " << *reshapeLikeOp << "\n";
-
+    auto elemOp = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(parentOperands),
+        TypeRange{parentOperands[0].getType()}, op->getAttrs(), {}, {});
+    auto reshapeLikeOp = rewriter.create(
+        op->getLoc(), operandOp->getName().getIdentifier(),
+        ValueRange{elemOp->getResult(0)}, TypeRange{op->getResult(0).getType()},
+        operandOp->getAttrs(), {}, {});
     rewriter.replaceOp(op, reshapeLikeOp);
-
-    llvm::errs() << "replaced\n";
-
     return success();
   }
 };
