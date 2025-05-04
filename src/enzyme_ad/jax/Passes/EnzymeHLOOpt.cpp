@@ -18411,26 +18411,24 @@ struct ConcatReshapeToInsertDimConcatReshape
       }
     }
 
-    int64_t newConcatDim;
-    if (concatFirst) {
-      newConcatDim = 0;
-    } else {
-      newConcatDim = concatDim + 1;
-    }
+    int64_t newConcatDim = -1;
 
     SmallVector<Value> newConcatOperands;
     for (auto reshape : reshapeOperands) {
       SmallVector<int64_t> newShape;
-      auto elemType =
-          cast<RankedTensorType>(reshape.getType()).getElementType();
+      auto reshapeType = cast<RankedTensorType>(reshape.getType());
+      auto elemType = reshapeType.getElementType();
+
+      if (newConcatDim == -1) {
+        newConcatDim = concatFirst ? 0 : reshapeType.getRank();
+      }
 
       if (concatFirst) {
         newShape.push_back(1);
-        for (auto dim : cast<RankedTensorType>(reshape.getType()).getShape())
+        for (auto dim : reshapeType.getShape())
           newShape.push_back(dim);
       } else {
-        newShape = llvm::to_vector(
-            cast<RankedTensorType>(reshape.getType()).getShape());
+        newShape = llvm::to_vector(reshapeType.getShape());
         newShape.push_back(1);
       }
 
@@ -18500,6 +18498,34 @@ struct LowerDropDim : public OpRewritePattern<enzymexla::DropDimOp> {
     return failure();
   }
 };
+
+struct InsertDimBroadcastInDim
+    : public OpRewritePattern<enzymexla::InsertDimOp> {
+  using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto bcastOp = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastOp)
+      return failure();
+
+    auto broadcastDims = llvm::to_vector(bcastOp.getBroadcastDimensions());
+    auto insertionDim = op.getDim();
+    for (auto [i, mappedDim] : llvm::enumerate(broadcastDims)) {
+      if (mappedDim >= insertionDim)
+        broadcastDims[i]++;
+    }
+
+    auto newOp = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), bcastOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+    return success();
+  }
+};
+
+// TODO: BroadcastInDimInsertDim
+// TODO: DropDimBroadcastInDim
+// TODO: BroadcastInDimDropDim
 
 ///////////////  End Imported from stablehlo
 
@@ -18943,7 +18969,8 @@ struct EnzymeHLOOptPass
         DivideDivideSimplify,
         ConcatReshapeSlice,
         ConcatReshapeReduce,
-        ConcatElementwise
+        ConcatElementwise,
+        InsertDimBroadcastInDim
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);

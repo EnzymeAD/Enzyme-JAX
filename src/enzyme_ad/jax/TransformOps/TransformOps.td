@@ -1615,6 +1615,11 @@ def LowerInsertDim : EnzymeHLOPatternOp<
   let patterns = ["LowerInsertDim"];
 }
 
+def ApplyInsertDimBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "insertdim_broadcastindim"> {
+  let patterns = ["InsertDimBroadcastInDim"];
+}
+
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "extend_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

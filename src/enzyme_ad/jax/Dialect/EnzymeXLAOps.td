@@ -198,6 +198,8 @@ def InsertDimOp : EnzymeXLA_Op<"insertdim", [Pure, SameOperandsAndResultElementT
   );
 
   let results = (outs HLO_Tensor:$result);
+
+  // TODO: add verifier
 }
 
 def DropDimOp : EnzymeXLA_Op<"dropdim", [Pure, SameOperandsAndResultElementType]> {
@@ -209,6 +211,8 @@ def DropDimOp : EnzymeXLA_Op<"dropdim", [Pure, SameOperandsAndResultElementType]
   );
 
   let results = (outs HLO_Tensor:$result);
+
+  // TODO: add verifier
 }
 
 #endif // ENZYMEXLA_OPS
