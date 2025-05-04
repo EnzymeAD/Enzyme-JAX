@@ -407,6 +407,11 @@ def ApplyConcatElementwisePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatElementwise"];
 }
 
+def ApplyElementwiseReshapePatterns : EnzymeHLOPatternOp<
+    "elementwise_reshape"> {
+  let patterns = ["ElementwiseReshape"];
+}
+
 // benefit 65k + max_constant_expansion flag
 def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_add_sub_simplify"> {

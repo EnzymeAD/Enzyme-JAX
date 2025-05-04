@@ -18166,6 +18166,9 @@ struct ConcatElementwise final
       if (!vdefOp)
         return failure();
 
+      if (isa<stablehlo::ConvertOp>(vdefOp)) // Conflicts with ConvertConcat
+        return failure();
+
       if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
         if (concatOpOperands.size() != 0) {
           if (!OperationEquivalence::isEquivalentTo(
@@ -18221,7 +18224,6 @@ struct ConcatReshapeReduce final
       if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
         if (!isOnlyUsedInOperation(reshapeOp, concatOp))
           return failure();
-
         if (!reshapeOfEquivalentReduces(reshapeOp, allOperands,
                                         reduceOpOperands))
           return failure();
@@ -18336,6 +18338,47 @@ struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         op.getLoc(), reverseOp.getOperand(), permutation);
     rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, newTranspose,
                                                       newReverseDims);
+    return success();
+  }
+};
+
+struct ElementwiseReshape : public OpTraitRewritePattern<OpTrait::Elementwise> {
+  using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> reshapeOperands;
+    stablehlo::ReshapeOp reshapeOp = nullptr;
+    for (auto operand : op->getOperands()) {
+      if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (!reshapeOp) {
+          reshapeOp = reshape;
+        } else {
+          if (!OperationEquivalence::isEquivalentTo(
+                  reshapeOp, reshape,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            return rewriter.notifyMatchFailure(
+                op, "reshape operations are not equivalent");
+          }
+        }
+
+        if (!reshape->hasOneUse())
+          return rewriter.notifyMatchFailure(op,
+                                             "reshape has more than one use");
+
+        reshapeOperands.push_back(reshape.getOperand());
+      } else {
+        return rewriter.notifyMatchFailure(op, "not a reshape");
+      }
+    }
+
+    auto elemOp = rewriter.create(op->getLoc(), op->getName().getIdentifier(),
+                                  ValueRange(reshapeOperands),
+                                  TypeRange{reshapeOperands[0].getType()},
+                                  op->getAttrs(), {}, {});
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+        op, op->getResult(0).getType(), elemOp->getResult(0));
     return success();
   }
 };
@@ -18710,6 +18753,11 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 1024)) {
       patterns.add<ConcatToOneDimDUS>(context);
+    }
+
+    if (passses & (2048 * 2048)) {
+      // push reshape down
+      patterns.add<ElementwiseReshape>(context);
     }
 
     if (all_finite)
