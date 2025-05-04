@@ -1065,21 +1065,46 @@ void CommRegionOp::getSuccessorRegions(
 LogicalResult InsertDimOp::verify() {
   auto inTy = cast<RankedTensorType>(getOperand().getType());
   auto outTy = cast<RankedTensorType>(getResult().getType());
-  auto dim = getDim();
-  if (dim < 0 || dim > inTy.getRank())
-    return emitOpError("dim must be in range [0, rank]");
+  auto dims = getDims();
 
-  if (inTy.getRank() != outTy.getRank() - 1)
-    return emitOpError("rank of input must be equal to rank of output - 1");
+  SmallVector<int64_t> sortedDims(dims.begin(), dims.end());
+  llvm::sort(sortedDims);
 
-  if (outTy.getShape()[dim] != 1)
-    return emitOpError("inserted dim must be of size 1");
+  for (auto dim : sortedDims) {
+    if (dim < 0 ||
+        dim > inTy.getRank() + std::distance(sortedDims.begin(),
+                                             std::find(sortedDims.begin(),
+                                                       sortedDims.end(), dim)))
+      return emitOpError(
+          "all dims must be in range [0, rank + current_insertions]");
+  }
 
-  for (int i = 0; i < inTy.getRank(); i++) {
-    if (i < dim && inTy.getShape()[i] != outTy.getShape()[i])
-      return emitOpError("shape mismatch");
-    if (i >= dim && inTy.getShape()[i] != outTy.getShape()[i + 1])
-      return emitOpError("shape mismatch");
+  if (inTy.getRank() + sortedDims.size() != outTy.getRank())
+    return emitOpError("rank of output must be equal to rank of input + number "
+                       "of inserted dims");
+
+  for (auto dim : sortedDims) {
+    if (outTy.getShape()[dim] != 1)
+      return emitOpError("all inserted dims must be of size 1");
+  }
+
+  // Check shape compatibility
+  int inputIdx = 0;
+  int outputIdx = 0;
+
+  while (inputIdx < inTy.getRank() && outputIdx < outTy.getRank()) {
+    if (llvm::is_contained(sortedDims, outputIdx)) {
+      // Skip the inserted dimension
+      outputIdx++;
+      continue;
+    }
+
+    if (inTy.getShape()[inputIdx] != outTy.getShape()[outputIdx])
+      return emitOpError("shape mismatch at dimension ")
+             << inputIdx << " and " << outputIdx;
+
+    inputIdx++;
+    outputIdx++;
   }
 
   return success();
@@ -1088,22 +1113,44 @@ LogicalResult InsertDimOp::verify() {
 LogicalResult DropDimOp::verify() {
   auto inTy = cast<RankedTensorType>(getOperand().getType());
   auto outTy = cast<RankedTensorType>(getResult().getType());
-  auto dim = getDim();
-  if (dim < 0 || dim >= inTy.getRank())
-    return emitOpError("dim must be in range [0, rank)");
+  auto dims = getDims();
 
-  if (inTy.getRank() != outTy.getRank() + 1)
-    return emitOpError("rank of input must be equal to rank of output + 1");
-
-  if (inTy.getShape()[dim] != 1)
-    return emitOpError("dropped dim must be of size 1");
-
-  for (int i = 0; i < inTy.getRank(); i++) {
-    if (i < dim && inTy.getShape()[i] != outTy.getShape()[i])
-      return emitOpError("shape mismatch");
-    if (i > dim && inTy.getShape()[i] != outTy.getShape()[i - 1])
-      return emitOpError("shape mismatch");
+  for (auto dim : dims) {
+    if (dim < 0 || dim >= inTy.getRank())
+      return emitOpError("all dims must be in range [0, rank)");
   }
+
+  if (inTy.getRank() - dims.size() != outTy.getRank())
+    return emitOpError("rank of output must be equal to rank of input - number "
+                       "of dropped dims");
+
+  for (auto dim : dims) {
+    if (inTy.getShape()[dim] != 1)
+      return emitOpError("all dropped dims must be of size 1");
+  }
+
+  // Check shape compatibility
+  int inputIdx = 0;
+  int outputIdx = 0;
+
+  while (inputIdx < inTy.getRank()) {
+    if (llvm::is_contained(dims, inputIdx)) {
+      // Skip the dropped dimension
+      inputIdx++;
+      continue;
+    }
+
+    if (outputIdx >= outTy.getRank() ||
+        inTy.getShape()[inputIdx] != outTy.getShape()[outputIdx])
+      return emitOpError("shape mismatch");
+
+    inputIdx++;
+    outputIdx++;
+  }
+
+  // Make sure we've consumed the entire output shape
+  if (outputIdx != outTy.getRank())
+    return emitOpError("shape mismatch");
 
   return success();
 }

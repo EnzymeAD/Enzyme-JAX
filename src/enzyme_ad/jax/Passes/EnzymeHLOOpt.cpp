@@ -18350,11 +18350,9 @@ struct RecognizeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
     auto insertionDims = findReshapeInsertionDims(
         cast<RankedTensorType>(op.getOperand().getType()),
         cast<RankedTensorType>(op.getType()));
-    if (insertionDims.size() != 1)
-      return failure();
-
     rewriter.replaceOpWithNewOp<enzymexla::InsertDimOp>(
-        op, op.getType(), op.getOperand(), insertionDims[0]);
+        op, op.getType(), op.getOperand(),
+        rewriter.getDenseI64ArrayAttr(insertionDims));
     return success();
   }
 };
@@ -18378,11 +18376,9 @@ struct RecognizeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
     auto deletionDims = findReshapeInsertionDims(
         cast<RankedTensorType>(op.getType()),
         cast<RankedTensorType>(op.getOperand().getType()));
-    if (deletionDims.size() != 1)
-      return failure();
-
     rewriter.replaceOpWithNewOp<enzymexla::DropDimOp>(
-        op, op.getType(), op.getOperand(), deletionDims[0]);
+        op, op.getType(), op.getOperand(),
+        rewriter.getDenseI64ArrayAttr(deletionDims));
     return success();
   }
 };
@@ -18467,8 +18463,18 @@ struct DropDimInsertDim : public OpRewritePattern<enzymexla::DropDimOp> {
     if (!insertDimOp)
       return failure();
 
-    if (insertDimOp.getDim() != op.getDim())
+    auto insertDims = llvm::to_vector(insertDimOp.getDims());
+    auto dropDims = llvm::to_vector(op.getDims());
+
+    if (insertDims.size() != dropDims.size())
       return failure();
+
+    llvm::sort(insertDims);
+    llvm::sort(dropDims);
+    for (auto [insertDim, dropDim] : llvm::zip(insertDims, dropDims)) {
+      if (insertDim != dropDim)
+        return failure();
+    }
 
     rewriter.replaceAllOpUsesWith(op, insertDimOp.getOperand());
     return success();
@@ -18484,8 +18490,18 @@ struct InsertDimDropDim : public OpRewritePattern<enzymexla::InsertDimOp> {
     if (!dropDimOp)
       return failure();
 
-    if (dropDimOp.getDim() != op.getDim())
+    auto insertDims = llvm::to_vector(op.getDims());
+    auto dropDims = llvm::to_vector(dropDimOp.getDims());
+
+    if (insertDims.size() != dropDims.size())
       return failure();
+
+    llvm::sort(insertDims);
+    llvm::sort(dropDims);
+    for (auto [insertDim, dropDim] : llvm::zip(insertDims, dropDims)) {
+      if (insertDim != dropDim)
+        return failure();
+    }
 
     rewriter.replaceAllOpUsesWith(op, dropDimOp.getOperand());
     return success();

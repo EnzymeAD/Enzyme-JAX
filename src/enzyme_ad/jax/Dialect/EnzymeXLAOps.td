@@ -194,11 +194,11 @@ def InsertDimOp : EnzymeXLA_Op<"insertdim", [Pure, SameOperandsAndResultElementT
 
   let arguments = (ins
     HLO_Tensor:$operand,
-    I64Attr:$dim
+    DenseI64ArrayAttr:$dims
   );
 
   let results = (outs HLO_Tensor:$result);
-  let assemblyFormat = "$operand `,` `dim` `=` $dim attr-dict `:` functional-type($operand, results)";
+  let assemblyFormat = "$operand `,` `dims` `=` $dims attr-dict `:` functional-type($operand, results)";
   let hasVerifier = 1;
 }
 
@@ -207,11 +207,11 @@ def DropDimOp : EnzymeXLA_Op<"dropdim", [Pure, SameOperandsAndResultElementType]
 
   let arguments = (ins
     HLO_Tensor:$operand,
-    I64Attr:$dim
+    DenseI64ArrayAttr:$dims
   );
 
   let results = (outs HLO_Tensor:$result);
-  let assemblyFormat = "$operand `,` `dim` `=` $dim attr-dict `:` functional-type($operand, results)";
+  let assemblyFormat = "$operand `,` `dims` `=` $dims attr-dict `:` functional-type($operand, results)";
   let hasVerifier = 1;
 }
 
