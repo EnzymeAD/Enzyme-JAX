@@ -1765,3 +1765,8 @@ def ReshuffleAndsCompares : EnzymeHLOPatternOp<
     "reshuffle_ands_compares"> {
   let patterns = ["ReshuffleAndsCompares"];
 }
+
+def ElementwiseReshapeLike : EnzymeHLOPatternOp<
+    "elementwise_reshape_like"> {
+  let patterns = ["ElementwiseReshapeLike"];
+}
