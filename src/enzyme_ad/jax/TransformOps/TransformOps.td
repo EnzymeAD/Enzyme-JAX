@@ -1765,3 +1765,53 @@ def ReshuffleAndsCompares : EnzymeHLOPatternOp<
     "reshuffle_ands_compares"> {
   let patterns = ["ReshuffleAndsCompares"];
 }
+
+def RecognizeInsertDim : EnzymeHLOPatternOp<
+    "recognize_insertdim"> {
+  let patterns = ["RecognizeInsertDim"];
+}
+
+def RecognizeDropDim : EnzymeHLOPatternOp<
+    "recognize_dropdim"> {
+  let patterns = ["RecognizeDropDim"];
+}
+
+def LowerInsertDim : EnzymeHLOPatternOp<
+    "lower_insertdim"> {
+  let patterns = ["LowerInsertDim"];
+}
+
+def LowerDropDim : EnzymeHLOPatternOp<
+    "lower_dropdim"> {
+  let patterns = ["LowerDropDim"];
+}
+
+def InsertDimReshape : EnzymeHLOPatternOp<
+    "insertdim_reshape"> {
+  let patterns = ["InsertDimReshape"];
+}
+
+def ReshapeInsertDim : EnzymeHLOPatternOp<
+    "reshape_insertdim"> {
+  let patterns = ["ReshapeInsertDim"];
+}
+
+def DropDimReshape : EnzymeHLOPatternOp<
+    "dropdim_reshape"> {
+  let patterns = ["DropDimReshape"];
+}
+
+def ReshapeDropDim : EnzymeHLOPatternOp<
+    "reshape_dropdim"> {
+  let patterns = ["ReshapeDropDim"];
+}
+
+def DropDimInsertDim : EnzymeHLOPatternOp<
+    "dropdim_insertdim"> {
+  let patterns = ["DropDimInsertDim"];
+}
+
+def InsertDimDropDim : EnzymeHLOPatternOp<
+    "insertdim_dropdim"> {
+  let patterns = ["InsertDimDropDim"];
+}

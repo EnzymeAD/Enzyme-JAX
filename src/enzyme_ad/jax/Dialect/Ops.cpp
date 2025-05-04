@@ -1061,3 +1061,96 @@ void CommRegionOp::getSuccessorRegions(
   // Otherwise, the region branches back to the parent operation.
   regions.push_back(RegionSuccessor(getResults()));
 }
+
+LogicalResult InsertDimOp::verify() {
+  auto inTy = cast<RankedTensorType>(getOperand().getType());
+  auto outTy = cast<RankedTensorType>(getResult().getType());
+  auto dims = getDims();
+
+  SmallVector<int64_t> sortedDims(dims.begin(), dims.end());
+  llvm::sort(sortedDims);
+
+  for (auto dim : sortedDims) {
+    if (dim < 0 ||
+        dim > inTy.getRank() + std::distance(sortedDims.begin(),
+                                             std::find(sortedDims.begin(),
+                                                       sortedDims.end(), dim)))
+      return emitOpError(
+          "all dims must be in range [0, rank + current_insertions]");
+  }
+
+  if (inTy.getRank() + sortedDims.size() != outTy.getRank())
+    return emitOpError("rank of output must be equal to rank of input + number "
+                       "of inserted dims");
+
+  for (auto dim : sortedDims) {
+    if (outTy.getShape()[dim] != 1)
+      return emitOpError("all inserted dims must be of size 1");
+  }
+
+  // Check shape compatibility
+  int inputIdx = 0;
+  int outputIdx = 0;
+
+  while (inputIdx < inTy.getRank() && outputIdx < outTy.getRank()) {
+    if (llvm::is_contained(sortedDims, outputIdx)) {
+      // Skip the inserted dimension
+      outputIdx++;
+      continue;
+    }
+
+    if (inTy.getShape()[inputIdx] != outTy.getShape()[outputIdx])
+      return emitOpError("shape mismatch at dimension ")
+             << inputIdx << " and " << outputIdx;
+
+    inputIdx++;
+    outputIdx++;
+  }
+
+  return success();
+}
+
+LogicalResult DropDimOp::verify() {
+  auto inTy = cast<RankedTensorType>(getOperand().getType());
+  auto outTy = cast<RankedTensorType>(getResult().getType());
+  auto dims = getDims();
+
+  for (auto dim : dims) {
+    if (dim < 0 || dim >= inTy.getRank())
+      return emitOpError("all dims must be in range [0, rank)");
+  }
+
+  if (inTy.getRank() - dims.size() != outTy.getRank())
+    return emitOpError("rank of output must be equal to rank of input - number "
+                       "of dropped dims");
+
+  for (auto dim : dims) {
+    if (inTy.getShape()[dim] != 1)
+      return emitOpError("all dropped dims must be of size 1");
+  }
+
+  // Check shape compatibility
+  int inputIdx = 0;
+  int outputIdx = 0;
+
+  while (inputIdx < inTy.getRank()) {
+    if (llvm::is_contained(dims, inputIdx)) {
+      // Skip the dropped dimension
+      inputIdx++;
+      continue;
+    }
+
+    if (outputIdx >= outTy.getRank() ||
+        inTy.getShape()[inputIdx] != outTy.getShape()[outputIdx])
+      return emitOpError("shape mismatch");
+
+    inputIdx++;
+    outputIdx++;
+  }
+
+  // Make sure we've consumed the entire output shape
+  if (outputIdx != outTy.getRank())
+    return emitOpError("shape mismatch");
+
+  return success();
+}

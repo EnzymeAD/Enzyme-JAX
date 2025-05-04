@@ -189,4 +189,30 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
+def InsertDimOp : EnzymeXLA_Op<"insertdim", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Insert a dimension of size 1 into the tensor";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    DenseI64ArrayAttr:$dims
+  );
+
+  let results = (outs HLO_Tensor:$result);
+  let assemblyFormat = "$operand `,` `dims` `=` $dims attr-dict `:` functional-type($operand, results)";
+  let hasVerifier = 1;
+}
+
+def DropDimOp : EnzymeXLA_Op<"dropdim", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Drop a dimension of size 1 from the tensor";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    DenseI64ArrayAttr:$dims
+  );
+
+  let results = (outs HLO_Tensor:$result);
+  let assemblyFormat = "$operand `,` `dims` `=` $dims attr-dict `:` functional-type($operand, results)";
+  let hasVerifier = 1;
+}
+
 #endif // ENZYMEXLA_OPS
