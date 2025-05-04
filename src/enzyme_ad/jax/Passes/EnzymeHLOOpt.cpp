@@ -18383,10 +18383,7 @@ struct ElementwiseReshape : public OpTraitRewritePattern<OpTrait::Elementwise> {
   }
 };
 
-// concat(reshape....; dim = 1 || rank - 1) -> reshape(concat(1 dim adding
-// reshapes)) We have a lot more optimizations combining / removing 1 dim adding
-// reshapes
-struct ConcatReshapeToReshapeConcatReshape
+struct ConcatReshapeToInsertDimConcatReshape
     : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
 
@@ -18434,6 +18431,13 @@ struct ConcatReshapeToReshapeConcatReshape
       }
     }
 
+    int64_t newConcatDim;
+    if (concatFirst) {
+      newConcatDim = 0;
+    } else {
+      newConcatDim = concatDim + 1;
+    }
+
     SmallVector<Value> newConcatOperands;
     for (auto reshape : reshapeOperands) {
       SmallVector<int64_t> newShape;
@@ -18450,16 +18454,9 @@ struct ConcatReshapeToReshapeConcatReshape
         newShape.push_back(1);
       }
 
-      newConcatOperands.push_back(rewriter.create<stablehlo::ReshapeOp>(
-          op.getLoc(), RankedTensorType::get(newShape, elemType), reshape));
-    }
-
-    int64_t newConcatDim;
-    if (concatFirst) {
-      newConcatDim = 0;
-    } else {
-      newConcatDim =
-          cast<RankedTensorType>(newConcatOperands[0].getType()).getRank() - 1;
+      newConcatOperands.push_back(rewriter.create<enzymexla::InsertDimOp>(
+          op.getLoc(), RankedTensorType::get(newShape, elemType), reshape,
+          newConcatDim));
     }
 
     auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
@@ -18467,6 +18464,60 @@ struct ConcatReshapeToReshapeConcatReshape
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       concatOp.getResult());
     return success();
+  }
+};
+
+struct RecognizeInsertDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto insertionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getOperand().getType()),
+        cast<RankedTensorType>(op.getType()));
+    if (insertionDims.size() != 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<enzymexla::InsertDimOp>(
+        op, op.getType(), op.getOperand(), insertionDims[0]);
+    return success();
+  }
+};
+
+// TODO: Implement this
+struct LowerInsertDim : public OpRewritePattern<enzymexla::InsertDimOp> {
+  using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
+                                PatternRewriter &rewriter) const override {
+    return failure();
+  }
+};
+
+struct RecognizeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto deletionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getType()),
+        cast<RankedTensorType>(op.getOperand().getType()));
+    if (deletionDims.size() != 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<enzymexla::DropDimOp>(
+        op, op.getType(), op.getOperand(), deletionDims[0]);
+    return success();
+  }
+};
+
+// TODO: Implement this
+struct LowerDropDim : public OpRewritePattern<enzymexla::DropDimOp> {
+  using OpRewritePattern<enzymexla::DropDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::DropDimOp op,
+                                PatternRewriter &rewriter) const override {
+    return failure();
   }
 };
 
@@ -18831,11 +18882,13 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend>(context);
+      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend,
+                   RecognizeDropDim, RecognizeInsertDim>(context);
     }
 
     if (passses & (2048 * 512)) {
-      patterns.add<LowerRotate, LowerWrap, LowerExtend>(context);
+      patterns.add<LowerRotate, LowerWrap, LowerExtend, LowerDropDim,
+                   LowerInsertDim>(context);
     }
 
     if (passses & (2048 * 1024)) {
@@ -18844,7 +18897,7 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 2048)) {
       // push reshape down
-      patterns.add<ElementwiseReshape, ConcatReshapeToReshapeConcatReshape>(
+      patterns.add<ElementwiseReshape, ConcatReshapeToInsertDimConcatReshape>(
           context);
     }
 

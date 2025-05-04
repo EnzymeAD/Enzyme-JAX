@@ -414,7 +414,7 @@ def ApplyElementwiseReshapePatterns : EnzymeHLOPatternOp<
 
 def ApplyConcatReshapePatterns : EnzymeHLOPatternOp<
     "concat_reshape_to_reshape_concat_reshape"> {
-  let patterns = ["ConcatReshapeToReshapeConcatReshape"];
+  let patterns = ["ConcatReshapeToInsertDimConcatReshape"];
 }
 
 // benefit 65k + max_constant_expansion flag
@@ -1593,6 +1593,26 @@ def RecognizeExtend : EnzymeHLOPatternOp<
 def ExtendSplat : EnzymeHLOPatternOp<
   "extend_splat"> {
   let patterns = ["ExtendSplat"];
+}
+
+def RecognizeDropDim : EnzymeHLOPatternOp<
+    "recognize_dropdim"> {
+  let patterns = ["RecognizeDropDim"];
+}
+
+def LowerDropDim : EnzymeHLOPatternOp<
+    "lower_dropdim"> {
+  let patterns = ["LowerDropDim"];
+}
+
+def RecognizeInsertDim : EnzymeHLOPatternOp<
+    "recognize_insertdim"> {
+  let patterns = ["RecognizeInsertDim"];
+}
+
+def LowerInsertDim : EnzymeHLOPatternOp<
+    "lower_insertdim"> {
+  let patterns = ["LowerInsertDim"];
 }
 
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
