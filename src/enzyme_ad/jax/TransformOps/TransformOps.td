@@ -1805,3 +1805,13 @@ def ReshapeDropDim : EnzymeHLOPatternOp<
     "reshape_dropdim"> {
   let patterns = ["ReshapeDropDim"];
 }
+
+def DropDimInsertDim : EnzymeHLOPatternOp<
+    "dropdim_insertdim"> {
+  let patterns = ["DropDimInsertDim"];
+}
+
+def InsertDimDropDim : EnzymeHLOPatternOp<
+    "insertdim_dropdim"> {
+  let patterns = ["InsertDimDropDim"];
+}

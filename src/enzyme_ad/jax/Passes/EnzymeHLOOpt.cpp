@@ -18458,6 +18458,40 @@ struct ReshapeDropDim : public OpRewritePattern<stablehlo::ReshapeOp> {
   }
 };
 
+struct DropDimInsertDim : public OpRewritePattern<enzymexla::DropDimOp> {
+  using OpRewritePattern<enzymexla::DropDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::DropDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto insertDimOp = op.getOperand().getDefiningOp<enzymexla::InsertDimOp>();
+    if (!insertDimOp)
+      return failure();
+
+    if (insertDimOp.getDim() != op.getDim())
+      return failure();
+
+    rewriter.replaceAllOpUsesWith(op, insertDimOp.getOperand());
+    return success();
+  }
+};
+
+struct InsertDimDropDim : public OpRewritePattern<enzymexla::InsertDimOp> {
+  using OpRewritePattern<enzymexla::InsertDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::InsertDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dropDimOp = op.getOperand().getDefiningOp<enzymexla::DropDimOp>();
+    if (!dropDimOp)
+      return failure();
+
+    if (dropDimOp.getDim() != op.getDim())
+      return failure();
+
+    rewriter.replaceAllOpUsesWith(op, dropDimOp.getOperand());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
