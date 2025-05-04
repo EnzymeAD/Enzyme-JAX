@@ -3459,9 +3459,7 @@ struct GatherActivityInterface
     : public ActivityOpInterface::ExternalModel<GatherActivityInterface,
                                                 GatherOp> {
   bool isInactive(Operation *op) const { return false; }
-  bool isArgInactive(Operation *op, size_t i) const { 
-    return i != 0;
-  }
+  bool isArgInactive(Operation *op, size_t i) const { return i != 0; }
 };
 
 } // namespace
