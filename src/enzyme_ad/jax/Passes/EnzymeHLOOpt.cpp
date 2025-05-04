@@ -18120,6 +18120,138 @@ struct ConcatReshapeSlice
   }
 };
 
+struct ConcatInsertDimSlice
+    : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
+                                PatternRewriter &rewriter) const override {
+    auto concatDim = concatOp.getDimension();
+    auto ndims = cast<RankedTensorType>(concatOp.getType()).getRank();
+
+    // Ensure all operands are reshapes of slices
+    SmallVector<stablehlo::SliceOp> sliceOps;
+    Value sourceTensor;
+
+    for (auto operand : concatOp.getOperands()) {
+      auto insertDim = operand.getDefiningOp<enzymexla::InsertDimOp>();
+      if (!insertDim || (!insertDim->hasOneUse()))
+        return failure();
+
+      if (insertDim.getDim() != concatDim)
+        return failure();
+
+      auto slice = insertDim.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if ((!slice) || (!slice->hasOneUse()))
+        return failure();
+
+      // Make sure all slices come from the same source
+      if (!sourceTensor) {
+        sourceTensor = slice.getOperand();
+      } else if (sourceTensor != slice.getOperand()) {
+        return failure();
+      }
+
+      auto sliceStrides = slice.getStrides();
+      for (int64_t i = 0; i < sliceStrides.size(); i++) {
+        if (sliceStrides[i] != 1)
+          return failure();
+      }
+
+      sliceOps.push_back(slice);
+    }
+
+    SmallVector<int64_t> sliceStrides(ndims - 1, 1);
+    SmallVector<int64_t> sliceStarts, sliceLimits;
+    int64_t srcSliceDim = -1;
+
+    for (int i = 0; i < sliceOps.size(); i++) {
+      auto sliceOp = sliceOps[i];
+      auto sliceShape =
+          cast<RankedTensorType>(sliceOp.getResult().getType()).getShape();
+
+      int64_t singletonSliceDim = -1;
+      int64_t nSingletonSlices = 0;
+      for (int64_t i = 0; i < sliceShape.size(); i++) {
+        if (sliceShape[i] == 1) {
+          singletonSliceDim = i;
+          nSingletonSlices++;
+        }
+      }
+
+      if (nSingletonSlices != 1)
+        return failure();
+
+      if (srcSliceDim == -1) {
+        srcSliceDim = singletonSliceDim;
+        sliceStarts = llvm::to_vector(sliceOp.getStartIndices());
+        sliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
+      } else {
+        if (!canMergeSlicesAlongAxis(srcSliceDim, sliceOps[i - 1], sliceOp))
+          return failure();
+      }
+    }
+
+    int64_t startIndex = sliceOps[0].getStartIndices()[srcSliceDim];
+    int64_t limitIndex =
+        sliceOps[sliceOps.size() - 1].getLimitIndices()[srcSliceDim];
+    sliceStarts[srcSliceDim] = startIndex;
+    sliceLimits[srcSliceDim] = limitIndex;
+
+    auto newSlice = rewriter.create<stablehlo::SliceOp>(
+        concatOp.getLoc(), sourceTensor, sliceStarts, sliceLimits,
+        sliceStrides);
+
+    llvm::errs() << "new slice: " << newSlice << "\n";
+
+    SmallVector<int64_t> newShape;
+    SmallVector<int64_t> shape =
+        llvm::to_vector(cast<RankedTensorType>(newSlice.getType()).getShape());
+    for (int i = 0; i < ndims; i++) {
+      if (i == concatDim) {
+        newShape.push_back(1);
+      } else if (i < concatDim) {
+        newShape.push_back(shape[i]);
+      } else {
+        newShape.push_back(shape[i - 1]);
+      }
+    }
+
+    auto insertDim = rewriter.create<stablehlo::ReshapeOp>(
+        concatOp.getLoc(),
+        RankedTensorType::get(
+            newShape,
+            cast<RankedTensorType>(newSlice.getType()).getElementType()),
+        newSlice);
+
+    llvm::errs() << "reshaped: " << insertDim << "\n";
+
+    SmallVector<int64_t> mapping(ndims, 0);
+    for (int64_t i = 0; i < mapping.size(); i++) {
+      mapping[i] = i;
+    }
+    mapping[srcSliceDim] = concatDim;
+    if (srcSliceDim > concatDim) {
+      for (int64_t i = concatDim; i < srcSliceDim; i++) { // shift right
+        mapping[i]++;
+      }
+    } else {
+      for (int64_t i = srcSliceDim + 1; i <= concatDim; i++) { // shift left
+        mapping[i]--;
+      }
+    }
+
+    SmallVector<int64_t> permutation(ndims, 0);
+    for (int64_t i = 0; i < ndims; i++) {
+      permutation[mapping[i]] = i;
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+        concatOp, insertDim, permutation);
+    return success();
+  }
+};
+
 bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
                                 SmallVector<stablehlo::ReduceOp> &allOperands,
                                 SmallVector<Value> &reduceOpOperands) {
@@ -19146,6 +19278,7 @@ struct EnzymeHLOOptPass
         SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
+        ConcatInsertDimSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
         InsertDimBroadcastInDim,

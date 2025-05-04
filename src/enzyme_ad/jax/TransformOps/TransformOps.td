@@ -1645,6 +1645,11 @@ def ApplyDropDimReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["DropDimReshape"];
 }
 
+def ApplyConcatInsertDimSlicePatterns : EnzymeHLOPatternOp<
+    "concat_insertdim_slice"> {
+  let patterns = ["ConcatInsertDimSlice"];
+}
+
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "extend_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
