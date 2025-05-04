@@ -18383,6 +18383,93 @@ struct ElementwiseReshape : public OpTraitRewritePattern<OpTrait::Elementwise> {
   }
 };
 
+// concat(reshape....; dim = 1 || rank - 1) -> reshape(concat(1 dim adding
+// reshapes)) We have a lot more optimizations combining / removing 1 dim adding
+// reshapes
+struct ConcatReshapeToReshapeConcatReshape
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() <= 1)
+      return failure();
+
+    auto concatDim = op.getDimension();
+    bool concatFirst = concatDim == 0;
+    bool concatLast =
+        concatDim == cast<RankedTensorType>(op.getType()).getRank() - 1;
+    if (!concatFirst && !concatLast)
+      return failure();
+
+    SmallVector<Value> reshapeOperands;
+    for (auto operand : op.getOperands()) {
+      if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
+        auto reshapeType = cast<RankedTensorType>(reshape.getType());
+        auto reshapeShape = reshapeType.getShape();
+        if (reshapeShape[concatDim] != 1)
+          return rewriter.notifyMatchFailure(op, "reshape has non-unit dim");
+
+        if (concatFirst) {
+          SmallVector<int64_t> oldShape = {1};
+          for (auto dim : cast<RankedTensorType>(reshape.getOperand().getType())
+                              .getShape())
+            oldShape.push_back(dim);
+          if (oldShape == llvm::to_vector(reshapeShape))
+            return rewriter.notifyMatchFailure(op,
+                                               "already singleton insertion");
+        } else {
+          SmallVector<int64_t> oldShape = llvm::to_vector(
+              cast<RankedTensorType>(reshape.getOperand().getType())
+                  .getShape());
+          oldShape.push_back(1);
+          if (oldShape == llvm::to_vector(reshapeShape))
+            return rewriter.notifyMatchFailure(op,
+                                               "already singleton insertion");
+        }
+
+        reshapeOperands.push_back(reshape.getOperand());
+      } else {
+        return rewriter.notifyMatchFailure(op, "not a reshape");
+      }
+    }
+
+    SmallVector<Value> newConcatOperands;
+    for (auto reshape : reshapeOperands) {
+      SmallVector<int64_t> newShape;
+      auto elemType =
+          cast<RankedTensorType>(reshape.getType()).getElementType();
+
+      if (concatFirst) {
+        newShape.push_back(1);
+        for (auto dim : cast<RankedTensorType>(reshape.getType()).getShape())
+          newShape.push_back(dim);
+      } else {
+        newShape = llvm::to_vector(
+            cast<RankedTensorType>(reshape.getType()).getShape());
+        newShape.push_back(1);
+      }
+
+      newConcatOperands.push_back(rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(), RankedTensorType::get(newShape, elemType), reshape));
+    }
+
+    int64_t newConcatDim;
+    if (concatFirst) {
+      newConcatDim = 0;
+    } else {
+      newConcatDim =
+          cast<RankedTensorType>(newConcatOperands[0].getType()).getRank() - 1;
+    }
+
+    auto concatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(newConcatOperands), newConcatDim);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      concatOp.getResult());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -18393,7 +18480,7 @@ namespace enzyme {
 }; // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
-   // clang-format on
+// clang-format on
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
@@ -18757,7 +18844,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 2048)) {
       // push reshape down
-      patterns.add<ElementwiseReshape>(context);
+      patterns.add<ElementwiseReshape, ConcatReshapeToReshapeConcatReshape>(
+          context);
     }
 
     if (all_finite)
