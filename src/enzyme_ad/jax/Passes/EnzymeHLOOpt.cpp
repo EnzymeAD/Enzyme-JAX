@@ -18342,6 +18342,56 @@ struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+struct ElementwiseReshapeLike
+    : public OpTraitRewritePattern<OpTrait::Elementwise> {
+  using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> parentOperands;
+    Operation *operandOp = nullptr;
+    for (auto operand : op->getOperands()) {
+      auto defOp = operand.getDefiningOp();
+      if (!defOp)
+        return failure();
+
+      // TODO: once insertdim/dropdim land, we add those here as well
+      if (!isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(defOp))
+        return failure();
+
+      if (!isOnlyUsedInOperation(defOp, op))
+        return rewriter.notifyMatchFailure(
+            op, "operand is used in more than one op");
+
+      if (!operandOp) {
+        operandOp = defOp;
+      } else {
+        if (!OperationEquivalence::isEquivalentTo(
+                operandOp, defOp, OperationEquivalence::ignoreValueEquivalence,
+                nullptr, OperationEquivalence::IgnoreLocations, nullptr)) {
+          return rewriter.notifyMatchFailure(
+              op, "operand operations are not equivalent");
+        }
+      }
+
+      parentOperands.push_back(defOp->getOperand(0));
+    }
+
+    if (parentOperands.size() == 0)
+      return failure();
+
+    auto elemOp = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(parentOperands),
+        TypeRange{parentOperands[0].getType()}, op->getAttrs(), {}, {});
+    auto reshapeLikeOp = rewriter.create(
+        op->getLoc(), operandOp->getName().getIdentifier(),
+        ValueRange{elemOp->getResult(0)}, TypeRange{op->getResult(0).getType()},
+        operandOp->getAttrs(), {}, {});
+    rewriter.replaceOp(op, reshapeLikeOp);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -18712,6 +18762,11 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 1024)) {
       patterns.add<ConcatToOneDimDUS>(context);
+    }
+
+    if (passses & (2048 * 2048)) {
+      // push reshapes down
+      patterns.add<ElementwiseReshapeLike>(context);
     }
 
     if (all_finite)
