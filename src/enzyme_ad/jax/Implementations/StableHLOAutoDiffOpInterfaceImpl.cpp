@@ -2253,6 +2253,42 @@ private:
     return mlir::isPure(op) && op->getNumRegions() == 0;
   }
 
+  static Graph reverseGraph(const Graph &Orig, const SetVector<Value> &sources,
+                            const SetVector<Value> &sinks) {
+    Graph inverted, revGraph;
+
+    // Compute the graph with inverted edges
+    for (auto &pair : Orig) {
+      for (auto N : pair.second) {
+        inverted[N].insert(pair.first);
+      }
+    }
+
+    SmallVector<Value> worklist(sinks.getArrayRef().begin(),
+                                sinks.getArrayRef().end());
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (sources.contains(todo))
+        continue;
+
+      Node N(todo);
+      auto pair = inverted.find(N);
+      for (auto NN : pair->second) {
+        assert(NN.type == Node::OP);
+
+        revGraph[NN].insert(N);
+
+        for (auto NNN : inverted.find(NN)->second) {
+          revGraph[NNN].insert(NN);
+          worklist.push_back(NNN.V);
+        }
+      }
+    }
+
+    return revGraph;
+  }
+
   // Given the full forward/backward compute graph, the push/pop can be seen as
   // a special cut of this graph. This function tries to modifies the boundary
   // of the push/pop to minimize the amount of memory that is live across
@@ -2449,14 +2485,7 @@ private:
 
     // The reverse graph is a sub graph of Orig with only pathes from Required
     // to "dominating" caches.
-    Graph revGraph;
-    for (Value req : Required) {
-      auto p = parent.find(Node(req));
-      while (p != parent.end()) {
-        revGraph[p->second].insert(p->first);
-        p = parent.find(p->second);
-      }
-    }
+    Graph revGraph = reverseGraph(Orig, newCaches, Required);
 
     LLVM_DEBUG(llvm::dbgs() << "revGraph:\n");
     LLVM_DEBUG(dump(revGraph));
@@ -2630,8 +2659,37 @@ private:
           continue;
         }
 
+        if (!llvm::all_of(N.O->getOperands(), [&mapping](Value operand) {
+              return mapping.contains(operand);
+            })) {
+          continue;
+        }
+
         OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointAfterValue(mapping.lookup(todo));
+
+        Value lastVal = mapping.lookup(todo);
+        Operation *lastValOp = lastVal.getDefiningOp();
+
+        for (Value operand : N.O->getOperands()) {
+          Value mapped = mapping.lookup(operand);
+          Operation *mappedOp = mapped.getDefiningOp();
+          if (!mappedOp)
+            continue;
+
+          if (!lastValOp) {
+            lastValOp = mappedOp;
+            lastVal = mapped;
+            continue;
+          }
+
+          if (lastValOp->isBeforeInBlock(mappedOp)) {
+            lastValOp = mappedOp;
+            lastVal = mapped;
+            continue;
+          }
+        }
+
+        rewriter.setInsertionPointAfterValue(lastVal);
         Operation *newO = rewriter.clone(*N.O, mapping);
 
         for (auto [oldRes, newRes] :
