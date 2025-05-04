@@ -2781,6 +2781,66 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
+struct TransposeAllUsersSlice final
+    : public OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<stablehlo::SliceOp> sliceOps;
+    for (auto user : op->getUsers()) {
+      auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
+      if (!sliceOp)
+        return failure();
+
+      // only propagate down if we know a different optimization will clean this
+      // up
+      for (auto downstreamUser : sliceOp->getUsers()) {
+        if (!isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
+                 stablehlo::DotGeneralOp>(downstreamUser))
+          return failure();
+      }
+
+      sliceOps.push_back(sliceOp);
+    }
+
+    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+
+    SmallVector<int64_t> originalStartIndices =
+        llvm::to_vector(sliceOps[0].getStartIndices());
+    SmallVector<int64_t> originalLimitIndices =
+        llvm::to_vector(sliceOps[0].getLimitIndices());
+    SmallVector<int64_t> originalStrides =
+        llvm::to_vector(sliceOps[0].getStrides());
+
+    SmallVector<int64_t> newStartIndices;
+    SmallVector<int64_t> newLimitIndices;
+    SmallVector<int64_t> newStrides;
+
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      size_t permIndex = permutation[i];
+      newStartIndices.push_back(originalStartIndices[permIndex]);
+      newLimitIndices.push_back(originalLimitIndices[permIndex]);
+      newStrides.push_back(originalStrides[permIndex]);
+    }
+
+    for (int64_t i = 0; i < sliceOps.size(); ++i) {
+      auto origSlice = sliceOps[i];
+
+      auto newSlice = rewriter.create<stablehlo::SliceOp>(
+          origSlice.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(newStartIndices),
+          rewriter.getDenseI64ArrayAttr(newLimitIndices),
+          rewriter.getDenseI64ArrayAttr(newStrides));
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(origSlice, newSlice,
+                                                          permutation);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -18831,7 +18891,8 @@ struct EnzymeHLOOptPass
         DivideDivideSimplify,
         ConcatReshapeSlice,
         ConcatReshapeReduce,
-        ConcatElementwise
+        ConcatElementwise,
+        TransposeAllUsersSlice
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
