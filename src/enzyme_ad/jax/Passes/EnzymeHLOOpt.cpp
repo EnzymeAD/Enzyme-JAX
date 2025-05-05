@@ -15589,6 +15589,9 @@ struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
 static SmallVector<int64_t>
 findReshapeInsertionDims(RankedTensorType inputType,
                          RankedTensorType outputType) {
+  if (inputType.getRank() >= outputType.getRank())
+    return {}; // trivial no insertion case
+
   SmallVector<int64_t> insertionDims;
   size_t inputDimIndex = 0;
 
@@ -15606,6 +15609,11 @@ findReshapeInsertionDims(RankedTensorType inputType,
       return {};
     }
   }
+
+  // If we haven't seen all of the input dimensions, we don't have a valid
+  // insertion point.
+  if (inputDimIndex != inputType.getRank())
+    return {};
 
   return insertionDims;
 }
@@ -18486,10 +18494,10 @@ struct ElementwiseReshapeLike
 
     auto elemOp = rewriter.create(
         op->getLoc(), op->getName().getIdentifier(), ValueRange(parentOperands),
-        TypeRange{
-          RankedTensorType::get(
+        TypeRange{RankedTensorType::get(
             cast<RankedTensorType>(parentOperands[0].getType()).getShape(),
-            cast<RankedTensorType>(op->getResult(0).getType()).getElementType())},
+            cast<RankedTensorType>(op->getResult(0).getType())
+                .getElementType())},
         op->getAttrs(), {}, {});
     auto reshapeLikeOp = rewriter.create(
         op->getLoc(), operandOp->getName().getIdentifier(),
