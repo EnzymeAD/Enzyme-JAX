@@ -25,3 +25,15 @@ func.func @main2(%arg0: tensor<3x2xf32>, %arg1: tensor<3x2xf32>) -> tensor<3x1x4
 // CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [0, 3] : (tensor<3x2xf32>) -> tensor<3x1x4x2xf32>
 // CHECK-NEXT:     return %1 : tensor<3x1x4x2xf32>
 // CHECK-NEXT: }
+
+func.func @main3(%arg0: tensor<3x2xf32>) -> tensor<3x1x2xf64> {
+    %0 = stablehlo.reshape %arg0 : (tensor<3x2xf32>) -> tensor<3x1x2xf32>
+    %1 = stablehlo.convert %0 : (tensor<3x1x2xf32>) -> tensor<3x1x2xf64>
+    return %1 : tensor<3x1x2xf64>
+}
+
+// CHECK: func.func @main3(%arg0: tensor<3x2xf32>) -> tensor<3x1x2xf64> {
+// CHECK-NEXT:     %0 = stablehlo.convert %arg0 : (tensor<3x2xf32>) -> tensor<3x2xf64>
+// CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<3x2xf64>) -> tensor<3x1x2xf64>
+// CHECK-NEXT:     return %1 : tensor<3x1x2xf64>
+// CHECK-NEXT: }
