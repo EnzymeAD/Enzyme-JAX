@@ -18497,6 +18497,51 @@ struct ElementwiseReshapeLike
   }
 };
 
+struct ConcatTranspose final : OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() < 2)
+      return failure();
+
+    SmallVector<Value> parentOperands;
+    stablehlo::TransposeOp transposeOp;
+    for (auto operand : op.getOperands()) {
+      auto defOp = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (!defOp)
+        return failure();
+
+      if (!isOnlyUsedInOperation(defOp, op))
+        return rewriter.notifyMatchFailure(
+            op, "operand is used in more than one op");
+
+      if (!transposeOp) {
+        transposeOp = defOp;
+      } else {
+        if (!OperationEquivalence::isEquivalentTo(
+                transposeOp, defOp,
+                OperationEquivalence::ignoreValueEquivalence, nullptr,
+                OperationEquivalence::IgnoreLocations, nullptr)) {
+          return rewriter.notifyMatchFailure(
+              op, "operand operations are not equivalent");
+        }
+      }
+
+      parentOperands.push_back(defOp->getOperand(0));
+    }
+
+    auto permutation = transposeOp.getPermutation();
+    auto newConcatDim = permutation[op.getDimension()];
+
+    auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), parentOperands, newConcatDim);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, newConcat,
+                                                        permutation);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
