@@ -18460,7 +18460,6 @@ struct ElementwiseReshapeLike
       if (!defOp)
         return failure();
 
-      // TODO: once insertdim/dropdim land, we add those here as well
       if (!isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(defOp))
         return failure();
 
@@ -18487,7 +18486,11 @@ struct ElementwiseReshapeLike
 
     auto elemOp = rewriter.create(
         op->getLoc(), op->getName().getIdentifier(), ValueRange(parentOperands),
-        TypeRange{parentOperands[0].getType()}, op->getAttrs(), {}, {});
+        TypeRange{
+          RankedTensorType::get(
+            cast<RankedTensorType>(parentOperands[0].getType()).getShape(),
+            cast<RankedTensorType>(op->getResult(0).getType()).getElementType())},
+        op->getAttrs(), {}, {});
     auto reshapeLikeOp = rewriter.create(
         op->getLoc(), operandOp->getName().getIdentifier(),
         ValueRange{elemOp->getResult(0)}, TypeRange{op->getResult(0).getType()},
