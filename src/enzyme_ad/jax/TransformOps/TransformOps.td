@@ -1229,6 +1229,12 @@ def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReshapeToBroadcast"];
 }
 
+def ReshapeTransposeToBroadcastPatterns : EnzymeHLOPatternOp<
+  "reshape_transpose_to_broadcast"
+> {
+  let patterns = ["ReshapeTransposeToBroadcast"];
+}
+
 def TransposeConcatPatterns : EnzymeHLOPatternOp<
   "transpose_concat"
 > {
