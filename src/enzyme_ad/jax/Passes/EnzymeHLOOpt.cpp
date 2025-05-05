@@ -15659,6 +15659,51 @@ struct TransposeReshapeToBroadcast final
   }
 };
 
+struct ReshapeTransposeToBroadcast final
+    : OpRewritePattern<stablehlo::ReshapeOp> {
+  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    RankedTensorType reshapeOpInputType = op.getOperand().getType();
+    RankedTensorType reshapeOpOutputType = op.getResult().getType();
+
+    SmallVector<int64_t> insertionDims =
+        findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
+
+    if (insertionDims.size() != 1) // TODO: support more than one deletion dim
+      return failure();
+
+    int64_t insertionDim = insertionDims[0];
+    auto permutation = transposeOp.getPermutation();
+
+    SmallVector<int64_t> broadcastDimensions;
+    for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
+      auto it = llvm::find(permutation, i);
+      if (it == permutation.end())
+        return failure(); // The index was not found in the permutation
+      int64_t dim = std::distance(permutation.begin(), it);
+
+      if (dim >= insertionDim)
+        broadcastDimensions.push_back(dim + 1);
+      else
+        broadcastDimensions.push_back(dim);
+    }
+
+    // Create a single broadcast_in_dim operation to replace the reshape +
+    // transpose sequence.
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getResult().getType(), transposeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(broadcastDimensions));
+
+    return success();
+  }
+};
+
 struct BroadcastInDimIsReshape final
     : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
   using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
@@ -18653,8 +18698,8 @@ struct EnzymeHLOOptPass
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
              SimplifyBoundary<enzymexla::ExtendOp>,
              SimplifyBoundary<enzymexla::WrapOp>,
-             SimplifyBoundary<enzymexla::RotateOp>,
-             TransposeReshapeToBroadcast>(context, PatternBenefit(65000));
+             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+             ReshapeTransposeToBroadcast>(context, PatternBenefit(65000));
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp>(
         max_constant_expansion, context, PatternBenefit(65000));
 
