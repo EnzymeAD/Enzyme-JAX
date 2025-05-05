@@ -18452,6 +18452,47 @@ struct ElementwiseReshapeLike
   }
 };
 
+struct ConcatReshape : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() < 2)
+      return failure();
+
+    // Only valid for dim = 0 concatenation
+    if (op.getDimension() != 0)
+      return failure();
+
+    SmallVector<Value> operands;
+    stablehlo::ReshapeOp reshapeOp = nullptr;
+    for (auto operand : op.getOperands()) {
+      auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshape)
+        return failure();
+
+      if (!reshapeOp) {
+        reshapeOp = reshape;
+      } else {
+        if (!OperationEquivalence::isEquivalentTo(
+                reshapeOp, reshape,
+                OperationEquivalence::ignoreValueEquivalence, nullptr,
+                OperationEquivalence::IgnoreLocations, nullptr)) {
+          return failure();
+        }
+      }
+
+      operands.push_back(reshape.getOperand());
+    }
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(operands), rewriter.getI64IntegerAttr(0));
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newConcatOp);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off

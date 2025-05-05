@@ -1775,3 +1775,8 @@ def TransposeAllUsersSlice : EnzymeHLOPatternOp<
     "transpose_all_users_slice"> {
   let patterns = ["TransposeAllUsersSlice"];
 }
+
+def ConcatReshape : EnzymeHLOPatternOp<
+    "concat_reshape"> {
+  let patterns = ["ConcatReshape"];
+}
