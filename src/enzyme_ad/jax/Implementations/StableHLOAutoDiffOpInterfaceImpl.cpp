@@ -458,6 +458,230 @@ public:
 class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
+
+  enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, UNKNOWN };
+  struct ReverseModeInfo {
+    enum ReverseMode mode;
+    int64_t numIters;
+  };
+
+  static struct ReverseModeInfo getReverseMode(Operation *orig) {
+    struct ReverseModeInfo revInfo{.mode = UNKNOWN, .numIters = 0};
+    WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
+
+    if (info.computeInfo().succeeded() && info.isValid() && info.isConstant()) {
+      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+      auto enableCheckpointing =
+          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+      if (enableCheckpointing && enableCheckpointing.getValue())
+        revInfo.mode = CONSTANT_CHECKPOINTING;
+      else
+        revInfo.mode = CONSTANT;
+
+      revInfo.numIters = info.getConstantNumIters();
+    }
+
+    return revInfo;
+  }
+
+  static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
+                                        int64_t start, int64_t limit,
+                                        int64_t step, ValueRange operands) {
+    OpBuilder::InsertionGuard guard(builder);
+
+    SmallVector<Value> operandsWithInduction{
+        makeI64Constant(loc, builder, start)};
+    operandsWithInduction.append(operands.begin(), operands.end());
+
+    auto types = ValueRange(operandsWithInduction).getTypes();
+    auto whileOp =
+        builder.create<stablehlo::WhileOp>(loc, types, operandsWithInduction);
+
+    SmallVector<Location> locs{loc};
+    locs.reserve(operands.size() + 1);
+    for (Value val : operands)
+      locs.push_back(val.getLoc());
+
+    Block *cond = builder.createBlock(&whileOp.getCond(), {}, types, locs);
+    Value cmp = builder.create<stablehlo::CompareOp>(
+        loc, cond->getArgument(0), makeI64Constant(loc, builder, limit),
+        ComparisonDirection::LT);
+    builder.create<stablehlo::ReturnOp>(loc, cmp);
+
+    Block *body = builder.createBlock(&whileOp.getBody(), {}, types, locs);
+    Value newVal = builder.create<stablehlo::AddOp>(
+        loc, body->getArgument(0), makeI64Constant(loc, builder, step));
+    operandsWithInduction.assign(body->getArguments().begin(),
+                                 body->getArguments().end());
+    operandsWithInduction[0] = newVal;
+    builder.create<stablehlo::ReturnOp>(loc, operandsWithInduction);
+
+    return whileOp;
+  }
+
+  // Create a function from the body a the loop
+  // The function returns the same number of results as the loop but takes more
+  // argument for values defined outside.
+  static func::FuncOp outlineFunction(stablehlo::WhileOp op,
+                                      SetVector<Value> &outsideRefs) {
+    Region *reg = op->getParentRegion();
+    op->walk([&](Operation *child) {
+      if (child == op)
+        return;
+
+      for (Value operand : child->getOperands()) {
+        if (!reg->isProperAncestor(operand.getParentRegion())) {
+          outsideRefs.insert(operand);
+        }
+      }
+    });
+
+    SymbolTable symbolTable = SymbolTable::getNearestSymbolTable(op);
+
+    IRMapping mapping;
+
+    Block *funcBody = new Block();
+    for (Value arg : op.getOperands())
+      mapping.map(arg, funcBody->addArgument(arg.getType(), arg.getLoc()));
+
+    for (Value ref : outsideRefs)
+      mapping.map(ref, funcBody->addArgument(ref.getType(), ref.getLoc()));
+
+    FunctionType funcType = FunctionType::get(
+        op.getContext(), funcBody->getArgumentTypes(), op.getResultTypes());
+    func::FuncOp func =
+        func::FuncOp::create(op.getLoc(), "while_checkpoint", funcType);
+
+    func.getBody().push_back(funcBody);
+    func.setPrivate();
+
+    OpBuilder builder(funcBody, funcBody->end());
+    Block *body = &op.getBody().front();
+
+    for (auto &innerOp : body->without_terminator()) {
+      auto newOp = builder.clone(innerOp, mapping);
+      for (auto [oldRes, newRes] :
+           llvm::zip_equal(innerOp.getResults(), newOp->getResults()))
+        mapping.map(oldRes, newRes);
+    }
+
+    Operation *terminator = body->getTerminator();
+    SmallVector<Value> returns;
+    for (auto ret : terminator->getOperands())
+      returns.push_back(mapping.lookup(ret));
+    builder.create<func::ReturnOp>(terminator->getLoc(), returns);
+
+    symbolTable.insert(func);
+
+    return func;
+  }
+
+  static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
+                                                int64_t numIters,
+                                                OpBuilder &builder,
+                                                MGradientUtilsReverse *gutils,
+                                                SmallVector<Value> caches,
+                                                ArrayRef<bool> operandsActive) {
+    int64_t nInner = std::sqrt(numIters);
+    int64_t nOuter = nInner;
+    assert(nInner * nOuter == numIters);
+
+    auto outer = gutils->getNewFromOriginal(orig);
+
+    func::FuncOp func;
+
+    SymbolTable symTable = SymbolTable::getNearestSymbolTable(orig);
+    outer->walk([&](func::CallOp call) {
+      func = cast<func::FuncOp>(symTable.lookup(call.getCallee()));
+      return WalkResult::interrupt();
+    });
+
+    SmallVector<Value> operands;
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    OpBuilder::InsertionGuard guard(builder);
+    stablehlo::WhileOp revOuter =
+        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
+
+    Block *revOuterBody = &revOuter.getBody().front();
+    builder.setInsertionPointToStart(revOuterBody);
+
+    SmallVector<Value> cacheVals;
+    for (auto cache : caches)
+      cacheVals.push_back(gutils->popCache(cache, builder));
+
+    operands.assign(revOuterBody->getArguments().slice(1).begin(),
+                    revOuterBody->getArguments().slice(1).end());
+
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
+    Block *revInnerBody = &revInner.getBody().front();
+
+    IRMapping mapping;
+
+    builder.setInsertionPointToStart(revInnerBody);
+
+    auto rematLoop =
+        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, cacheVals);
+    Block *rematLoopCond = &rematLoop.getCond().front();
+    Operation *rematLoopCmp = rematLoopCond->front().getNextNode();
+    rematLoopCmp->setOperands(1, 1, revInnerBody->getArgument(0));
+
+    Block *rematLoopBody = &rematLoop.getBody().front();
+
+    cacheVals.assign(
+        rematLoop->getResults()
+            .slice(1, rematLoop->getNumResults() - 1)
+            .begin(),
+        rematLoop->getResults().slice(1, rematLoop->getNumResults() - 1).end());
+
+    builder.setInsertionPointToStart(rematLoopBody);
+
+    auto call = builder.create<func::CallOp>(orig.getLoc(), func, cacheVals);
+    Operation *term = rematLoopBody->getTerminator();
+    term->setOperands(1, term->getNumOperands() - 1,
+                      call.getResults().slice(1, call.getNumResults() - 1));
+
+    builder.setInsertionPointAfter(rematLoop);
+
+    // Create autodiff call
+    DerivativeMode mode = DerivativeMode::ReverseModeGradient;
+
+    std::vector<DIFFE_TYPE> RetActivity, ArgActivity;
+    for (auto act : operandsActive) {
+      if (act) {
+        RetActivity.push_back(DIFFE_TYPE::OUT_DIFF);
+        ArgActivity.push_back(DIFFE_TYPE::OUT_DIFF);
+      } else {
+        RetActivity.push_back(DIFFE_TYPE::CONSTANT);
+        ArgActivity.push_back(DIFFE_TYPE::CONSTANT);
+      }
+    }
+
+    std::vector<bool> volatile_args, returnShadow, returnPrimal;
+
+    auto type_args = gutils->TA.getAnalyzedTypeInfo(func);
+    bool freeMemory = true;
+    size_t width = gutils->width;
+
+    revOuter->getParentOfType<ModuleOp>()->dump();
+
+    auto revFn = gutils->Logic.CreateReverseDiff(
+        func, RetActivity, ArgActivity, gutils->TA, returnPrimal, returnShadow,
+        mode, freeMemory, width, /*addedType*/ nullptr, type_args,
+        volatile_args, /*augmented*/ nullptr, gutils->omp, gutils->postpasses,
+        gutils->verifyPostPasses);
+
+    // builder.create<func::CallOp>();
+
+    return failure();
+  }
+
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
@@ -473,19 +697,20 @@ public:
                           !gutils->isConstantValue(orig->getResult(i));
     }
 
+    auto revInfo = getReverseMode(orig);
+
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
     Value numIters;
-    if (caches.empty()) {
-      WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
-      bool res = info.computeInfo().succeeded();
-      assert(res && info.isValid() && info.isConstant());
-      (void)res;
-
+    if (revInfo.mode == CONSTANT_CHECKPOINTING) {
+      return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig),
+                                      revInfo.numIters, builder, gutils, caches,
+                                      operandsActive);
+    } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
       numIters = builder.create<stablehlo::ConstantOp>(
           orig->getLoc(), iterType,
-          cast<ElementsAttr>(makeAttr(iterType, info.getConstantNumIters())));
+          cast<ElementsAttr>(makeAttr(iterType, revInfo.numIters)));
     } else
       numIters = gutils->popCache(caches[0], builder);
 
@@ -653,8 +878,110 @@ public:
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
-      if (info.isValid() && info.isConstant())
+      if (info.isValid() && info.isConstant()) {
+
+        // for any value that is a reference from the outside we can hoist the
+        // push/pop from outside the outer really.
+
+        if (getReverseMode(orig).mode == CONSTANT_CHECKPOINTING) {
+          OpBuilder builder(newWhile);
+
+          SetVector<Value> outsideRefs;
+          auto func = outlineFunction(newWhile, outsideRefs);
+
+          SmallVector<Value> caches;
+
+          // sqrt scheme
+          int64_t nInner = std::sqrt(info.getConstantNumIters());
+          int64_t nOuter = nInner;
+
+          assert(nInner * nOuter == info.getConstantNumIters());
+          auto outer = makeForLoop(
+              builder, orig->getLoc(), 0, nOuter, 1,
+              newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
+
+          Block *outerBody = &outer.getBody().front();
+          builder.setInsertionPointToStart(outerBody);
+
+          Value outerIV = builder.create<stablehlo::MulOp>(
+              newWhile.getLoc(), outerBody->getArgument(0),
+              makeI64Constant(newWhile.getLoc(), builder, nOuter));
+
+          for (auto arg : outerBody->getArguments().slice(1)) {
+            caches.push_back(gutils->initAndPushCache(arg, builder));
+          }
+
+          builder.setInsertionPoint(outer);
+
+          for (auto ref : outsideRefs) {
+            caches.push_back(gutils->initAndPushCache(ref, builder));
+          }
+
+          builder.setInsertionPointToStart(outerBody);
+
+          SmallVector<Value> operands(
+              outerBody->getArguments().slice(1).begin(),
+              outerBody->getArguments().slice(1).end());
+          auto inner =
+              makeForLoop(builder, orig->getLoc(), 0, nInner, 1, operands);
+
+          outerBody->getTerminator()->setOperands(
+              1, inner.getNumResults() - 1,
+              inner.getResults().slice(1, inner.getNumResults() - 1));
+
+          Block *innerBody = &inner.getBody().front();
+          Block *oldInnerBody = &newWhile.getBody().front();
+          builder.setInsertionPointToStart(innerBody);
+
+          // IRMapping mapping;
+
+          // for (auto [oldArg, newArg] : llvm::zip_equal(
+          //          oldInnerBody->getArguments(), innerBody->getArguments()))
+          //          {
+          //   mapping.map(oldArg, newArg);
+          // }
+
+          Value oldIV = oldInnerBody->getArgument(0);
+          Value newIV = builder.create<stablehlo::AddOp>(
+              oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+
+          SmallVector<Value> callOperands{newIV};
+          callOperands.append(innerBody->getArguments().slice(1).begin(),
+                              innerBody->getArguments().slice(1).end());
+          callOperands.append(outsideRefs.begin(), outsideRefs.end());
+          auto call =
+              builder.create<func::CallOp>(orig->getLoc(), func, callOperands);
+
+          Operation *term = innerBody->getTerminator();
+          term->setOperands(1, call.getNumResults() - 1, call.getResults());
+
+          //  mapping.map(oldIV, newIV);
+
+          //  for (Operation &innerOp : oldInnerBody->without_terminator()) {
+          //    auto newOp = builder.clone(innerOp, mapping);
+          //    for (auto [oldRes, newRes] :
+          //         llvm::zip_equal(innerOp.getResults(), newOp->getResults()))
+          //         {
+          //      mapping.map(oldRes, newRes);
+          //    }
+          //  }
+
+          builder.setInsertionPointAfter(outer);
+          SmallVector<Value> newResults{makeI64Constant(
+              oldIV.getLoc(), builder, *info.getConstantLimit())};
+          newResults.append(
+              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
+              outer->getResults().slice(1, outer->getNumResults() - 1).end());
+
+          gutils->replaceOrigOpWith(orig, newResults);
+          gutils->erase(newWhile);
+          gutils->originalToNewFnOps[orig] = outer;
+
+          return caches;
+        }
+
         return {};
+      }
 
       numIters = info.getNumIters(revBuilder);
     }
@@ -2176,9 +2503,9 @@ private:
       OP,
     } type;
 
-    Node(Operation *O) : O(O), type(OP){};
-    Node(Value V) : V(V), type(VAL){};
-    Node() : type(NONE){};
+    Node(Operation *O) : O(O), type(OP) {};
+    Node(Value V) : V(V), type(VAL) {};
+    Node() : type(NONE) {};
 
     bool operator<(const Node N) const {
       if (type != N.type)
@@ -2527,33 +2854,8 @@ private:
     };
 
     for (Value newCache : newCacheVec) {
-      SetVector<Value> candidates;
-
       worklist.clear();
       worklist.push_back(newCache);
-
-      while (!worklist.empty()) {
-        Value candidate = worklist.pop_back_val();
-
-        auto C = revGraph.find(Node(candidate));
-        if (C == revGraph.end())
-          continue;
-
-        if (C->second.size() > 1)
-          continue;
-
-        if (candidate.getParentBlock() == reverse)
-          continue; // TODO: support this
-
-        candidates.insert(candidate);
-        for (auto &N : C->second) {
-          // not eligible
-          if (N.O->getNumResults() > 1)
-            continue;
-
-          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
-        }
-      }
 
       auto computeSizeOfType = [](Value val) -> int64_t {
         auto T = cast<RankedTensorType>(val.getType());
@@ -2568,7 +2870,20 @@ private:
       Value picked = newCache;
       int64_t curSize = computeSizeOfType(picked),
               curRank = cast<RankedTensorType>(picked.getType()).getRank();
-      for (Value candidate : candidates) {
+
+      while (!worklist.empty()) {
+        Value candidate = worklist.pop_back_val();
+
+        auto C = revGraph.find(Node(candidate));
+        if (C == revGraph.end())
+          continue;
+
+        if (C->second.size() > 1)
+          continue;
+
+        if (candidate.getParentBlock() == reverse)
+          continue; // TODO: support this
+
         int64_t newSize = computeSizeOfType(candidate),
                 newRank = cast<RankedTensorType>(candidate.getType()).getRank();
         if (newSize < curSize || (newSize == curSize && newRank < curRank) ||
@@ -2576,6 +2891,14 @@ private:
           curSize = newSize;
           curRank = newRank;
           picked = candidate;
+        }
+
+        for (auto &N : C->second) {
+          // not eligible
+          if (N.O->getNumResults() > 1)
+            continue;
+
+          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
         }
       }
 
@@ -2876,27 +3199,6 @@ public:
       if (!inductionVariable) {
         return rewriter.notifyMatchFailure(
             op, "WhileOp does not have induction variable for cache removal");
-
-        // TODO: support adding an induction variable if not present
-
-        // Value zero = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
-        //                                                rewriter.getIndexAttr(0));
-        // newOperands.push_back(zero);
-
-        // inductionVariable = body->addArgument(zero.getType(),
-        // whileOp->getLoc());
-        //  cond->addArgument(zero.getType(), whileOp->getLoc());
-        // {
-        //   OpBuilder::InsertionGuard guard(rewriter);
-        //   rewriter.setInsertionPoint(term);
-
-        //   auto one = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
-        //                                                rewriter.getIndexAttr(1));
-        //   auto newInductionVar = rewriter.create<arith::AddIOp>(
-        //       whileOp->getLoc(), inductionVariable, one);
-        //   term->insertOperands(term->getNumOperands(),
-        //                        ValueRange(newInductionVar));
-        // }
       }
 
       auto newType =
@@ -2964,8 +3266,8 @@ public:
     }
 
     // 4. On the other while op (the one containing the pops), we add an
-    // induction variable and replace pops with slice from the tensor version of
-    // the cache.
+    // induction variable and replace pops with slice from the tensor version
+    // of the cache.
     if (inductionVariable && caches.size() != 0) {
       if (isa<BlockArgument>(inductionVariable) &&
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
