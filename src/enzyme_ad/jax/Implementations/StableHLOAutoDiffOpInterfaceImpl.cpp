@@ -671,9 +671,17 @@ class AutoDiffWhileRev
         orig.getLoc(),
         builder.create<stablehlo::MulOp>(
             orig.getLoc(), revOuterBody->getArgument(0),
-            makeI64Constant(orig.getLoc(), builder,
-                            revInfo.info.getConstantStep().value())),
+            makeI64Constant(orig.getLoc(), builder, nInner)),
         revInnerBody->getArgument(0));
+    Value currentIV = builder.create<stablehlo::AddOp>(
+        orig.getLoc(),
+        makeI64Constant(orig.getLoc(), builder,
+                        revInfo.info.getConstantStart().value()),
+        builder.create<stablehlo::MulOp>(
+            orig.getLoc(),
+            makeI64Constant(orig.getLoc(), builder,
+                            revInfo.info.getConstantStep().value()),
+            currentStep));
 
     auto rematLoop = makeForLoop(
         builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, 0),
@@ -687,7 +695,23 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(rematLoopBody);
 
-    SmallVector<Value> callOperands{currentStep};
+    Value rematStep = builder.create<stablehlo::AddOp>(
+        orig.getLoc(),
+        builder.create<stablehlo::MulOp>(
+            orig.getLoc(), revOuterBody->getArgument(0),
+            makeI64Constant(orig.getLoc(), builder, nInner)),
+        rematLoopBody->getArgument(0));
+    Value rematIV = builder.create<stablehlo::AddOp>(
+        orig.getLoc(),
+        makeI64Constant(orig.getLoc(), builder,
+                        revInfo.info.getConstantStart().value()),
+        builder.create<stablehlo::MulOp>(
+            orig.getLoc(),
+            makeI64Constant(orig.getLoc(), builder,
+                            revInfo.info.getConstantStep().value()),
+            currentStep));
+
+    SmallVector<Value> callOperands{rematIV};
     callOperands.append(cacheVals.begin(), cacheVals.end());
     auto call = builder.create<func::CallOp>(orig.getLoc(), func, callOperands);
     Operation *term = rematLoopBody->getTerminator();
@@ -709,7 +733,7 @@ class AutoDiffWhileRev
     for (int i = 0; i < nrets; ++i) {
       bool act = operandsActive[i];
 
-      Value arg = i == 0 ? revInnerBody->getArgument(0) : cacheVals[i - 1];
+      Value arg = i == 0 ? currentIV : cacheVals[i - 1];
       revArgs.push_back(arg);
 
       if (act) {
