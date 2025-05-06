@@ -461,15 +461,17 @@ class AutoDiffWhileRev
 
   enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, UNKNOWN };
   struct ReverseModeInfo {
-    enum ReverseMode mode;
-    int64_t numIters;
+    enum ReverseMode mode = UNKNOWN;
+    WhileLoopInfo info;
+
+    ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
 
   static struct ReverseModeInfo getReverseMode(Operation *orig) {
-    struct ReverseModeInfo revInfo{.mode = UNKNOWN, .numIters = 0};
-    WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
+    struct ReverseModeInfo revInfo(cast<stablehlo::WhileOp>(orig));
 
-    if (info.computeInfo().succeeded() && info.isValid() && info.isConstant()) {
+    if (revInfo.info.computeInfo().succeeded() && revInfo.info.isValid() &&
+        revInfo.info.isConstant()) {
       const char *checkpointAttrName = "enzymexla.enable_checkpointing";
       auto enableCheckpointing =
           orig->getAttrOfType<BoolAttr>(checkpointAttrName);
@@ -477,8 +479,6 @@ class AutoDiffWhileRev
         revInfo.mode = CONSTANT_CHECKPOINTING;
       else
         revInfo.mode = CONSTANT;
-
-      revInfo.numIters = info.getConstantNumIters();
     }
 
     return revInfo;
@@ -487,10 +487,17 @@ class AutoDiffWhileRev
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, int64_t limit,
                                         int64_t step, ValueRange operands) {
+    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
+                       makeI64Constant(loc, builder, limit),
+                       makeI64Constant(loc, builder, step), operands);
+  }
+
+  static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
+                                        Value start, Value limit, Value step,
+                                        ValueRange operands) {
     OpBuilder::InsertionGuard guard(builder);
 
-    SmallVector<Value> operandsWithInduction{
-        makeI64Constant(loc, builder, start)};
+    SmallVector<Value> operandsWithInduction{start};
     operandsWithInduction.append(operands.begin(), operands.end());
 
     auto types = ValueRange(operandsWithInduction).getTypes();
@@ -504,13 +511,12 @@ class AutoDiffWhileRev
 
     Block *cond = builder.createBlock(&whileOp.getCond(), {}, types, locs);
     Value cmp = builder.create<stablehlo::CompareOp>(
-        loc, cond->getArgument(0), makeI64Constant(loc, builder, limit),
-        ComparisonDirection::LT);
+        loc, cond->getArgument(0), limit, ComparisonDirection::LT);
     builder.create<stablehlo::ReturnOp>(loc, cmp);
 
     Block *body = builder.createBlock(&whileOp.getBody(), {}, types, locs);
-    Value newVal = builder.create<stablehlo::AddOp>(
-        loc, body->getArgument(0), makeI64Constant(loc, builder, step));
+    Value newVal =
+        builder.create<stablehlo::AddOp>(loc, body->getArgument(0), step);
     operandsWithInduction.assign(body->getArguments().begin(),
                                  body->getArguments().end());
     operandsWithInduction[0] = newVal;
@@ -582,11 +588,12 @@ class AutoDiffWhileRev
   }
 
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
-                                                int64_t numIters,
+                                                struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
                                                 MGradientUtilsReverse *gutils,
                                                 SmallVector<Value> caches,
                                                 ArrayRef<bool> operandsActive) {
+    int64_t numIters = revInfo.info.getConstantNumIters();
     int64_t nInner = std::sqrt(numIters);
     int64_t nOuter = nInner;
     assert(nInner * nOuter == numIters);
@@ -621,8 +628,9 @@ class AutoDiffWhileRev
     }
 
     OpBuilder::InsertionGuard guard(builder);
+
     stablehlo::WhileOp revOuter =
-        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
+        makeForLoop(builder, orig.getLoc(), nOuter - 1, -1, -1, operands);
 
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
@@ -646,7 +654,8 @@ class AutoDiffWhileRev
     operands.assign(revOuterBody->getArguments().slice(1).begin(),
                     revOuterBody->getArguments().slice(1).end());
 
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
+    auto revInner =
+        makeForLoop(builder, orig.getLoc(), nInner - 1, -1, -1, operands);
     Block *revInnerBody = &revInner.getBody().front();
 
     IRMapping mapping;
@@ -657,10 +666,19 @@ class AutoDiffWhileRev
     for (int i = 0; i < nrets - 1; i++) {
       carried.push_back(cacheVals[i]);
     }
-    auto rematLoop = makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, carried);
-    Block *rematLoopCond = &rematLoop.getCond().front();
-    Operation *rematLoopCmp = rematLoopCond->front().getNextNode();
-    rematLoopCmp->setOperands(1, 1, revInnerBody->getArgument(0));
+
+    Value currentStep = builder.create<stablehlo::AddOp>(
+        orig.getLoc(),
+        builder.create<stablehlo::MulOp>(
+            orig.getLoc(), revOuterBody->getArgument(0),
+            makeI64Constant(orig.getLoc(), builder,
+                            revInfo.info.getConstantStep().value())),
+        revInnerBody->getArgument(0));
+
+    auto rematLoop = makeForLoop(
+        builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, 0),
+        revInnerBody->getArgument(0),
+        makeI64Constant(orig.getLoc(), builder, 1), carried);
 
     Block *rematLoopBody = &rematLoop.getBody().front();
     for (int i = 1; i < nrets; ++i) {
@@ -669,7 +687,7 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(rematLoopBody);
 
-    SmallVector<Value> callOperands{rematLoopBody->getArgument(0)};
+    SmallVector<Value> callOperands{currentStep};
     callOperands.append(cacheVals.begin(), cacheVals.end());
     auto call = builder.create<func::CallOp>(orig.getLoc(), func, callOperands);
     Operation *term = rematLoopBody->getTerminator();
@@ -754,8 +772,6 @@ class AutoDiffWhileRev
       }
     }
 
-    revOuter->getParentOfType<ModuleOp>()->dump();
-
     return success();
   }
 
@@ -780,14 +796,14 @@ public:
     // of iterations is either known or cached from the augmented primal.
     Value numIters;
     if (revInfo.mode == CONSTANT_CHECKPOINTING) {
-      return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig),
-                                      revInfo.numIters, builder, gutils, caches,
-                                      operandsActive);
+      return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig), revInfo,
+                                      builder, gutils, caches, operandsActive);
     } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
       numIters = builder.create<stablehlo::ConstantOp>(
           orig->getLoc(), iterType,
-          cast<ElementsAttr>(makeAttr(iterType, revInfo.numIters)));
+          cast<ElementsAttr>(
+              makeAttr(iterType, revInfo.info.getConstantNumIters())));
     } else
       numIters = gutils->popCache(caches[0], builder);
 
