@@ -82,8 +82,14 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
 }
 
 int64_t WhileLoopInfo::getConstantNumIters() {
-  return (getConstantLimit().value() - getConstantStart().value()) /
-         getConstantStep().value();
+  int64_t start = getConstantStart().value(),
+          limit = getConstantLimit().value(), step = getConstantStep().value();
+
+  if (step > 0 && limit < start)
+    return 0;
+  if (step < 0 && limit > start)
+    return 0;
+  return (limit - start) / getConstantStep().value();
 }
 
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
