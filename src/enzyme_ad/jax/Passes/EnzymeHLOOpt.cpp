@@ -4802,9 +4802,23 @@ struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
 struct DynamicUpdateSliceConstProp final
     : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
   using OpRewritePattern::OpRewritePattern;
+  size_t max_constant_expansion;
+
+  DynamicUpdateSliceConstProp(size_t max_constant_expansion,
+                              MLIRContext *context, PatternBenefit benefit = 1,
+                              ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
                                 PatternRewriter &rewriter) const override {
+
+    size_t size = 1;
+    for (auto sz : op.getType().getShape())
+      size *= sz;
+    if (size >= max_constant_expansion)
+      return failure();
+
     auto startIndices = op.getStartIndices();
 
     bool legal = true;
@@ -4825,19 +4839,16 @@ struct DynamicUpdateSliceConstProp final
             m_Constant(&constants[operand.getOperandNumber() - 2]));
     }
 
-    if (!legal)
-      return failure();
-
-    if (operandConstant.isSplat() && updateConstant.isSplat() &&
-        ((isa<FloatType>(op.getType().getElementType()) &&
-          operandConstant.getSplatValue<llvm::APFloat>() ==
-              updateConstant.getSplatValue<llvm::APFloat>()) ||
-         (isa<IntegerType>(op.getType().getElementType()) &&
-          operandConstant.getSplatValue<llvm::APInt>() ==
-              updateConstant.getSplatValue<llvm::APInt>()))) {
+    if (operandConstant && updateConstant && operandConstant.isSplat() &&
+        updateConstant.isSplat() &&
+        operandConstant.getSplatValue<Attribute>() ==
+            updateConstant.getSplatValue<Attribute>()) {
       rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
       return success();
     }
+
+    if (!legal)
+      return failure();
 
     stablehlo::Tensor operandTen = mlir::stablehlo::constantOp(operandConstant);
     stablehlo::Tensor updateTen = mlir::stablehlo::constantOp(updateConstant);
@@ -18585,6 +18596,13 @@ void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
   patterns.insert<ConcatConstProp>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addDynamicUpdateSliceConstProp(
+    RewritePatternSet &patterns, int64_t maxConstantExpansion,
+    MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<DynamicUpdateSliceConstProp>(maxConstantExpansion, &context,
+                                               benefit);
+}
+
 void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
                                        bool hoistAll, MLIRContext &context,
                                        PatternBenefit benefit) {
@@ -18756,23 +18774,24 @@ struct EnzymeHLOOptPass
              SimplifyBoundary<enzymexla::WrapOp>,
              SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
              ReshapeTransposeToBroadcast>(context, PatternBenefit(65000));
-    patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp>(
-        max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, DynamicUpdateSliceConstProp,
-                 NotConstProp, IsFiniteConstProp, LogConstProp,
-                 LogPlusConstProp, ChloInfConstProp, GammaConstProp,
-                 AbsConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
-                 ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>, RotatePad>(context);
+    patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
+                 DynamicUpdateSliceConstProp>(max_constant_expansion, context,
+                                              PatternBenefit(65000));
+
+    patterns.add<
+        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
+        DotReshapeDot, NotConstProp, IsFiniteConstProp, LogConstProp,
+        LogPlusConstProp, ChloInfConstProp, GammaConstProp, AbsConstProp,
+        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
