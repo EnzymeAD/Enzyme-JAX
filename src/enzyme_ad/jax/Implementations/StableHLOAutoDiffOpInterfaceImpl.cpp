@@ -519,11 +519,8 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  // Create a function from the body a the loop
-  // The function returns the same number of results as the loop but takes more
-  // argument for values defined outside.
-  static func::FuncOp outlineFunction(stablehlo::WhileOp op,
-                                      SetVector<Value> &outsideRefs) {
+  static void computeOutsideRefs(stablehlo::WhileOp op,
+                                 SetVector<Value> &outsideRefs) {
     Region *reg = op->getParentRegion();
     op->walk([&](Operation *child) {
       if (child == op)
@@ -535,13 +532,22 @@ class AutoDiffWhileRev
         }
       }
     });
+  }
 
+  // Create a function from the body a the loop
+  // The function returns the same number of results as the loop but takes more
+  // argument for values defined outside.
+  static func::FuncOp outlineFunction(stablehlo::WhileOp op,
+                                      SetVector<Value> &outsideRefs) {
+    computeOutsideRefs(op, outsideRefs);
     SymbolTable symbolTable = SymbolTable::getNearestSymbolTable(op);
 
     IRMapping mapping;
 
     Block *funcBody = new Block();
-    for (Value arg : op.getOperands())
+    Block *body = &op.getBody().front();
+
+    for (Value arg : body->getArguments())
       mapping.map(arg, funcBody->addArgument(arg.getType(), arg.getLoc()));
 
     for (Value ref : outsideRefs)
@@ -556,7 +562,6 @@ class AutoDiffWhileRev
     func.setPrivate();
 
     OpBuilder builder(funcBody, funcBody->end());
-    Block *body = &op.getBody().front();
 
     for (auto &innerOp : body->without_terminator()) {
       auto newOp = builder.clone(innerOp, mapping);
@@ -591,10 +596,20 @@ class AutoDiffWhileRev
     func::FuncOp func;
 
     SymbolTable symTable = SymbolTable::getNearestSymbolTable(orig);
-    outer->walk([&](func::CallOp call) {
+    auto res = outer->walk([&](func::CallOp call) {
       func = cast<func::FuncOp>(symTable.lookup(call.getCallee()));
       return WalkResult::interrupt();
     });
+    assert(res.wasInterrupted());
+
+    SetVector<Value> outsideRefs;
+    computeOutsideRefs(orig, outsideRefs);
+
+    int nargs = func.getNumArguments();
+    int nrets = func.getNumResults();
+    int numOutsideRefs = nargs - nrets;
+
+    assert(outsideRefs.size() == numOutsideRefs);
 
     SmallVector<Value> operands;
     for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
@@ -612,9 +627,21 @@ class AutoDiffWhileRev
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
-    SmallVector<Value> cacheVals;
-    for (auto cache : caches)
-      cacheVals.push_back(gutils->popCache(cache, builder));
+    Value lastCache = nullptr;
+
+    SmallVector<Value> cacheVals(nargs - 1, nullptr);
+    for (int i = 0; i < nrets - 1; ++i)
+      lastCache = cacheVals[i] = gutils->popCache(caches[i], builder);
+
+    builder.setInsertionPoint(revOuter);
+
+    for (int i = nrets - 1; i < nargs - 1; ++i)
+      cacheVals[i] = gutils->popCache(caches[i], builder);
+
+    if (lastCache)
+      builder.setInsertionPointAfterValue(lastCache);
+    else
+      builder.setInsertionPointToStart(revOuterBody);
 
     operands.assign(revOuterBody->getArguments().slice(1).begin(),
                     revOuterBody->getArguments().slice(1).end());
@@ -626,34 +653,47 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(revInnerBody);
 
-    auto rematLoop =
-        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, cacheVals);
+    SmallVector<Value> carried;
+    for (int i = 0; i < nrets - 1; i++) {
+      carried.push_back(cacheVals[i]);
+    }
+    auto rematLoop = makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, carried);
     Block *rematLoopCond = &rematLoop.getCond().front();
     Operation *rematLoopCmp = rematLoopCond->front().getNextNode();
     rematLoopCmp->setOperands(1, 1, revInnerBody->getArgument(0));
 
     Block *rematLoopBody = &rematLoop.getBody().front();
-
-    cacheVals.assign(
-        rematLoop->getResults()
-            .slice(1, rematLoop->getNumResults() - 1)
-            .begin(),
-        rematLoop->getResults().slice(1, rematLoop->getNumResults() - 1).end());
+    for (int i = 1; i < nrets; ++i) {
+      cacheVals[i - 1] = rematLoopBody->getArgument(i);
+    }
 
     builder.setInsertionPointToStart(rematLoopBody);
 
-    auto call = builder.create<func::CallOp>(orig.getLoc(), func, cacheVals);
+    SmallVector<Value> callOperands{rematLoopBody->getArgument(0)};
+    callOperands.append(cacheVals.begin(), cacheVals.end());
+    auto call = builder.create<func::CallOp>(orig.getLoc(), func, callOperands);
     Operation *term = rematLoopBody->getTerminator();
     term->setOperands(1, term->getNumOperands() - 1,
                       call.getResults().slice(1, call.getNumResults() - 1));
 
     builder.setInsertionPointAfter(rematLoop);
+    for (int i = 1; i < nrets; ++i) {
+      cacheVals[i - 1] = rematLoop->getResult(i);
+    }
 
     // Create autodiff call
     DerivativeMode mode = DerivativeMode::ReverseModeGradient;
 
+    SmallVector<Value> revArgs;
+
     std::vector<DIFFE_TYPE> RetActivity, ArgActivity;
-    for (auto act : operandsActive) {
+    int nactive = 0;
+    for (int i = 0; i < nrets; ++i) {
+      bool act = operandsActive[i];
+
+      Value arg = i == 0 ? revInnerBody->getArgument(0) : cacheVals[i - 1];
+      revArgs.push_back(arg);
+
       if (act) {
         RetActivity.push_back(DIFFE_TYPE::OUT_DIFF);
         ArgActivity.push_back(DIFFE_TYPE::OUT_DIFF);
@@ -663,13 +703,27 @@ class AutoDiffWhileRev
       }
     }
 
-    std::vector<bool> volatile_args, returnShadow, returnPrimal;
+    for (auto refEn : llvm::enumerate(outsideRefs)) {
+      revArgs.push_back(cacheVals[nrets - 1 + refEn.index()]);
+      auto ref = refEn.value();
+      if (gutils->isConstantValue(ref)) {
+        ArgActivity.push_back(DIFFE_TYPE::CONSTANT);
+      } else {
+        ArgActivity.push_back(DIFFE_TYPE::OUT_DIFF);
+      }
+    }
+
+    for (auto dif : revInnerBody->getArguments().slice(1)) {
+      revArgs.push_back(dif);
+    }
+
+    std::vector<bool> volatile_args(nargs, false);
+    std::vector<bool> returnShadow(nrets, false);
+    std::vector<bool> returnPrimal(nrets, false);
 
     auto type_args = gutils->TA.getAnalyzedTypeInfo(func);
     bool freeMemory = true;
     size_t width = gutils->width;
-
-    revOuter->getParentOfType<ModuleOp>()->dump();
 
     auto revFn = gutils->Logic.CreateReverseDiff(
         func, RetActivity, ArgActivity, gutils->TA, returnPrimal, returnShadow,
@@ -677,9 +731,32 @@ class AutoDiffWhileRev
         volatile_args, /*augmented*/ nullptr, gutils->omp, gutils->postpasses,
         gutils->verifyPostPasses);
 
-    // builder.create<func::CallOp>();
+    auto revCall = builder.create<func::CallOp>(
+        orig.getLoc(), cast<func::FuncOp>(revFn), revArgs);
 
-    return failure();
+    term = revInnerBody->getTerminator();
+    term->setOperands(1, revCall.getNumResults(), revCall.getResults());
+
+    term = revOuterBody->getTerminator();
+    term->setOperands(
+        1, revInner.getNumResults() - 1,
+        revInner.getResults().slice(1, revInner.getNumResults() - 1));
+
+    builder.setInsertionPointAfter(revOuter);
+
+    int revIdx = 1;
+    for (auto &&[active, arg] :
+         llvm::zip(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg))
+          gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        revIdx++;
+      }
+    }
+
+    revOuter->getParentOfType<ModuleOp>()->dump();
+
+    return success();
   }
 
 public:
@@ -887,7 +964,8 @@ public:
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
-          auto func = outlineFunction(newWhile, outsideRefs);
+          auto func =
+              outlineFunction(cast<stablehlo::WhileOp>(orig), outsideRefs);
 
           SmallVector<Value> caches;
 
@@ -914,10 +992,11 @@ public:
           builder.setInsertionPoint(outer);
 
           for (auto ref : outsideRefs) {
-            caches.push_back(gutils->initAndPushCache(ref, builder));
+            caches.push_back(gutils->initAndPushCache(
+                gutils->getNewFromOriginal(ref), builder));
           }
 
-          builder.setInsertionPointToStart(outerBody);
+          builder.setInsertionPointAfterValue(outerIV);
 
           SmallVector<Value> operands(
               outerBody->getArguments().slice(1).begin(),
@@ -948,12 +1027,15 @@ public:
           SmallVector<Value> callOperands{newIV};
           callOperands.append(innerBody->getArguments().slice(1).begin(),
                               innerBody->getArguments().slice(1).end());
-          callOperands.append(outsideRefs.begin(), outsideRefs.end());
+          for (auto ref : outsideRefs)
+            callOperands.push_back(gutils->getNewFromOriginal(ref));
           auto call =
               builder.create<func::CallOp>(orig->getLoc(), func, callOperands);
 
           Operation *term = innerBody->getTerminator();
-          term->setOperands(1, call.getNumResults() - 1, call.getResults());
+          term->setOperands(
+              1, call.getNumResults() - 1,
+              call.getResults().slice(1, call.getNumResults() - 1));
 
           //  mapping.map(oldIV, newIV);
 
