@@ -87,7 +87,7 @@ void ApplyConcatConstPropPatterns::populatePatterns(
 void ApplyDynamicUpdateSliceConstPropPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addDynamicUpdateSliceConstProp(patterns, getParameter(), *getContext(),
-                     PatternBenefit(getBenefit().value_or(1)));
+                                 PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
     RewritePatternSet &patterns) {
