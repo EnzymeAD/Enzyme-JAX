@@ -251,7 +251,7 @@ def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     }
   }];
 }
-def ApplyDynamicUpdateSliceConstProp : EnzymeHLOParameterizedPatternOp<
+def ApplyDynamicUpdateSliceConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "dynamic_update_slice_const_prop"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
   let assemblyFormat = "attr-dict";

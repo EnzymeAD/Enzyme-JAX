@@ -4813,13 +4813,6 @@ struct DynamicUpdateSliceConstProp final
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
                                 PatternRewriter &rewriter) const override {
 
-    if (operandConstant.isSplat() && updateConstant.isSplat() &&
-        operandConstant.getSplatValue<Attribute>() ==
-            updateConstant.getSplatValue<Attribute>()) {
-      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
-      return success();
-    }
-
     size_t size = 1;
     for (auto sz : op.getType().getShape())
       size *= sz;
@@ -4844,6 +4837,14 @@ struct DynamicUpdateSliceConstProp final
         legal &= matchPattern(
             operand.get(),
             m_Constant(&constants[operand.getOperandNumber() - 2]));
+    }
+
+    if (operandConstant && updateConstant && operandConstant.isSplat() &&
+        updateConstant.isSplat() &&
+        operandConstant.getSplatValue<Attribute>() ==
+            updateConstant.getSplatValue<Attribute>()) {
+      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      return success();
     }
 
     if (!legal)
