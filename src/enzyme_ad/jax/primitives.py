@@ -184,7 +184,7 @@ slice_reduce_window<1>;
 pad_reduce_window<1>;
 dot_reshape_dot<1>;
 concat_const_prop<1>(1024);
-dynamic_update_slice_const_prop<1>;
+dynamic_update_slice_const_prop<1>(1024);
 log_const_prop<1>;
 log_plus_one_const_prop<1>;
 chlo_inf_const_prop<1>;
