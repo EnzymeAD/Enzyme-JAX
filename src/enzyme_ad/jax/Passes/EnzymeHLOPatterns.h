@@ -29,6 +29,9 @@ void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
 void addConcatConstProp(RewritePatternSet &patterns,
                         int64_t maxConstantExpansion, MLIRContext &context,
                         PatternBenefit benefit);
+void addDynamicUpdateSliceConstProp(RewritePatternSet &patterns,
+                        int64_t maxConstantExpansion, MLIRContext &context,
+                        PatternBenefit benefit);
 void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
                       MLIRContext &context, PatternBenefit benefit);
 void addWhileLICM(RewritePatternSet &patterns, bool hoist_all,
