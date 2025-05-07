@@ -523,6 +523,8 @@ def _enzyme_aug_abstract_eval(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
+        if "op_like" in jit_options:
+            del jit_options["op_like"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, args_flat)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -649,12 +651,17 @@ def _enzyme_primal_lowering(
 
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
+    print("primal lowering", fn, args_flat)
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
         print_mlir = False
+        op_like = None
         if "print_mlir" in jit_options:
             print_mlir = jit_options["print_mlir"]
             del jit_options["print_mlir"]
+        if "op_like" in jit_options:
+            op_like = jit_options["op_like"]
+            del jit_options["op_like"]
         assert len(out_idx_map) == len(out_shapes)
 
         orig_shapes = []
@@ -744,7 +751,9 @@ def _enzyme_primal_lowering(
                 )
             for f in pushtop[::-1]:
                 f.move_before(next(mod.regions[0].blocks[0].__iter__()))
-            if True:
+
+            print("op_like=", op_like)
+            if op_like is None:
                 identifier_attr = jax_mlir.dense_int_elements([0])
                 placeholderop = stablehlo.ConstantOp(identifier_attr)
                 for op in list(fn.regions[0].blocks[0].operations)[:-1]:
@@ -756,8 +765,15 @@ def _enzyme_primal_lowering(
                 fn.erase()
                 placeholderop.erase()
             else:
-                callop = func.CallOp(fn, list(in_args))
+                callop = func.CallOp(fn, list(in_args))                
+                callop.attributes["noinline"] = jax_mlir.ir.StringAttr.get("")
+                print(callop)
                 results = callop.results
+                attrs = fn.attributes
+                attrs["sym_visibility"] = jax_mlir.ir.StringAttr.get("public")
+                attrs["op_name"] = jax_mlir.ir.StringAttr.get(op_like[1])
+                attrs["dialect_name"] = jax_mlir.ir.StringAttr.get(op_like[0])
+                print("fn=", fn)
             if len(results) != len(out_shapes):
                 print(source)
                 print(pass_pipeline)
@@ -876,6 +892,8 @@ def _enzyme_fwd_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
+        if "op_like" in jit_options:
+            del jit_options["op_like"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
             in_tree, ctx.avals_in[::2]
         )
@@ -944,6 +962,8 @@ def _enzyme_aug_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
+        if "op_like" in jit_options:
+            del jit_options["op_like"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1020,6 +1040,8 @@ def _enzyme_rev_lowering(
         (in_tree, _, _, mfunc, jit_options) = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
+        if "op_like" in jit_options:
+            del jit_options["op_like"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1522,13 +1544,36 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
 ad.primitive_transposes[_enzyme_shadow_aug_p] = enzyme_vjp
 
+def zero_like(arg):
+    if arg.dtype == jax.float0:
+        return arg
+    else:
+        return jnp.zeros(arg.shape, dtype=arg.dtype)
 
-def export(outfile, func, *args, argv=(), jit_options={}):
-    def zero_like(arg):
-        if arg.dtype == jax.float0:
-            return arg
-        else:
-            return jnp.zeros(arg.shape, dtype=arg.dtype)
+
+def export_mlir(outfile, func, *args, jit_options={}):
+    args_flat, in_tree = jax.tree_util.tree_flatten(args)
+    in_shapes = [absmaketup(a) for a in args_flat]
+    jitres = jax.jit(func, **jit_options)
+    out_shape = jitres.eval_shape(*args)
+    out_shape_flat, out_tree = jax.tree_util.tree_flatten(out_shape)
+    out_shape_flat = [jax.core.ShapedArray(o.shape, o.dtype) for o in out_shape_flat]
+    avals_in = jax.tree_util.tree_unflatten(
+        in_tree,
+        [zero_like(arg) for arg in args_flat],
+    )
+    lowered_func = lower(jitres, avals_in)
+    mhlo = lowered_func.compiler_ir(dialect="stablehlo")
+    source = mhlo.operation.get_asm(enable_debug_info=True)
+    if outfile is None:
+        return source
+    else:
+        # export mlir doesn't yet support exporting to a file
+        assert False
+        return None
+
+
+def export_llvm(outfile, func, *args, argv=(), jit_options={}):
 
     args_flat, in_tree = jax.tree_util.tree_flatten(args)
     in_shapes = [absmaketup(a) for a in args_flat]
@@ -1562,12 +1607,13 @@ def export(outfile, func, *args, argv=(), jit_options={}):
     return
 
 
-def enzyme_jax_ir(
-    argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True
-):
+
+def common_irgen(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True):
     jit_options2 = {k: v for (k, v) in jit_options.items()}
     if "print_mlir" in jit_options2:
         del jit_options2["print_mlir"]
+    if "op_like" in jit_options2:
+        del jit_options2["op_like"]
     jit_options2["inline"] = True
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -1588,12 +1634,6 @@ def enzyme_jax_ir(
             # this code will get DCE'd / not traced).
             # TODO in the future we should look at mlir to determine what actual values
             # we will need and do dead arg elim ourselves based on ir in advance
-            def zero_like(arg):
-                if arg.dtype == jax.float0:
-                    return arg
-                else:
-                    return jnp.zeros(arg.shape, dtype=arg.dtype)
-
             (avals_in, avals_kwin) = jax.tree_util.tree_unflatten(
                 in_tree,
                 [zero_like(arg) for arg in args_flat],
@@ -1605,6 +1645,7 @@ def enzyme_jax_ir(
                 for (i, arg) in enumerate(args_flat)
             ]
 
+            print("ffi call", func, jit_options)
             out_flat = ffi_call(
                 *args_flat,
                 source=(in_tree, in_idxs, out_idxs, func, jit_options),
@@ -1619,3 +1660,13 @@ def enzyme_jax_ir(
         return jax.jit(wrapped, **jit_options2) if inner_jit else wrapped
 
     return decorator
+
+def enzyme_jax_ir(argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True):
+    return common_irgen(argv, pipeline_options, jit_options, inner_jit)
+
+def op_like(dialect : str, op : str):
+    jit_options2 = {"op_like": (dialect, op)}
+    inner_jit=True
+    argv=()
+    pipeline_options=JaXPipeline("")
+    return common_irgen(argv, pipeline_options, jit_options2, inner_jit)
