@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --enzyme-hlo-opt | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --enzyme-hlo-unroll --arith-raise --enzyme-hlo-opt | stablehlo-translate --interpret
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --enzyme-hlo-opt --canonicalize | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --enzyme-hlo-unroll --arith-raise --enzyme-hlo-opt --canonicalize | stablehlo-translate --interpret
 
 module {
   func.func @without_checkpointing(%arg0: tensor<f64>) -> tensor<f64> {
