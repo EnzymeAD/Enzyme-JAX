@@ -540,7 +540,7 @@ class AutoDiffWhileRev
     });
   }
 
-  // Create a function from the body a the loop
+  // Create a function from the body of the loop
   // The function returns the same number of results as the loop but takes more
   // argument for values defined outside.
   static func::FuncOp outlineFunction(stablehlo::WhileOp op,
@@ -776,8 +776,19 @@ class AutoDiffWhileRev
     auto revCall = builder.create<func::CallOp>(
         orig.getLoc(), cast<func::FuncOp>(revFn), revArgs);
 
+    int resIdx = revOuter.getNumOperands() - 1;
+    for (auto ref : outsideRefs) {
+      if (!gutils->isConstantValue(ref)) {
+        auto diffe = revCall.getResult(resIdx);
+        resIdx++;
+        gutils->addToDiffe(ref, diffe, builder);
+      }
+    }
+
     term = revInnerBody->getTerminator();
-    term->setOperands(1, revCall.getNumResults(), revCall.getResults());
+    term->setOperands(
+        1, revOuter->getNumOperands() - 1,
+        revCall.getResults().slice(0, revOuter->getNumOperands() - 1));
 
     term = revOuterBody->getTerminator();
     term->setOperands(
