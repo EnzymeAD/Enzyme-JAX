@@ -1406,10 +1406,12 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
 
       if (isa<affine::AffineLoadOp>(op) || isa<memref::LoadOp>(op)) {
         loads.push_back(op);
+        continue;
       }
 
-      LLVM_DEBUG(llvm::errs() << "Alloc is not dead due to unknown user, alloc="
-                              << *alloc << " user = " << *op << "\n");
+      LLVM_DEBUG(llvm::errs()
+                 << "Alloc is not simple mem2reg due to unknown user, alloc="
+                 << *alloc << " user = " << *op << "\n");
 
       return failure();
     }
