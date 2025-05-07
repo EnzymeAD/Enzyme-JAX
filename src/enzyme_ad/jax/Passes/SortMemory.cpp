@@ -124,6 +124,8 @@ void sortParallel(affine::AffineParallelOp par) {
     }
   }
   for (auto m : memrefs) {
+    if (!definedOutsideOrAt(m, par))
+      return;
     for (auto u : m.getUsers()) {
       if (!isa<affine::AffineLoadOp, affine::AffineStoreOp>(u)) {
         return;
