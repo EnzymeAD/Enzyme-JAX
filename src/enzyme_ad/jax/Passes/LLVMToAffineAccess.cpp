@@ -119,15 +119,24 @@ convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
   if (!ptr2memref)
     return failure();
 
-  assert(elType == ptr2memref.getResult().getType().getElementType());
+  auto newElSize =
+      dataLayout.getTypeSize(ptr2memref.getResult().getType().getElementType());
+  int64_t newElnum = elNum / newElSize;
+  if (newElSize * newElnum != elNum)
+    return failure();
 
-  SmallVector<int64_t, 1> sizes = {elNum};
+  SmallVector<int64_t, 1> sizes = {newElnum};
   auto memrefType =
-      MemRefType::get(sizes, elType, MemRefLayoutAttrInterface{},
+      MemRefType::get(sizes, ptr2memref.getResult().getType().getElementType(),
+                      MemRefLayoutAttrInterface{},
                       ptr2memref.getResult().getType().getMemorySpace());
   auto newAlloca =
       rewriter.create<memref::AllocaOp>(alloc->getLoc(), memrefType);
-  rewriter.replaceAllUsesWith(ptr2memref.getResult(), newAlloca.getResult());
+  Value replacement = newAlloca.getResult();
+  if (replacement.getType() != ptr2memref.getType())
+    replacement = rewriter.create<memref::CastOp>(
+        ptr2memref.getLoc(), ptr2memref.getType(), replacement);
+  rewriter.replaceAllUsesWith(ptr2memref.getResult(), replacement);
   rewriter.eraseOp(ptr2memref);
   rewriter.eraseOp(alloc);
   return success();
@@ -1215,6 +1224,46 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
+template <typename T> struct SimplifyDeadAlloc : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T alloc,
+                                PatternRewriter &rewriter) const override {
+    for (auto op : alloc->getUsers()) {
+      if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+        if (storeOp.getValue() == alloc)
+          return failure();
+        continue;
+      }
+      if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
+        if (storeOp.getValue() == alloc)
+          return failure();
+        continue;
+      }
+
+      if (isa<memref::DeallocOp>(op))
+        continue;
+
+      if (isa<LLVM::LifetimeStartOp>(op))
+        continue;
+
+      if (isa<LLVM::LifetimeEndOp>(op))
+        continue;
+
+      LLVM_DEBUG(llvm::errs() << "Alloc is not dead due to unknown user, alloc="
+                              << *alloc << " user = " << *op << "\n");
+
+      return failure();
+    }
+
+    for (Operation *user : llvm::make_early_inc_range(alloc->getUsers()))
+      rewriter.eraseOp(user);
+
+    rewriter.eraseOp(alloc);
+    return success();
+  }
+};
+
 namespace mlir {
 LogicalResult
 convertLLVMToAffineAccess(Operation *op,
@@ -1389,6 +1438,8 @@ convertLLVMToAffineAccess(Operation *op,
         auto mao = aab.getMap();
         if (mao.map.getResult(0).isMultipleOf(tySize) ||
             isAligned(store, tySize)) {
+          assert(cast<MemRefType>(memref.getType()).getElementType() ==
+                 store.getValue().getType());
           auto expr = mao.map.getResult(0).floorDiv(tySize);
           SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
                                             store->getAttrs().end());
@@ -1431,6 +1482,9 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad>(
         context, dataLayoutAnalysis);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE>(context);
+    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
+                    SimplifyDeadAlloc<LLVM::AllocaOp>>(context);
+    memref::AllocaOp::getCanonicalizationPatterns(patterns, context);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
       return failure();
