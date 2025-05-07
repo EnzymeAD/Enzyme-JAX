@@ -146,7 +146,7 @@ void sortParallel(affine::AffineParallelOp par) {
 
   Operation *last = par.getBody()->getTerminator();
   for (auto st : stores) {
-    if (ld->getParentOp() != par)
+    if (st->getParentOp() != par)
       continue;
     st->moveBefore(last);
   }
