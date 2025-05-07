@@ -104,8 +104,32 @@ static std::optional<int64_t> getConstant(Value v) {
 static LogicalResult
 convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
                                 const DataLayout &dataLayout) {
-  if (!alloc.getRes().hasOneUse())
+  SmallVector<enzymexla::Pointer2MemrefOp> p2ms;
+  SmallVector<Operation *> others;
+  for (auto op : alloc.getRes().getUsers()) {
+    if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+      p2ms.push_back(p2m);
+      continue;
+    }
+    if (isa<LLVM::LifetimeStartOp>(op) || isa<LLVM::LifetimeEndOp>(op)) {
+      others.push_back(op);
+      continue;
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "unknown user: " << *op << "\n");
+    return rewriter.notifyMatchFailure(alloc, "Unknown user of allocation");
+  }
+  if (p2ms.size() == 0)
     return failure();
+  for (int i = 1; i < p2ms.size(); i++) {
+    if (p2ms[i].getType().getElementType() !=
+        p2ms[0].getType().getElementType()) {
+      LLVM_DEBUG(llvm::dbgs() << "p2ms[0]:" << p2ms[0] << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "p2ms[i]:" << p2ms[i] << "\n");
+      return rewriter.notifyMatchFailure(alloc,
+                                         "Non matching tpye of multi p2m");
+    }
+  }
 
   auto sizeVal = getConstant(alloc.getArraySize());
   if (!sizeVal)
@@ -114,21 +138,31 @@ convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
   Type elType = rewriter.getI8Type();
   int64_t elNum = dataLayout.getTypeSize(alloc.getElemType()) * (*sizeVal);
 
-  auto ptr2memref = dyn_cast<enzymexla::Pointer2MemrefOp>(
-      alloc.getRes().use_begin()->getOwner());
-  if (!ptr2memref)
+  auto ptr2memref = p2ms[0];
+
+  auto newElSize =
+      dataLayout.getTypeSize(ptr2memref.getResult().getType().getElementType());
+  int64_t newElnum = elNum / newElSize;
+  if (newElSize * newElnum != elNum)
     return failure();
 
-  assert(elType == ptr2memref.getResult().getType().getElementType());
-
-  SmallVector<int64_t, 1> sizes = {elNum};
+  SmallVector<int64_t, 1> sizes = {newElnum};
   auto memrefType =
-      MemRefType::get(sizes, elType, MemRefLayoutAttrInterface{},
+      MemRefType::get(sizes, ptr2memref.getResult().getType().getElementType(),
+                      MemRefLayoutAttrInterface{},
                       ptr2memref.getResult().getType().getMemorySpace());
   auto newAlloca =
       rewriter.create<memref::AllocaOp>(alloc->getLoc(), memrefType);
-  rewriter.replaceAllUsesWith(ptr2memref.getResult(), newAlloca.getResult());
-  rewriter.eraseOp(ptr2memref);
+
+  for (auto p2m : p2ms) {
+    Value replacement = newAlloca.getResult();
+    if (replacement.getType() != p2m.getType())
+      replacement = rewriter.create<memref::CastOp>(p2m.getLoc(), p2m.getType(),
+                                                    replacement);
+    rewriter.replaceOp(p2m, replacement);
+  }
+  for (auto other : others)
+    rewriter.eraseOp(other);
   rewriter.eraseOp(alloc);
   return success();
 }
@@ -472,6 +506,50 @@ struct SelectCSE : public OpRewritePattern<arith::SelectOp> {
     } else {
       rewriter.replaceOpWithNewOp<arith::SubIOp>(sel, op0, op1);
     }
+    return success();
+  }
+};
+
+struct SelectAddrCast : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = sel.getTrueValue().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!lhs)
+      return failure();
+    auto rhs = sel.getFalseValue().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!rhs)
+      return failure();
+
+    if (lhs.getOperand().getType() != rhs.getOperand().getType())
+      return failure();
+
+    auto sel0 = rewriter.create<arith::SelectOp>(
+        sel.getLoc(), sel.getCondition(), lhs.getOperand(), rhs.getOperand());
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(sel, sel.getType(),
+                                                       sel0);
+    return success();
+  }
+};
+
+struct Pointer2MemrefSelect
+    : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto sel = p2m.getOperand().getDefiningOp<arith::SelectOp>();
+    if (!sel)
+      return failure();
+
+    auto tval = rewriter.create<enzymexla::Pointer2MemrefOp>(
+        p2m.getLoc(), p2m.getType(), sel.getTrueValue());
+    auto fval = rewriter.create<enzymexla::Pointer2MemrefOp>(
+        p2m.getLoc(), p2m.getType(), sel.getFalseValue());
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(p2m, sel.getCondition(), tval,
+                                                 fval);
+    auto rhs = sel.getFalseValue().getDefiningOp<LLVM::AddrSpaceCastOp>();
     return success();
   }
 };
@@ -1215,6 +1293,46 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
+template <typename T> struct SimplifyDeadAlloc : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T alloc,
+                                PatternRewriter &rewriter) const override {
+    for (auto op : alloc->getUsers()) {
+      if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+        if (storeOp.getValue() == alloc)
+          return failure();
+        continue;
+      }
+      if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
+        if (storeOp.getValue() == alloc)
+          return failure();
+        continue;
+      }
+
+      if (isa<memref::DeallocOp>(op))
+        continue;
+
+      if (isa<LLVM::LifetimeStartOp>(op))
+        continue;
+
+      if (isa<LLVM::LifetimeEndOp>(op))
+        continue;
+
+      LLVM_DEBUG(llvm::errs() << "Alloc is not dead due to unknown user, alloc="
+                              << *alloc << " user = " << *op << "\n");
+
+      return failure();
+    }
+
+    for (Operation *user : llvm::make_early_inc_range(alloc->getUsers()))
+      rewriter.eraseOp(user);
+
+    rewriter.eraseOp(alloc);
+    return success();
+  }
+};
+
 namespace mlir {
 LogicalResult
 convertLLVMToAffineAccess(Operation *op,
@@ -1389,6 +1507,8 @@ convertLLVMToAffineAccess(Operation *op,
         auto mao = aab.getMap();
         if (mao.map.getResult(0).isMultipleOf(tySize) ||
             isAligned(store, tySize)) {
+          assert(cast<MemRefType>(memref.getType()).getElementType() ==
+                 store.getValue().getType());
           auto expr = mao.map.getResult(0).floorDiv(tySize);
           SmallVector<NamedAttribute> attrs(store->getAttrs().begin(),
                                             store->getAttrs().end());
@@ -1430,7 +1550,11 @@ convertLLVMToAffineAccess(Operation *op,
     RewritePatternSet patterns(context);
     patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad>(
         context, dataLayoutAnalysis);
-    patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE>(context);
+    patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
+                    SelectAddrCast>(context);
+    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
+                    SimplifyDeadAlloc<LLVM::AllocaOp>, Pointer2MemrefSelect>(
+        context);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
       return failure();
