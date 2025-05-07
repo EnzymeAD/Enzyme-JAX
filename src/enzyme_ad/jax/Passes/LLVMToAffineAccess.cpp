@@ -1553,8 +1553,8 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
     patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
-                    SimplifyDeadAlloc<LLVM::AllocaOp>, Pointer2MemrefSelect,
-                    LoadSelect>(context);
+                    SimplifyDeadAlloc<LLVM::AllocaOp>, Pointer2MemrefSelect>(
+        context);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
       return failure();
