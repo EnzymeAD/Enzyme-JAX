@@ -85,10 +85,12 @@ int64_t WhileLoopInfo::getConstantNumIters() {
   int64_t start = getConstantStart().value(),
           limit = getConstantLimit().value(), step = getConstantStep().value();
 
-  if (step > 0 && limit < start)
+  if (limit < start) // cmp is lt
     return 0;
+
   if (step < 0 && limit > start)
     return 0;
+
   return (limit - start) / getConstantStep().value();
 }
 
