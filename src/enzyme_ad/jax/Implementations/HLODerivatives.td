@@ -1004,6 +1004,8 @@ def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
 
 def : HLOInactiveOp<"CeilOp">;
 
+def : HLOInactiveOp<"GetDimensionSizeOp">;
+
 def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
   (Select
     (And
