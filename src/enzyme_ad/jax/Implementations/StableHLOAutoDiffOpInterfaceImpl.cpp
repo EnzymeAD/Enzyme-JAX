@@ -630,10 +630,17 @@ class AutoDiffWhileRev
     OpBuilder::InsertionGuard guard(builder);
 
     stablehlo::WhileOp revOuter =
-        makeForLoop(builder, orig.getLoc(), nOuter - 1, -1, -1, operands);
+        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
 
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
+
+    Value outerStep = builder.create<stablehlo::SubtractOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nOuter - 1),
+        revOuterBody->getArgument(0));
+    Value outerStart = builder.create<stablehlo::MulOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner),
+        outerStep);
 
     Value lastCache = nullptr;
 
@@ -654,8 +661,7 @@ class AutoDiffWhileRev
     operands.assign(revOuterBody->getArguments().slice(1).begin(),
                     revOuterBody->getArguments().slice(1).end());
 
-    auto revInner =
-        makeForLoop(builder, orig.getLoc(), nInner - 1, -1, -1, operands);
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
     Block *revInnerBody = &revInner.getBody().front();
 
     IRMapping mapping;
@@ -667,12 +673,12 @@ class AutoDiffWhileRev
       carried.push_back(cacheVals[i]);
     }
 
-    Value currentStep = builder.create<stablehlo::AddOp>(
-        orig.getLoc(),
-        builder.create<stablehlo::MulOp>(
-            orig.getLoc(), revOuterBody->getArgument(0),
-            makeI64Constant(orig.getLoc(), builder, nInner)),
+    Value innerIV = builder.create<stablehlo::SubtractOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner - 1),
         revInnerBody->getArgument(0));
+
+    Value currentStep =
+        builder.create<stablehlo::AddOp>(orig.getLoc(), outerStart, innerIV);
     Value currentIV = builder.create<stablehlo::AddOp>(
         orig.getLoc(),
         makeI64Constant(orig.getLoc(), builder,
@@ -685,8 +691,7 @@ class AutoDiffWhileRev
 
     auto rematLoop = makeForLoop(
         builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, 0),
-        revInnerBody->getArgument(0),
-        makeI64Constant(orig.getLoc(), builder, 1), carried);
+        innerIV, makeI64Constant(orig.getLoc(), builder, 1), carried);
 
     Block *rematLoopBody = &rematLoop.getBody().front();
     for (int i = 1; i < nrets; ++i) {
@@ -696,11 +701,7 @@ class AutoDiffWhileRev
     builder.setInsertionPointToStart(rematLoopBody);
 
     Value rematStep = builder.create<stablehlo::AddOp>(
-        orig.getLoc(),
-        builder.create<stablehlo::MulOp>(
-            orig.getLoc(), revOuterBody->getArgument(0),
-            makeI64Constant(orig.getLoc(), builder, nInner)),
-        rematLoopBody->getArgument(0));
+        orig.getLoc(), outerStart, rematLoopBody->getArgument(0));
     Value rematIV = builder.create<stablehlo::AddOp>(
         orig.getLoc(),
         makeI64Constant(orig.getLoc(), builder,
@@ -3596,7 +3597,7 @@ struct IfOpEnzymeOpsRemover
     //
     //  if %pred {
     //    enzyme.set %grad, %2
-    //  } else {
+    //  } else {
     //  }
     //
     //  %0 = enzyme.get %grad
