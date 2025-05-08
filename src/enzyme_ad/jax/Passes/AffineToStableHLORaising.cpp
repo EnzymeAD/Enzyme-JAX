@@ -1108,6 +1108,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
   for (auto [init, iterArg] :
        llvm::zip(forOp.getInits(), forOp.getRegionIterArgs())) {
     auto TT = pc.getTensorType(init.getType());
+    cond->addArgument(TT, iterArg.getLoc());
     Value iterArgInBody = body->addArgument(TT, iterArg.getLoc());
     auto tensorInit = mapping.lookup(init);
     auto broadcastInit =
