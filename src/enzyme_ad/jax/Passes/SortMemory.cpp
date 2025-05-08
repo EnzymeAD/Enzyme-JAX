@@ -138,12 +138,16 @@ void sortParallel(affine::AffineParallelOp par) {
 
   Operation *first = &par.getBody()->front();
   for (auto ld : llvm::reverse(loads)) {
+    if (ld->getParentOp() != par)
+      continue;
     ld->moveBefore(first);
     first = ld;
   }
 
   Operation *last = par.getBody()->getTerminator();
   for (auto st : stores) {
+    if (st->getParentOp() != par)
+      continue;
     st->moveBefore(last);
   }
 }
