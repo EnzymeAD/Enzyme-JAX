@@ -133,8 +133,8 @@ void sortParallel(affine::AffineParallelOp par) {
     }
   }
 
-  llvm::sort(loads, affineCmpLoad);
-  llvm::sort(stores, affineCmpStore);
+  llvm::stable_sort(loads, affineCmpLoad);
+  llvm::stable_sort(stores, affineCmpStore);
 
   Operation *first = &par.getBody()->front();
   for (auto ld : llvm::reverse(loads)) {
