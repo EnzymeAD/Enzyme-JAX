@@ -135,7 +135,6 @@ convertLLVMAllocaToMemrefAlloca(LLVM::AllocaOp alloc, RewriterBase &rewriter,
   if (!sizeVal)
     return failure();
 
-  Type elType = rewriter.getI8Type();
   int64_t elNum = dataLayout.getTypeSize(alloc.getElemType()) * (*sizeVal);
 
   auto ptr2memref = p2ms[0];
@@ -549,7 +548,6 @@ struct Pointer2MemrefSelect
         p2m.getLoc(), p2m.getType(), sel.getFalseValue());
     rewriter.replaceOpWithNewOp<arith::SelectOp>(p2m, sel.getCondition(), tval,
                                                  fval);
-    auto rhs = sel.getFalseValue().getDefiningOp<LLVM::AddrSpaceCastOp>();
     return success();
   }
 };
@@ -832,7 +830,7 @@ struct AffineExprBuilder {
             return failure();
           if (!lhs->isMultipleOf(2))
             return failure();
-          if (!cexpr.getValue() != 1)
+          if (cexpr.getValue() != 1)
             return failure();
           return *lhs + 1;
         } else {
@@ -1458,7 +1456,7 @@ convertLLVMToAffineAccess(Operation *op,
         std::make_unique<AffineAccessBuilder>(op, legalizeSymbols));
     AffineAccessBuilder &aab = *accessBuilders.back();
     auto dl = dataLayoutAnalysis.getAtOrAbove(op);
-    auto res = aab.build(dl, addr);
+    aab.build(dl, addr);
   };
   op->walk([&](LLVM::StoreOp store) {
     PtrVal addr = store.getAddr();
