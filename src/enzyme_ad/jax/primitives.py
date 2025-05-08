@@ -839,8 +839,13 @@ def _enzyme_primal_lowering(
             sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
             out_types = out_types + (sa,)
 
+        i32_type = ir.IntegerType.get_signless(32)
         custom_call = stablehlo.CustomCallOp(
-            out_types, mlir_args, call_target_name="jaxzyme.primal"
+            out_types,
+            mlir_args,
+            call_target_name="jaxzyme.primal",
+            backend_config=ir.StringAttr.get("backend"),
+            api_version=ir.IntegerAttr.get(i32_type, 3),
         )
 
         results = custom_call.results
@@ -909,8 +914,13 @@ def _enzyme_fwd_lowering(
         sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
         out_types = out_types + (sa, sa)
 
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        out_types, mlir_args, call_target_name="jaxzyme.fwd"
+        out_types,
+        mlir_args,
+        call_target_name="jaxzyme.fwd",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
 
     results = custom_call.results
