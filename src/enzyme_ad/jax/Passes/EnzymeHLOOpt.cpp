@@ -16546,8 +16546,7 @@ struct SumToReduceWindow
       rewriter.setInsertionPointToStart(block);
       auto addOp = rewriter.create<stablehlo::AddOp>(
           input.getLoc(), block->getArgument(0), block->getArgument(1));
-      auto ret = rewriter.create<stablehlo::ReturnOp>(input.getLoc(),
-                                                      addOp.getResult());
+      rewriter.create<stablehlo::ReturnOp>(input.getLoc(), addOp.getResult());
     }
 
     return result;
@@ -16679,7 +16678,7 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
 
     auto newOp = rewriter.create<enzymexla::CommRegionOp>(
         end.getLoc(), end.getResult().getType());
-    auto blk = rewriter.createBlock(&newOp.getBody(), newOp.getBody().begin());
+    rewriter.createBlock(&newOp.getBody(), newOp.getBody().begin());
     IRMapping map;
     for (auto op : done) {
       rewriter.clone(*op, map);
@@ -16922,7 +16921,6 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
     int concatDim = concat.getDimension();
     SmallVector<Value> operands = llvm::to_vector(concat.getOperands());
     auto shard = sdy::getShardingPerValue(concat);
-    auto loc = concat.getLoc();
 
     if (operands.size() < 2)
       return failure();
@@ -17317,7 +17315,6 @@ struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
       midv = peelReshape(midv);
       rhsv = peelReshape(rhsv);
       if (!lhsv || !midv || !rhsv || !removedDim) {
-        rewriter.notifyMatchFailure(concat, "Illegal reshapes");
         continue;
       }
       unsigned reshapedDim = dim;
@@ -17790,7 +17787,6 @@ struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         op.getLoc(), extendOp.getOperand(), op.getPermutation());
 
     // Then create a new extend operation on the transposed data
-    auto newExtendType = op.getType();
     auto newExtendOp = rewriter.create<enzymexla::ExtendOp>(
         op.getLoc(), newTranspose.getResult(), lhs, rhs, newExtendDim);
 
@@ -17842,7 +17838,6 @@ struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
         op.getLoc(), rotateOp.getOperand(), op.getPermutation());
 
     // Then create a new rotate operation on the transposed data
-    auto newRotateType = op.getType();
     auto newRotateOp = rewriter.create<enzymexla::RotateOp>(
         op.getLoc(), newTranspose.getResult(), amount, newRotateDim);
 
