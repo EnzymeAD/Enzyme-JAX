@@ -3281,9 +3281,9 @@ struct SplitParallelInductions
             }
             auto newBaseVal = iattr.getZExtValue();
             if (!(base.i_val == newBaseVal ||
-                  isa<arith::FloorDivSIOp, arith::DivUIOp>(U) &&
-                      (base.i_val % newBaseVal == 0 ||
-                       newBaseVal % base.i_val == 0))) {
+                  (isa<arith::FloorDivSIOp, arith::DivUIOp>(U) &&
+                   (base.i_val % newBaseVal == 0 ||
+                    newBaseVal % base.i_val == 0)))) {
               legal = false;
               break;
             }
