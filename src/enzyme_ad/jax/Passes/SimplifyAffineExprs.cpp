@@ -450,14 +450,15 @@ AffineExpr mlir::enzyme::recreateExpr(AffineExpr expr) {
         for (auto expr : getSumOperands(lhs)) {
           if (expr.isMultipleOf(cst.getValue())) {
             alreadyDivided.push_back(expr.floorDiv(cst));
-	  } else if (auto cst2 = dyn_cast<AffineConstantExpr>(expr)) {
-	    if (cst2.getValue() > 0 && cst.getValue() > 0 && cst2.getValue() > cst.getValue()) {
+          } else if (auto cst2 = dyn_cast<AffineConstantExpr>(expr)) {
+            if (cst2.getValue() > 0 && cst.getValue() > 0 &&
+                cst2.getValue() > cst.getValue()) {
               toDivide.push_back(expr % rhs);
-	      alreadyDivided.push_back(expr.floorDiv(rhs));
-	    } else {
+              alreadyDivided.push_back(expr.floorDiv(rhs));
+            } else {
               toDivide.push_back(expr);
-	    }
-	  } else
+            }
+          } else
             toDivide.push_back(expr);
         }
       } else {
