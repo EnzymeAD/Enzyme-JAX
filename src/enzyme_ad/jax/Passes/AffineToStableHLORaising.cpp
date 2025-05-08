@@ -2286,7 +2286,6 @@ replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
     assert(operand_aliases.size() == user.getNumResults());
 
     SmallVector<Value> replacements;
-    size_t outputs = user.getNumResults();
     for (auto alias_attr : operand_aliases) {
       auto alias = cast<mlir::stablehlo::OutputOperandAliasAttr>(alias_attr);
       auto operandIndex = alias.getOperandIndex();
