@@ -3097,6 +3097,8 @@ AffineExpr optimizeExprWithBounds(AffineExpr expr,
       return *replacement;
     else
       return lhs.floorDiv(rhs);
+  default:
+    return expr;
   }
 
   return expr;
