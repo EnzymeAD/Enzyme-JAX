@@ -972,6 +972,11 @@ LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
 
   AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
                                     newExprs, access->getContext());
+  newMap = mlir::enzyme::recreateExpr(newMap);
+
+  if (map == newMap)
+    return failure();
+
   access.setMap(newMap);
   return success();
 }
