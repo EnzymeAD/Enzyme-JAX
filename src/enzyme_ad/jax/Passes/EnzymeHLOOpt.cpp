@@ -1131,7 +1131,6 @@ struct DUSConcat final
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
-    auto dusOperandType = cast<RankedTensorType>(dus.getOperand().getType());
     auto updateType = cast<RankedTensorType>(dus.getUpdate().getType());
 
     ArrayRef<int64_t> updateShape = updateType.getShape();
@@ -1229,11 +1228,7 @@ struct DUSConcat final
     SmallVector<Value> newDusStartIndices =
         llvm::to_vector(dus.getStartIndices());
     Location loc = dus.getLoc();
-    auto indexElementType = cast<ShapedType>(startIndices[concatDim].getType())
-                                .getElementType(); // Assuming all start indices
-                                                   // have same scalar type
 
-    int64_t newConcatStartVal = concatStartVal - currentOffset;
     newDusStartIndices[concatDim] = rewriter.create<stablehlo::ConstantOp>(
         dus.getLoc(), newDusStartIndices[concatDim].getType(),
         cast<ElementsAttr>(makeAttr(newDusStartIndices[concatDim].getType(),
@@ -12494,7 +12489,6 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         useInner = mapper.lookupOrDefault(useInner);
       }
       for (auto &candidate : candidates) {
-        unsigned idx = candidate.idx;
         Value operand = candidate.outerOperand;
         if (candidate.conditionalOperand) {
           operand = rewriter.create<stablehlo::SelectOp>(
@@ -12672,10 +12666,10 @@ IVInfo extractSimpleIVInfo(stablehlo::WhileOp whileOp) {
       limit = rhs;
       break;
     }
-    if (rhs == arg && compareOp.getComparisonDirection() ==
-                          stablehlo::ComparisonDirection::GT ||
-        compareOp.getComparisonDirection() ==
-            stablehlo::ComparisonDirection::NE) {
+    if (rhs == arg && (compareOp.getComparisonDirection() ==
+                           stablehlo::ComparisonDirection::GT ||
+                       compareOp.getComparisonDirection() ==
+                           stablehlo::ComparisonDirection::NE)) {
       ivArg = arg;
       limit = rhs;
       break;
@@ -13912,7 +13906,7 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
       // For now we will assume it
 
       candidates.emplace_back(
-          Candidate{idx, concat, lhsSize, rhsSize, ops[0], ops[1], ops[2]});
+          Candidate{idx, concat, lhsSize, rhsSize, {ops[0], ops[1], ops[2]}});
     }
 
     // If no candidates found, no rewrite needed
@@ -14207,7 +14201,6 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
     };
 
     llvm::SmallVector<Candidate, 4> candidates;
-    bool hasConditional = false;
 
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
 
@@ -14428,9 +14421,6 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
     Operation *bodyTerm = body->getTerminator();
 
     int deleted = 0;
-
-    // Find the index of IV and the step to check for 1 iteration
-    auto ivInfo = extractSimpleIVInfo(op);
 
     for (auto &opOperand : op->getOpOperands()) {
       Value inputValue = opOperand.get();
@@ -15038,20 +15028,21 @@ struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
       DenseIntElementsAttr c;
       if (matchPattern(mul.getRhs(), m_Constant(&c)) && c.isSplat()) {
         auto cv = c.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+        if (cv == -1) {
+          auto off = rewriter.create<stablehlo::ConstantOp>(
+              mul.getLoc(), mul.getType(),
+              cast<ElementsAttr>(makeAttr(mul.getType(), -rhsv)));
 
-        auto off = rewriter.create<stablehlo::ConstantOp>(
-            mul.getLoc(), mul.getType(),
-            cast<ElementsAttr>(makeAttr(mul.getType(), -rhsv)));
+          // x * -1 ?= rhsv -> x =? -rhs
+          rewriter.modifyOpInPlace(op, [&]() {
+            op.getLhsMutable().assign(mul.getLhs());
+            op.getRhsMutable().assign(off);
+            op.setComparisonDirection(
+                reorderComparisionDirection(op.getComparisonDirection()));
+          });
 
-        // x * -1 ?= rhsv -> x =? -rhs
-        rewriter.modifyOpInPlace(op, [&]() {
-          op.getLhsMutable().assign(mul.getLhs());
-          op.getRhsMutable().assign(off);
-          op.setComparisonDirection(
-              reorderComparisionDirection(op.getComparisonDirection()));
-        });
-
-        return success();
+          return success();
+        }
       }
     }
 
