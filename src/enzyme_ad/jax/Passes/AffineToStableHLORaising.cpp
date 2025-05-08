@@ -393,9 +393,6 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   SmallVector<AffineExpr> exprs;
   SmallVector<Value> mapOperands;
 
-  unsigned idxA = 0;
-  unsigned rankA = src.getNumResults();
-
   SetVector<Value> ivs;
 
   bool needsBroadcastA = false;
@@ -718,9 +715,6 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
-
-    auto IT = cast<RankedTensorType>(b.getType());
-    Type result = b.getType();
 
     auto newOp = builder.create<stablehlo::SelectOp>(ifOp->getLoc(), a, b, c);
     mapping.map(res, newOp.getResult());
@@ -1114,7 +1108,6 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
   for (auto [init, iterArg] :
        llvm::zip(forOp.getInits(), forOp.getRegionIterArgs())) {
     auto TT = pc.getTensorType(init.getType());
-    Value iterArgInCond = cond->addArgument(TT, iterArg.getLoc());
     Value iterArgInBody = body->addArgument(TT, iterArg.getLoc());
     auto tensorInit = mapping.lookup(init);
     auto broadcastInit =
@@ -1648,7 +1641,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto inputTen = mapping.lookup(access.memref);
 
-    auto rank = access.getRank();
     SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
 
     SmallVector<int64_t> strides;
@@ -2147,7 +2139,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     c = dsts[1];
     assert(b.getType() == c.getType());
 
-    auto IT = cast<RankedTensorType>(b.getType());
     Type result = b.getType();
 
     auto newOp =
