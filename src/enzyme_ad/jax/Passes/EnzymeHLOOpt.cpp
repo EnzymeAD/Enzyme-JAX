@@ -61,6 +61,13 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
+template <> Attribute makeAttr(mlir::Type elemType, APFloat val) {
+  if (auto TT = dyn_cast<RankedTensorType>(elemType))
+    return SplatElementsAttr::get(
+        TT, ArrayRef(makeAttr<APFloat>(TT.getElementType(), val)));
+  return FloatAttr::get(elemType, val);
+}
+
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
   for (auto &&[low, high, inner] :
@@ -16048,10 +16055,10 @@ struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
 };
 
 template <typename T> struct Term {
-  double constantFactor;
+  APFloat constantFactor;
   Value valFactor;
   T term;
-  Term(double constantFactor, Value valFactor, T term)
+  Term(APFloat constantFactor, Value valFactor, T term)
       : constantFactor(constantFactor), valFactor(valFactor), term(term) {}
 };
 
@@ -16066,7 +16073,9 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
 
     SmallVector<Term<stablehlo::SliceOp>> done0;
     SmallVector<Term<Value>> todo;
-    todo.emplace_back(1.0, (Value) nullptr, (Value)op.getResult());
+    APFloat zero(cast<FloatType>(op.getType().getElementType()).getFloatSemantics(), "0");
+    APFloat one(cast<FloatType>(op.getType().getElementType()).getFloatSemantics(), "1");
+    todo.emplace_back(one, (Value) nullptr, (Value)op.getResult());
     SmallVector<Value> intermediates;
     SmallPtrSet<Operation *, 1> seen;
     while (!todo.empty()) {
@@ -16091,7 +16100,7 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
           SplatElementsAttr other;
           if (!matchPattern(mul->getOperand(1 - i), m_Constant(&other)))
             continue;
-          todo.emplace_back(cur.constantFactor * other.getSplatValue<double>(),
+          todo.emplace_back(cur.constantFactor * other.getSplatValue<APFloat>(),
                             cur.valFactor, mul->getOperand(i));
           legal = true;
           break;
@@ -16105,7 +16114,7 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       if (auto div = cur.term.getDefiningOp<stablehlo::DivOp>()) {
         SplatElementsAttr other;
         if (matchPattern(div.getRhs(), m_Constant(&other))) {
-          todo.emplace_back(cur.constantFactor / other.getSplatValue<double>(),
+          todo.emplace_back(cur.constantFactor / other.getSplatValue<APFloat>(),
                             cur.valFactor, div.getLhs());
           intermediates.push_back(div);
           seen.insert(div);
@@ -16216,20 +16225,27 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       }
 
       if (legal && offsetDim == -1) {
-        double tally = 0;
-        for (auto term : done)
-          tally += term.constantFactor;
-
-        finalToAdd.emplace_back(tally, nullptr, done[0].term);
+        std::optional<APFloat> tally;
+        for (auto term : done) {
+	  if (tally)
+          tally = *tally + term.constantFactor;
+	  else
+	   tally = term.constantFactor;
+	}
+        finalToAdd.emplace_back(*tally, nullptr, done[0].term);
         hasMerge = true;
         continue;
       }
 
-      std::map<int, double> terms;
+      std::map<int, APFloat> terms;
       for (int i = 0; i < done.size(); i++) {
         int offset = (int)done[i].term.getStartIndices()[offsetDim] -
                      (int)done[0].term.getStartIndices()[offsetDim];
-        terms[offset] += done[i].constantFactor;
+	auto found = terms.find(offset);
+	if (found != terms.end())
+	   found->second = found->second + done[i].constantFactor;
+	else
+	   terms.emplace(offset, done[i].constantFactor);
       }
       assert(terms.size() > 1);
 
@@ -16239,10 +16255,10 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       int lastidx = lastItr->first;
       assert(lastidx != startidx);
 
-      SmallVector<double> pad(lastidx + 1 - startidx);
+      SmallVector<APFloat> pad(lastidx + 1 - startidx, zero);
       // Check contiguous
       for (auto &term : terms) {
-        pad[term.first - startidx] += term.second;
+        pad[term.first - startidx] = pad[term.first - startidx] + term.second;
       }
 
       if (!((Child *)this)->applies(offsetDim, T, terms, startidx, lastidx)) {
@@ -16282,7 +16298,7 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       auto conv = ((Child *)this)
                       ->makeReduction(rewriter, input, offsetDim, T, terms,
                                       startidx, lastidx, filter);
-      finalToAdd.emplace_back(1, nullptr, conv);
+      finalToAdd.emplace_back(one, nullptr, conv);
       hasMerge = true;
     }
 
@@ -16294,8 +16310,7 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
     Value result = nullptr;
     for (auto term : finalToAdd) {
       Value intermediate = term.term;
-      if (term.constantFactor != 1) {
-
+      if (!term.constantFactor.isExactlyValue(1.0)) {
         intermediate = rewriter.create<stablehlo::MulOp>(
             op.getLoc(), intermediate,
             rewriter.create<stablehlo::ConstantOp>(
@@ -16315,9 +16330,9 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
   }
 
   bool reduceWindowApplies(size_t offsetDim, RankedTensorType T,
-                           const std::map<int, double> &pad, int startidx,
+                           const std::map<int, APFloat> &pad, int startidx,
                            int lastidx) {
-    double start = pad.find(startidx)->second;
+    auto start = pad.find(startidx)->second;
     for (int i = startidx; i <= lastidx; i++) {
       auto found = pad.find(i);
       if (found == pad.end())
@@ -16340,7 +16355,7 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
   using SumToReductionBase<ST, SumToConv<ST>>::matchAndRewrite;
 
   bool applies(size_t offsetDim, RankedTensorType T,
-               const std::map<int, double> &pad, int startidx, int lastidx) {
+               const std::map<int, APFloat> &pad, int startidx, int lastidx) {
     if (SumToReductionBase<ST, SumToConv<ST>>::reduceWindowApplies(
             offsetDim, T, pad, startidx, lastidx)) {
       return false;
@@ -16357,7 +16372,7 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
   }
 
   Value makeReduction(PatternRewriter &rewriter, Value input, size_t offsetDim,
-                      RankedTensorType T, const std::map<int, double> &pad,
+                      RankedTensorType T, const std::map<int, APFloat> &pad,
                       int startidx, int lastidx, Value filter) {
 
     size_t newOffsetDim = offsetDim;
@@ -16488,15 +16503,15 @@ struct SumToReduceWindow
   using SumToReductionBase<ST, SumToReduceWindow<ST>>::matchAndRewrite;
 
   bool applies(size_t offsetDim, RankedTensorType T,
-               const std::map<int, double> &pad, int startidx, int lastidx) {
+               const std::map<int, APFloat> &pad, int startidx, int lastidx) {
     return SumToReductionBase<ST, SumToReduceWindow<ST>>::reduceWindowApplies(
         offsetDim, T, pad, startidx, lastidx);
   }
 
   Value makeReduction(PatternRewriter &rewriter, Value input, size_t offsetDim,
-                      RankedTensorType T, const std::map<int, double> &pad,
+                      RankedTensorType T, const std::map<int, APFloat> &pad,
                       int startidx, int lastidx, Value filter) {
-    double factor = pad.begin()->second;
+    auto factor = pad.begin()->second;
 
     SmallVector<int64_t> outShape =
         llvm::to_vector(cast<RankedTensorType>(input.getType()).getShape());
@@ -16532,7 +16547,7 @@ struct SumToReduceWindow
     Location locs[2] = {input.getLoc(), input.getLoc()};
 
     Value result = redwin->getResult(0);
-    if (factor != 1) {
+    if (!factor.isExactlyValue(1.0)) {
       result = rewriter.create<stablehlo::MulOp>(
           input.getLoc(), result,
           rewriter.create<stablehlo::ConstantOp>(
