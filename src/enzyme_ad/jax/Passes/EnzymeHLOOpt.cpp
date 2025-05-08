@@ -5962,7 +5962,8 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
                                 PatternRewriter &rewriter) const final {
 
     if (matchPattern(op.getRhs(), m_One())) {
-      rewriter.replaceOp(op, op.getLhs());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
     SmallVector<Attribute> constants;
