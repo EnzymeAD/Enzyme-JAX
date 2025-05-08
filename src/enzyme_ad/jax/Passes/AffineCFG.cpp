@@ -1213,17 +1213,6 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     return false;
   }
   assert(rhs.size());
-  for (auto &lhspack : lhs)
-    if (!isa<IndexType>(lhspack.getType())) {
-      lhspack = b.create<arith::IndexCastOp>(
-          cmpi.getLoc(), IndexType::get(cmpi.getContext()), lhspack);
-    }
-
-  for (auto &rhspack : rhs)
-    if (!isa<IndexType>(rhspack.getType())) {
-      rhspack = b.create<arith::IndexCastOp>(
-          cmpi.getLoc(), IndexType::get(cmpi.getContext()), rhspack);
-    }
 
   auto pred = cmpi.getPredicate();
   if (negated)
@@ -1734,6 +1723,12 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       if (!legal)
         continue;
 
+      for (auto &lhspack : applies)
+        if (!isa<IndexType>(lhspack.getType())) {
+          lhspack = rewriter.create<arith::IndexCastOp>(
+              ifOp.getLoc(), IndexType::get(ifOp.getContext()), lhspack);
+        }
+
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
@@ -1842,6 +1837,12 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       }
       if (badcmp)
         continue;
+
+      for (auto &lhspack : applies)
+        if (!isa<IndexType>(lhspack.getType())) {
+          lhspack = rewriter.create<arith::IndexCastOp>(
+              ifOp.getLoc(), IndexType::get(ifOp.getContext()), lhspack);
+        }
 
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
