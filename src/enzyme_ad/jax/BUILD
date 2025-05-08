@@ -452,6 +452,8 @@ cc_library(
     ]),
     copts = [
         "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=missing-braces",
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
