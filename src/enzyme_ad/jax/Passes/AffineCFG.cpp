@@ -3563,7 +3563,7 @@ struct SplitParallelInductions
             OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPoint(U);
 
-            for (auto UU : U->getResult(0).getUsers()) {
+            for (auto UU : llvm::early_inc_range(U->getResult(0).getUsers())) {
 
               if (isa<arith::FloorDivSIOp, arith::DivUIOp>(UU)) {
                 rewriter.setInsertionPoint(UU);
