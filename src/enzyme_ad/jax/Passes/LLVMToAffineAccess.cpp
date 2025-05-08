@@ -1470,7 +1470,8 @@ convertLLVMToAffineAccess(Operation *op,
     PtrVal addr = load.getAddr();
     handleOp(load, addr);
   });
-  if (failed) return failure();
+  if (failed)
+    return failure();
   // TODO should also gather other mem operations such as memory intrinsics
   // TODO should we shrink the scope to where no other memory operations
   // exist?
