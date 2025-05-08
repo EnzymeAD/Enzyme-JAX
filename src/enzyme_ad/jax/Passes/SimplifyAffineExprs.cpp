@@ -478,6 +478,8 @@ AffineExpr mlir::enzyme::recreateExpr(AffineExpr expr) {
         out = out + expr;
       return out;
     }
+    default:
+      return expr;
     }
   }
   return expr;
