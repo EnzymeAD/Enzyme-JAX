@@ -5050,6 +5050,27 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   }
 };
 
+// and(a, or(a, b)) -> a
+struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AndIOp op,
+                                PatternRewriter &rewriter) const override {
+
+    for (int i = 0; i < 2; i++) {
+      if (auto orOp = op->getOperand(i).getDefiningOp<arith::OrIOp>()) {
+        for (int j = 0; j < 2; j++) {
+          if (orOp->getOperand(j) == op->getOperand(1 - i)) {
+            rewriter.replaceOp(op, orOp->getOperand(j));
+            return success();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -5068,6 +5089,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
+  rpl.add<SimplifyAndOr>(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
