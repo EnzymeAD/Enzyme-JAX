@@ -17030,7 +17030,7 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
     return failure();
 
   bool anyModified = false;
-  for (auto elem : op->getUsers()) {
+  for (auto elem : llvm::make_early_inc_range(op->getUsers())) {
     if (!elem->template hasTrait<mlir::OpTrait::Elementwise>() ||
         elem->getNumResults() != 1 || elem->getNumOperands() != 1)
       continue;
