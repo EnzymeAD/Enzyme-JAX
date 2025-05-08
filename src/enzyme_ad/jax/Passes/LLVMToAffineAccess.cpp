@@ -1449,6 +1449,7 @@ convertLLVMToAffineAccess(Operation *op,
   IndexConverter ic;
 
   SmallVector<std::unique_ptr<AffineAccessBuilder>> accessBuilders;
+  bool failed = false;
   auto handleOp = [&](Operation *op, PtrVal addr) {
     LLVM_DEBUG(llvm::dbgs() << "Building affine access for " << op
                             << " for address " << addr << "\n");
@@ -1456,7 +1457,10 @@ convertLLVMToAffineAccess(Operation *op,
         std::make_unique<AffineAccessBuilder>(op, legalizeSymbols));
     AffineAccessBuilder &aab = *accessBuilders.back();
     auto dl = dataLayoutAnalysis.getAtOrAbove(op);
-    aab.build(dl, addr);
+    auto res = aab.build(dl, addr);
+    if (!res.succeeded()) {
+      failed = true;
+    }
   };
   op->walk([&](LLVM::StoreOp store) {
     PtrVal addr = store.getAddr();
@@ -1466,7 +1470,7 @@ convertLLVMToAffineAccess(Operation *op,
     PtrVal addr = load.getAddr();
     handleOp(load, addr);
   });
-
+  if (failed) return failure();
   // TODO should also gather other mem operations such as memory intrinsics
   // TODO should we shrink the scope to where no other memory operations
   // exist?

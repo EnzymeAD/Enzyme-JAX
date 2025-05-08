@@ -5208,7 +5208,9 @@ void AffineCFGPass::runOnOperation() {
   IslAnalysis islAnalysis;
   populateAffineExprSimplificationPatterns(islAnalysis, rpl);
   GreedyRewriteConfig config;
-  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config))) {
+    signalPassFailure();
+  }
 }
 
 bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
