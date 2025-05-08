@@ -16073,8 +16073,12 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
 
     SmallVector<Term<stablehlo::SliceOp>> done0;
     SmallVector<Term<Value>> todo;
-    APFloat zero(cast<FloatType>(op.getType().getElementType()).getFloatSemantics(), "0");
-    APFloat one(cast<FloatType>(op.getType().getElementType()).getFloatSemantics(), "1");
+    APFloat zero(
+        cast<FloatType>(op.getType().getElementType()).getFloatSemantics(),
+        "0");
+    APFloat one(
+        cast<FloatType>(op.getType().getElementType()).getFloatSemantics(),
+        "1");
     todo.emplace_back(one, (Value) nullptr, (Value)op.getResult());
     SmallVector<Value> intermediates;
     SmallPtrSet<Operation *, 1> seen;
@@ -16227,11 +16231,11 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       if (legal && offsetDim == -1) {
         std::optional<APFloat> tally;
         for (auto term : done) {
-	  if (tally)
-          tally = *tally + term.constantFactor;
-	  else
-	   tally = term.constantFactor;
-	}
+          if (tally)
+            tally = *tally + term.constantFactor;
+          else
+            tally = term.constantFactor;
+        }
         finalToAdd.emplace_back(*tally, nullptr, done[0].term);
         hasMerge = true;
         continue;
@@ -16241,11 +16245,11 @@ struct SumToReductionBase : public OpRewritePattern<ST> {
       for (int i = 0; i < done.size(); i++) {
         int offset = (int)done[i].term.getStartIndices()[offsetDim] -
                      (int)done[0].term.getStartIndices()[offsetDim];
-	auto found = terms.find(offset);
-	if (found != terms.end())
-	   found->second = found->second + done[i].constantFactor;
-	else
-	   terms.emplace(offset, done[i].constantFactor);
+        auto found = terms.find(offset);
+        if (found != terms.end())
+          found->second = found->second + done[i].constantFactor;
+        else
+          terms.emplace(offset, done[i].constantFactor);
       }
       assert(terms.size() > 1);
 
