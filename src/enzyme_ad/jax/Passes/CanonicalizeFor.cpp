@@ -1187,14 +1187,11 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
         } else if (addOp.getRhs() == IV) {
           stepSize = addOp.getLhs();
         } else {
-          rewriter.notifyMatchFailure(
-              whileOp, "Expect atleast one of the arg fields to be IV");
           continue;
         }
         updatedIV = arg;
         break;
       } else {
-        rewriter.notifyMatchFailure(whileOp, "Step not add");
         continue;
       }
     }
