@@ -28,7 +28,7 @@ module {
   }
   
   // CHECK-LABEL: kern2
-  // CHECK:  affine.store %cst, %arg0[(%arg1 floordiv 7) * 16 + %arg2 floordiv 16, %arg2 mod 16 + (%arg1 mod 7) * 16] 
+  // CHECK:  affine.store %cst, %arg0[%arg2 floordiv 16 + (%arg1 floordiv 7) * 16, %arg2 mod 16 + (%arg1 mod 7) * 16]
 
   func.func private @kern3(%arg0: memref<99xf64, 1>) {
     affine.parallel (%arg1, %arg2) = (0, 0) to (21, 256) {
@@ -42,6 +42,6 @@ module {
   
   // CHECK-LABEL: kern3
   // CHECK:    affine.store %cst, %arg0[%arg2 mod 16 + 1] : memref<99xf64, 1>
-  // CHECK:    affine.store %cst, %arg0[%arg2 mod 16 + %arg1] : memref<99xf64, 1>
+  // CHECK:    affine.store %cst, %arg0[%arg1 + %arg2 mod 16] : memref<99xf64, 1>
   // CHECK:    affine.store %cst, %arg0[%arg2 mod 16 + (%arg1 mod 7) * 16] : memref<99xf64, 1>
 }
