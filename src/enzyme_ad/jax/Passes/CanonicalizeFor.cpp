@@ -3012,7 +3012,8 @@ void CanonicalizeFor::runOnOperation() {
   //    WhileLICM,
   GreedyRewriteConfig config;
   config.setMaxIterations(247);
-  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config))) {
+  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(rpl),
+                                          config))) {
     signalPassFailure();
   }
 }
