@@ -424,17 +424,41 @@ AffineExpr mlir::enzyme::recreateExpr(AffineExpr expr) {
       return internalAdd(lhs, rhs);
     case AffineExprKind::Mul:
       return sortSum(lhs) * sortSum(rhs);
-    case AffineExprKind::Mod:
-      return sortSum(lhs) % sortSum(rhs);
+    case AffineExprKind::Mod: {
+      rhs = sortSum(rhs);
+      SmallVector<AffineExpr> toMod;
+      if (auto cst = dyn_cast<AffineConstantExpr>(rhs)) {
+        for (auto expr : getSumOperands(lhs)) {
+          if (!expr.isMultipleOf(cst.getValue()))
+            toMod.push_back(expr);
+        }
+      } else {
+        toMod.push_back(sortSum(lhs));
+      }
+      llvm::sort(toMod, affineCmp);
+      AffineExpr out = getAffineConstantExpr(0, expr.getContext());
+      for (auto expr : toMod)
+        out = out + expr;
+      out = out % rhs;
+      return out;
+    }
     case AffineExprKind::FloorDiv: {
       rhs = sortSum(rhs);
       SmallVector<AffineExpr> toDivide;
       SmallVector<AffineExpr> alreadyDivided;
       if (auto cst = dyn_cast<AffineConstantExpr>(rhs)) {
         for (auto expr : getSumOperands(lhs)) {
-          if (expr.isMultipleOf(cst.getValue()))
+          if (expr.isMultipleOf(cst.getValue())) {
             alreadyDivided.push_back(expr.floorDiv(cst));
-          else
+          } else if (auto cst2 = dyn_cast<AffineConstantExpr>(expr)) {
+            if (cst2.getValue() > 0 && cst.getValue() > 0 &&
+                cst2.getValue() > cst.getValue()) {
+              toDivide.push_back(expr % rhs);
+              alreadyDivided.push_back(expr.floorDiv(rhs));
+            } else {
+              toDivide.push_back(expr);
+            }
+          } else
             toDivide.push_back(expr);
         }
       } else {

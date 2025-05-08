@@ -1354,9 +1354,26 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       }
   } break;
 
-  case CmpIPredicate::ne:
+  case CmpIPredicate::ne: {
+    if (rhs.size() == 1 && matchPattern(rhs[0], m_Zero())) {
+      bool legal = true;
+      for (auto lhspack : lhs) {
+        if (!valueCmp(Cmp::GE, lhspack, 0)) {
+          legal = false;
+          break;
+        }
+        eqflags.push_back(false);
+        applies.push_back(lhspack);
+        applies.push_back(lhspack);
+        AffineExpr expr = b.getAffineSymbolExpr(2 * exprs.size() + 0);
+        exprs.push_back(expr - 1);
+      }
+      if (legal)
+        return true;
+    }
     LLVM_DEBUG(llvm::dbgs() << "illegal icmp: " << cmpi << "\n");
     return false;
+  }
   }
   return true;
 }
@@ -1669,80 +1686,101 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       types.push_back(v.getType());
     }
 
-    SmallVector<AffineExpr, 2> exprs;
-    SmallVector<bool, 2> eqflags;
-    SmallVector<Value, 4> applies;
+    for (auto tryNegate : {false, true}) {
+      SmallVector<AffineExpr, 2> exprs;
+      SmallVector<bool, 2> eqflags;
+      SmallVector<Value, 4> applies;
 
-    // condition, Negated
-    std::deque<std::pair<Value, bool>> todo = {
-        std::make_pair(ifOp.getCondition(), false)};
-    while (todo.size()) {
-      auto &&[cur, negated] = todo.front();
-      todo.pop_front();
-      if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
-        if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated)) {
-          return failure();
+      // condition, Negated
+      std::deque<std::pair<Value, bool>> todo = {
+          std::make_pair(ifOp.getCondition(), tryNegate)};
+      bool legal = true;
+      while (todo.size()) {
+        auto &&[cur, negated] = todo.front();
+        todo.pop_front();
+        if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
+          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated)) {
+            legal = false;
+            break;
+          }
+          continue;
         }
+        if (!negated) {
+          if (auto andi = cur.getDefiningOp<AndIOp>()) {
+            todo.emplace_back(andi.getOperand(0), negated);
+            todo.emplace_back(andi.getOperand(1), negated);
+            continue;
+          }
+        }
+        if (negated) {
+          if (auto andi = cur.getDefiningOp<OrIOp>()) {
+            todo.emplace_back(andi.getOperand(0), negated);
+            todo.emplace_back(andi.getOperand(1), negated);
+            continue;
+          }
+        }
+
+        if (auto noti = cur.getDefiningOp<XOrIOp>()) {
+          if (matchPattern(noti.getOperand(1), m_One())) {
+            todo.emplace_back(noti.getOperand(0), !negated);
+            continue;
+          }
+        }
+        LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
+                                << " - negated: " << negated << "\n");
+        legal = false;
+        break;
+      }
+      if (!legal)
         continue;
-      }
-      if (!negated) {
-        if (auto andi = cur.getDefiningOp<AndIOp>()) {
-          todo.emplace_back(andi.getOperand(0), negated);
-          todo.emplace_back(andi.getOperand(1), negated);
-          continue;
-        }
-      }
-      if (negated) {
-        if (auto andi = cur.getDefiningOp<OrIOp>()) {
-          todo.emplace_back(andi.getOperand(0), negated);
-          todo.emplace_back(andi.getOperand(1), negated);
-          continue;
-        }
-      }
 
-      if (auto noti = cur.getDefiningOp<XOrIOp>()) {
-        if (matchPattern(noti.getOperand(1), m_One())) {
-          todo.emplace_back(noti.getOperand(0), !negated);
-          continue;
-        }
-      }
-      LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
-                              << " - negated: " << negated << "\n");
-      return failure();
-    }
+      auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+      DominanceInfo DI(scope);
 
-    auto *scope = affine::getAffineScope(ifOp)->getParentOp();
-    DominanceInfo DI(scope);
+      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
+                                  eqflags);
+      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &applies, DI);
+      affine::canonicalizeSetAndOperands(&iset, &applies);
+      affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
+          ifOp.getLoc(), types, iset, applies,
+          /*elseBlock=*/true);
 
-    auto iset =
-        IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs, eqflags);
-    fully2ComposeIntegerSetAndOperands(rewriter, &iset, &applies, DI);
-    affine::canonicalizeSetAndOperands(&iset, &applies);
-    affine::AffineIfOp affineIfOp =
-        rewriter.create<affine::AffineIfOp>(ifOp.getLoc(), types, iset, applies,
-                                            /*elseBlock=*/true);
-
-    rewriter.setInsertionPoint(ifOp.thenYield());
-    rewriter.replaceOpWithNewOp<affine::AffineYieldOp>(
-        ifOp.thenYield(), ifOp.thenYield().getOperands());
-
-    rewriter.eraseBlock(affineIfOp.getThenBlock());
-    rewriter.eraseBlock(affineIfOp.getElseBlock());
-    if (ifOp.getElseRegion().getBlocks().size()) {
-      rewriter.setInsertionPoint(ifOp.elseYield());
+      rewriter.setInsertionPoint(ifOp.thenYield());
       rewriter.replaceOpWithNewOp<affine::AffineYieldOp>(
-          ifOp.elseYield(), ifOp.elseYield().getOperands());
+          ifOp.thenYield(), ifOp.thenYield().getOperands());
+
+      rewriter.eraseBlock(affineIfOp.getThenBlock());
+      rewriter.eraseBlock(affineIfOp.getElseBlock());
+      if (ifOp.getElseRegion().getBlocks().size()) {
+        rewriter.setInsertionPoint(ifOp.elseYield());
+        rewriter.replaceOpWithNewOp<affine::AffineYieldOp>(
+            ifOp.elseYield(), ifOp.elseYield().getOperands());
+      }
+
+      if (!tryNegate) {
+        rewriter.inlineRegionBefore(ifOp.getThenRegion(),
+                                    affineIfOp.getThenRegion(),
+                                    affineIfOp.getThenRegion().begin());
+        rewriter.inlineRegionBefore(ifOp.getElseRegion(),
+                                    affineIfOp.getElseRegion(),
+                                    affineIfOp.getElseRegion().begin());
+      } else {
+        if (ifOp.getElseRegion().empty()) {
+          rewriter.createBlock(&affineIfOp.getThenRegion());
+          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc());
+        } else {
+          rewriter.inlineRegionBefore(ifOp.getElseRegion(),
+                                      affineIfOp.getThenRegion(),
+                                      affineIfOp.getThenRegion().begin());
+        }
+        rewriter.inlineRegionBefore(ifOp.getThenRegion(),
+                                    affineIfOp.getElseRegion(),
+                                    affineIfOp.getElseRegion().begin());
+      }
+      rewriter.replaceOp(ifOp, affineIfOp.getResults());
+      return success();
     }
-
-    rewriter.inlineRegionBefore(ifOp.getThenRegion(),
-                                affineIfOp.getThenRegion(),
-                                affineIfOp.getThenRegion().begin());
-    rewriter.inlineRegionBefore(ifOp.getElseRegion(),
-                                affineIfOp.getElseRegion(),
-                                affineIfOp.getElseRegion().begin());
-
-    rewriter.replaceOp(ifOp, affineIfOp.getResults());
-    return success();
+    return failure();
   }
 };
 
@@ -5012,6 +5050,27 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   }
 };
 
+// and(a, or(a, b)) -> a
+struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AndIOp op,
+                                PatternRewriter &rewriter) const override {
+
+    for (int i = 0; i < 2; i++) {
+      if (auto orOp = op->getOperand(i).getDefiningOp<arith::OrIOp>()) {
+        for (int j = 0; j < 2; j++) {
+          if (orOp->getOperand(j) == op->getOperand(1 - i)) {
+            rewriter.replaceOp(op, orOp->getOperand(j));
+            return success();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -5030,6 +5089,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
+  rpl.add<SimplifyAndOr>(context, 2);
   rpl.add<SplitParallelInductions>(context, 1);
 }
 
