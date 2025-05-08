@@ -120,7 +120,8 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
 
 static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
                                    ArrayRef<bool> isElse,
-                                   FlatAffineValueConstraints *domain) {
+                                   FlatAffineValueConstraints *domain,
+                                   bool allowFail = false) {
   assert(ops.size() == isElse.size() &&
          "expected co-indexed ops and isElse arrays");
   SmallVector<Value> indices;
@@ -151,7 +152,7 @@ static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
       if (failed(domain->addAffineForOpDomain(forOp)))
         return failure();
     } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
-      if (failed(addAffineIfOpDomain(ifOp, complement, domain)))
+      if (failed(addAffineIfOpDomain(ifOp, complement, domain)) && !allowFail)
         return failure();
     } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op))
       if (failed(domain->addAffineParallelOpDomain(parallelOp)))
@@ -160,8 +161,8 @@ static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
   return success();
 }
 
-std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
-                                                            Operation *op) {
+std::tuple<isl_set *, FlatAffineValueConstraints>
+getDomain(isl_ctx *ctx, Operation *op, bool overApproximationAllowed = false) {
   // Extract the affine for/if ops enclosing the caller and insert them into the
   // enclosingOps list.
   using EnclosingOpList = llvm::SmallVector<mlir::Operation *, 8>;
@@ -179,7 +180,8 @@ std::tuple<isl_set *, FlatAffineValueConstraints> getDomain(isl_ctx *ctx,
   }
   // The domain constraints can then be collected from the enclosing ops.
   mlir::affine::FlatAffineValueConstraints cst;
-  auto res = succeeded(getIndexSetEx(enclosingOps, isElse, &cst));
+  auto res = succeeded(
+      getIndexSetEx(enclosingOps, isElse, &cst, overApproximationAllowed));
   if (!res)
     return {nullptr, FlatAffineValueConstraints()};
 
@@ -769,7 +771,7 @@ isl_map *IslAnalysis::getAccessMap(mlir::Operation *op) {
 std::optional<SmallVector<isl_aff *>>
 IslAnalysis::getAffExprs(Operation *op, AffineValueMap avm) {
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
-  auto [domain, cst] = ::getDomain(ctx, op);
+  auto [domain, cst] = ::getDomain(ctx, op, true);
   if (!domain)
     return std::nullopt;
   LLVM_DEBUG(isl_set_dump(domain));
@@ -869,7 +871,7 @@ template <typename T>
 LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
   isl_ctx *ctx = islAnalysis.getCtx();
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
-  auto [domain, cst] = ::getDomain(ctx, access);
+  auto [domain, cst] = ::getDomain(ctx, access, true);
   if (!domain)
     return failure();
   LLVM_DEBUG(isl_set_dump(domain));
