@@ -56,14 +56,14 @@ bool isValidIndex(mlir::Value val);
 struct ValueOrInt {
   bool isValue;
   mlir::Value v_val;
-  int64_t i_val;
+  llvm::APInt i_val;
   ValueOrInt(mlir::Value v) { initValue(v); }
   void initValue(mlir::Value v) {
     using namespace mlir;
     if (v) {
       IntegerAttr iattr;
       if (matchPattern(v, m_Constant(&iattr))) {
-        i_val = iattr.getValue().getSExtValue();
+        i_val = iattr.getValue();
         v_val = nullptr;
         isValue = false;
         return;
@@ -73,17 +73,17 @@ struct ValueOrInt {
     v_val = v;
   }
 
-  ValueOrInt(size_t i) : isValue(false), v_val(), i_val(i) {}
+  ValueOrInt(llvm::APInt i) : isValue(false), v_val(), i_val(i) {}
 
   bool operator>=(int64_t v) {
     if (isValue)
       return false;
-    return i_val >= v;
+    return i_val.sge(v);
   }
   bool operator>(int64_t v) {
     if (isValue)
       return false;
-    return i_val > v;
+    return i_val.sgt(v);
   }
   bool operator==(int64_t v) {
     if (isValue)
@@ -93,37 +93,52 @@ struct ValueOrInt {
   bool operator<(int64_t v) {
     if (isValue)
       return false;
-    return i_val < v;
+    return i_val.slt(v);
   }
   bool operator<=(int64_t v) {
     if (isValue)
       return false;
-    return i_val <= v;
+    return i_val.sle(v);
   }
   bool operator>=(llvm::APInt v) {
     if (isValue)
       return false;
-    return i_val >= v.getSExtValue();
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator>=(v.getSExtValue());
+    }
+    return i_val.sge(v);
   }
   bool operator>(llvm::APInt v) {
     if (isValue)
       return false;
-    return i_val > v.getSExtValue();
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator>(v.getSExtValue());
+    }
+    return i_val.sgt(v);
   }
   bool operator==(llvm::APInt v) {
     if (isValue)
       return false;
-    return i_val == v.getSExtValue();
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator==(v.getSExtValue());
+    }
+    return i_val == v;
   }
   bool operator<(llvm::APInt v) {
     if (isValue)
       return false;
-    return i_val < v.getSExtValue();
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator<(v.getSExtValue());
+    }
+    return i_val.slt(v);
   }
   bool operator<=(llvm::APInt v) {
     if (isValue)
       return false;
-    return i_val <= v.getSExtValue();
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator<=(v.getSExtValue());
+    }
+    return i_val.sle(v);
   }
 };
 
@@ -132,7 +147,15 @@ enum class Cmp { EQ, LT, LE, GT, GE };
 bool valueCmp(Cmp cmp, mlir::AffineExpr expr, size_t numDim,
               mlir::ValueRange operands, ValueOrInt val);
 
+bool valueCmp(Cmp cmp, mlir::AffineExpr expr, size_t numDim,
+              mlir::ValueRange operands, int64_t val);
+
+bool valueCmp(Cmp cmp, ValueOrInt bval, ValueOrInt val);
+bool valueCmp(Cmp cmp, ValueOrInt bval, int64_t val);
+
 bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
+
+bool valueCmp(Cmp cmp, llvm::APInt bval, ValueOrInt val);
 
 bool isReadOnly(mlir::Operation *);
 bool isReadNone(mlir::Operation *);
