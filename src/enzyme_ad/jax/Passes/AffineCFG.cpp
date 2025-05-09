@@ -1218,6 +1218,42 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   if (negated)
     pred = arith::invertPredicate(pred);
 
+  if (lhs.size() == 1 && matchPattern(lhs[0], m_Constant())) {
+    auto tmp = lhs;
+    lhs = rhs;
+    rhs = tmp;
+    switch (pred) {
+    case CmpIPredicate::eq:
+    case CmpIPredicate::ne:
+      break;
+    case CmpIPredicate::slt:
+      pred = CmpIPredicate::sgt;
+      break;
+    case CmpIPredicate::sle:
+      pred = CmpIPredicate::sge;
+      break;
+    case CmpIPredicate::ult:
+      pred = CmpIPredicate::ugt;
+      break;
+    case CmpIPredicate::ule:
+      pred = CmpIPredicate::uge;
+      break;
+
+    case CmpIPredicate::sgt:
+      pred = CmpIPredicate::slt;
+      break;
+    case CmpIPredicate::sge:
+      pred = CmpIPredicate::sle;
+      break;
+    case CmpIPredicate::ugt:
+      pred = CmpIPredicate::ult;
+      break;
+    case CmpIPredicate::uge:
+      pred = CmpIPredicate::ule;
+      break;
+    }
+  }
+
   switch (pred) {
   case CmpIPredicate::eq: {
     if (lhs_min || lhs_max || rhs_min || rhs_max)
