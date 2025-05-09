@@ -63,7 +63,7 @@ struct ValueOrInt {
     if (v) {
       IntegerAttr iattr;
       if (matchPattern(v, m_Constant(&iattr))) {
-        i_val = iattr.getValue().getSExtValue();
+        i_val = iattr.getValue();
         v_val = nullptr;
         isValue = false;
         return;
@@ -103,26 +103,41 @@ struct ValueOrInt {
   bool operator>=(llvm::APInt v) {
     if (isValue)
       return false;
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator>=(v.getSExtValue());
+    }
     return i_val.sge(v);
   }
   bool operator>(llvm::APInt v) {
     if (isValue)
       return false;
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator>(v.getSExtValue());
+    }
     return i_val.sgt(v);
   }
   bool operator==(llvm::APInt v) {
     if (isValue)
       return false;
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator==(v.getSExtValue());
+    }
     return i_val == v;
   }
   bool operator<(llvm::APInt v) {
     if (isValue)
       return false;
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator<(v.getSExtValue());
+    }
     return i_val.slt(v);
   }
   bool operator<=(llvm::APInt v) {
     if (isValue)
       return false;
+    if (v.getBitWidth() != i_val.getBitWidth()) {
+      return operator<=(v.getSExtValue());
+    }
     return i_val.sle(v);
   }
 };

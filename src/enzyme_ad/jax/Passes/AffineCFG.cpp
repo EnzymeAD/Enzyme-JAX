@@ -102,7 +102,7 @@ bool isValidSymbolInt(Value value, bool recur) {
 
 struct AffineApplyNormalizer {
   AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
-                        PatternRewriter &rewriter, DominanceInfo &DI);
+                        PatternRewriter *rewriter, DominanceInfo *DI);
 
   /// Returns the AffineMap resulting from normalization.
   AffineMap getAffineMap() { return affineMap; }
@@ -205,8 +205,8 @@ static bool legalCondition(Value en, bool dim = false) {
 /// non-trivial, recursive, procedure.
 AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                                              ArrayRef<Value> operands,
-                                             PatternRewriter &rewriter,
-                                             DominanceInfo &DI) {
+                                             PatternRewriter *rewriter,
+                                             DominanceInfo *DI) {
   assert(map.getNumInputs() == operands.size() &&
          "number of operands does not match the number of map inputs");
 
@@ -313,7 +313,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         assert(next->getBlock());
       if (front == nullptr)
         front = next;
-      else if (DI.dominates(front, next))
+      else if (DI && DI->dominates(front, next))
         front = next;
       if (front)
         assert(front->getBlock());
@@ -322,22 +322,27 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!front)
       op->dump();
     assert(front);
-    PatternRewriter::InsertionGuard B(rewriter);
-    rewriter.setInsertionPoint(front);
-    if (front)
-      assert(front->getBlock());
-    auto cloned = rewriter.clone(*op);
-    replaceOp(op, cloned);
-    if (front)
-      assert(front->getBlock());
-    for (auto op_ptr : operationContext) {
-      if (*op_ptr == op)
-        *op_ptr = cloned;
-    }
-    rewriter.replaceOp(op, cloned->getResults());
+    if (!rewriter) {
+      operationContext.pop_back();
+      return op->getResult(0);
+    } else {
+      PatternRewriter::InsertionGuard B(*rewriter);
+      rewriter->setInsertionPoint(front);
+      if (front)
+        assert(front->getBlock());
+      auto cloned = rewriter->clone(*op);
+      replaceOp(op, cloned);
+      if (front)
+        assert(front->getBlock());
+      for (auto op_ptr : operationContext) {
+        if (*op_ptr == op)
+          *op_ptr = cloned;
+      }
+      rewriter->replaceOp(op, cloned->getResults());
 
-    operationContext.pop_back();
-    return cloned->getResult(0);
+      operationContext.pop_back();
+      return cloned->getResult(0);
+    }
   };
   auto renumberOneSymbol = [&](Value v) {
     for (auto i : llvm::enumerate(addedValues)) {
@@ -677,8 +682,8 @@ AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
 
 static void composeAffineMapAndOperands(AffineMap *map,
                                         SmallVectorImpl<Value> *operands,
-                                        PatternRewriter &rewriter,
-                                        DominanceInfo &DI) {
+                                        PatternRewriter *rewriter,
+                                        DominanceInfo *DI) {
   AffineApplyNormalizer normalizer(*map, *operands, rewriter, DI);
   auto normalizedMap = normalizer.getAffineMap();
   auto normalizedOperands = normalizer.getOperands();
@@ -707,56 +712,64 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands) {
   return false;
 }
 
-void fully2ComposeAffineMapAndOperands(PatternRewriter &builder, AffineMap *map,
+void fully2ComposeAffineMapAndOperands(PatternRewriter *builder, AffineMap *map,
                                        SmallVectorImpl<Value> *operands,
-                                       DominanceInfo &DI) {
+                                       DominanceInfo *DI) {
   IRMapping indexMap;
-  for (auto op : *operands) {
-    SmallVector<IndexCastOp> attempt;
-    auto idx0 = op.getDefiningOp<IndexCastOp>();
-    attempt.push_back(idx0);
-    if (!idx0)
-      continue;
+  if (builder)
+    for (auto op : *operands) {
+      SmallVector<IndexCastOp> attempt;
+      auto idx0 = op.getDefiningOp<IndexCastOp>();
+      attempt.push_back(idx0);
+      if (!idx0)
+        continue;
 
-    for (auto &u : idx0.getIn().getUses()) {
-      if (auto idx = dyn_cast<IndexCastOp>(u.getOwner()))
-        if (DI.dominates((Operation *)idx, &*builder.getInsertionPoint()))
-          attempt.push_back(idx);
-    }
+      for (auto &u : idx0.getIn().getUses()) {
+        if (auto idx = dyn_cast<IndexCastOp>(u.getOwner()))
+          if (DI->dominates((Operation *)idx, &*builder->getInsertionPoint()))
+            attempt.push_back(idx);
+      }
 
-    for (auto idx : attempt) {
-      if (affine::isValidSymbol(idx)) {
-        indexMap.map(idx.getIn(), idx);
-        break;
+      for (auto idx : attempt) {
+        if (affine::isValidSymbol(idx)) {
+          indexMap.map(idx.getIn(), idx);
+          break;
+        }
       }
     }
-  }
   assert(map->getNumInputs() == operands->size());
   while (need(map, operands)) {
     composeAffineMapAndOperands(map, operands, builder, DI);
     assert(map->getNumInputs() == operands->size());
   }
   *map = simplifyAffineMap(*map);
-  for (auto &op : *operands) {
-    if (!op.getType().isIndex()) {
-      Operation *toInsert;
-      if (auto *o = op.getDefiningOp())
-        toInsert = o->getNextNode();
-      else {
-        auto BA = cast<BlockArgument>(op);
-        toInsert = &BA.getOwner()->front();
-      }
+  if (builder)
+    for (auto &op : *operands) {
+      if (!op.getType().isIndex()) {
+        Operation *toInsert;
+        if (auto *o = op.getDefiningOp())
+          toInsert = o->getNextNode();
+        else {
+          auto BA = cast<BlockArgument>(op);
+          toInsert = &BA.getOwner()->front();
+        }
 
-      if (auto v = indexMap.lookupOrNull(op))
-        op = v;
-      else {
-        PatternRewriter::InsertionGuard B(builder);
-        builder.setInsertionPoint(toInsert);
-        op = builder.create<IndexCastOp>(op.getLoc(), builder.getIndexType(),
-                                         op);
+        if (auto v = indexMap.lookupOrNull(op))
+          op = v;
+        else {
+          PatternRewriter::InsertionGuard B(*builder);
+          builder->setInsertionPoint(toInsert);
+          op = builder->create<IndexCastOp>(op.getLoc(),
+                                            builder->getIndexType(), op);
+        }
       }
     }
-  }
+}
+
+void fully2ComposeAffineMapAndOperands(PatternRewriter &builder, AffineMap *map,
+                                       SmallVectorImpl<Value> *operands,
+                                       DominanceInfo &DI) {
+  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI);
 }
 
 void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
@@ -787,7 +800,7 @@ void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
   auto map = AffineMap::get(set->getNumDims(), set->getNumSymbols(),
                             set->getConstraints(), set->getContext());
   while (need(&map, operands)) {
-    composeAffineMapAndOperands(&map, operands, builder, DI);
+    composeAffineMapAndOperands(&map, operands, &builder, &DI);
   }
   map = simplifyAffineMap(map);
   *set = IntegerSet::get(map.getNumDims(), map.getNumSymbols(),
@@ -1199,8 +1212,8 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   bool lhs_min = false;
   bool lhs_max = false;
   if (!handleMinMax(cmpi.getLhs(), lhs0, lhs_min, lhs_max)) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "illegal lhs: " << cmpi.getLhs() << " - " << cmpi << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "illegal lhs minmax: " << cmpi.getLhs() << " - "
+                            << cmpi << "\n");
     return false;
   }
   assert(lhs0.size());
@@ -1208,8 +1221,8 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   bool rhs_min = false;
   bool rhs_max = false;
   if (!handleMinMax(cmpi.getRhs(), rhs0, rhs_min, rhs_max)) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "illegal rhs: " << cmpi.getRhs() << " - " << cmpi << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "illegal rhs minmax: " << cmpi.getRhs() << " - "
+                            << cmpi << "\n");
     return false;
   }
   assert(rhs0.size());
@@ -1224,8 +1237,9 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   }
 
   auto pred = cmpi.getPredicate();
-  if (negated)
+  if (negated) {
     pred = arith::invertPredicate(pred);
+  }
 
   if (lhs.size() == 1 && !lhs[0].isValue) {
     auto tmp = lhs;
@@ -1357,8 +1371,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
                               b.getAffineSymbolExpr(2 * exprs.size() + 1)};
         auto expr = dims[0] - dims[1];
-        if (cmpi.getPredicate() == CmpIPredicate::sgt ||
-            cmpi.getPredicate() == CmpIPredicate::ugt)
+        if (pred == CmpIPredicate::sgt || pred == CmpIPredicate::ugt)
           expr = expr - 1;
         exprs.push_back(expr);
       }
@@ -1402,8 +1415,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
                               b.getAffineSymbolExpr(2 * exprs.size() + 1)};
         auto expr = dims[1] - dims[0];
-        if (cmpi.getPredicate() == CmpIPredicate::slt ||
-            cmpi.getPredicate() == CmpIPredicate::ult)
+        if (pred == CmpIPredicate::slt || pred == CmpIPredicate::ult)
           expr = expr - 1;
         exprs.push_back(expr);
       }
@@ -1413,7 +1425,30 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 0) {
       bool legal = true;
       for (auto lhspack : lhs) {
-        if (!valueCmp(Cmp::GE, lhspack, 0)) {
+        bool atLeastZero = false;
+        if (valueCmp(Cmp::GE, lhspack, 0))
+          atLeastZero = true;
+        else if (lhspack.isValue) {
+          AffineExpr exprTmp[] = {b.getAffineSymbolExpr(0)};
+          auto mapTmp = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1,
+                                       exprTmp, b.getContext());
+          SmallVector<Value> tmp = {lhspack.v_val};
+
+          fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr);
+          if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp,
+                       0)) {
+            atLeastZero = true;
+          } else {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "illegal icmp ne lhs is not at least zero: "
+                       << lhspack.v_val << "\n");
+          }
+        } else {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "illegal icmp ne lhs is not at least zero: "
+                     << lhspack.i_val << "\n");
+        }
+        if (!atLeastZero) {
           legal = false;
           break;
         }
@@ -3363,6 +3398,9 @@ struct SplitParallelInductions
             if (!matchPattern(newBase, m_ConstantInt(&iattr))) {
               legal = false;
               break;
+            }
+            if (base.i_val.getBitWidth() != iattr.getBitWidth()) {
+              base.i_val = base.i_val.sextOrTrunc(iattr.getBitWidth());
             }
             if (!(base.i_val == iattr ||
                   (isa<arith::FloorDivSIOp, arith::DivUIOp>(U) &&
@@ -5330,6 +5368,17 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
       return valueCmp(cmp, baval.getLhs(), val) &&
              valueCmp(cmp, baval.getRhs(), val);
     }
+    if (auto baval = bval.getDefiningOp<arith::MulIOp>()) {
+      APInt ival;
+      if (matchPattern(baval.getRhs(), m_ConstantInt(&ival))) {
+        if (ival == 0)
+          return true;
+        if (ival.isStrictlyPositive())
+          return valueCmp(cmp, baval.getLhs(), val);
+        else
+          return valueCmp(Cmp::LE, baval.getLhs(), val);
+      }
+    }
     if (auto baval = bval.getDefiningOp<arith::ShRUIOp>()) {
       return valueCmp(cmp, baval.getLhs(), val);
     }
@@ -5566,8 +5615,7 @@ bool valueCmp(Cmp cmp, ValueOrInt expr, int64_t val) {
   return valueCmp(cmp, expr, APInt(64, val, true));
 }
 
-bool valueCmp(Cmp cmp, APInt expr, size_t numDim, ValueRange operands,
-              ValueOrInt val) {
+bool valueCmp(Cmp cmp, APInt expr, ValueOrInt val) {
   switch (cmp) {
   case Cmp::EQ:
     return val == expr;
