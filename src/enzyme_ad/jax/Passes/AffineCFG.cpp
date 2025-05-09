@@ -1193,65 +1193,92 @@ bool handleMinMax(Value start, SmallVectorImpl<Value> &out, bool &min,
 }
 
 bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
-            SmallVectorImpl<bool> &eqflags, SmallVectorImpl<Value> &applies,
+            SmallVectorImpl<bool> &eqflags, SmallVectorImpl<ValueOrInt> &applies,
             bool negated) {
-  SmallVector<Value> lhs;
+  SmallVector<Value> lhs0;
   bool lhs_min = false;
   bool lhs_max = false;
-  if (!handleMinMax(cmpi.getLhs(), lhs, lhs_min, lhs_max)) {
+  if (!handleMinMax(cmpi.getLhs(), lhs0, lhs_min, lhs_max)) {
     LLVM_DEBUG(llvm::dbgs()
                << "illegal lhs: " << cmpi.getLhs() << " - " << cmpi << "\n");
     return false;
   }
-  assert(lhs.size());
-  SmallVector<Value> rhs;
+  assert(lhs0.size());
+  SmallVector<Value> rhs0;
   bool rhs_min = false;
   bool rhs_max = false;
-  if (!handleMinMax(cmpi.getRhs(), rhs, rhs_min, rhs_max)) {
+  if (!handleMinMax(cmpi.getRhs(), rhs0, rhs_min, rhs_max)) {
     LLVM_DEBUG(llvm::dbgs()
                << "illegal rhs: " << cmpi.getRhs() << " - " << cmpi << "\n");
     return false;
   }
-  assert(rhs.size());
+  assert(rhs0.size());
+
+  SmallVector<ValueOrInt> lhs;
+  for (auto v : lhs0) {
+    lhs.emplace_back(v);
+  }
+  SmallVector<ValueOrInt> rhs;
+  for (auto v : rhs0) {
+    rhs.emplace_back(v);
+  }
 
   auto pred = cmpi.getPredicate();
   if (negated)
     pred = arith::invertPredicate(pred);
 
-  if (lhs.size() == 1 && matchPattern(lhs[0], m_Constant())) {
-    auto tmp = lhs;
-    lhs = rhs;
-    rhs = tmp;
-    switch (pred) {
-    case CmpIPredicate::eq:
-    case CmpIPredicate::ne:
-      break;
-    case CmpIPredicate::slt:
-      pred = CmpIPredicate::sgt;
-      break;
-    case CmpIPredicate::sle:
-      pred = CmpIPredicate::sge;
-      break;
-    case CmpIPredicate::ult:
-      pred = CmpIPredicate::ugt;
-      break;
-    case CmpIPredicate::ule:
-      pred = CmpIPredicate::uge;
-      break;
+  if (lhs.size() == 1 && !lhs[0].isValue) {
+     auto tmp = lhs;
+     lhs = rhs;
+     rhs = tmp;
+     switch(pred) {
+	case CmpIPredicate::eq:
+	case CmpIPredicate::ne:
+		break;
+	case CmpIPredicate::slt:
+		pred = CmpIPredicate::sgt;
+		break;
+	case CmpIPredicate::sle:
+		pred = CmpIPredicate::sge;
+		break;
+	case CmpIPredicate::ult:
+		pred = CmpIPredicate::ugt;
+		break;
+	case CmpIPredicate::ule:
+		pred = CmpIPredicate::uge;
+		break;
+	
+	case CmpIPredicate::sgt:
+		pred = CmpIPredicate::slt;
+		break;
+	case CmpIPredicate::sge:
+		pred = CmpIPredicate::sle;
+		break;
+	case CmpIPredicate::ugt:
+		pred = CmpIPredicate::ult;
+		break;
+	case CmpIPredicate::uge:
+		pred = CmpIPredicate::ule;
+		break;
 
-    case CmpIPredicate::sgt:
-      pred = CmpIPredicate::slt;
-      break;
-    case CmpIPredicate::sge:
-      pred = CmpIPredicate::sle;
-      break;
-    case CmpIPredicate::ugt:
-      pred = CmpIPredicate::ult;
-      break;
-    case CmpIPredicate::uge:
-      pred = CmpIPredicate::ule;
-      break;
-    }
+     }
+  }
+  
+  if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 1) {
+     switch(pred) {
+	default:;
+		break;
+	// a u< 1 -> a == 0
+	case CmpIPredicate::ult:
+		rhs[0].i_val = 0;
+		pred = CmpIPredicate::eq;
+		break;
+	// a u>= 1 -> a != 0
+	case CmpIPredicate::uge:
+		rhs[0].i_val = 0;
+		pred = CmpIPredicate::ne;
+		break;
+     } 
   }
 
   switch (pred) {
@@ -1271,8 +1298,8 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   case CmpIPredicate::uge:
     for (auto lhspack : lhs)
       if (!valueCmp(Cmp::GE, lhspack, 0)) {
-        APInt ival;
-        if (matchPattern(lhspack, m_ConstantInt(&ival))) {
+        if (!lhspack.isValue) {
+	  auto ival = lhspack.i_val;
           assert(ival.isNegative());
           assert(ival.isSingleWord());
           // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
@@ -1282,19 +1309,19 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           // just the sign bit.
           if (ival.isMinSignedValue()) {
             LLVM_DEBUG(llvm::dbgs() << "illegal const greater lhs icmp: "
-                                    << cmpi << " - " << lhspack << "\n");
+                                    << cmpi << " - " << ival << "\n");
             return false;
           }
         } else {
           LLVM_DEBUG(llvm::dbgs() << "illegal greater lhs icmp: " << cmpi
-                                  << " - " << lhspack << "\n");
+                                  << " - " << lhspack.v_val << "\n");
           return false;
         }
       }
     for (auto &rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
-        APInt ival;
-        if (matchPattern(rhspack, m_ConstantInt(&ival))) {
+        if (!rhspack.isValue) {
+	  auto ival = rhspack.i_val;
           assert(ival.isNegative());
           assert(ival.isSingleWord());
           // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
@@ -1304,12 +1331,12 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           // just the sign bit.
           if (ival.isMinSignedValue()) {
             LLVM_DEBUG(llvm::dbgs() << "illegal const greater rhs icmp: "
-                                    << cmpi << " - " << rhspack << "\n");
+                                    << cmpi << " - " << ival << "\n");
             return false;
           }
         } else {
           LLVM_DEBUG(llvm::dbgs() << "illegal greater rhs icmp: " << cmpi
-                                  << " - " << rhspack << "\n");
+                                  << " - " << rhspack.v_val << "\n");
           return false;
         }
       }
@@ -1354,8 +1381,12 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     }
     for (auto rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
+	      if (rhspack.isValue)
         LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
-                                << rhspack << "\n");
+                                << rhspack.v_val << "\n");
+	      else 
+        LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
+                                << rhspack.i_val << "\n");
         return false;
       }
 
@@ -1380,7 +1411,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   } break;
 
   case CmpIPredicate::ne: {
-    if (rhs.size() == 1 && matchPattern(rhs[0], m_Zero())) {
+    if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 0) {
       bool legal = true;
       for (auto lhspack : lhs) {
         if (!valueCmp(Cmp::GE, lhspack, 0)) {
@@ -1714,7 +1745,7 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
     for (auto tryNegate : {false, true}) {
       SmallVector<AffineExpr, 2> exprs;
       SmallVector<bool, 2> eqflags;
-      SmallVector<Value, 4> applies;
+      SmallVector<ValueOrInt, 4> applies;
 
       // condition, Negated
       std::deque<std::pair<Value, bool>> todo = {
@@ -1759,21 +1790,29 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       if (!legal)
         continue;
 
-      for (auto &lhspack : applies)
-        if (!isa<IndexType>(lhspack.getType())) {
-          lhspack = rewriter.create<arith::IndexCastOp>(
-              ifOp.getLoc(), IndexType::get(ifOp.getContext()), lhspack);
+      SmallVector<Value> operands;
+      auto ity = IndexType::get(ifOp.getContext());
+      for (auto vori : applies) {
+	Value operand = vori.v_val;
+	if (!vori.isValue) {
+	  operand = rewriter.create<arith::ConstantIndexOp>(ifOp.getLoc(), vori.i_val.getSExtValue());
+	}
+        if (!isa<IndexType>(operand.getType())) {
+          operand = rewriter.create<arith::IndexCastOp>(
+              ifOp.getLoc(), ity, operand);
         }
+	operands.push_back(operand);
+      }
 
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
       auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
                                   eqflags);
-      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &applies, DI);
-      affine::canonicalizeSetAndOperands(&iset, &applies);
+      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
+      affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), types, iset, applies,
+          ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
       rewriter.setInsertionPoint(ifOp.thenYield());
@@ -1829,7 +1868,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
     for (int i = 0; i < 2; i++) {
       SmallVector<AffineExpr, 2> exprs;
       SmallVector<bool, 2> eqflags;
-      SmallVector<Value, 4> applies;
+      SmallVector<ValueOrInt, 4> applies;
 
       // condition, Negated
       std::deque<std::pair<Value, bool>> todo = {
@@ -1874,21 +1913,29 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       if (badcmp)
         continue;
 
-      for (auto &lhspack : applies)
-        if (!isa<IndexType>(lhspack.getType())) {
-          lhspack = rewriter.create<arith::IndexCastOp>(
-              ifOp.getLoc(), IndexType::get(ifOp.getContext()), lhspack);
+      SmallVector<Value> operands;
+      auto ity = IndexType::get(ifOp.getContext());
+      for (auto vori : applies) {
+	Value operand = vori.v_val;
+	if (!vori.isValue) {
+	  operand = rewriter.create<arith::ConstantIndexOp>(ifOp.getLoc(), vori.i_val.getSExtValue());
+	}
+        if (!isa<IndexType>(operand.getType())) {
+          operand = rewriter.create<arith::IndexCastOp>(
+              ifOp.getLoc(), ity, operand);
         }
+	operands.push_back(operand);
+      }
 
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
       auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
                                   eqflags);
-      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &applies, DI);
-      affine::canonicalizeSetAndOperands(&iset, &applies);
+      fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
+      affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), types, iset, applies,
+          ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
       rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
@@ -3316,16 +3363,15 @@ struct SplitParallelInductions
               legal = false;
               break;
             }
-            auto newBaseVal = iattr.getZExtValue();
-            if (!(base.i_val == newBaseVal ||
+            if (!(base.i_val == iattr ||
                   (isa<arith::FloorDivSIOp, arith::DivUIOp>(U) &&
-                   (base.i_val % newBaseVal == 0 ||
-                    newBaseVal % base.i_val == 0)))) {
+                   (base.i_val.urem(iattr.getZExtValue()) == 0 ||
+                    iattr.urem(base.i_val.getZExtValue()) == 0)))) {
               legal = false;
               break;
             }
 
-            base.i_val = base.i_val > newBaseVal ? newBaseVal : base.i_val;
+            base.i_val = base.i_val.sgt(iattr) ? iattr : base.i_val;
           } else {
             legal = false;
             break;
@@ -3358,11 +3404,11 @@ struct SplitParallelInductions
 
               auto rhs = binExpr.getRHS();
 
-              ValueOrInt newBase(-1);
+              ValueOrInt newBase(nullptr);
               if (auto symExpr = dyn_cast<AffineSymbolExpr>(rhs)) {
                 newBase = ValueOrInt(operands[symExpr.getPosition()]);
               } else if (auto constExpr = dyn_cast<AffineConstantExpr>(rhs)) {
-                newBase = ValueOrInt(constExpr.getValue());
+                newBase = ValueOrInt(APInt(64, constExpr.getValue(), true));
               } else {
                 legal = false;
                 return;
@@ -3380,10 +3426,10 @@ struct SplitParallelInductions
               } else if (!base.isValue && !newBase.isValue &&
                          (base.i_val == newBase.i_val ||
                           (kind == AffineExprKind::FloorDiv &&
-                           (base.i_val % newBase.i_val == 0 ||
-                            newBase.i_val % base.i_val == 0)))) {
+                           (base.i_val.urem(newBase.i_val) == 0 ||
+                            newBase.i_val.urem(base.i_val) == 0)))) {
                 base.i_val =
-                    base.i_val > newBase.i_val ? newBase.i_val : base.i_val;
+                    base.i_val.sgt(newBase.i_val) ? newBase.i_val : base.i_val;
               } else {
                 legal = false;
                 return;
@@ -3440,7 +3486,7 @@ struct SplitParallelInductions
         AffineExpr baseExpr =
             base.isValue
                 ? mlir::getAffineSymbolExpr(0, op.getContext())
-                : mlir::getAffineConstantExpr(base.i_val, op.getContext());
+                : mlir::getAffineConstantExpr(base.i_val.getSExtValue(), op.getContext());
 
         AffineExpr ubound0 =
             op.getUpperBoundsMap().getResult(idx).floorDiv(baseExpr);
@@ -3523,7 +3569,7 @@ struct SplitParallelInductions
               AffineDimDescriptor(
                   0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
           dimDescriptors[cast<AffineDimExpr>(minorExpr).getPosition()] =
-              AffineDimDescriptor(0, base.i_val, 1);
+              AffineDimDescriptor(0, base.i_val.getSExtValue(), 1);
 
           return optimizeMap(
               oldMap.replace(majorExpr, majorExpr * baseExpr + minorExpr,
@@ -3573,7 +3619,7 @@ struct SplitParallelInductions
                 AffineDimDescriptor(
                     0, cast<AffineConstantExpr>(ubound0).getValue(), 1);
             dimDescriptors[cast<AffineDimExpr>(minorExpr).getPosition()] =
-                AffineDimDescriptor(0, base.i_val, 1);
+                AffineDimDescriptor(0, base.i_val.getSExtValue(), 1);
 
             SmallVector<AffineExpr> newConstraints;
             for (auto constraint : is.getConstraints()) {
@@ -3608,7 +3654,7 @@ struct SplitParallelInductions
                 auto replacement = rewriter.create<arith::MulIOp>(
                     UU->getLoc(), U->getResult(0),
                     rewriter.create<arith::ConstantIntOp>(
-                        UU->getLoc(), base.i_val, U->getResult(0).getType()));
+                        UU->getLoc(), base.i_val.getSExtValue(), U->getResult(0).getType()));
                 replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
                 rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
                                                             UU->getOperand(1));
@@ -3627,7 +3673,7 @@ struct SplitParallelInductions
             auto replacement = rewriter.create<arith::MulIOp>(
                 U->getLoc(), iv,
                 rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
-                                                        base.i_val));
+                                                        base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
             rewriter.replaceOpWithNewOp<arith::DivUIOp>(U, replacement,
                                                         U->getOperand(1));
@@ -3638,7 +3684,7 @@ struct SplitParallelInductions
             auto replacement = rewriter.create<arith::MulIOp>(
                 U->getLoc(), iv,
                 rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
-                                                        base.i_val));
+                                                        base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
             auto replacement2 =
                 rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
@@ -3752,7 +3798,7 @@ struct MergeParallelInductions
       if (ubMap.getNumResults() == 1) {
         auto ub = ubMap.getResult(0);
         if (auto cst = dyn_cast<AffineConstantExpr>(ub)) {
-          fixedUpperBounds.push_back(ValueOrInt(cst.getValue()));
+          fixedUpperBounds.push_back(ValueOrInt(APInt(64, cst.getValue(), true)));
         } else if (auto dim = dyn_cast<AffineDimExpr>(ub)) {
           fixedUpperBounds.push_back(
               ValueOrInt(op.getUpperBoundsOperands()[dim.getPosition()]));
@@ -3970,7 +4016,7 @@ struct MergeParallelInductions
       size_t upperBound;
       if (fixedUpperBounds[ivBeingAdded].isValue)
         continue;
-      upperBound = fixedUpperBounds[ivBeingAdded].i_val;
+      upperBound = fixedUpperBounds[ivBeingAdded].i_val.getSExtValue();
 
       for (auto pair1 : indUsage) {
         // This expression is something of the form
@@ -5503,6 +5549,40 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
     }
   }
   return false;
+}
+
+bool valueCmp(Cmp cmp, ValueOrInt expr, 
+              ValueOrInt val) {
+  if (expr.isValue)
+    return valueCmp(cmp, expr.v_val, val);
+  else {
+    return valueCmp(cmp, expr.i_val, val);
+  }
+}
+
+bool valueCmp(Cmp cmp, ValueOrInt expr, int64_t val) {
+  return valueCmp(cmp, expr, APInt(64, val, true));
+}
+
+bool valueCmp(Cmp cmp, APInt expr, size_t numDim, ValueRange operands,
+              ValueOrInt val) {
+    switch (cmp) {
+    case Cmp::EQ:
+      return val == expr;
+    case Cmp::LT:
+      return val > expr;
+    case Cmp::LE:
+      return val >= expr;
+    case Cmp::GT:
+      return val < expr;
+    case Cmp::GE:
+      return val <= expr;
+    }
+}
+
+bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
+              int64_t val) {
+  return valueCmp(cmp, expr, numDim, operands, APInt(64, val, true));
 }
 
 bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
