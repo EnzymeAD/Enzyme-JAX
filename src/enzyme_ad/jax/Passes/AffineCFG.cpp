@@ -1193,8 +1193,8 @@ bool handleMinMax(Value start, SmallVectorImpl<Value> &out, bool &min,
 }
 
 bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
-            SmallVectorImpl<bool> &eqflags, SmallVectorImpl<ValueOrInt> &applies,
-            bool negated) {
+            SmallVectorImpl<bool> &eqflags,
+            SmallVectorImpl<ValueOrInt> &applies, bool negated) {
   SmallVector<Value> lhs0;
   bool lhs_min = false;
   bool lhs_max = false;
@@ -1228,57 +1228,56 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     pred = arith::invertPredicate(pred);
 
   if (lhs.size() == 1 && !lhs[0].isValue) {
-     auto tmp = lhs;
-     lhs = rhs;
-     rhs = tmp;
-     switch(pred) {
-	case CmpIPredicate::eq:
-	case CmpIPredicate::ne:
-		break;
-	case CmpIPredicate::slt:
-		pred = CmpIPredicate::sgt;
-		break;
-	case CmpIPredicate::sle:
-		pred = CmpIPredicate::sge;
-		break;
-	case CmpIPredicate::ult:
-		pred = CmpIPredicate::ugt;
-		break;
-	case CmpIPredicate::ule:
-		pred = CmpIPredicate::uge;
-		break;
-	
-	case CmpIPredicate::sgt:
-		pred = CmpIPredicate::slt;
-		break;
-	case CmpIPredicate::sge:
-		pred = CmpIPredicate::sle;
-		break;
-	case CmpIPredicate::ugt:
-		pred = CmpIPredicate::ult;
-		break;
-	case CmpIPredicate::uge:
-		pred = CmpIPredicate::ule;
-		break;
+    auto tmp = lhs;
+    lhs = rhs;
+    rhs = tmp;
+    switch (pred) {
+    case CmpIPredicate::eq:
+    case CmpIPredicate::ne:
+      break;
+    case CmpIPredicate::slt:
+      pred = CmpIPredicate::sgt;
+      break;
+    case CmpIPredicate::sle:
+      pred = CmpIPredicate::sge;
+      break;
+    case CmpIPredicate::ult:
+      pred = CmpIPredicate::ugt;
+      break;
+    case CmpIPredicate::ule:
+      pred = CmpIPredicate::uge;
+      break;
 
-     }
+    case CmpIPredicate::sgt:
+      pred = CmpIPredicate::slt;
+      break;
+    case CmpIPredicate::sge:
+      pred = CmpIPredicate::sle;
+      break;
+    case CmpIPredicate::ugt:
+      pred = CmpIPredicate::ult;
+      break;
+    case CmpIPredicate::uge:
+      pred = CmpIPredicate::ule;
+      break;
+    }
   }
-  
+
   if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 1) {
-     switch(pred) {
-	default:;
-		break;
-	// a u< 1 -> a == 0
-	case CmpIPredicate::ult:
-		rhs[0].i_val = 0;
-		pred = CmpIPredicate::eq;
-		break;
-	// a u>= 1 -> a != 0
-	case CmpIPredicate::uge:
-		rhs[0].i_val = 0;
-		pred = CmpIPredicate::ne;
-		break;
-     } 
+    switch (pred) {
+    default:;
+      break;
+    // a u< 1 -> a == 0
+    case CmpIPredicate::ult:
+      rhs[0].i_val = 0;
+      pred = CmpIPredicate::eq;
+      break;
+    // a u>= 1 -> a != 0
+    case CmpIPredicate::uge:
+      rhs[0].i_val = 0;
+      pred = CmpIPredicate::ne;
+      break;
+    }
   }
 
   switch (pred) {
@@ -1299,7 +1298,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto lhspack : lhs)
       if (!valueCmp(Cmp::GE, lhspack, 0)) {
         if (!lhspack.isValue) {
-	  auto ival = lhspack.i_val;
+          auto ival = lhspack.i_val;
           assert(ival.isNegative());
           assert(ival.isSingleWord());
           // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
@@ -1321,7 +1320,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto &rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
         if (!rhspack.isValue) {
-	  auto ival = rhspack.i_val;
+          auto ival = rhspack.i_val;
           assert(ival.isNegative());
           assert(ival.isSingleWord());
           // Via Alive2: https://alive2.llvm.org/ce/z/5Fk78i
@@ -1381,12 +1380,12 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     }
     for (auto rhspack : rhs)
       if (!valueCmp(Cmp::GE, rhspack, 0)) {
-	      if (rhspack.isValue)
-        LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
-                                << rhspack.v_val << "\n");
-	      else 
-        LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
-                                << rhspack.i_val << "\n");
+        if (rhspack.isValue)
+          LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
+                                  << rhspack.v_val << "\n");
+        else
+          LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
+                                  << rhspack.i_val << "\n");
         return false;
       }
 
@@ -1793,15 +1792,16 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       SmallVector<Value> operands;
       auto ity = IndexType::get(ifOp.getContext());
       for (auto vori : applies) {
-	Value operand = vori.v_val;
-	if (!vori.isValue) {
-	  operand = rewriter.create<arith::ConstantIndexOp>(ifOp.getLoc(), vori.i_val.getSExtValue());
-	}
-        if (!isa<IndexType>(operand.getType())) {
-          operand = rewriter.create<arith::IndexCastOp>(
-              ifOp.getLoc(), ity, operand);
+        Value operand = vori.v_val;
+        if (!vori.isValue) {
+          operand = rewriter.create<arith::ConstantIndexOp>(
+              ifOp.getLoc(), vori.i_val.getSExtValue());
         }
-	operands.push_back(operand);
+        if (!isa<IndexType>(operand.getType())) {
+          operand =
+              rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity, operand);
+        }
+        operands.push_back(operand);
       }
 
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
@@ -1916,15 +1916,16 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       SmallVector<Value> operands;
       auto ity = IndexType::get(ifOp.getContext());
       for (auto vori : applies) {
-	Value operand = vori.v_val;
-	if (!vori.isValue) {
-	  operand = rewriter.create<arith::ConstantIndexOp>(ifOp.getLoc(), vori.i_val.getSExtValue());
-	}
-        if (!isa<IndexType>(operand.getType())) {
-          operand = rewriter.create<arith::IndexCastOp>(
-              ifOp.getLoc(), ity, operand);
+        Value operand = vori.v_val;
+        if (!vori.isValue) {
+          operand = rewriter.create<arith::ConstantIndexOp>(
+              ifOp.getLoc(), vori.i_val.getSExtValue());
         }
-	operands.push_back(operand);
+        if (!isa<IndexType>(operand.getType())) {
+          operand =
+              rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity, operand);
+        }
+        operands.push_back(operand);
       }
 
       auto *scope = affine::getAffineScope(ifOp)->getParentOp();
@@ -3484,9 +3485,9 @@ struct SplitParallelInductions
           ubounds.push_back(op.getUpperBoundsMap().getResult(i));
 
         AffineExpr baseExpr =
-            base.isValue
-                ? mlir::getAffineSymbolExpr(0, op.getContext())
-                : mlir::getAffineConstantExpr(base.i_val.getSExtValue(), op.getContext());
+            base.isValue ? mlir::getAffineSymbolExpr(0, op.getContext())
+                         : mlir::getAffineConstantExpr(
+                               base.i_val.getSExtValue(), op.getContext());
 
         AffineExpr ubound0 =
             op.getUpperBoundsMap().getResult(idx).floorDiv(baseExpr);
@@ -3654,7 +3655,8 @@ struct SplitParallelInductions
                 auto replacement = rewriter.create<arith::MulIOp>(
                     UU->getLoc(), U->getResult(0),
                     rewriter.create<arith::ConstantIntOp>(
-                        UU->getLoc(), base.i_val.getSExtValue(), U->getResult(0).getType()));
+                        UU->getLoc(), base.i_val.getSExtValue(),
+                        U->getResult(0).getType()));
                 replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
                 rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
                                                             UU->getOperand(1));
@@ -3672,8 +3674,8 @@ struct SplitParallelInductions
             rewriter.setInsertionPoint(U);
             auto replacement = rewriter.create<arith::MulIOp>(
                 U->getLoc(), iv,
-                rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
-                                                        base.i_val.getSExtValue()));
+                rewriter.create<arith::ConstantIndexOp>(
+                    U->getLoc(), base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
             rewriter.replaceOpWithNewOp<arith::DivUIOp>(U, replacement,
                                                         U->getOperand(1));
@@ -3683,8 +3685,8 @@ struct SplitParallelInductions
             rewriter.setInsertionPoint(U);
             auto replacement = rewriter.create<arith::MulIOp>(
                 U->getLoc(), iv,
-                rewriter.create<arith::ConstantIndexOp>(U->getLoc(),
-                                                        base.i_val.getSExtValue()));
+                rewriter.create<arith::ConstantIndexOp>(
+                    U->getLoc(), base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
             auto replacement2 =
                 rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
@@ -3798,7 +3800,8 @@ struct MergeParallelInductions
       if (ubMap.getNumResults() == 1) {
         auto ub = ubMap.getResult(0);
         if (auto cst = dyn_cast<AffineConstantExpr>(ub)) {
-          fixedUpperBounds.push_back(ValueOrInt(APInt(64, cst.getValue(), true)));
+          fixedUpperBounds.push_back(
+              ValueOrInt(APInt(64, cst.getValue(), true)));
         } else if (auto dim = dyn_cast<AffineDimExpr>(ub)) {
           fixedUpperBounds.push_back(
               ValueOrInt(op.getUpperBoundsOperands()[dim.getPosition()]));
@@ -5551,8 +5554,7 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
   return false;
 }
 
-bool valueCmp(Cmp cmp, ValueOrInt expr, 
-              ValueOrInt val) {
+bool valueCmp(Cmp cmp, ValueOrInt expr, ValueOrInt val) {
   if (expr.isValue)
     return valueCmp(cmp, expr.v_val, val);
   else {
@@ -5566,18 +5568,18 @@ bool valueCmp(Cmp cmp, ValueOrInt expr, int64_t val) {
 
 bool valueCmp(Cmp cmp, APInt expr, size_t numDim, ValueRange operands,
               ValueOrInt val) {
-    switch (cmp) {
-    case Cmp::EQ:
-      return val == expr;
-    case Cmp::LT:
-      return val > expr;
-    case Cmp::LE:
-      return val >= expr;
-    case Cmp::GT:
-      return val < expr;
-    case Cmp::GE:
-      return val <= expr;
-    }
+  switch (cmp) {
+  case Cmp::EQ:
+    return val == expr;
+  case Cmp::LT:
+    return val > expr;
+  case Cmp::LE:
+    return val >= expr;
+  case Cmp::GT:
+    return val < expr;
+  case Cmp::GE:
+    return val <= expr;
+  }
 }
 
 bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
