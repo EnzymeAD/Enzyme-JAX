@@ -2808,26 +2808,26 @@ struct TransposeAllUsersSlice final
 
     SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
 
-    SmallVector<int64_t> originalStartIndices =
-        llvm::to_vector(sliceOps[0].getStartIndices());
-    SmallVector<int64_t> originalLimitIndices =
-        llvm::to_vector(sliceOps[0].getLimitIndices());
-    SmallVector<int64_t> originalStrides =
-        llvm::to_vector(sliceOps[0].getStrides());
-
-    SmallVector<int64_t> newStartIndices;
-    SmallVector<int64_t> newLimitIndices;
-    SmallVector<int64_t> newStrides;
-
-    for (size_t i = 0; i < permutation.size(); ++i) {
-      size_t permIndex = permutation[i];
-      newStartIndices.push_back(originalStartIndices[permIndex]);
-      newLimitIndices.push_back(originalLimitIndices[permIndex]);
-      newStrides.push_back(originalStrides[permIndex]);
-    }
-
     for (int64_t i = 0; i < sliceOps.size(); ++i) {
       auto origSlice = sliceOps[i];
+
+      SmallVector<int64_t> originalStartIndices =
+          llvm::to_vector(origSlice.getStartIndices());
+      SmallVector<int64_t> originalLimitIndices =
+          llvm::to_vector(origSlice.getLimitIndices());
+      SmallVector<int64_t> originalStrides =
+          llvm::to_vector(origSlice.getStrides());
+
+      SmallVector<int64_t> newStartIndices;
+      SmallVector<int64_t> newLimitIndices;
+      SmallVector<int64_t> newStrides;
+
+      for (size_t j = 0; j < permutation.size(); ++j) {
+        size_t permIndex = permutation[j];
+        newStartIndices.push_back(originalStartIndices[permIndex]);
+        newLimitIndices.push_back(originalLimitIndices[permIndex]);
+        newStrides.push_back(originalStrides[permIndex]);
+      }
 
       auto newSlice = rewriter.create<stablehlo::SliceOp>(
           origSlice.getLoc(), op.getOperand(),
