@@ -18570,6 +18570,69 @@ struct ConcatTranspose final : OpRewritePattern<stablehlo::ConcatenateOp> {
   }
 };
 
+struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "reduce op has more than one input. not yet supported");
+
+    auto redOp = op.getInputs()[0].getDefiningOp<stablehlo::ReduceOp>();
+    if (!redOp)
+      return failure();
+
+    if (redOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "reduce op has more than one input. not yet supported");
+
+    if (!OperationEquivalence::isEquivalentTo(
+            redOp.getInitValues()[0].getDefiningOp(),
+            op.getInitValues()[0].getDefiningOp(),
+            OperationEquivalence::IgnoreLocations))
+      return rewriter.notifyMatchFailure(
+          op, "reduce op init values are not equivalent");
+
+    if (!OperationEquivalence::isRegionEquivalentTo(
+            &redOp.getBody(), &op.getBody(),
+            OperationEquivalence::IgnoreLocations))
+      return failure();
+
+    SmallVector<int64_t> innerDimensions =
+        llvm::to_vector(redOp.getDimensions());
+    SmallVector<int64_t> outerDimensions = llvm::to_vector(op.getDimensions());
+    SmallVector<int64_t> mergedDimensions = innerDimensions;
+
+    int64_t inputRank =
+        cast<RankedTensorType>(redOp.getInputs()[0].getType()).getRank();
+
+    llvm::SmallBitVector reduced(inputRank, false);
+    SmallVector<int64_t> dimensionMap;
+
+    for (auto dim : innerDimensions)
+      reduced.set(dim);
+    for (int64_t i = 0; i < inputRank; ++i) {
+      if (!reduced[i])
+        dimensionMap.push_back(i);
+    }
+    for (auto dim : outerDimensions) {
+      if (dim >= dimensionMap.size())
+        return rewriter.notifyMatchFailure(op, "out of bounds dimension map");
+
+      mergedDimensions.push_back(dimensionMap[dim]);
+    }
+
+    auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), TypeRange(op.getType(0)), ValueRange(redOp.getInputs()),
+        ValueRange(redOp.getInitValues()), mergedDimensions);
+    rewriter.inlineRegionBefore(redOp.getBody(), newReduceOp.getBody(),
+                                newReduceOp.getBody().end());
+    rewriter.replaceOp(op, newReduceOp.getResult(0));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19018,7 +19081,8 @@ struct EnzymeHLOOptPass
         ConcatReshapeSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
-        TransposeAllUsersSlice
+        TransposeAllUsersSlice,
+        ReduceReduce
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);

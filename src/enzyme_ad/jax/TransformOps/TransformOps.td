@@ -1796,3 +1796,8 @@ def ConcatTranspose : EnzymeHLOPatternOp<
   "concat_transpose"> {
   let patterns = ["ConcatTranspose"];
 }
+
+def ReduceReduce : EnzymeHLOPatternOp<
+  "reduce_reduce"> {
+  let patterns = ["ReduceReduce"];
+}
