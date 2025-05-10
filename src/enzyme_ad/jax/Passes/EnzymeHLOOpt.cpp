@@ -18587,7 +18587,10 @@ struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
       return rewriter.notifyMatchFailure(
           op, "reduce op has more than one input. not yet supported");
 
-    if (redOp.getInitValues()[0] != op.getInitValues()[0])
+    if (!OperationEquivalence::isEquivalentTo(
+            redOp.getInitValues()[0].getDefiningOp(),
+            op.getInitValues()[0].getDefiningOp(),
+            OperationEquivalence::IgnoreLocations))
       return rewriter.notifyMatchFailure(
           op, "reduce op init values are not equivalent");
 
