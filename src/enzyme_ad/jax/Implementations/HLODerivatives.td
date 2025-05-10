@@ -144,6 +144,7 @@ def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDime
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
 def ResultDotAlg : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getAlgorithmAttr()">;
 
+// https://github.com/jax-ml/jax/blob/87a8051ed83a8abbfcbe7c884d68a8130a36929d/jax/_src/lax/lax.py#L5326-L5363
 def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
@@ -203,42 +204,46 @@ def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> transposes;
-
-  // Result order is batches, lhs results, rhs results  [in this case contracting dims]
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    transposes.push_back(en2.value());
-  }
+  SmallVector<int64_t> lhsKept;
 
   for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-    transposes.push_back(en.index());
+    if (llvm::is_contained(lhsBatching, en.index())) continue;
+    if (llvm::is_contained(lhsContracting, en.index())) continue;
+    lhsKept.push_back(en.index());
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-
-    ssize_t contractidx = -1;
-
-    for (auto en2 : llvm::enumerate(existingattr.getRhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    transposes.push_back(existingattr.getLhsContractingDimensions()[contractidx]);
+  SmallVector<int64_t> rhsContractArgSorted(rhsContracting.size());
+  std::iota(rhsContractArgSorted.begin(), rhsContractArgSorted.end(), 0);
+  std::sort(rhsContractArgSorted.begin(), rhsContractArgSorted.end(),
+            [&](int64_t a, int64_t b) { return rhsContracting[a] < rhsContracting[b]; });
+  SmallVector<int64_t> lhsContractSortedByRhs;
+  for (auto idx : rhsContractArgSorted) {
+    lhsContractSortedByRhs.push_back(lhsContracting[idx]);
   }
 
-  builder.getNamedAttr(TransposeOp::getAttributeNames()[0], builder.getDenseI64ArrayAttr(transposes));
+  SmallVector<int64_t> unsortedAxes;
+  for (auto en : lhsBatching)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsKept)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsContractSortedByRhs)
+    unsortedAxes.push_back(en);
+
+  SmallVector<int64_t> outAxes(unsortedAxes.size());
+  std::iota(outAxes.begin(), outAxes.end(), 0);
+  std::sort(outAxes.begin(), outAxes.end(),
+            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
+
+  builder.getNamedAttr(
+    TransposeOp::getAttributeNames()[0],
+    builder.getDenseI64ArrayAttr(outAxes)
+  );
 }]>;
 
 def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
