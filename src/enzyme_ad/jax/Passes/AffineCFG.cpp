@@ -1435,7 +1435,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           SmallVector<Value> tmp = {lhspack.v_val};
 
           fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr);
-	  mapTmp = recreateExpr(mapTmp);
+          mapTmp = recreateExpr(mapTmp);
           if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp,
                        0)) {
             atLeastZero = true;
@@ -1443,8 +1443,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
             LLVM_DEBUG(llvm::dbgs()
                        << "illegal icmp ne lhs is not at least zero: "
                        << lhspack.v_val << "\n");
-            LLVM_DEBUG(llvm::dbgs()
-                       << "simplified map: " << mapTmp << "\n");
+            LLVM_DEBUG(llvm::dbgs() << "simplified map: " << mapTmp << "\n");
           }
         } else {
           LLVM_DEBUG(llvm::dbgs()
@@ -1901,7 +1900,8 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
         !ifOp->getParentOfType<affine::AffineParallelOp>())
       return failure();
 
-    if (!ifOp.getOperand().getType().isInteger(1)) return failure();
+    if (!ifOp.getOperand().getType().isInteger(1))
+      return failure();
 
     std::vector<mlir::Type> types = {ifOp.getOperand().getType()};
 
@@ -1975,24 +1975,24 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1, rewriter.getI1Type())}; 
-      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 0, rewriter.getI1Type())}; 
+      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), 1, rewriter.getI1Type())};
+      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), 0, rewriter.getI1Type())};
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
           ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
-
       rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(
-          ifOp.getLoc(), i == 0 ? tval : fval);
+      rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
+                                             i == 0 ? tval : fval);
 
       rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(
-          ifOp.getLoc(), i == 0 ? fval : tval);
-      
-      rewriter.modifyOpInPlace(ifOp, [&](){
-	ifOp.getInMutable().assign(affineIfOp.getResult(0));
-      });
+      rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
+                                             i == 0 ? fval : tval);
+
+      rewriter.modifyOpInPlace(
+          ifOp, [&]() { ifOp.getInMutable().assign(affineIfOp.getResult(0)); });
       return success();
     }
     return failure();
@@ -5421,8 +5421,8 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
-          MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine,
-          MoveExtToAffine, MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine, MoveExtToAffine,
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
@@ -5838,11 +5838,15 @@ bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
                  valueCmp(Cmp::LE, bop.getRHS(), numDim, operands, val)));
       }
     }
-    if ((bop.getKind() == AffineExprKind::Mod || bop.getKind() == AffineExprKind::FloorDiv)&& val == 0 && isa<AffineConstantExpr>(bop.getRHS()) && cast<AffineConstantExpr>(bop.getRHS()).getValue() > 0) {
+    if ((bop.getKind() == AffineExprKind::Mod ||
+         bop.getKind() == AffineExprKind::FloorDiv) &&
+        val == 0 && isa<AffineConstantExpr>(bop.getRHS()) &&
+        cast<AffineConstantExpr>(bop.getRHS()).getValue() > 0) {
       switch (cmp) {
       case Cmp::GE:
         return valueCmp(cmp, bop.getLHS(), numDim, operands, val);
-      default:break;
+      default:
+        break;
       }
     }
   }
