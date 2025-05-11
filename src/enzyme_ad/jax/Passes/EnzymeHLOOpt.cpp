@@ -7653,21 +7653,25 @@ struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
                                 PatternRewriter &rewriter) const final {
 
     auto dim = dot.getDotDimensionNumbers();
-    size_t numLHSResults = dot.getLhs().getType().getShape().size() -
+    size_t numLHSResults = dot.getLhs().getType().getRank() -
                            dim.getLhsBatchingDimensions().size() -
                            dim.getLhsContractingDimensions().size();
 
-    size_t numRHSResults = dot.getRhs().getType().getShape().size() -
+    size_t numRHSResults = dot.getRhs().getType().getRank() -
                            dim.getRhsBatchingDimensions().size() -
                            dim.getRhsContractingDimensions().size();
 
-    auto lhs_trans = dot.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
-    if (lhs_trans && numLHSResults != 1)
-      return failure();
-    auto rhs_trans = dot.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
-    if (rhs_trans && numRHSResults != 1)
-      return failure();
-    if (!lhs_trans && !rhs_trans)
+    auto lhsTrans = dot.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    bool fuseLhs = false;
+    if (lhsTrans)
+      fuseLhs = numLHSResults <= 1; // otherwise we need to transpose the result
+
+    auto rhsTrans = dot.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    bool fuseRhs = false;
+    if (rhsTrans)
+      fuseRhs = numRHSResults <= 1; // otherwise we need to transpose the result
+
+    if (!fuseLhs && !fuseRhs)
       return failure();
 
     SmallVector<int64_t> lhsBatch(dim.getLhsBatchingDimensions().begin(),
@@ -7680,26 +7684,26 @@ struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
     SmallVector<int64_t> rhsContract(dim.getRhsContractingDimensions().begin(),
                                      dim.getRhsContractingDimensions().end());
 
-    if (lhs_trans) {
+    if (fuseLhs) {
       for (auto &dim : lhsBatch)
-        dim = lhs_trans.getPermutation()[dim];
+        dim = lhsTrans.getPermutation()[dim];
       for (auto &dim : lhsContract)
-        dim = lhs_trans.getPermutation()[dim];
+        dim = lhsTrans.getPermutation()[dim];
     }
 
-    if (rhs_trans) {
+    if (fuseRhs) {
       for (auto &dim : rhsBatch)
-        dim = rhs_trans.getPermutation()[dim];
+        dim = rhsTrans.getPermutation()[dim];
       for (auto &dim : rhsContract)
-        dim = rhs_trans.getPermutation()[dim];
+        dim = rhsTrans.getPermutation()[dim];
     }
 
     auto ndim = stablehlo::DotDimensionNumbersAttr::get(
         dim.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
 
     rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        dot, dot.getType(), lhs_trans ? lhs_trans.getOperand() : dot.getLhs(),
-        rhs_trans ? rhs_trans.getOperand() : dot.getRhs(), ndim,
+        dot, dot.getType(), fuseLhs ? lhsTrans.getOperand() : dot.getLhs(),
+        fuseRhs ? rhsTrans.getOperand() : dot.getRhs(), ndim,
         dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
     return success();
   }
