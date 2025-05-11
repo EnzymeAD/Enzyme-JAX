@@ -144,196 +144,254 @@ def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDime
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
 def ResultDotAlg : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getAlgorithmAttr()">;
 
+// https://github.com/jax-ml/jax/blob/87a8051ed83a8abbfcbe7c884d68a8130a36929d/jax/_src/lax/lax.py#L5326-L5363
 def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  // first result index is batching, then lhs results (aka indices not batch/contracted)
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size() + (op.getLhs().getType().getShape().size() - existingattr.getLhsBatchingDimensions().size() - existingattr.getLhsContractingDimensions().size());
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> shadowBatchingDimensions;
-  for (auto en : llvm::enumerate(existingattr.getLhsBatchingDimensions()))
-    shadowBatchingDimensions.push_back(en.index());
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
-  SmallVector<int64_t> rhsContractingDimensions;
-  SmallVector<int64_t> shadowResultContractingDimensions;
-
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-     if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-     if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-     rhsContractingDimensions.push_back(en.index());
-     shadowResultContractingDimensions.push_back(resultidx++);
-     resultidx++;
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  DotDimensionNumbersAttr::get(existingattr.getContext(), shadowBatchingDimensions, existingattr.getRhsBatchingDimensions(), shadowResultContractingDimensions, rhsContractingDimensions);
+  SmallVector<int64_t> rhsKept;
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsBatching, i)) continue;
+    if (llvm::is_contained(rhsContracting, i)) continue;
+    rhsKept.push_back(i);
+  }
+
+  SmallVector<int64_t> resBatch;
+  for (int64_t i = 0; i < lhsBatching.size(); i++) {
+    resBatch.push_back(i);
+  }
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < rhsKept.size(); i++) {
+    resContractingDims.push_back(lhsBatching.size() + lhsKept.size() + i);
+  }
+
+  DotDimensionNumbersAttr::get(
+    existingattr.getContext(),
+    resBatch,
+    existingattr.getRhsBatchingDimensions(),
+    resContractingDims,
+    rhsKept
+  );
 }]>;
 
 def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = cast<RankedTensorType>(op->getResult(0).getType());
+  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
+
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
   SmallVector<int64_t> shapes;
-  // Result order is batches, lhs results, rhs results  [in this case contracting dims]
 
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    shapes.push_back(op.getLhs().getType().getShape()[en2.value()]);
+  for (auto B: lhsBatching)
+    shapes.push_back(lhsShape[B]);
+
+  int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
+  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < rhsKeptSize; i++) {
+    resContractingDims.push_back(lhsBatching.size() + lhsKeptSize + i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-    shapes.push_back(en.value());
+  for (int64_t i = lhsBatching.size(); i < resShape.size(); i++) {
+    if (llvm::is_contained(resContractingDims, i)) continue;
+    shapes.push_back(resShape[i]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    ssize_t contractidx = -1;
+  for (auto i: rhsContracting)
+    shapes.push_back(rhsShape[i]);
 
-    for (auto en2 : llvm::enumerate(existingattr.getRhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    shapes.push_back(op.getRhs().getType().getShape()[existingattr.getRhsContractingDimensions()[contractidx]]);
-  }
-
-  RankedTensorType::get(shapes, prev.getElementType());
+  RankedTensorType::get(shapes, elemType);
 }]>;
 
 def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> transposes;
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
 
-  // Result order is batches, lhs results, rhs results  [in this case contracting dims]
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    transposes.push_back(en2.value());
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-    transposes.push_back(en.index());
+  SmallVector<int64_t> rhsContractArgSorted(rhsContracting.size());
+  std::iota(rhsContractArgSorted.begin(), rhsContractArgSorted.end(), 0);
+  std::sort(rhsContractArgSorted.begin(), rhsContractArgSorted.end(),
+            [&](int64_t a, int64_t b) { return rhsContracting[a] < rhsContracting[b]; });
+  SmallVector<int64_t> lhsContractSortedByRhs;
+  for (auto idx : rhsContractArgSorted) {
+    lhsContractSortedByRhs.push_back(lhsContracting[idx]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
+  SmallVector<int64_t> unsortedAxes;
+  for (auto en : lhsBatching)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsKept)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsContractSortedByRhs)
+    unsortedAxes.push_back(en);
 
-    ssize_t contractidx = -1;
+  SmallVector<int64_t> outAxes(unsortedAxes.size());
+  std::iota(outAxes.begin(), outAxes.end(), 0);
+  std::sort(outAxes.begin(), outAxes.end(),
+            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
 
-    for (auto en2 : llvm::enumerate(existingattr.getRhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    transposes.push_back(existingattr.getLhsContractingDimensions()[contractidx]);
-  }
-
-  builder.getNamedAttr(TransposeOp::getAttributeNames()[0], builder.getDenseI64ArrayAttr(transposes));
+  builder.getNamedAttr(
+    TransposeOp::getAttributeNames()[0],
+    builder.getDenseI64ArrayAttr(outAxes)
+  );
 }]>;
 
 def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> shadowBatchingDimensions;
-  for (auto en : llvm::enumerate(existingattr.getLhsBatchingDimensions()))
-    shadowBatchingDimensions.push_back(en.index());
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
-  SmallVector<int64_t> lhsContractingDimensions;
-  SmallVector<int64_t> shadowResultContractingDimensions;
-
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-     if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-     if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-     lhsContractingDimensions.push_back(en.index());
-     shadowResultContractingDimensions.push_back(resultidx++);
-     resultidx++;
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  DotDimensionNumbersAttr::get(existingattr.getContext(), existingattr.getLhsBatchingDimensions(), shadowBatchingDimensions, lhsContractingDimensions, shadowResultContractingDimensions);
+  SmallVector<int64_t> resBatch;
+  for (int64_t i = 0; i < rhsBatching.size(); i++) {
+    resBatch.push_back(i);
+  }
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < lhsKept.size(); i++) {
+    resContractingDims.push_back(rhsBatching.size() + i);
+  }
+
+  DotDimensionNumbersAttr::get(
+    existingattr.getContext(),
+    resBatch,
+    existingattr.getLhsBatchingDimensions(),
+    resContractingDims,
+    lhsKept
+  );
 }]>;
 
 def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = cast<RankedTensorType>(op->getResult(0).getType());
+  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
+
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
   SmallVector<int64_t> shapes;
-  // Result order is batches, lhs results [in this case contracting dims], rhs results
 
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    shapes.push_back(op.getLhs().getType().getShape()[en2.value()]);
+  for (auto B: lhsBatching)
+    shapes.push_back(lhsShape[B]);
+
+  int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
+  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < lhsKeptSize; i++) {
+    resContractingDims.push_back(lhsBatching.size() + i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    ssize_t contractidx = -1;
-
-    for (auto en2 : llvm::enumerate(existingattr.getLhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    shapes.push_back(op.getLhs().getType().getShape()[existingattr.getLhsContractingDimensions()[contractidx]]);
+  for (int64_t i = lhsBatching.size(); i < resShape.size(); i++) {
+    if (llvm::is_contained(resContractingDims, i)) continue;
+    shapes.push_back(resShape[i]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-    shapes.push_back(en.value());
-  }
+  for (auto i: lhsContracting)
+    shapes.push_back(lhsShape[i]);
 
-  RankedTensorType::get(shapes, prev.getElementType());
+  RankedTensorType::get(shapes, elemType);
 }]>;
 
 def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  SmallVector<int64_t> transposes;
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
 
-  // Result order is batches, lhs results [in this case contracting dims], rhs results
-  for (auto en2 : llvm::enumerate(existingattr.getRhsBatchingDimensions())) {
-    transposes.push_back(en2.value());
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
+  SmallVector<int64_t> rhsKept;
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsBatching, i)) continue;
+    if (llvm::is_contained(rhsContracting, i)) continue;
+    rhsKept.push_back(i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-
-    ssize_t contractidx = -1;
-
-    for (auto en2 : llvm::enumerate(existingattr.getLhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    transposes.push_back(existingattr.getRhsContractingDimensions()[contractidx]);
+  SmallVector<int64_t> lhsContractArgSorted(lhsContracting.size());
+  std::iota(lhsContractArgSorted.begin(), lhsContractArgSorted.end(), 0);
+  std::sort(lhsContractArgSorted.begin(), lhsContractArgSorted.end(),
+            [&](int64_t a, int64_t b) { return lhsContracting[a] < lhsContracting[b]; });
+  SmallVector<int64_t> rhsContractSortedByLhs;
+  for (auto idx : lhsContractArgSorted) {
+    rhsContractSortedByLhs.push_back(rhsContracting[idx]);
   }
 
+  SmallVector<int64_t> unsortedAxes;
+  for (auto en : rhsBatching)
+    unsortedAxes.push_back(en);
+  for (auto en : rhsKept)
+    unsortedAxes.push_back(en);
+  for (auto en : rhsContractSortedByLhs)
+    unsortedAxes.push_back(en);
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-    transposes.push_back(en.index());
-  }
+  SmallVector<int64_t> outAxes(unsortedAxes.size());
+  std::iota(outAxes.begin(), outAxes.end(), 0);
+  std::sort(outAxes.begin(), outAxes.end(),
+            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
 
-  builder.getNamedAttr(TransposeOp::getAttributeNames()[0], builder.getDenseI64ArrayAttr(transposes));
+  builder.getNamedAttr(
+    TransposeOp::getAttributeNames()[0],
+    builder.getDenseI64ArrayAttr(outAxes)
+  );
 }]>;
 
 def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -1075,7 +1133,7 @@ def : HLODerivative<"DivOp", (Op $x, $y),
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
                         (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
+                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
                       ],
                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)))
                   >;
