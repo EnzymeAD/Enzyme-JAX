@@ -18,7 +18,7 @@ module {
 // CHECK:  func.func @f(%[[MEMREF:.+]]: memref<20x10xf64>) {
 // CHECK-NEXT:    affine.parallel (%[[IV1:.+]], %[[IV2:.+]]) = (0, 0) to (20, 10) {
 // CHECK-NEXT:        %[[VAL:.+]] = affine.load %[[MEMREF]][%[[IV1]], %[[IV2]]] : memref<20x10xf64>
-// CHECK-NEXT:        %[[IVINT:.+]] = arith.index_castui %[[IV1]] : index to i64
+// CHECK-NEXT:        %[[IVINT:.+]] = arith.index_cast %[[IV1]] : index to i64
 // CHECK-NEXT:        %[[IVFLOAT:.+]] = arith.sitofp %[[IVINT]] : i64 to f64
 // CHECK-NEXT:        %[[VALFINAL:.+]] = arith.addf %[[VAL]], %[[IVFLOAT]] : f64
 // CHECK-NEXT:        affine.store %[[VALFINAL]], %[[MEMREF]][%[[IV1]], %[[IV2]]] : memref<20x10xf64>

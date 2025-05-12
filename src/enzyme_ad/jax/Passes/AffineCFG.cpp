@@ -2041,6 +2041,48 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
   }
 };
 
+struct MoveSIToFPToAffine : public OpRewritePattern<arith::SIToFPOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SIToFPOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp->getParentOfType<affine::AffineForOp>() &&
+        !ifOp->getParentOfType<affine::AffineParallelOp>())
+      return failure();
+
+    auto defop = ifOp.getOperand().getDefiningOp();
+    if (!defop)
+      return failure();
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(defop))
+      return failure();
+
+    if (!isValidIndex(ifOp.getOperand()))
+      return failure();
+
+    SmallVector<AffineExpr, 1> dimExprs;
+    dimExprs.push_back(rewriter.getAffineSymbolExpr(0));
+    auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1, dimExprs,
+                              rewriter.getContext());
+    SmallVector<Value, 1> operands = {ifOp.getOperand()};
+
+    auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+    DominanceInfo DI(scope);
+
+    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
+    affine::canonicalizeMapAndOperands(&map, &operands);
+    map = recreateExpr(map);
+
+    auto app =
+        rewriter.create<affine::AffineApplyOp>(ifOp.getLoc(), map, operands);
+
+    auto cast = rewriter.create<arith::IndexCastOp>(
+        ifOp.getLoc(), ifOp.getOperand().getType(), app);
+
+    rewriter.modifyOpInPlace(ifOp, [&]() { ifOp.getInMutable().assign(cast); });
+    return success();
+  }
+};
+
 struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -3956,6 +3998,7 @@ struct MergeParallelInductions
             continue;
           }
           if (indUsage.find(ival.getArgNumber()) != indUsage.end()) {
+            LLVM_DEBUG(llvm::dbgs() << "Already used index " << ival << "\n");
             legal = false;
             continue;
           }
@@ -3990,6 +4033,9 @@ struct MergeParallelInductions
             }
           }
         }
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Unknown affine expression in parallel merge " << cur
+                   << "\n");
         legal = false;
         break;
       }
@@ -4010,10 +4056,14 @@ struct MergeParallelInductions
       for (auto lb : op.getLowerBoundMap(iv.getArgNumber()).getResults()) {
         if (auto cst = dyn_cast<AffineConstantExpr>(lb)) {
           if (cst.getValue() != 0) {
+            LLVM_DEBUG(llvm::dbgs() << "Non-zero lower bound for iv "
+                                    << iv.getArgNumber() << "\n");
             legal = false;
             break;
           }
         } else {
+          LLVM_DEBUG(llvm::dbgs() << "Non-constant lower bound for iv "
+                                  << iv.getArgNumber() << "\n");
           legal = false;
           break;
         }
@@ -4032,10 +4082,14 @@ struct MergeParallelInductions
               op.getUpperBoundsOperands()[op.getUpperBoundsMap().getNumDims() +
                                           sym.getPosition()]));
         } else {
+          LLVM_DEBUG(llvm::dbgs() << "Non-constant upper bound for iv "
+                                  << iv.getArgNumber() << "\n");
           legal = false;
           fixedUpperBounds.push_back(ValueOrInt(0));
         }
       } else {
+        LLVM_DEBUG(llvm::dbgs() << "Non-single upper bound for iv "
+                                << iv.getArgNumber() << "\n");
         fixedUpperBounds.push_back(ValueOrInt(0));
         legal = false;
       }
@@ -4085,6 +4139,8 @@ struct MergeParallelInductions
         } else if (auto AS = dyn_cast<affine::AffineStoreOp>(U)) {
           if (AS.getValue() == iv) {
             illegal.push_back(nullptr); // legal = false;
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Capturing user" << *U << " from " << val << "\n");
           }
           operands = AS.getMapOperands();
           for (auto E : AS.getAffineMap().getResults()) {
@@ -4160,6 +4216,8 @@ struct MergeParallelInductions
         } else if (auto addOp = dyn_cast<arith::AddIOp>(U)) {
           if (idxCst) {
             illegal.push_back(nullptr);
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Illegal add user " << *U << " from " << val << "\n");
             break;
           }
 
@@ -4179,16 +4237,26 @@ struct MergeParallelInductions
           exprs.push_back(map.getResult(0));
           numDims = map.getNumDims();
         } else {
+          LLVM_DEBUG(llvm::dbgs() << "Illegal unknown user " << *U << " from "
+                                  << val << "\n");
           illegal.push_back(U);
         }
         for (auto expr : exprs) {
           bool flegal = true;
           std::map<size_t, AffineExpr> indUsage;
           getIndUsage(expr, operands, indUsage, flegal);
+          if (!flegal)
+            LLVM_DEBUG(llvm::dbgs() << "Illegal indUsage expr: " << expr
+                                    << " of " << *U << " from " << val << "\n");
+          else if (indUsage.size() == 1)
+            LLVM_DEBUG(llvm::dbgs() << "Single indUsage expr: " << expr
+                                    << " of " << *U << " from " << val << "\n");
           if (!flegal || indUsage.size() == 1) {
             illegal.push_back(nullptr);
             break;
           }
+          LLVM_DEBUG(llvm::dbgs() << "Legal indUsage expr: " << expr << " from "
+                                  << val << "\n");
           affineMapUsers[iv.getArgNumber()].emplace_back(indUsage, operands,
                                                          numDims);
         }
@@ -4221,8 +4289,12 @@ struct MergeParallelInductions
               onlyUsedInAdd = false;
               break;
             }
-          if (!onlyUsedInAdd)
+          if (!onlyUsedInAdd) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "To merge operand has invalid use with: illegal idx="
+                       << idx << " i=" << i << "\n");
             affineMapUsers.erase(i);
+          }
         }
       }
     }
@@ -4233,6 +4305,9 @@ struct MergeParallelInductions
       if (pair.second.size() == 0)
         continue;
       auto &&[indUsage, operands, numDim] = pair.second[0];
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Considering merge of affine pair: " << pair.first << "\n");
 
       // ivBeingAdded + ivBeingMuled * C
       // where ivBeingAdded = 0 ... C
@@ -5514,8 +5589,8 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine, MoveExtToAffine,
-          CmpExt, MoveSelectToAffine, AffineIfSimplification,
-          AffineIfSimplificationIsl, CombineAffineIfs,
+          MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
+          AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
           CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
