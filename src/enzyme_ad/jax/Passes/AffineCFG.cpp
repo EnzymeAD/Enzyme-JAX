@@ -5418,10 +5418,12 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
 
 bool areOpposite(Value lhs, Value rhs) {
   if (auto xorOp = lhs.getDefiningOp<arith::XOrIOp>()) {
-    if (xorOp.getLhs() == rhs && matchPattern(xorOp.getRhs(), m_One())) return true;
+    if (xorOp.getLhs() == rhs && matchPattern(xorOp.getRhs(), m_One()))
+      return true;
   }
   if (auto xorOp = rhs.getDefiningOp<arith::XOrIOp>()) {
-    if (xorOp.getLhs() == lhs && matchPattern(xorOp.getRhs(), m_One())) return true;
+    if (xorOp.getLhs() == lhs && matchPattern(xorOp.getRhs(), m_One()))
+      return true;
   }
   return false;
 }
@@ -5442,9 +5444,8 @@ struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
           }
           // and(!a, or(a, b)) -> and(!a, b)
           if (areOpposite(orOp->getOperand(j), op->getOperand(1 - i))) {
-	    rewriter.modifyOpInPlace(op, [&]() {
-	      op->setOperand(i, orOp->getOperand(1-j));
-	    });
+            rewriter.modifyOpInPlace(
+                op, [&]() { op->setOperand(i, orOp->getOperand(1 - j)); });
             return success();
           }
         }
