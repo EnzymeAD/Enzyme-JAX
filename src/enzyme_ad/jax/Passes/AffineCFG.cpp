@@ -2041,6 +2041,46 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
   }
 };
 
+struct MoveSIToFPToAffine : public OpRewritePattern<arith::SIToFPOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SIToFPOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp->getParentOfType<affine::AffineForOp>() &&
+        !ifOp->getParentOfType<affine::AffineParallelOp>())
+      return failure();
+
+    auto defop = ifOp.getOperand().getDefiningOp();
+    if (!defop) return failure();
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(defop)) return failure();
+
+    if (!isValidIndex(ifOp.getOperand()))
+      return failure();
+
+    SmallVector<AffineExpr, 1> dimExprs;
+    dimExprs.push_back(rewriter.getAffineSymbolExpr(0));
+    auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1, dimExprs,
+                              rewriter.getContext());
+    SmallVector<Value, 1> operands = { ifOp.getOperand() };
+
+    auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+    DominanceInfo DI(scope);
+
+    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
+    affine::canonicalizeMapAndOperands(&map, &operands);
+    map = recreateExpr(map);
+
+    auto app = rewriter.create<affine::AffineApplyOp>(ifOp.getLoc(), map, operands);
+
+    auto cast = rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ifOp.getOperand().getType(), app);
+
+    rewriter.modifyOpInPlace(ifOp, [&]() {
+	ifOp.getInMutable().assign(cast);
+		    });
+    return success();
+  }
+};
+
 struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -5514,6 +5554,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine, MoveExtToAffine,
+	  MoveSIToFPToAffine,
           CmpExt, MoveSelectToAffine, AffineIfSimplification,
           AffineIfSimplificationIsl, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
