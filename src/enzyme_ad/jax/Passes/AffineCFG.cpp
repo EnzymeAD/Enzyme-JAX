@@ -1205,6 +1205,33 @@ bool handleMinMax(Value start, SmallVectorImpl<Value> &out, bool &min,
   return !(min && max);
 }
 
+bool handle(PatternRewriter &b, AffineIfOp ifOp, size_t idx,
+            SmallVectorImpl<AffineExpr> &exprs, SmallVectorImpl<bool> &eqflags,
+            SmallVectorImpl<ValueOrInt> &applies, bool negated) {
+
+  auto tval =
+      cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
+  auto fval =
+      cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
+  if (!negated && matchPattern(tval, m_One()) && matchPattern(fval, m_Zero())) {
+    auto iset = ifOp.getCondition();
+    for (auto expr : iset.getConstraints()) {
+      exprs.push_back(expr.shiftSymbols(iset.getNumSymbols(), applies.size()));
+    }
+    for (auto eq : iset.getEqFlags()) {
+      eqflags.push_back(eq);
+    }
+    for (auto op : ifOp.getOperands()) {
+      applies.emplace_back(op);
+    }
+    return true;
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "illegal handle cmp: " << ifOp << " - idx: " << idx
+                          << "\n");
+  return false;
+}
+
 bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
             SmallVectorImpl<bool> &eqflags,
             SmallVectorImpl<ValueOrInt> &applies, bool negated) {
@@ -1818,6 +1845,14 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
             continue;
           }
         }
+        if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
+          auto idx = cast<OpResult>(cur).getResultNumber();
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated)) {
+            legal = false;
+            break;
+          }
+          continue;
+        }
         LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
                                 << " - negated: " << negated << "\n");
         legal = false;
@@ -1903,7 +1938,7 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
     if (!ifOp.getOperand().getType().isInteger(1))
       return failure();
 
-    std::vector<mlir::Type> types = {ifOp.getOperand().getType()};
+    std::vector<mlir::Type> types = {ifOp.getType()};
 
     for (int i = 0; i < 2; i++) {
       SmallVector<AffineExpr, 2> exprs;
@@ -1945,6 +1980,14 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
             continue;
           }
         }
+        if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
+          auto idx = cast<OpResult>(cur).getResultNumber();
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated)) {
+            badcmp = true;
+            break;
+          }
+          continue;
+        }
         LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
                                 << " - negated: " << negated << "\n");
         badcmp = true;
@@ -1975,10 +2018,10 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(
-          ifOp.getLoc(), 1, rewriter.getI1Type())};
-      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(
-          ifOp.getLoc(), 0, rewriter.getI1Type())};
+      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1,
+                                                             ifOp.getType())};
+      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 0,
+                                                             ifOp.getType())};
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
           ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
@@ -1991,8 +2034,31 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
       rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
                                              i == 0 ? fval : tval);
 
-      rewriter.modifyOpInPlace(
-          ifOp, [&]() { ifOp.getInMutable().assign(affineIfOp.getResult(0)); });
+      rewriter.replaceOp(ifOp, affineIfOp);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::CmpIOp cmpOp,
+                                PatternRewriter &rewriter) const override {
+    auto ext = cmpOp.getLhs().getDefiningOp<arith::ExtUIOp>();
+    if (!ext)
+      return failure();
+    if (!ext.getOperand().getType().isInteger(1))
+      return failure();
+    if (!matchPattern(cmpOp.getRhs(), m_Zero()))
+      return failure();
+
+    // ext (i1 -> i64) == 0, !%c
+    if (cmpOp.getPredicate() == arith::CmpIPredicate::eq) {
+      auto tval = rewriter.create<arith::ConstantIntOp>(
+          cmpOp.getLoc(), 1, ext.getOperand().getType());
+      rewriter.replaceOpWithNewOp<arith::XOrIOp>(cmpOp, ext.getOperand(), tval);
       return success();
     }
     return failure();
@@ -2049,6 +2115,14 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
             todo.emplace_back(noti.getOperand(0), !negated);
             continue;
           }
+        }
+        if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
+          auto idx = cast<OpResult>(cur).getResultNumber();
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated)) {
+            badcmp = true;
+            break;
+          }
+          continue;
         }
         LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
                                 << " - negated: " << negated << "\n");
@@ -5392,7 +5466,18 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   }
 };
 
-// and(a, or(a, b)) -> a
+bool areOpposite(Value lhs, Value rhs) {
+  if (auto xorOp = lhs.getDefiningOp<arith::XOrIOp>()) {
+    if (xorOp.getLhs() == rhs && matchPattern(xorOp.getRhs(), m_One()))
+      return true;
+  }
+  if (auto xorOp = rhs.getDefiningOp<arith::XOrIOp>()) {
+    if (xorOp.getLhs() == lhs && matchPattern(xorOp.getRhs(), m_One()))
+      return true;
+  }
+  return false;
+}
+
 struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -5402,8 +5487,15 @@ struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
     for (int i = 0; i < 2; i++) {
       if (auto orOp = op->getOperand(i).getDefiningOp<arith::OrIOp>()) {
         for (int j = 0; j < 2; j++) {
+          // and(a, or(a, b)) -> a
           if (orOp->getOperand(j) == op->getOperand(1 - i)) {
             rewriter.replaceOp(op, orOp->getOperand(j));
+            return success();
+          }
+          // and(!a, or(a, b)) -> and(!a, b)
+          if (areOpposite(orOp->getOperand(j), op->getOperand(1 - i))) {
+            rewriter.modifyOpInPlace(
+                op, [&]() { op->setOperand(i, orOp->getOperand(1 - j)); });
             return success();
           }
         }
@@ -5422,13 +5514,13 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine, MoveExtToAffine,
-          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
-          CombineAffineIfs, MergeNestedAffineParallelLoops,
-          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
-          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
-          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
-                                                                      2);
+          CmpExt, MoveSelectToAffine, AffineIfSimplification,
+          AffineIfSimplificationIsl, CombineAffineIfs,
+          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
+          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
+          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
