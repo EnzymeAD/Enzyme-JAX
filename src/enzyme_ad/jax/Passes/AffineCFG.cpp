@@ -2005,16 +2005,19 @@ struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
   LogicalResult matchAndRewrite(arith::CmpIOp cmpOp,
                                 PatternRewriter &rewriter) const override {
     auto ext = cmpOp.getLhs().getDefiningOp<arith::ExtUIOp>();
-    if (!ext) return failure();
+    if (!ext)
+      return failure();
     if (!ext.getOperand().getType().isInteger(1))
       return failure();
-    if (!matchPattern(cmpOp.getRhs(), m_Zero())) return failure();
-    
+    if (!matchPattern(cmpOp.getRhs(), m_Zero()))
+      return failure();
+
     // ext (i1 -> i64) == 0, !%c
     if (cmpOp.getPredicate() == arith::CmpIPredicate::eq) {
-	auto tval = rewriter.create<arith::ConstantIntOp>(cmpOp.getLoc(), 1, ext.getOperand().getType());
-	rewriter.replaceOpWithNewOp<arith::XOrIOp>(cmpOp, ext.getOperand(), tval);
-	return success();
+      auto tval = rewriter.create<arith::ConstantIntOp>(
+          cmpOp.getLoc(), 1, ext.getOperand().getType());
+      rewriter.replaceOpWithNewOp<arith::XOrIOp>(cmpOp, ext.getOperand(), tval);
+      return success();
     }
     return failure();
   }
@@ -5443,14 +5446,13 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveLoadToAffine, MoveExtToAffine,
-	  CmpExt,
-          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
-          CombineAffineIfs, MergeNestedAffineParallelLoops,
-          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
-          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
-          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
-                                                                      2);
+          CmpExt, MoveSelectToAffine, AffineIfSimplification,
+          AffineIfSimplificationIsl, CombineAffineIfs,
+          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
+          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
+          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
