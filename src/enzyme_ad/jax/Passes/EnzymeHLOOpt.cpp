@@ -12416,6 +12416,7 @@ struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
         DUS = concatToOneDimDUS(rewriter, concat);
         assert(DUS);
         for (auto idx : DUS.getStartIndices()) {
+          (void)idx;
           assert(definedOutside(idx, whileOp));
         }
       }
