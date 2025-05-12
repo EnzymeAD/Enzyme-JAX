@@ -390,7 +390,7 @@ public:
         mlir::function_interface_impl::eraseFunctionArguments(fn, deadArgs,
                                                               fty2);
       } else {
-        fn.eraseArguments(deadArgs);
+        (void)fn.eraseArguments(deadArgs);
       }
     });
 
