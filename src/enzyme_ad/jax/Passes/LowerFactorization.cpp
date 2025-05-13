@@ -77,9 +77,11 @@ struct LUFactorizationOpLowering
     : public OpRewritePattern<enzymexla::LUFactorizationOp> {
 
   std::string backend;
-  LUFactorizationOpLowering(std::string backend, MLIRContext *context,
-                            PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+  int64_t blasIntWidth;
+  LUFactorizationOpLowering(std::string backend, int64_t blasIntWidth,
+                            MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
 
   LogicalResult matchAndRewrite(enzymexla::LUFactorizationOp op,
                                 PatternRewriter &rewriter) const override {
@@ -135,7 +137,17 @@ struct LUFactorizationOpLowering
       auto moduleOp = op->getParentOfType<ModuleOp>();
       static int64_t fnNum = 0;
 
-      auto indexLLVMType = typeConverter.convertType(rewriter.getIndexType());
+      Type blasIntType;
+      if (blasIntWidth == 32) {
+        blasIntType = rewriter.getI32Type();
+      } else if (blasIntWidth == 64) {
+        blasIntType = rewriter.getI64Type();
+      } else {
+        op->emitOpError() << "Unsupported blasIntWidth: " << blasIntWidth;
+        return rewriter.notifyMatchFailure(op, "unsupported blasIntWidth");
+      }
+
+      auto llvmBlasIntType = typeConverter.convertType(blasIntType);
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
 
@@ -177,18 +189,31 @@ struct LUFactorizationOpLowering
             rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-        auto ptrSize = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), typeConverter.convertType(rewriter.getIndexType()),
-            rewriter.getIndexAttr(1));
-        auto mPtr = rewriter.create<LLVM::AllocaOp>(op.getLoc(), llvmPtrType,
-                                                    indexLLVMType, ptrSize, 0);
-        auto nPtr = rewriter.create<LLVM::AllocaOp>(op.getLoc(), llvmPtrType,
-                                                    indexLLVMType, ptrSize, 0);
+        IntegerAttr mAttr, nAttr, oneAttr;
+        if (blasIntWidth == 32) {
+          mAttr = rewriter.getI32IntegerAttr(m);
+          nAttr = rewriter.getI32IntegerAttr(n);
+          oneAttr = rewriter.getI32IntegerAttr(1);
+        } else if (blasIntWidth == 64) {
+          mAttr = rewriter.getI64IntegerAttr(m);
+          nAttr = rewriter.getI64IntegerAttr(n);
+          oneAttr = rewriter.getI64IntegerAttr(1);
+        } else {
+          op->emitOpError() << "Unsupported blasIntWidth: " << blasIntWidth;
+          return rewriter.notifyMatchFailure(op, "unsupported blasIntWidth");
+        }
 
-        auto mVal = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), indexLLVMType, rewriter.getIndexAttr(m));
-        auto nVal = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), indexLLVMType, rewriter.getIndexAttr(n));
+        auto ptrSize = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmBlasIntType, oneAttr);
+        auto mPtr = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
+        auto nPtr = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
+
+        auto mVal = rewriter.create<LLVM::ConstantOp>(op.getLoc(),
+                                                      llvmBlasIntType, mAttr);
+        auto nVal = rewriter.create<LLVM::ConstantOp>(op.getLoc(),
+                                                      llvmBlasIntType, nAttr);
 
         auto mStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
         auto nStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
@@ -199,7 +224,7 @@ struct LUFactorizationOpLowering
                                           mPtr,
                                           nPtr,
                                           func.getArgument(0),
-                                          nPtr,
+                                          mPtr,
                                           func.getArgument(1),
                                           func.getArgument(2),
                                       });
@@ -360,7 +385,7 @@ struct LowerFactorizationPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<LUFactorizationOpLowering>(backend, context);
+    patterns.add<LUFactorizationOpLowering>(backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
