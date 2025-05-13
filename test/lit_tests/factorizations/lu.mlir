@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cpu})" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cpu blas_int_width=64})" %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cuda})" %s | FileCheck %s --check-prefix=CUDA
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=tpu})" %s | FileCheck %s --check-prefix=TPU
 

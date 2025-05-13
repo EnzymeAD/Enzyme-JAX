@@ -99,28 +99,10 @@ struct LUFactorizationOpLowering
     const int64_t numBatchDims = inputRank - 2;
     auto inputType = input.getType();
 
-    auto indexType =
-        cast<RankedTensorType>(op.getResult(1).getType()).getElementType();
-
-    SmallVector<int64_t> infoShape;
-    for (int i = 0; i < numBatchDims; i++) {
-      infoShape.push_back(inputShape[i]);
-    }
-    auto infoType = RankedTensorType::get(infoShape, indexType);
-
-    SmallVector<int64_t> pivotShape;
-    for (int i = 0; i < numBatchDims; i++) {
-      pivotShape.push_back(inputShape[i]);
-    }
-    pivotShape.push_back(std::min(m, n));
-    auto pivotType = RankedTensorType::get(pivotShape, indexType);
-
-    SmallVector<int64_t> permutationShape;
-    for (int i = 0; i < numBatchDims; i++) {
-      permutationShape.push_back(inputShape[i]);
-    }
-    permutationShape.push_back(m);
-    auto permutationType = RankedTensorType::get(permutationShape, indexType);
+    auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
+    auto pivotRank = pivotType.getRank();
+    auto infoType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto infoRank = infoType.getRank();
 
     if (backend == "cpu") {
       if (numBatchDims > 0) {
@@ -138,7 +120,6 @@ struct LUFactorizationOpLowering
       static int64_t fnNum = 0;
 
       auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-
       auto llvmBlasIntType = typeConverter.convertType(blasIntType);
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
@@ -240,13 +221,16 @@ struct LUFactorizationOpLowering
             ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
       }
 
+      auto blasPivotType = RankedTensorType::get(
+          pivotType.getShape(), rewriter.getIntegerType(blasIntWidth));
+      auto blasInfoType = RankedTensorType::get(
+          infoType.getShape(), rewriter.getIntegerType(blasIntWidth));
+
       SmallVector<bool> isColMajorArr = {true, true, true};
-      SmallVector<int64_t> operandRanks = {inputRank, pivotShape.size(),
-                                           infoShape.size()};
-      SmallVector<int64_t> outputRanks = {inputRank, pivotShape.size(),
-                                          infoShape.size()};
+      SmallVector<int64_t> operandRanks = {inputRank, pivotRank, infoRank};
+      SmallVector<int64_t> outputRanks = {inputRank, pivotRank, infoRank};
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), op.getResultTypes(),
+          op.getLoc(), TypeRange{inputType, blasPivotType, blasInfoType},
           mlir::FlatSymbolRefAttr::get(ctx, fnName),
           ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
           /*operand_layouts=*/
@@ -255,7 +239,14 @@ struct LUFactorizationOpLowering
           getSHLOLayout(rewriter, outputRanks, isColMajorArr, inputRank),
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/rewriter.getUnitAttr());
-      rewriter.replaceOp(op, jitCall);
+
+      rewriter.replaceAllUsesWith(op.getResult(0), jitCall.getResult(0));
+      rewriter.replaceAllUsesWith(
+          op.getResult(1), rewriter.create<stablehlo::ConvertOp>(
+                               op.getLoc(), pivotType, jitCall.getResult(1)));
+      rewriter.replaceAllUsesWith(
+          op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
+                               op.getLoc(), infoType, jitCall.getResult(2)));
 
       return success();
     } else if (backend == "cuda") {
@@ -265,8 +256,7 @@ struct LUFactorizationOpLowering
       SmallVector<bool> isColMajorArrOperands = {true};
       SmallVector<int64_t> operandRanks = {inputRank};
       SmallVector<bool> isColMajorArrOutputs = {true, true, true};
-      SmallVector<int64_t> outputRanks = {inputRank, pivotShape.size(),
-                                          infoShape.size()};
+      SmallVector<int64_t> outputRanks = {inputRank, pivotRank, infoRank};
 
       rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
           op, TypeRange{inputType, pivotType, infoType}, ValueRange{input},
@@ -284,6 +274,14 @@ struct LUFactorizationOpLowering
 
       return success();
     } else if (backend == "tpu") {
+      SmallVector<int64_t> permutationShape;
+      for (int i = 0; i < numBatchDims; i++) {
+        permutationShape.push_back(inputShape[i]);
+      }
+      permutationShape.push_back(m);
+      auto permutationType =
+          RankedTensorType::get(permutationShape, pivotType.getElementType());
+
       // TPU returns (LU, pivots, permutation). info isn't returned. based on
       // how JAX operates, I am assuming info = 0 when there is a nan in the
       // output.
@@ -320,7 +318,8 @@ struct LUFactorizationOpLowering
           cast<ElementsAttr>(makeAttr(initValType, 1)));
 
       auto allFinite = rewriter.create<stablehlo::ReduceOp>(
-          op.getLoc(), RankedTensorType::get(infoShape, rewriter.getI1Type()),
+          op.getLoc(),
+          RankedTensorType::get(infoType.getShape(), rewriter.getI1Type()),
           ValueRange{isFinite.getResult()}, ValueRange{initVal},
           rewriter.getDenseI64ArrayAttr(reductionDims));
 
