@@ -18637,6 +18637,48 @@ struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+// transpose(dot(x, y)) -> dot(transpose(x), transpose(y)) if possible
+// This should have a lower benefit than the transpose_dot_reorder pattern
+struct TransposeDot final : OpRewritePattern<stablehlo::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto dotOp = op.getOperand().getDefiningOp<stablehlo::DotOp>();
+    if (!dotOp)
+      return failure();
+
+    auto dotDims = dotOp.getDotDimensionNumbers();
+    auto perm = op.getPermutation();
+
+    auto lhsBatchingDims = dotDims.getLhsBatchingDimensions();
+    auto rhsBatchingDims = dotDims.getRhsBatchingDimensions();
+    auto lhsContractingDims = dotDims.getLhsContractingDimensions();
+    auto rhsContractingDims = dotDims.getRhsContractingDimensions();
+
+    auto lhsShape = cast<RankedTensorType>(dotOp.getLhs().getType()).getShape();
+    auto rhsShape = cast<RankedTensorType>(dotOp.getRhs().getType()).getShape();
+    auto resShape = cast<RankedTensorType>(op.getType()).getShape();
+    auto lhsRank = lhsShape.size();
+    auto rhsRank = rhsShape.size();
+    auto resRank = resShape.size();
+
+    SmallVector<int64_t> lhsKept, rhsKept;
+    for (size_t i = 0; i < lhsRank; ++i) {
+      if (llvm::is_contained(lhsBatchingDims, i) ||
+          llvm::is_contained(lhsContractingDims, i))
+        continue;
+      lhsKept.push_back(i);
+    }
+    for (size_t i = 0; i < rhsRank; ++i) {
+      if (llvm::is_contained(rhsBatchingDims, i) ||
+          llvm::is_contained(rhsContractingDims, i))
+        continue;
+      rhsKept.push_back(i);
+    }
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
