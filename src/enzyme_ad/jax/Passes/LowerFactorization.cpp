@@ -210,11 +210,6 @@ struct LUFactorizationOpLowering
       }
 
       // Call the LLVM function with enzymexla.jit_call
-      auto pivot = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), pivotType, cast<ElementsAttr>(makeAttr(pivotType, 1)));
-      auto info = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), infoType, cast<ElementsAttr>(makeAttr(infoType, 0)));
-
       SmallVector<Attribute> aliases;
       for (int i = 0; i < 3; ++i) {
         aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
@@ -225,6 +220,13 @@ struct LUFactorizationOpLowering
           pivotType.getShape(), rewriter.getIntegerType(blasIntWidth));
       auto blasInfoType = RankedTensorType::get(
           infoType.getShape(), rewriter.getIntegerType(blasIntWidth));
+
+      auto pivot = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), blasPivotType,
+          cast<ElementsAttr>(makeAttr(blasPivotType, 1)));
+      auto info = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), blasInfoType,
+          cast<ElementsAttr>(makeAttr(blasInfoType, 0)));
 
       SmallVector<bool> isColMajorArr = {true, true, true};
       SmallVector<int64_t> operandRanks = {inputRank, pivotRank, infoRank};
