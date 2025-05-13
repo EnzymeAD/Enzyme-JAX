@@ -10664,6 +10664,8 @@ struct SelectCompIotaConstToDUS final
         ub++;
       }
 
+      if (ub > selectOp.getType().getShape()[dimension])
+        ub = selectOp.getType().getShape()[dimension];
       if (lb >= ub)
         continue;
       if (lb < 0)
