@@ -4,7 +4,7 @@
 
 module {
   func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>) {
-    %0:3 = enzymexla.lu_factorization %arg0 : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>)
+    %0:3 = enzymexla.linalg.lu %arg0 : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>)
     return %0#0, %0#1, %0#2 : tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3xi32>
   }
 }

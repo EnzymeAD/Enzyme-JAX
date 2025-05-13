@@ -189,7 +189,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
-def LUFactorizationOp: EnzymeXLA_Op<"lu_factorization", [Pure]> {
+def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting";
 
   let arguments = (ins

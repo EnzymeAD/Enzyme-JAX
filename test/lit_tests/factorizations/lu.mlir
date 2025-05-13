@@ -5,7 +5,7 @@
 // TODO: add for other element types
 module {
   func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>) {
-    %0:3 = enzymexla.lu_factorization %arg0 : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>)
+    %0:3 = enzymexla.linalg.lu %arg0 : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>)
     return %0#0, %0#1, %0#2 : tensor<64x64xf32>, tensor<64xi32>, tensor<i32>
   }
 }
