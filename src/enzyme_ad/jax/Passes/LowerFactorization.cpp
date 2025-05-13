@@ -137,15 +137,7 @@ struct LUFactorizationOpLowering
       auto moduleOp = op->getParentOfType<ModuleOp>();
       static int64_t fnNum = 0;
 
-      Type blasIntType;
-      if (blasIntWidth == 32) {
-        blasIntType = rewriter.getI32Type();
-      } else if (blasIntWidth == 64) {
-        blasIntType = rewriter.getI64Type();
-      } else {
-        op->emitOpError() << "Unsupported blasIntWidth: " << blasIntWidth;
-        return rewriter.notifyMatchFailure(op, "unsupported blasIntWidth");
-      }
+      auto blasIntType = rewriter.getIntegerType(blasIntWidth);
 
       auto llvmBlasIntType = typeConverter.convertType(blasIntType);
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
@@ -189,31 +181,20 @@ struct LUFactorizationOpLowering
             rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-        IntegerAttr mAttr, nAttr, oneAttr;
-        if (blasIntWidth == 32) {
-          mAttr = rewriter.getI32IntegerAttr(m);
-          nAttr = rewriter.getI32IntegerAttr(n);
-          oneAttr = rewriter.getI32IntegerAttr(1);
-        } else if (blasIntWidth == 64) {
-          mAttr = rewriter.getI64IntegerAttr(m);
-          nAttr = rewriter.getI64IntegerAttr(n);
-          oneAttr = rewriter.getI64IntegerAttr(1);
-        } else {
-          op->emitOpError() << "Unsupported blasIntWidth: " << blasIntWidth;
-          return rewriter.notifyMatchFailure(op, "unsupported blasIntWidth");
-        }
-
         auto ptrSize = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), llvmBlasIntType, oneAttr);
+            op.getLoc(), llvmBlasIntType,
+            rewriter.getIntegerAttr(blasIntType, 1));
         auto mPtr = rewriter.create<LLVM::AllocaOp>(
             op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
         auto nPtr = rewriter.create<LLVM::AllocaOp>(
             op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
 
-        auto mVal = rewriter.create<LLVM::ConstantOp>(op.getLoc(),
-                                                      llvmBlasIntType, mAttr);
-        auto nVal = rewriter.create<LLVM::ConstantOp>(op.getLoc(),
-                                                      llvmBlasIntType, nAttr);
+        auto mVal = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmBlasIntType,
+            rewriter.getIntegerAttr(blasIntType, m));
+        auto nVal = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmBlasIntType,
+            rewriter.getIntegerAttr(blasIntType, n));
 
         auto mStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
         auto nStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
