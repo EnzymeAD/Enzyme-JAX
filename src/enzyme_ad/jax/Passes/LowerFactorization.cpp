@@ -223,10 +223,10 @@ struct LUFactorizationOpLowering
 
       auto pivot = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), blasPivotType,
-          cast<ElementsAttr>(makeAttr(blasPivotType, 1)));
+          cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
       auto info = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), blasInfoType,
-          cast<ElementsAttr>(makeAttr(blasInfoType, 0)));
+          cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
 
       SmallVector<bool> isColMajorArr = {true, true, true};
       SmallVector<int64_t> operandRanks = {inputRank, pivotRank, infoRank};
