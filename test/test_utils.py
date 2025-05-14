@@ -353,7 +353,7 @@ noop_slice<16>;
 const_prop_through_barrier<16>;
 slice_slice<16>;
 shift_right_logical_simplify<16>;
-pad_simplify<16>;
+pad_simplify<16>(1024);
 negative_pad_to_slice<16>;
 tanh_simplify<16>;
 exp_simplify<16>;
