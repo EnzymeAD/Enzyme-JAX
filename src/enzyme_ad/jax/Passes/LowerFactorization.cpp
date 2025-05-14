@@ -91,13 +91,12 @@ struct LUFactorizationOpLowering
     auto input = op.getOperand();
     auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
     auto inputRank = inputShape.size();
-    auto inputElementType =
-        cast<RankedTensorType>(input.getType()).getElementType();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto inputElementType = inputType.getElementType();
 
     const int64_t m = inputShape[inputRank - 2];
     const int64_t n = inputShape[inputRank - 1];
     const int64_t numBatchDims = inputRank - 2;
-    auto inputType = input.getType();
 
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
     auto pivotRank = pivotType.getRank();
@@ -105,17 +104,6 @@ struct LUFactorizationOpLowering
     auto infoRank = infoType.getRank();
 
     if (backend == "cpu") {
-      if (numBatchDims > 0) {
-        // TODO: Implement batched LU factorizations
-        // If we are already linking against MKL we can call
-        // https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html.
-        // Or assume this as the call signature and rely on the downstream user
-        // to correctly set the function pointers. JAX currently lowers to a
-        // loop for CPU
-        return rewriter.notifyMatchFailure(
-            op, "Batched LU factorizations not yet implemented on CPU.");
-      }
-
       auto moduleOp = op->getParentOfType<ModuleOp>();
       static int64_t fnNum = 0;
 
@@ -221,34 +209,187 @@ struct LUFactorizationOpLowering
       auto blasInfoType = RankedTensorType::get(
           infoType.getShape(), rewriter.getIntegerType(blasIntWidth));
 
-      auto pivot = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), blasPivotType,
-          cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
-      auto info = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), blasInfoType,
-          cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
-
       SmallVector<bool> isColMajorArr = {true, true, true};
-      SmallVector<int64_t> operandRanks = {inputRank, pivotRank, infoRank};
-      SmallVector<int64_t> outputRanks = {inputRank, pivotRank, infoRank};
-      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), TypeRange{inputType, blasPivotType, blasInfoType},
-          mlir::FlatSymbolRefAttr::get(ctx, fnName),
-          ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
-          /*operand_layouts=*/
-          getSHLOLayout(rewriter, operandRanks, isColMajorArr, inputRank),
-          /*result_layouts=*/
-          getSHLOLayout(rewriter, outputRanks, isColMajorArr, inputRank),
-          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+      SmallVector<int64_t> operandRanks = {2, 1, 0};
+      SmallVector<int64_t> outputRanks = {2, 1, 0};
+      auto operandLayouts =
+          getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+      auto resultLayouts =
+          getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
-      rewriter.replaceAllUsesWith(op.getResult(0), jitCall.getResult(0));
-      rewriter.replaceAllUsesWith(
-          op.getResult(1), rewriter.create<stablehlo::ConvertOp>(
-                               op.getLoc(), pivotType, jitCall.getResult(1)));
-      rewriter.replaceAllUsesWith(
-          op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
-                               op.getLoc(), infoType, jitCall.getResult(2)));
+      if (numBatchDims > 0) {
+        // TODO: Implement batched LU factorizations by directly calling MKL
+        //       https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html.
+
+        int64_t batchSize = 1;
+        for (int i = 0; i < numBatchDims; i++) {
+          batchSize *= inputShape[i];
+        }
+        SmallVector<int64_t> flattenedInput = {batchSize, m, n};
+
+        auto flatInputType =
+            RankedTensorType::get(flattenedInput, inputElementType);
+        auto flatInput = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), flatInputType, input);
+
+        auto flatPivotType = RankedTensorType::get(
+            {batchSize, pivotType.getShape()[pivotRank - 1]}, blasIntType);
+        auto flatPivot = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), flatPivotType,
+            cast<ElementsAttr>(makeAttr(flatPivotType, -1)));
+
+        auto flatInfoType = RankedTensorType::get({batchSize}, blasIntType);
+        auto flatInfo = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), flatInfoType,
+            cast<ElementsAttr>(makeAttr(flatInfoType, -1)));
+
+        auto iterType = RankedTensorType::get({}, rewriter.getI32Type());
+        auto iter = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
+        auto zeroConst = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
+
+        auto whileReturnTypes = {iterType, flatInputType, flatPivotType,
+                                 flatInfoType};
+        auto whileOp = rewriter.create<stablehlo::WhileOp>(
+            op.getLoc(),
+            TypeRange{iterType, flatInputType, flatPivotType, flatInfoType},
+            ValueRange{iter, flatInput, flatPivot, flatInfo});
+
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+
+          Block *block = rewriter.createBlock(&whileOp.getCond());
+          rewriter.setInsertionPointToStart(block);
+
+          for (auto type : whileReturnTypes) {
+            block->addArgument(type, whileOp.getLoc());
+          }
+
+          auto batchSizeConst = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), iterType,
+              cast<ElementsAttr>(makeAttr(iterType, batchSize)));
+
+          auto comparison = rewriter.create<stablehlo::CompareOp>(
+              op.getLoc(), block->getArgument(0), batchSizeConst, stablehlo::ComparisonDirection::LT);
+
+          rewriter.create<stablehlo::ReturnOp>(
+              op.getLoc(), ValueRange{comparison.getResult()});
+        }
+
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+
+          Block *block = rewriter.createBlock(&whileOp.getBody());
+          rewriter.setInsertionPointToStart(block);
+
+          for (auto type : whileReturnTypes) {
+            block->addArgument(type, whileOp.getLoc());
+          }
+
+          auto iterArg = block->getArgument(0);
+
+          auto inputSliceType = RankedTensorType::get({m, n}, inputElementType);
+          auto inputSlice = rewriter.create<stablehlo::ReshapeOp>(
+              op.getLoc(), inputSliceType,
+              rewriter.create<stablehlo::DynamicSliceOp>(
+                  op.getLoc(), block->getArgument(1),
+                  ValueRange{iterArg, zeroConst, zeroConst},
+                  rewriter.getDenseI64ArrayAttr({1, m, n})));
+
+          auto pivotSliceType =
+              RankedTensorType::get({std::min(m, n)}, blasIntType);
+          auto pivotSlice = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), pivotSliceType,
+              cast<ElementsAttr>(makeAttr(pivotSliceType, -1)));
+
+          auto infoSliceType = RankedTensorType::get({}, blasIntType);
+          auto infoSlice = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), infoSliceType,
+              cast<ElementsAttr>(makeAttr(infoSliceType, -1)));
+
+          auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+              op.getLoc(),
+              TypeRange{inputSliceType, pivotSliceType, infoSliceType},
+              mlir::FlatSymbolRefAttr::get(ctx, fnName),
+              ValueRange{inputSlice, pivotSlice, infoSlice},
+              rewriter.getStringAttr(""),
+              /*operand_layouts=*/operandLayouts,
+              /*result_layouts=*/resultLayouts,
+              /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+              /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+          auto inputUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+              op.getLoc(), block->getArgument(1),
+              rewriter.create<stablehlo::ReshapeOp>(
+                  op.getLoc(),
+                  RankedTensorType::get({1, m, n}, inputElementType),
+                  jitCall.getResult(0)),
+              ValueRange{iterArg, zeroConst, zeroConst});
+          auto pivotUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+              op.getLoc(), block->getArgument(2),
+              rewriter.create<stablehlo::ReshapeOp>(
+                  op.getLoc(),
+                  RankedTensorType::get({1, std::min(m, n)}, blasIntType),
+                  jitCall.getResult(1)),
+              ValueRange{iterArg, zeroConst});
+          auto infoUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+              op.getLoc(), block->getArgument(3),
+              rewriter.create<stablehlo::ReshapeOp>(
+                  op.getLoc(), RankedTensorType::get({1}, blasIntType),
+                  jitCall.getResult(2)),
+              ValueRange{iterArg});
+
+          auto updatedIter = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), block->getArgument(0),
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), iterType,
+                  cast<ElementsAttr>(makeAttr(iterType, 1))));
+
+          rewriter.create<stablehlo::ReturnOp>(
+              op.getLoc(),
+              ValueRange{updatedIter, inputUpdated, pivotUpdated, infoUpdated});
+        }
+
+        auto factorizedResult = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), inputType, whileOp.getResult(1));
+        auto pivot = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), blasPivotType, whileOp.getResult(2));
+        auto info = rewriter.create<stablehlo::ReshapeOp>(
+            op.getLoc(), blasInfoType, whileOp.getResult(3));
+
+        rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
+        rewriter.replaceAllUsesWith(op.getResult(1),
+                                    rewriter.create<stablehlo::ConvertOp>(
+                                        op.getLoc(), pivotType, pivot));
+        rewriter.replaceAllUsesWith(
+            op.getResult(2),
+            rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType, info));
+      } else {
+        auto pivot = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), blasPivotType,
+            cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
+        auto info = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), blasInfoType,
+            cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+
+        auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+            op.getLoc(), TypeRange{inputType, blasPivotType, blasInfoType},
+            mlir::FlatSymbolRefAttr::get(ctx, fnName),
+            ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
+            /*operand_layouts=*/operandLayouts,
+            /*result_layouts=*/resultLayouts,
+            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+            /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+        rewriter.replaceAllUsesWith(op.getResult(0), jitCall.getResult(0));
+        rewriter.replaceAllUsesWith(
+            op.getResult(1), rewriter.create<stablehlo::ConvertOp>(
+                                 op.getLoc(), pivotType, jitCall.getResult(1)));
+        rewriter.replaceAllUsesWith(
+            op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
+                                 op.getLoc(), infoType, jitCall.getResult(2)));
+      }
 
       return success();
     } else if (backend == "cuda") {
