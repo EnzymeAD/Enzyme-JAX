@@ -352,6 +352,7 @@ td_library(
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
         "@llvm-project//mlir:ViewLikeInterfaceTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterface",
     ],
 )
 
