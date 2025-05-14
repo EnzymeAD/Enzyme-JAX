@@ -402,9 +402,14 @@ struct LUFactorizationOpLowering
       SmallVector<bool> isColMajorArrOutputs = {true, true, true};
       SmallVector<int64_t> outputRanks = {inputRank, pivotRank, infoRank};
 
-      rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-          op, TypeRange{inputType, pivotType, infoType}, ValueRange{input},
-          rewriter.getStringAttr("cusolver_getrf_ffi"),
+      auto pivotCuSolverType =
+          RankedTensorType::get(pivotType.getShape(), rewriter.getI32Type());
+      auto infoCuSolverType =
+          RankedTensorType::get(infoType.getShape(), rewriter.getI32Type());
+
+      auto cusolverffi = rewriter.create<stablehlo::CustomCallOp>(
+          op.getLoc(), TypeRange{inputType, pivotCuSolverType, infoCuSolverType},
+          ValueRange{input}, rewriter.getStringAttr("cusolver_getrf_ffi"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
           /*api_version*/ nullptr,
@@ -416,6 +421,16 @@ struct LUFactorizationOpLowering
           getSHLOLayout(rewriter, outputRanks, isColMajorArrOutputs, inputRank),
           /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
 
+      rewriter.replaceAllUsesWith(op.getResult(0), cusolverffi.getResult(0));
+      rewriter.replaceAllUsesWith(
+          op.getResult(1),
+          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
+                                                cusolverffi.getResult(1)));
+      rewriter.replaceAllUsesWith(
+          op.getResult(2),
+          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
+                                                cusolverffi.getResult(2)));
+
       return success();
     } else if (backend == "tpu") {
       SmallVector<int64_t> permutationShape;
@@ -424,13 +439,16 @@ struct LUFactorizationOpLowering
       }
       permutationShape.push_back(m);
       auto permutationType =
-          RankedTensorType::get(permutationShape, pivotType.getElementType());
+          RankedTensorType::get(permutationShape, rewriter.getI32Type());
+
+      auto pivotTPUType =
+          RankedTensorType::get(pivotType.getShape(), rewriter.getI32Type());
 
       // TPU returns (LU, pivots, permutation). info isn't returned. based on
       // how JAX operates, I am assuming info != 0 when there is a nan in the
       // output.
       auto customCall = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(), TypeRange{inputType, pivotType, permutationType},
+          op.getLoc(), TypeRange{inputType, pivotTPUType, permutationType},
           ValueRange{input}, rewriter.getStringAttr("LUFactorization"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
@@ -447,7 +465,8 @@ struct LUFactorizationOpLowering
           rewriter.create<stablehlo::ConstantOp>(
               op.getLoc(), pivotType,
               cast<ElementsAttr>(makeAttr(pivotType, 1))),
-          customCall.getResult(1));
+          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
+                                                customCall.getResult(1)));
 
       auto isFinite = rewriter.create<stablehlo::AndOp>(
           op.getLoc(),

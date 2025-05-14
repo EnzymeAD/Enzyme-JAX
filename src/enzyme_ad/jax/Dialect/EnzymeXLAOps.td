@@ -190,7 +190,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 }
 
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
-  let summary = "LU factorization operation with RowMaximum pivoting";
+  let summary = "LU factorization operation with RowMaximum pivoting.";
 
   let arguments = (ins
     HLO_Tensor:$input
