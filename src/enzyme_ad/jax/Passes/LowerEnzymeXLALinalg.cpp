@@ -90,7 +90,7 @@ struct LUFactorizationOpLowering
 
     auto input = op.getOperand();
     auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
-    auto inputRank = inputShape.size();
+    auto inputRank = static_cast<int64_t>(inputShape.size());
     auto inputType = cast<RankedTensorType>(input.getType());
     auto inputElementType = inputType.getElementType();
 
@@ -427,7 +427,7 @@ struct LUFactorizationOpLowering
           RankedTensorType::get(permutationShape, pivotType.getElementType());
 
       // TPU returns (LU, pivots, permutation). info isn't returned. based on
-      // how JAX operates, I am assuming info = 0 when there is a nan in the
+      // how JAX operates, I am assuming info != 0 when there is a nan in the
       // output.
       auto customCall = rewriter.create<stablehlo::CustomCallOp>(
           op.getLoc(), TypeRange{inputType, pivotType, permutationType},
@@ -449,8 +449,14 @@ struct LUFactorizationOpLowering
               cast<ElementsAttr>(makeAttr(pivotType, 1))),
           customCall.getResult(1));
 
-      auto isFinite = rewriter.create<stablehlo::IsFiniteOp>(
-          op.getLoc(), customCall.getResult(0));
+      auto isFinite = rewriter.create<stablehlo::AndOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::IsFiniteOp>(
+              op.getLoc(), rewriter.create<stablehlo::RealOp>(
+                               op.getLoc(), customCall.getResult(0))),
+          rewriter.create<stablehlo::IsFiniteOp>(
+              op.getLoc(), rewriter.create<stablehlo::ImagOp>(
+                               op.getLoc(), customCall.getResult(0))));
 
       SmallVector<int64_t> reductionDims;
       for (int i = numBatchDims; i < inputRank; i++) {
@@ -502,7 +508,8 @@ struct LUFactorizationOpLowering
 };
 
 struct LowerEnzymeXLALinalgPass
-    : public enzyme::impl::LowerEnzymeXLALinalgPassBase<LowerEnzymeXLALinalgPass> {
+    : public enzyme::impl::LowerEnzymeXLALinalgPassBase<
+          LowerEnzymeXLALinalgPass> {
   using Base::Base;
 
   void runOnOperation() override {
