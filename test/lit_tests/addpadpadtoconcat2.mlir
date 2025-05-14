@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=add_pad_pad_to_concat;pad_simplify" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=add_pad_pad_to_concat;pad_simplify(1024)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
 func.func @t1(%1383: tensor<1x30x1x10xbf16>, %1387: tensor<1x30x1x10xbf16>) -> tensor<1x30x1x20xbf16> {
   %cst_217 = stablehlo.constant dense<0.000000e+00> : tensor<bf16> 

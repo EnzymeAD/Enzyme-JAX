@@ -3825,6 +3825,13 @@ struct DotReshapeDot final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
 
 struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   using OpRewritePattern::OpRewritePattern;
+  size_t max_constant_expansion;
+
+  PadSimplify(size_t max_constant_expansion, MLIRContext *context,
+              PatternBenefit benefit = 1,
+              ArrayRef<StringRef> generatedNames = {})
+      : OpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
                                 PatternRewriter &rewriter) const override {
@@ -3843,15 +3850,28 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
       DenseElementsAttr pv;
       matchPattern(op.getPaddingValue(), m_Constant(&pv));
       if (inp && pv) {
-        auto ten = mlir::stablehlo::constantOp(inp);
-        auto out = fromTensor(mlir::stablehlo::padOp(
-            mlir::stablehlo::constantOp(inp), mlir::stablehlo::constantOp(pv),
-            stablehlo::Sizes(op.getEdgePaddingLow()),
-            stablehlo::Sizes(op.getInteriorPadding()), op.getType()));
 
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
-                                                           out);
-        return success();
+        if (inp.isSplat() && pv.isSplat() &&
+            inp.getSplatValue<Attribute>() == pv.getSplatValue<Attribute>()) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), inp.resizeSplat(op.getType()));
+          return success();
+        }
+
+        size_t size = 1;
+        for (auto sz : op.getType().getShape())
+          size *= sz;
+        if (size < max_constant_expansion) {
+          auto ten = mlir::stablehlo::constantOp(inp);
+          auto out = fromTensor(mlir::stablehlo::padOp(
+              mlir::stablehlo::constantOp(inp), mlir::stablehlo::constantOp(pv),
+              stablehlo::Sizes(op.getEdgePaddingLow()),
+              stablehlo::Sizes(op.getInteriorPadding()), op.getType()));
+
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                             out);
+          return success();
+        }
       }
     }
 
@@ -4845,7 +4865,7 @@ struct DynamicUpdateSliceConstProp final
         updateConstant.isSplat() &&
         operandConstant.getSplatValue<Attribute>() ==
             updateConstant.getSplatValue<Attribute>()) {
-      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      rewriter.replaceOp(op, op.getOperand());
       return success();
     }
 
@@ -6252,8 +6272,7 @@ struct PadReduceWindow
         op.getBaseDilationsAttr(), op.getWindowDilationsAttr(), newPaddingAttr);
     newOp.getRegion().takeBody(op.getRegion());
 
-    rewriter.replaceAllUsesWith(op.getResult(0), newOp.getResult(0));
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, newOp);
 
     return success();
   }
@@ -10361,7 +10380,7 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
     if (isConvertFromBool(lhsConvert) &&
         direction == stablehlo::ComparisonDirection::EQ) {
       if (matchPattern(op.getRhs(), m_One())) {
-        rewriter.replaceAllUsesWith(op.getResult(), lhsConvert.getOperand());
+        rewriter.replaceOp(op, lhsConvert.getOperand());
         return success();
       } else if (matchPattern(op.getRhs(), m_Zero())) {
         rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
@@ -10373,7 +10392,7 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
     if (isConvertFromBool(rhsConvert) &&
         direction == stablehlo::ComparisonDirection::EQ) {
       if (matchPattern(op.getLhs(), m_One())) {
-        rewriter.replaceAllUsesWith(op.getResult(), rhsConvert.getOperand());
+        rewriter.replaceOp(op, rhsConvert.getOperand());
         return success();
       } else if (matchPattern(op.getLhs(), m_Zero())) {
         rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
@@ -11262,7 +11281,7 @@ struct RealOpCanon final : OpRewritePattern<mlir::stablehlo::RealOp> {
                                 PatternRewriter &rewriter) const override {
     auto elTy = op.getOperand().getType().getElementType();
     if (!isa<ComplexType>(elTy)) {
-      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      rewriter.replaceOp(op, op.getOperand());
       return success();
     }
 
@@ -11353,7 +11372,7 @@ struct NoopReverse final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
     }
 
     if (newDimensions.empty()) {
-      rewriter.replaceAllUsesWith(op.getResult(), op.getOperand());
+      rewriter.replaceOp(op, op.getOperand());
       return success();
     }
 
@@ -18672,6 +18691,13 @@ void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
   patterns.insert<ConcatConstProp>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addPadSimplify(RewritePatternSet &patterns,
+                                     int64_t maxConstantExpansion,
+                                     MLIRContext &context,
+                                     PatternBenefit benefit) {
+  patterns.insert<PadSimplify>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addDynamicUpdateSliceConstProp(
     RewritePatternSet &patterns, int64_t maxConstantExpansion,
     MLIRContext &context, PatternBenefit benefit) {
@@ -18852,8 +18878,8 @@ struct EnzymeHLOOptPass
              ReshapeTransposeToBroadcast>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp>(max_constant_expansion, context,
-                                              PatternBenefit(65000));
+                 DynamicUpdateSliceConstProp, PadSimplify>(
+        max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
