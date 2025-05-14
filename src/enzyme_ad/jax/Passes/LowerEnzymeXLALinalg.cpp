@@ -100,7 +100,9 @@ struct LUFactorizationOpLowering
 
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
     auto pivotRank = pivotType.getRank();
-    auto infoType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto permutationRank = permutationType.getRank();
+    auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
     auto infoRank = infoType.getRank();
 
     if (backend == "cpu") {
@@ -217,6 +219,14 @@ struct LUFactorizationOpLowering
       auto resultLayouts =
           getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
+      auto iterType = RankedTensorType::get({}, rewriter.getI32Type());
+      auto iter = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
+      auto zeroConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
+
+      Value factorizedResult, pivotResult, infoResult;
+
       if (numBatchDims > 0) {
         // TODO: Implement batched LU factorizations by directly calling MKL
         //       https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-fortran/2024-0/getrf-batch-strided.html.
@@ -242,12 +252,6 @@ struct LUFactorizationOpLowering
         auto flatInfo = rewriter.create<stablehlo::ConstantOp>(
             op.getLoc(), flatInfoType,
             cast<ElementsAttr>(makeAttr(flatInfoType, -1)));
-
-        auto iterType = RankedTensorType::get({}, rewriter.getI32Type());
-        auto iter = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
-        auto zeroConst = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
 
         auto whileReturnTypes = {iterType, flatInputType, flatPivotType,
                                  flatInfoType};
@@ -352,20 +356,12 @@ struct LUFactorizationOpLowering
               ValueRange{updatedIter, inputUpdated, pivotUpdated, infoUpdated});
         }
 
-        auto factorizedResult = rewriter.create<stablehlo::ReshapeOp>(
+        factorizedResult = rewriter.create<stablehlo::ReshapeOp>(
             op.getLoc(), inputType, whileOp.getResult(1));
-        auto pivot = rewriter.create<stablehlo::ReshapeOp>(
+        pivotResult = rewriter.create<stablehlo::ReshapeOp>(
             op.getLoc(), blasPivotType, whileOp.getResult(2));
-        auto info = rewriter.create<stablehlo::ReshapeOp>(
+        infoResult = rewriter.create<stablehlo::ReshapeOp>(
             op.getLoc(), blasInfoType, whileOp.getResult(3));
-
-        rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
-        rewriter.replaceAllUsesWith(op.getResult(1),
-                                    rewriter.create<stablehlo::ConvertOp>(
-                                        op.getLoc(), pivotType, pivot));
-        rewriter.replaceAllUsesWith(
-            op.getResult(2),
-            rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType, info));
       } else {
         auto pivot = rewriter.create<stablehlo::ConstantOp>(
             op.getLoc(), blasPivotType,
@@ -383,14 +379,167 @@ struct LUFactorizationOpLowering
             /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
             /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-        rewriter.replaceAllUsesWith(op.getResult(0), jitCall.getResult(0));
-        rewriter.replaceAllUsesWith(
-            op.getResult(1), rewriter.create<stablehlo::ConvertOp>(
-                                 op.getLoc(), pivotType, jitCall.getResult(1)));
-        rewriter.replaceAllUsesWith(
-            op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
-                                 op.getLoc(), infoType, jitCall.getResult(2)));
+        factorizedResult = jitCall.getResult(0);
+        pivotResult = jitCall.getResult(1);
+        infoResult = jitCall.getResult(2);
       }
+
+      auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
+          op.getLoc(), pivotResult,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), blasPivotType,
+              cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+
+      auto permutation = rewriter.create<stablehlo::IotaOp>(
+          op.getLoc(), blasPivotType,
+          rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
+
+      auto pivotToPermReturnTypes = {iterType, blasPivotType};
+      auto pivotToPermWhileOp = rewriter.create<stablehlo::WhileOp>(
+          op.getLoc(), TypeRange{iterType, blasPivotType},
+          ValueRange{iter, permutation});
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+
+        Block *block = rewriter.createBlock(&pivotToPermWhileOp.getCond());
+        rewriter.setInsertionPointToStart(block);
+
+        for (auto type : pivotToPermReturnTypes)
+          block->addArgument(type, pivotToPermWhileOp.getLoc());
+
+        auto pivotShapeConst = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), iterType,
+            cast<ElementsAttr>(makeAttr(
+                iterType, pivotType.getShape()[pivotType.getRank() - 1])));
+
+        auto comparison = rewriter.create<stablehlo::CompareOp>(
+            op.getLoc(), block->getArgument(0), pivotShapeConst,
+            stablehlo::ComparisonDirection::LT);
+
+        rewriter.create<stablehlo::ReturnOp>(
+            op.getLoc(), ValueRange{comparison.getResult()});
+      }
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+
+        Block *block = rewriter.createBlock(&pivotToPermWhileOp.getBody());
+        rewriter.setInsertionPointToStart(block);
+
+        for (auto type : pivotToPermReturnTypes)
+          block->addArgument(type, pivotToPermWhileOp.getLoc());
+
+        auto iterArg = block->getArgument(0);
+
+        auto updatedIter = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(), iterArg,
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), iterType,
+                cast<ElementsAttr>(makeAttr(iterType, 1))));
+
+        /*
+        for i in range(pivot.shape[-1]):
+          j = pivot[..., i]        # dynamic slice
+          x = permutation[..., i]  # dynamic slice
+          y = permutation[j]       # gather
+          permutation[..., i] = y  # dynamic update slice
+          permutation[j] = x       # scatter
+        */
+
+        SmallVector<Value> indices;
+        SmallVector<int64_t> sliceShape, batchDims;
+        for (int i = 0; i < numBatchDims; i++) {
+          indices.push_back(zeroConst);
+          sliceShape.push_back(pivotType.getShape()[i]);
+          batchDims.push_back(i);
+        }
+        indices.push_back(iterArg);
+        sliceShape.push_back(1);
+        SmallVector<int64_t> gatherSliceSizes(numBatchDims + 1, 1);
+
+        auto pivotJ = rewriter.create<stablehlo::DynamicSliceOp>(
+            op.getLoc(), pivots0indexed, indices, sliceShape);
+        auto permutationX = rewriter.create<stablehlo::DynamicSliceOp>(
+            op.getLoc(), block->getArgument(1), indices, sliceShape);
+
+        auto gatherDims = stablehlo::GatherDimensionNumbersAttr::get(
+            op.getContext(),
+            /*offsetDims=*/{numBatchDims},
+            /*collapsedSliceDims=*/{},
+            /*operandBatchingDims=*/batchDims,
+            /*startIndicesBatchingDims=*/batchDims,
+            /*startIndexMap=*/{numBatchDims},
+            /*indexVectorDim=*/numBatchDims);
+        auto permutationY = rewriter.create<stablehlo::GatherOp>(
+            op.getLoc(),
+            RankedTensorType::get(
+                sliceShape,
+                cast<RankedTensorType>(block->getArgument(1).getType())
+                    .getElementType()),
+            block->getArgument(1), pivotJ.getResult(), gatherDims,
+            gatherSliceSizes);
+
+        auto permutationUpdate1 =
+            rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+                op.getLoc(), block->getArgument(1), permutationY->getResult(0),
+                indices);
+
+        auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+            op.getContext(),
+            /*updateWindowDims=*/{},
+            /*insertedWindowDims=*/{numBatchDims},
+            /*inputBatchingDims=*/batchDims,
+            /*scatterIndicesBatchingDims=*/batchDims,
+            /*scatterDimsToOperandDims=*/{numBatchDims},
+            /*indexVectorDim=*/numBatchDims);
+        SmallVector<int64_t> scatterShape(sliceShape.begin(),
+                                          sliceShape.end() - 1);
+        auto permutationUpdate2 = rewriter.create<stablehlo::ScatterOp>(
+            op.getLoc(), TypeRange{permutationUpdate1->getResult(0).getType()},
+            ValueRange(permutationUpdate1->getResult(0)), pivotJ,
+            ValueRange(rewriter.create<stablehlo::ReshapeOp>(
+                op.getLoc(),
+                RankedTensorType::get(scatterShape,
+                                      permutationX.getType().getElementType()),
+                permutationX)),
+            scatterDims);
+
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          auto *block =
+              rewriter.createBlock(&permutationUpdate2.getUpdateComputation());
+          block->addArgument(RankedTensorType::get({}, blasIntType),
+                             op.getLoc());
+          block->addArgument(RankedTensorType::get({}, blasIntType),
+                             op.getLoc());
+          rewriter.setInsertionPointToStart(block);
+
+          rewriter.create<stablehlo::ReturnOp>(
+              op.getLoc(), ValueRange{block->getArgument(1)});
+        }
+
+        rewriter.create<stablehlo::ReturnOp>(
+            op.getLoc(),
+            ValueRange{updatedIter, permutationUpdate2->getResult(0)});
+      }
+
+      auto finalPermutation = rewriter.create<stablehlo::AddOp>(
+          op.getLoc(), pivotToPermWhileOp.getResult(1),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), blasPivotType,
+              cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+
+      rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
+      rewriter.replaceAllUsesWith(op.getResult(1),
+                                  rewriter.create<stablehlo::ConvertOp>(
+                                      op.getLoc(), pivotType, pivotResult));
+      rewriter.replaceAllUsesWith(
+          op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
+                               op.getLoc(), pivotType, finalPermutation));
+      rewriter.replaceAllUsesWith(op.getResult(3),
+                                  rewriter.create<stablehlo::ConvertOp>(
+                                      op.getLoc(), infoType, infoResult));
 
       return success();
     } else if (backend == "cuda") {
@@ -408,7 +557,8 @@ struct LUFactorizationOpLowering
           RankedTensorType::get(infoType.getShape(), rewriter.getI32Type());
 
       auto cusolverffi = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(), TypeRange{inputType, pivotCuSolverType, infoCuSolverType},
+          op.getLoc(),
+          TypeRange{inputType, pivotCuSolverType, infoCuSolverType},
           ValueRange{input}, rewriter.getStringAttr("cusolver_getrf_ffi"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
@@ -421,13 +571,40 @@ struct LUFactorizationOpLowering
           getSHLOLayout(rewriter, outputRanks, isColMajorArrOutputs, inputRank),
           /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
 
+      auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
+          op.getLoc(), cusolverffi.getResult(1),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), pivotCuSolverType,
+              cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))));
+
+      auto permutation = rewriter.create<stablehlo::CustomCallOp>(
+          op.getLoc(), TypeRange{pivotCuSolverType},
+          ValueRange{pivots0indexed.getResult()},
+          rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
+          /*has_side_effect*/ nullptr,
+          /*backend_config*/ nullptr,
+          /*api_version*/ nullptr,
+          /*calledcomputations*/ nullptr,
+          /*operand_layouts*/ nullptr,
+          /*result_layouts*/ nullptr,
+          /*output_operand_aliases*/ nullptr);
+      auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), pivotCuSolverType,
+              cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))),
+          permutation.getResult(0));
+
       rewriter.replaceAllUsesWith(op.getResult(0), cusolverffi.getResult(0));
       rewriter.replaceAllUsesWith(
           op.getResult(1),
           rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
                                                 cusolverffi.getResult(1)));
       rewriter.replaceAllUsesWith(
-          op.getResult(2),
+          op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
+                               op.getLoc(), pivotType, permutation1Indexed));
+      rewriter.replaceAllUsesWith(
+          op.getResult(3),
           rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
                                                 cusolverffi.getResult(2)));
 
@@ -468,6 +645,14 @@ struct LUFactorizationOpLowering
           rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
                                                 customCall.getResult(1)));
 
+      auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), permutationType,
+              cast<ElementsAttr>(makeAttr(permutationType, 1))),
+          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), permutationType,
+                                                customCall.getResult(2)));
+
       auto isFinite = rewriter.create<stablehlo::AndOp>(
           op.getLoc(),
           rewriter.create<stablehlo::IsFiniteOp>(
@@ -478,9 +663,8 @@ struct LUFactorizationOpLowering
                                op.getLoc(), customCall.getResult(0))));
 
       SmallVector<int64_t> reductionDims;
-      for (int i = numBatchDims; i < inputRank; i++) {
+      for (int i = numBatchDims; i < inputRank; i++)
         reductionDims.push_back(i);
-      }
       auto initValType = RankedTensorType::get({}, rewriter.getI1Type());
       auto initVal = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), initValType,
@@ -516,7 +700,8 @@ struct LUFactorizationOpLowering
 
       rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
       rewriter.replaceAllUsesWith(op.getResult(1), pivots1Indexed);
-      rewriter.replaceAllUsesWith(op.getResult(2), info);
+      rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
+      rewriter.replaceAllUsesWith(op.getResult(3), info);
       rewriter.eraseOp(op);
 
       return success();

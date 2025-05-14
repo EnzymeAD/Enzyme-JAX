@@ -196,11 +196,10 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
     HLO_Tensor:$input
   );
 
-  // TODO: consider returning the permutation tensor as well? For TPUs it is precomputed.
-  //       For other backends we will need to compute it.
   let results = (outs
     HLO_Tensor:$output,
     HLO_Tensor:$pivots,
+    HLO_Tensor:$permutation,
     HLO_Tensor:$info
   );
 
