@@ -3827,9 +3827,9 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   using OpRewritePattern::OpRewritePattern;
   size_t max_constant_expansion;
 
-  PadSimplify(size_t max_constant_expansion,
-                              MLIRContext *context, PatternBenefit benefit = 1,
-                              ArrayRef<StringRef> generatedNames = {})
+  PadSimplify(size_t max_constant_expansion, MLIRContext *context,
+              PatternBenefit benefit = 1,
+              ArrayRef<StringRef> generatedNames = {})
       : OpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
@@ -3851,11 +3851,10 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
       matchPattern(op.getPaddingValue(), m_Constant(&pv));
       if (inp && pv) {
 
-        if (inp.isSplat() &&
-            pv.isSplat() &&
-            inp.getSplatValue<Attribute>() ==
-                pv.getSplatValue<Attribute>()) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), inp.resizeSplat(op.getType()));
+        if (inp.isSplat() && pv.isSplat() &&
+            inp.getSplatValue<Attribute>() == pv.getSplatValue<Attribute>()) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), inp.resizeSplat(op.getType()));
           return success();
         }
 
@@ -18693,9 +18692,9 @@ void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addPadSimplify(RewritePatternSet &patterns,
-                                         int64_t maxConstantExpansion,
-                                         MLIRContext &context,
-                                         PatternBenefit benefit) {
+                                     int64_t maxConstantExpansion,
+                                     MLIRContext &context,
+                                     PatternBenefit benefit) {
   patterns.insert<PadSimplify>(maxConstantExpansion, &context, benefit);
 }
 
@@ -18879,8 +18878,8 @@ struct EnzymeHLOOptPass
              ReshapeTransposeToBroadcast>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, PadSimplify>(max_constant_expansion, context,
-                                              PatternBenefit(65000));
+                 DynamicUpdateSliceConstProp, PadSimplify>(
+        max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
