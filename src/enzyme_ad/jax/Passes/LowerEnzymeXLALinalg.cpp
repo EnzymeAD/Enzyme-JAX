@@ -571,38 +571,42 @@ struct LUFactorizationOpLowering
           getSHLOLayout(rewriter, outputRanks, isColMajorArrOutputs, inputRank),
           /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
 
-      auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
-          op.getLoc(), cusolverffi.getResult(1),
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), pivotCuSolverType,
-              cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))));
+      // unused custom call not getting optimized away. so adding a manual check
+      if (!op.getResult(2).getUses().empty()) {
+        auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
+            op.getLoc(), cusolverffi.getResult(1),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), pivotCuSolverType,
+                cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))));
 
-      auto permutation = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(), TypeRange{pivotCuSolverType},
-          ValueRange{pivots0indexed.getResult()},
-          rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
-          /*has_side_effect*/ nullptr,
-          /*backend_config*/ nullptr,
-          /*api_version*/ nullptr,
-          /*calledcomputations*/ nullptr,
-          /*operand_layouts*/ nullptr,
-          /*result_layouts*/ nullptr,
-          /*output_operand_aliases*/ nullptr);
-      auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
-          op.getLoc(),
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), pivotCuSolverType,
-              cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))),
-          permutation.getResult(0));
+        auto permutation = rewriter.create<stablehlo::CustomCallOp>(
+            op.getLoc(), TypeRange{pivotCuSolverType},
+            ValueRange{pivots0indexed.getResult()},
+            rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
+            /*has_side_effect*/ nullptr,
+            /*backend_config*/ nullptr,
+            /*api_version*/ nullptr,
+            /*calledcomputations*/ nullptr,
+            /*operand_layouts*/ nullptr,
+            /*result_layouts*/ nullptr,
+            /*output_operand_aliases*/ nullptr);
+        auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), pivotCuSolverType,
+                cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))),
+            permutation.getResult(0));
+
+        rewriter.replaceAllUsesWith(
+            op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
+                                 op.getLoc(), pivotType, permutation1Indexed));
+      }
 
       rewriter.replaceAllUsesWith(op.getResult(0), cusolverffi.getResult(0));
       rewriter.replaceAllUsesWith(
           op.getResult(1),
           rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
                                                 cusolverffi.getResult(1)));
-      rewriter.replaceAllUsesWith(
-          op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
-                               op.getLoc(), pivotType, permutation1Indexed));
       rewriter.replaceAllUsesWith(
           op.getResult(3),
           rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
