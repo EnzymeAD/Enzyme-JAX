@@ -1,8 +1,7 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cpu blas_int_width=64})" %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=cuda})" %s | FileCheck %s --check-prefix=CUDA
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-factorization{backend=tpu})" %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64})" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cuda})" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=tpu})" %s | FileCheck %s --check-prefix=TPU
 
-// TODO: add for other element types
 module {
   func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>) {
     %0:3 = enzymexla.linalg.lu %arg0 : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>)
@@ -21,3 +20,12 @@ module {
 // TPU-NEXT:     %5 = stablehlo.convert %4 : (tensor<i1>) -> tensor<i32>
 // TPU-NEXT:     return %0#0, %1, %5 : tensor<64x64xf32>, tensor<64xi32>, tensor<i32>
 // TPU-NEXT: }
+
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64})" %s | FileCheck %s --check-prefix=CPU
+
+module {
+  func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>) {
+    %0:3 = enzymexla.linalg.lu %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>)
+    return %0#0, %0#1, %0#2 : tensor<64x64xf64>, tensor<64xi32>, tensor<i32>
+  }
+}

@@ -336,8 +336,8 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
-def LowerFactorizationPass : Pass<"lower-factorization"> {
-  let summary = "Lower factorization to custom call";
+def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
+  let summary = "Lower enzymexla linalg ops";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",

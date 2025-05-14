@@ -15,11 +15,11 @@
 #include <algorithm>
 #include <cstdint>
 
-#define DEBUG_TYPE "lower-factorization"
+#define DEBUG_TYPE "lower-enzymexla-linalg"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_LOWERFACTORIZATIONPASS
+#define GEN_PASS_DEF_LOWERENZYMEXLALINALGPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -271,7 +271,8 @@ struct LUFactorizationOpLowering
               cast<ElementsAttr>(makeAttr(iterType, batchSize)));
 
           auto comparison = rewriter.create<stablehlo::CompareOp>(
-              op.getLoc(), block->getArgument(0), batchSizeConst, stablehlo::ComparisonDirection::LT);
+              op.getLoc(), block->getArgument(0), batchSizeConst,
+              stablehlo::ComparisonDirection::LT);
 
           rewriter.create<stablehlo::ReturnOp>(
               op.getLoc(), ValueRange{comparison.getResult()});
@@ -500,8 +501,8 @@ struct LUFactorizationOpLowering
   }
 };
 
-struct LowerFactorizationPass
-    : public enzyme::impl::LowerFactorizationPassBase<LowerFactorizationPass> {
+struct LowerEnzymeXLALinalgPass
+    : public enzyme::impl::LowerEnzymeXLALinalgPassBase<LowerEnzymeXLALinalgPass> {
   using Base::Base;
 
   void runOnOperation() override {
