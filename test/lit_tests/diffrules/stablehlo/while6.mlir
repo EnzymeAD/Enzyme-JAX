@@ -80,11 +80,6 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
 // REVERSE-NEXT:       %[[a15:.+]] = stablehlo.subtract %iterArg_8, %[[c_2]] : tensor<i64>
 // REVERSE-NEXT:       stablehlo.return %[[a9]], %[[a15]], %[[a14]] : tensor<i64>, tensor<i64>, tensor<12x16x4xf32>
 // REVERSE-NEXT:     }
-// REVERSE-NEXT:     %[[a2:.+]] = stablehlo.reshape %arg1 : (tensor<12x4xf32>) -> tensor<12x1x4xf32>
-// REVERSE-NEXT:     %[[a3:.+]] = stablehlo.slice %[[a1]]#2 [0:12, 0:1, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x1x4xf32>
-// REVERSE-NEXT:     %[[a4:.+]] = stablehlo.add %[[a3]], %[[a2]] : tensor<12x1x4xf32>
-// REVERSE-NEXT:     %[[a5:.+]] = stablehlo.slice %[[a1]]#2 [0:12, 1:16, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x15x4xf32>
-// REVERSE-NEXT:     %[[a6:.+]] = stablehlo.concatenate %[[a4]], %[[a5]], dim = 1 : (tensor<12x1x4xf32>, tensor<12x15x4xf32>) -> tensor<12x16x4xf32>
-// REVERSE-NEXT:     return %[[a6]] : tensor<12x16x4xf32>
+// REVERSE-NEXT:     return %[[a1]]#2 : tensor<12x16x4xf32>
 // REVERSE-NEXT:   }
 

@@ -23,7 +23,7 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    "test.use"(%arg0) : (tensor<144x1024x1008xf64>) -> ()
 // CHECK-NEXT:    %0 = stablehlo.compare  LT, %arg2, %arg3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:    %1 = stablehlo.select %0, %arg0, %arg1 : tensor<i1>, tensor<144x1024x1008xf64>
+// CHECK-NEXT:    %1 = stablehlo.select %0, %arg1, %arg0 : tensor<i1>, tensor<144x1024x1008xf64>
 // CHECK-NEXT:    %2 = stablehlo.while(%iterArg = %arg2) : tensor<i64>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:      %3 = stablehlo.compare  EQ, %iterArg, %arg2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
