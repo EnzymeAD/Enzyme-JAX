@@ -14860,7 +14860,7 @@ struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
           useInner = mapper.lookupOrDefault(useInner);
 
           resultReplacement = rewriter.create<stablehlo::SelectOp>(
-              op.getLoc(), useInner, inputValue, bodyRes);
+              op.getLoc(), useInner, bodyRes, inputValue);
         }
 
         // This variable is not updated during iterations
