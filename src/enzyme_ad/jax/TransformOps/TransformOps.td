@@ -1053,6 +1053,11 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
   let patterns = ["SelectPadToDUS"];
 }
 
+def AndPadPad : EnzymeHLOPatternOp<
+    "and_pad_pad"> {
+  let patterns = ["AndPadPad"];
+}
+
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
     "select_op_used_within_if"> {
   let patterns = ["SelectOpUsedWithinIf"];
