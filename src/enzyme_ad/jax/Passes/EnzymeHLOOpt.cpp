@@ -10954,7 +10954,7 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
                       ? operandRHSV
                       : paddedRHSV;
       auto newV = lhsV & rhsV;
-      if (start.size() == 0 || newV != start.back()) {
+      if (start.size() == 0 || newV != toConcat.back()) {
         toConcat.push_back(newV);
         start.push_back(boundariesV[i]);
       }
