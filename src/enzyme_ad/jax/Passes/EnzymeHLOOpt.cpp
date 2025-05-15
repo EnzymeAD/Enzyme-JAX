@@ -10807,6 +10807,60 @@ struct SelectCompIotaConstToDUS final
   }
 };
 
+struct SelectPadToDUS final : OpRewritePattern<mlir::stablehlo::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
+                                PatternRewriter &rewriter) const override {
+    auto pad = selectOp.getPred().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
+
+    SplatElementsAttr operand, padded;
+    if (!matchPattern(pad.getOperand(), m_Constant(&operand))) {
+      return failure();
+    }
+    if (!matchPattern(pad.getPaddingValue(), m_Constant(&padded))) {
+      return failure();
+    }
+
+    bool operandV = !operand.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool paddedV = !padded.getSplatValue<IntegerAttr>().getValue().isZero();
+    if (operandV == paddedV)
+      return failure();
+
+    for (auto pv : pad.getInteriorPadding()) {
+      if (pv != 0)
+        return failure();
+    }
+
+    SmallVector<int64_t> startSlices = llvm::to_vector(pad.getEdgePaddingLow());
+    SmallVector<int64_t> limits =
+        llvm::to_vector(selectOp.getType().getShape());
+    for (int i = 0; i < selectOp.getType().getShape().size(); i++) {
+      limits[i] -= pad.getEdgePaddingHigh()[i];
+    }
+    SmallVector<int64_t> step(selectOp.getType().getShape().size(), 1);
+
+    Value dusOperand = rewriter.create<stablehlo::SliceOp>(
+        selectOp.getLoc(), operandV ? trueTensor : falseTensor, startSlices,
+        limits, step);
+
+    auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
+    SmallVector<Value> starts;
+    for (int i = 0; i < selectOp.getType().getShape().size(); i++) {
+      starts.push_back(rewriter.create<stablehlo::ConstantOp>(
+          selectOp.getLoc(), ITy,
+          cast<ElementsAttr>(makeAttr(ITy, pad.getEdgePaddingLow()[i]))));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        selectOp, operandV ? falseTensor : trueTensor, dusOperand, starts);
+    return success();
+  }
+};
+
 struct SelectOpUsedWithinIf final
     : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -19176,6 +19230,7 @@ struct EnzymeHLOOptPass
         ReshapeOpCanon,
         SelectCompIotaConstSimplify,
         SelectCompIotaConstToDUS,
+        SelectPadToDUS,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,

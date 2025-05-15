@@ -1048,6 +1048,11 @@ def SelectCompIotaConstToDUS : EnzymeHLOPatternOp<
   let patterns = ["SelectCompIotaConstToDUS"];
 }
 
+def SelectPadToDUS : EnzymeHLOPatternOp<
+    "select_pad_to_dus"> {
+  let patterns = ["SelectPadToDUS"];
+}
+
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
     "select_op_used_within_if"> {
   let patterns = ["SelectOpUsedWithinIf"];
