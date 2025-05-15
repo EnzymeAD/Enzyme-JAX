@@ -10805,8 +10805,7 @@ struct SelectCompIotaConstToDUS final
   }
 };
 
-struct SelectPadToDUS final
-    : OpRewritePattern<mlir::stablehlo::SelectOp> {
+struct SelectPadToDUS final : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
                                 PatternRewriter &rewriter) const override {
@@ -10826,26 +10825,32 @@ struct SelectPadToDUS final
 
     bool operandV = !operand.getSplatValue<IntegerAttr>().getValue().isZero();
     bool paddedV = !padded.getSplatValue<IntegerAttr>().getValue().isZero();
-    if (operandV == paddedV) return failure();
+    if (operandV == paddedV)
+      return failure();
 
     for (auto pv : pad.getInteriorPadding()) {
-      if (pv != 0) return failure();
+      if (pv != 0)
+        return failure();
     }
 
     SmallVector<int64_t> startSlices = llvm::to_vector(pad.getEdgePaddingLow());
-    SmallVector<int64_t> limits = llvm::to_vector(selectOp.getType().getShape());
-    for (int i=0; i<selectOp.getType().getShape().size(); i++) {
+    SmallVector<int64_t> limits =
+        llvm::to_vector(selectOp.getType().getShape());
+    for (int i = 0; i < selectOp.getType().getShape().size(); i++) {
       limits[i] -= pad.getEdgePaddingHigh()[i];
     }
     SmallVector<int64_t> step(selectOp.getType().getShape().size(), 1);
 
-    Value dusOperand = rewriter.create<stablehlo::SliceOp>(selectOp.getLoc(), operandV ? trueTensor : falseTensor, startSlices, limits, step);
+    Value dusOperand = rewriter.create<stablehlo::SliceOp>(
+        selectOp.getLoc(), operandV ? trueTensor : falseTensor, startSlices,
+        limits, step);
 
     auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
     SmallVector<Value> starts;
-    for (int i=0; i<selectOp.getType().getShape().size(); i++) {
+    for (int i = 0; i < selectOp.getType().getShape().size(); i++) {
       starts.push_back(rewriter.create<stablehlo::ConstantOp>(
-          selectOp.getLoc(), ITy, cast<ElementsAttr>(makeAttr(ITy, pad.getEdgePaddingLow()[i]))));
+          selectOp.getLoc(), ITy,
+          cast<ElementsAttr>(makeAttr(ITy, pad.getEdgePaddingLow()[i]))));
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
