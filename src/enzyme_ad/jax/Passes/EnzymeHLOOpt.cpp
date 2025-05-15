@@ -10880,8 +10880,10 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
       return failure();
     }
 
-    bool operandLHSV = !operandLHS.getSplatValue<IntegerAttr>().getValue().isZero();
-    bool paddedLHSV = !paddedLHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool operandLHSV =
+        !operandLHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool paddedLHSV =
+        !paddedLHS.getSplatValue<IntegerAttr>().getValue().isZero();
     if (operandLHSV == paddedLHSV)
       return failure();
 
@@ -10898,8 +10900,10 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
       return failure();
     }
 
-    bool operandRHSV = !operandRHS.getSplatValue<IntegerAttr>().getValue().isZero();
-    bool paddedRHSV = !paddedRHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool operandRHSV =
+        !operandRHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool paddedRHSV =
+        !paddedRHS.getSplatValue<IntegerAttr>().getValue().isZero();
     if (operandRHSV == paddedRHSV)
       return failure();
 
@@ -10909,8 +10913,11 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
     }
 
     int64_t idx = -1;
-    for (int i=0; i<padLHS.getInteriorPadding().size(); i++) {
-      if (padLHS.getEdgePaddingLow()[i] != 0 || padRHS.getEdgePaddingLow()[i] != 0 || padLHS.getEdgePaddingHigh()[i] != 0 || padRHS.getEdgePaddingHigh()[i] != 0) {
+    for (int i = 0; i < padLHS.getInteriorPadding().size(); i++) {
+      if (padLHS.getEdgePaddingLow()[i] != 0 ||
+          padRHS.getEdgePaddingLow()[i] != 0 ||
+          padLHS.getEdgePaddingHigh()[i] != 0 ||
+          padRHS.getEdgePaddingHigh()[i] != 0) {
         if (idx == -1) {
           idx = i;
         } else {
@@ -10918,7 +10925,8 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
         }
       }
     }
-    if (idx == -1) return failure();
+    if (idx == -1)
+      return failure();
 
     std::set<int64_t> boundaries;
     boundaries.insert(0);
@@ -10926,15 +10934,25 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
     boundaries.insert(padLHS.getEdgePaddingLow()[idx]);
     boundaries.insert(padRHS.getEdgePaddingLow()[idx]);
 
-    boundaries.insert(padLHS.getType().getShape()[idx] - padLHS.getEdgePaddingHigh()[idx]);
-    boundaries.insert(padRHS.getType().getShape()[idx] - padRHS.getEdgePaddingHigh()[idx]);
+    boundaries.insert(padLHS.getType().getShape()[idx] -
+                      padLHS.getEdgePaddingHigh()[idx]);
+    boundaries.insert(padRHS.getType().getShape()[idx] -
+                      padRHS.getEdgePaddingHigh()[idx]);
     SmallVector<int64_t> boundariesV = llvm::to_vector(boundaries);
-    
+
     SmallVector<bool> toConcat;
     SmallVector<int64_t> start;
-    for (int i=0; i<boundariesV.size()-1; i++) {
-      auto lhsV = ( (boundariesV[i] >= padLHS.getEdgePaddingLow()[idx]) && (boundariesV[i] < (padLHS.getType().getShape()[idx] - padLHS.getEdgePaddingHigh()[idx])) ) ? operandLHSV : paddedLHSV;
-      auto rhsV = ( (boundariesV[i] >= padRHS.getEdgePaddingLow()[idx]) && (boundariesV[i] < (padRHS.getType().getShape()[idx] - padRHS.getEdgePaddingHigh()[idx])) ) ? operandRHSV : paddedRHSV;
+    for (int i = 0; i < boundariesV.size() - 1; i++) {
+      auto lhsV = ((boundariesV[i] >= padLHS.getEdgePaddingLow()[idx]) &&
+                   (boundariesV[i] < (padLHS.getType().getShape()[idx] -
+                                      padLHS.getEdgePaddingHigh()[idx])))
+                      ? operandLHSV
+                      : paddedLHSV;
+      auto rhsV = ((boundariesV[i] >= padRHS.getEdgePaddingLow()[idx]) &&
+                   (boundariesV[i] < (padRHS.getType().getShape()[idx] -
+                                      padRHS.getEdgePaddingHigh()[idx])))
+                      ? operandRHSV
+                      : paddedRHSV;
       auto newV = lhsV & rhsV;
       if (start.size() == 0 || newV != start.back()) {
         toConcat.push_back(newV);
@@ -10949,10 +10967,13 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
       shape[idx] = start[2] - start[1];
       auto RT = RankedTensorType::get(shape, andOp.getType().getElementType());
 
-      auto newInner = rewriter.create<stablehlo::ConstantOp>(andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[1]))); 
+      auto newInner = rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[1])));
 
       auto RT0D = RankedTensorType::get({}, andOp.getType().getElementType());
-      auto newOuter = rewriter.create<stablehlo::ConstantOp>(andOp.getLoc(), RT0D, cast<ElementsAttr>(makeAttr(RT0D, toConcat[0])));
+      auto newOuter = rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT0D,
+          cast<ElementsAttr>(makeAttr(RT0D, toConcat[0])));
 
       SmallVector<int64_t> low(padLHS.getInteriorPadding().size(), 0);
       low[idx] = start[1];
@@ -10966,16 +10987,16 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
     }
 
     SmallVector<Value> toConcatV;
-    for (int i=0; i<start.size()-1; i++) {
+    for (int i = 0; i < start.size() - 1; i++) {
       auto shape = llvm::to_vector(andOp.getType().getShape());
-      shape[idx] = start[i+1] - start[i];
+      shape[idx] = start[i + 1] - start[i];
       auto RT = RankedTensorType::get(shape, andOp.getType().getElementType());
-      toConcatV.push_back(rewriter.create<stablehlo::ConstantOp>(andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[i]))));
+      toConcatV.push_back(rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[i]))));
     }
 
-
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        andOp, toConcatV, idx);
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(andOp, toConcatV,
+                                                          idx);
     return success();
   }
 };
