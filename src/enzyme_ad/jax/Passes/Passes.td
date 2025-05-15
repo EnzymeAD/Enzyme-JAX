@@ -696,5 +696,13 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def PromoteWhile : Pass<"promote-while"> {
+  let summary = "";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+  ];
+}
+
 
 #endif
