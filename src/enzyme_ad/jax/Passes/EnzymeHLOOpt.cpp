@@ -6485,6 +6485,24 @@ struct BroadcastInDimSimplify
   }
 };
 
+stablehlo::ComparisonDirection
+reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GE;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GT;
+  }
+}
+
 struct CompareIotaConstSimplify
     : public OpRewritePattern<stablehlo::CompareOp> {
   using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
@@ -6498,19 +6516,14 @@ struct CompareIotaConstSimplify
     auto rhsIota = rhs.getDefiningOp<stablehlo::IotaOp>();
 
     if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
-      return failure();
-
-    // TODO: remove post GB
-    if (!llvm::hasSingleElement(cmpOp.getResult().getUsers()) ||
-        !isa<stablehlo::ConvertOp>(*cmpOp.getResult().getUsers().begin()))
-      return failure();
+      return rewriter.notifyMatchFailure(cmpOp, "Requires single iota user");
 
     auto iota = lhsIota ? lhsIota : rhsIota;
     Value cst = lhsIota ? rhs : lhs;
 
     APInt cstAPInt;
     if (!matchPattern(cst, m_ConstantInt(&cstAPInt)))
-      return failure();
+      return rewriter.notifyMatchFailure(cmpOp, "Non-constant comparison");
 
     std::optional<stablehlo::ComparisonType> compType = cmpOp.getCompareType();
 
@@ -6520,6 +6533,14 @@ struct CompareIotaConstSimplify
     auto dir = cmpOp.getComparisonDirection();
 
     auto T = cast<RankedTensorType>(iota.getType());
+
+    ssize_t max_offset = T.getShape()[iota.getIotaDimension()] - 1;
+    ssize_t min_offset = 0;
+
+    if (lhs != iota) {
+      dir = reversedComparisonDirection(dir);
+    }
+
     auto boolType = rewriter.getI1Type();
     int64_t lb = 0, ub = T.getShape()[iota.getIotaDimension()];
 
@@ -6568,50 +6589,113 @@ struct CompareIotaConstSimplify
       padInner(false, cstI, iota.getIotaDimension());
       return success();
     case stablehlo::ComparisonDirection::LE:
-      if (lhs == iota) { // iota <= cst [0, 1, 2, 3] .<= 2 -> [1, 1, 1, 0]
-        if (cstI >= T.getShape()[iota.getIotaDimension()]) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              cmpOp, SplatElementsAttr::get(cmpOp.getType(),
-                                            rewriter.getBoolAttr(true)));
-          return success();
-        }
+    case stablehlo::ComparisonDirection::LT:
+    case stablehlo::ComparisonDirection::GE:
+    case stablehlo::ComparisonDirection::GT: {
+      // iota <= cst [0, 1, 2, 3] .<= 2 -> [1, 1, 1, 0]
 
-        if (cstI < 0) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              cmpOp, SplatElementsAttr::get(cmpOp.getType(),
-                                            rewriter.getBoolAttr(false)));
-          return success();
-        }
-
-        SmallVector<int64_t> trueShape;
-        SmallVector<int64_t> falseShape;
-
-        for (auto [i, S] : llvm::enumerate(T.getShape())) {
-          if (i == iota.getIotaDimension()) {
-            trueShape.push_back(cstI + 1);
-            falseShape.push_back(S - (cstI + 1));
-            continue;
-          }
-
-          trueShape.push_back(S);
-          falseShape.push_back(S);
-        }
-
-        Value ops[] = {
-            rewriter.create<stablehlo::ConstantOp>(
-                iota.getLoc(), SplatElementsAttr::get(
-                                   RankedTensorType::get(trueShape, boolType),
-                                   rewriter.getBoolAttr(true))),
-            rewriter.create<stablehlo::ConstantOp>(
-                iota.getLoc(), SplatElementsAttr::get(
-                                   RankedTensorType::get(falseShape, boolType),
-                                   rewriter.getBoolAttr(false)))};
-        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-            cmpOp, cmpOp.getType(), ValueRange(ops), iota.getIotaDimension());
+      // [0, 1, 2, 3] < 4   => all true if max_offset < cst
+      if (dir == stablehlo::ComparisonDirection::LT && max_offset < cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(true)));
+        return success();
+      }
+      // [0, 1, 2, 3] <= 3  => all true if max_offset <= cst
+      if (dir == stablehlo::ComparisonDirection::LE && max_offset <= cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(true)));
+        return success();
+      }
+      // [0, 1, 2, 3] > -1  => all true if min_offset > cst
+      if (dir == stablehlo::ComparisonDirection::GT && min_offset > cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(true)));
+        return success();
+      }
+      // [0, 1, 2, 3] >= 0  => all true if min_offset > cst
+      if (dir == stablehlo::ComparisonDirection::GE && min_offset >= cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(true)));
         return success();
       }
 
-      break;
+      // [0, 1, 2, 3] < 0   => all false if min_offset >= cst
+      if (dir == stablehlo::ComparisonDirection::LT && min_offset >= cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(false)));
+        return success();
+      }
+
+      // [0, 1, 2, 3] <= -1  => all false if min_offset > cst
+      if (dir == stablehlo::ComparisonDirection::LE && min_offset > cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(false)));
+        return success();
+      }
+
+      // [0, 1, 2, 3] > 3   => all false if max_offset <= cst
+      if (dir == stablehlo::ComparisonDirection::GT && max_offset <= cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(false)));
+        return success();
+      }
+
+      // [0, 1, 2, 3] >= 4   => all false if max_offset < cst
+      if (dir == stablehlo::ComparisonDirection::GE && max_offset < cstI) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, SplatElementsAttr::get(cmpOp.getType(),
+                                          rewriter.getBoolAttr(false)));
+        return success();
+      }
+
+      bool isLess = dir == stablehlo::ComparisonDirection::LE ||
+                    dir == stablehlo::ComparisonDirection::LT;
+
+      SmallVector<int64_t> leftShape;
+      SmallVector<int64_t> rightShape;
+
+      for (auto [i, S] : llvm::enumerate(T.getShape())) {
+        if (i == iota.getIotaDimension()) {
+
+          // [0, 1, 2, 3] ?= 2
+
+          // is <= 2, left = [0, 1, 2]
+          // is < 2, left = [0, 1]
+          // is >= 2, left = [0, 1]
+          // is > 2, left = [0, 1, 2]
+          int left = (dir == stablehlo::ComparisonDirection::LE ||
+                      dir == stablehlo::ComparisonDirection::GT)
+                         ? cstI + 1
+                         : cstI;
+          leftShape.push_back(left);
+          rightShape.push_back(S - left);
+          continue;
+        }
+
+        leftShape.push_back(S);
+        rightShape.push_back(S);
+      }
+
+      Value ops[] = {
+          rewriter.create<stablehlo::ConstantOp>(
+              iota.getLoc(),
+              SplatElementsAttr::get(RankedTensorType::get(leftShape, boolType),
+                                     rewriter.getBoolAttr(isLess))),
+          rewriter.create<stablehlo::ConstantOp>(
+              iota.getLoc(), SplatElementsAttr::get(
+                                 RankedTensorType::get(rightShape, boolType),
+                                 rewriter.getBoolAttr(!isLess)))};
+      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+          cmpOp, cmpOp.getType(), ValueRange(ops), iota.getIotaDimension());
+      return success();
+    }
     default:
       // TODO: other directions
       break;
