@@ -5259,7 +5259,9 @@ struct BroadcastPad final
     if (!pad)
       return failure();
 
-    if (!llvm::hasSingleElement(pad->getUsers()))
+    SplatElementsAttr splat1;
+    if (!llvm::hasSingleElement(pad->getUsers()) &&
+        !(matchPattern(pad.getOperand(), m_Constant(&splat1))))
       return failure();
 
     SmallVector<int64_t> paddingLow;
