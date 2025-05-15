@@ -10861,6 +10861,146 @@ struct SelectPadToDUS final : OpRewritePattern<mlir::stablehlo::SelectOp> {
   }
 };
 
+struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp andOp,
+                                PatternRewriter &rewriter) const override {
+    auto padLHS = andOp.getLhs().getDefiningOp<stablehlo::PadOp>();
+    if (!padLHS)
+      return failure();
+    auto padRHS = andOp.getRhs().getDefiningOp<stablehlo::PadOp>();
+    if (!padRHS)
+      return failure();
+
+    SplatElementsAttr operandLHS, paddedLHS;
+    if (!matchPattern(padLHS.getOperand(), m_Constant(&operandLHS))) {
+      return failure();
+    }
+    if (!matchPattern(padLHS.getPaddingValue(), m_Constant(&paddedLHS))) {
+      return failure();
+    }
+
+    bool operandLHSV =
+        !operandLHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool paddedLHSV =
+        !paddedLHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    if (operandLHSV == paddedLHSV)
+      return failure();
+
+    for (auto pv : padLHS.getInteriorPadding()) {
+      if (pv != 0)
+        return failure();
+    }
+
+    SplatElementsAttr operandRHS, paddedRHS;
+    if (!matchPattern(padRHS.getOperand(), m_Constant(&operandRHS))) {
+      return failure();
+    }
+    if (!matchPattern(padRHS.getPaddingValue(), m_Constant(&paddedRHS))) {
+      return failure();
+    }
+
+    bool operandRHSV =
+        !operandRHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    bool paddedRHSV =
+        !paddedRHS.getSplatValue<IntegerAttr>().getValue().isZero();
+    if (operandRHSV == paddedRHSV)
+      return failure();
+
+    for (auto pv : padLHS.getInteriorPadding()) {
+      if (pv != 0)
+        return failure();
+    }
+
+    int64_t idx = -1;
+    for (int i = 0; i < padLHS.getInteriorPadding().size(); i++) {
+      if (padLHS.getEdgePaddingLow()[i] != 0 ||
+          padRHS.getEdgePaddingLow()[i] != 0 ||
+          padLHS.getEdgePaddingHigh()[i] != 0 ||
+          padRHS.getEdgePaddingHigh()[i] != 0) {
+        if (idx == -1) {
+          idx = i;
+        } else {
+          return failure();
+        }
+      }
+    }
+    if (idx == -1)
+      return failure();
+
+    std::set<int64_t> boundaries;
+    boundaries.insert(0);
+    boundaries.insert(padLHS.getType().getShape()[idx]);
+    boundaries.insert(padLHS.getEdgePaddingLow()[idx]);
+    boundaries.insert(padRHS.getEdgePaddingLow()[idx]);
+
+    boundaries.insert(padLHS.getType().getShape()[idx] -
+                      padLHS.getEdgePaddingHigh()[idx]);
+    boundaries.insert(padRHS.getType().getShape()[idx] -
+                      padRHS.getEdgePaddingHigh()[idx]);
+    SmallVector<int64_t> boundariesV = llvm::to_vector(boundaries);
+
+    SmallVector<bool> toConcat;
+    SmallVector<int64_t> start;
+    for (int i = 0; i < boundariesV.size() - 1; i++) {
+      auto lhsV = ((boundariesV[i] >= padLHS.getEdgePaddingLow()[idx]) &&
+                   (boundariesV[i] < (padLHS.getType().getShape()[idx] -
+                                      padLHS.getEdgePaddingHigh()[idx])))
+                      ? operandLHSV
+                      : paddedLHSV;
+      auto rhsV = ((boundariesV[i] >= padRHS.getEdgePaddingLow()[idx]) &&
+                   (boundariesV[i] < (padRHS.getType().getShape()[idx] -
+                                      padRHS.getEdgePaddingHigh()[idx])))
+                      ? operandRHSV
+                      : paddedRHSV;
+      auto newV = lhsV & rhsV;
+      if (start.size() == 0 || newV != toConcat.back()) {
+        toConcat.push_back(newV);
+        start.push_back(boundariesV[i]);
+      }
+    }
+
+    start.push_back(padLHS.getType().getShape()[idx]);
+
+    if (toConcat.size() == 3) {
+      auto shape = llvm::to_vector(andOp.getType().getShape());
+      shape[idx] = start[2] - start[1];
+      auto RT = RankedTensorType::get(shape, andOp.getType().getElementType());
+
+      auto newInner = rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[1])));
+
+      auto RT0D = RankedTensorType::get({}, andOp.getType().getElementType());
+      auto newOuter = rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT0D,
+          cast<ElementsAttr>(makeAttr(RT0D, toConcat[0])));
+
+      SmallVector<int64_t> low(padLHS.getInteriorPadding().size(), 0);
+      low[idx] = start[1];
+
+      SmallVector<int64_t> high(padLHS.getInteriorPadding().size(), 0);
+      high[idx] = start[3] - start[2];
+
+      rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+          andOp, newInner, newOuter, low, high, padLHS.getInteriorPadding());
+      return success();
+    }
+
+    SmallVector<Value> toConcatV;
+    for (int i = 0; i < start.size() - 1; i++) {
+      auto shape = llvm::to_vector(andOp.getType().getShape());
+      shape[idx] = start[i + 1] - start[i];
+      auto RT = RankedTensorType::get(shape, andOp.getType().getElementType());
+      toConcatV.push_back(rewriter.create<stablehlo::ConstantOp>(
+          andOp.getLoc(), RT, cast<ElementsAttr>(makeAttr(RT, toConcat[i]))));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(andOp, toConcatV,
+                                                          idx);
+    return success();
+  }
+};
+
 struct SelectOpUsedWithinIf final
     : OpRewritePattern<mlir::stablehlo::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -19231,6 +19371,7 @@ struct EnzymeHLOOptPass
         SelectCompIotaConstSimplify,
         SelectCompIotaConstToDUS,
         SelectPadToDUS,
+        AndPadPad,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
         BroadcastInDimTransposeToBroadcastInDim,
