@@ -2882,12 +2882,20 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
         auto start = sop.getStartIndices()[en.index()];
         auto stop = sop.getLimitIndices()[en.index()];
         auto stride = sop.getStrides()[en.index()];
+
+        if (stride != ints[en.index()])
+          ints[en.index()] = 1;
+        // If the difference between the starts is not an even multiple of the
+        // stride change the stride to 1
+        if (start != starts[en.index()]) {
+          if ((start - starts[en.index()]) % ints[en.index()] != 0) {
+            ints[en.index()] = 1;
+          }
+        }
         if (start < starts[en.index()])
           starts[en.index()] = start;
         if (stop > stops[en.index()])
           stops[en.index()] = stop;
-        if (stride != ints[en.index()])
-          ints[en.index()] = 1;
       }
       todo.push_back(sop);
     }
