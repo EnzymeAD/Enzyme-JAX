@@ -2871,48 +2871,43 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
                                 op.getStartIndices().end());
     SmallVector<int64_t> stops(op.getLimitIndices().begin(),
                                op.getLimitIndices().end());
-    SmallVector<int64_t> ints(op.getStrides().begin(), op.getStrides().end());
+    SmallVector<int64_t> ints(op.getStrides().size(), 1);
     SmallVector<stablehlo::SliceOp> todo;
     SmallVector<int64_t> sizes;
     for (auto u : elem->getUsers()) {
       auto sop = dyn_cast<stablehlo::SliceOp>(u);
       if (!sop)
         return failure();
+
       for (auto en : llvm::enumerate(sop.getType().getShape())) {
         auto start = sop.getStartIndices()[en.index()];
         auto stop = sop.getLimitIndices()[en.index()];
-        auto stride = sop.getStrides()[en.index()];
         if (start < starts[en.index()])
           starts[en.index()] = start;
         if (stop > stops[en.index()])
           stops[en.index()] = stop;
-        if (stride != ints[en.index()])
-          ints[en.index()] = 1;
       }
+
       todo.push_back(sop);
     }
+
     bool changed = false;
     for (auto en : llvm::enumerate(op.getOperand().getType().getShape())) {
-      if (starts[en.index()] != 0) {
+      if (starts[en.index()] != 0)
         changed = true;
-      }
-      if (stops[en.index()] < en.value()) {
+      if (stops[en.index()] < en.value())
         changed = true;
-      }
-      if (ints[en.index()] != 1) {
-        changed = true;
-      }
-      sizes.push_back((stops[en.index()] - starts[en.index()]) /
-                      ints[en.index()]);
+      sizes.push_back((stops[en.index()] - starts[en.index()]));
     }
     if (!changed)
-      return failure();
+      return rewriter.notifyMatchFailure(op, "!changed");
+
     rewriter.setInsertionPoint(elem);
     SmallVector<Value> ops;
-    for (auto v : elem->getOperands()) {
+    for (auto v : elem->getOperands())
       ops.push_back(rewriter.create<stablehlo::SliceOp>(op.getLoc(), v, starts,
                                                         stops, ints));
-    }
+
     auto nex = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
         TypeRange(RankedTensorType::get(
@@ -2920,26 +2915,15 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
         elem->getAttrs(), {}, {});
 
     for (auto sl : todo) {
-      SmallVector<int64_t> sstarts;
-      SmallVector<int64_t> sstops;
-      SmallVector<int64_t> sints;
+      SmallVector<int64_t> sstarts, sstops;
 
-      for (auto &&[start, stop, stride, ostart, ostop, ostride] :
-           llvm::zip(sl.getStartIndices(), sl.getLimitIndices(),
-                     sl.getStrides(), starts, stops, ints)) {
-        if (stride == ostride) {
-          sstarts.push_back(start - ostart);
-          sstops.push_back((stop - ostart) / stride);
-          sints.push_back(1);
-        } else {
-          assert(ostride == 1);
-          sstarts.push_back(start - ostart);
-          sstops.push_back(stop - ostart);
-          sints.push_back(stride);
-        }
+      for (auto &&[start, stop, ostart, ostop] : llvm::zip(
+               sl.getStartIndices(), sl.getLimitIndices(), starts, stops)) {
+        sstarts.push_back(start - ostart);
+        sstops.push_back(stop - ostart);
       }
-      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(sl, nex->getResult(0),
-                                                      sstarts, sstops, sints);
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          sl, nex->getResult(0), sstarts, sstops, sl.getStrides());
     }
     return success();
   }
