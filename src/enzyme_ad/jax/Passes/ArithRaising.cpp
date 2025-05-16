@@ -323,6 +323,28 @@ struct ArithRaisingPass
           addOp.getLoc(), addOp->getOperand(0),
           cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
+      if (cast<RankedTensorType>(addOp.getOperand().getType())
+              .getElementType()
+              .isInteger(1)) {
+        newAddOp = builder.create<stablehlo::NegOp>(addOp.getLoc(), newAddOp);
+      }
+      addOp.replaceAllUsesWith(newAddOp);
+      addOp.erase();
+    });
+    op->walk([=](arith::UIToFPOp addOp) {
+      if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
+        return;
+      if (!cast<RankedTensorType>(addOp.getOperand().getType())
+               .getElementType()
+               .isInteger(1)) {
+        return;
+      }
+      OpBuilder builder(addOp);
+      Value newAddOp;
+      newAddOp = builder.create<stablehlo::ConvertOp>(
+          addOp.getLoc(), addOp->getOperand(0),
+          cast<RankedTensorType>(addOp->getResult(0).getType())
+              .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
