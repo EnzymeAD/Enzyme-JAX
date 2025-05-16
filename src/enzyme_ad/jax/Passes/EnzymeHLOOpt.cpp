@@ -13164,7 +13164,8 @@ struct WhileRepeatedInductionReduction
     // Create the then and else regions for the if operation
 
     {
-      Region &thenRegion = cloneCond ? ifOp.getFalseBranch() : ifOp.getTrueBranch();
+      Region &thenRegion =
+          cloneCond ? ifOp.getFalseBranch() : ifOp.getTrueBranch();
       OpBuilder::InsertionGuard guard(rewriter);
       Block *thenBlock = rewriter.createBlock(&thenRegion);
       rewriter.setInsertionPointToStart(thenBlock);
@@ -13172,7 +13173,8 @@ struct WhileRepeatedInductionReduction
     }
 
     {
-      Region &elseRegion = cloneCond ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
+      Region &elseRegion =
+          cloneCond ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
       OpBuilder::InsertionGuard guard(rewriter);
       Block *elseBlock = rewriter.createBlock(&elseRegion);
       rewriter.setInsertionPointToStart(elseBlock);
@@ -13486,7 +13488,8 @@ struct WhilePadInductionReduction
     // Create the then and else regions for the if operation
 
     {
-      Region &thenRegion = cloneCond ? ifOp.getFalseBranch() : ifOp.getTrueBranch();
+      Region &thenRegion =
+          cloneCond ? ifOp.getFalseBranch() : ifOp.getTrueBranch();
       OpBuilder::InsertionGuard guard(rewriter);
       Block *thenBlock = rewriter.createBlock(&thenRegion);
       rewriter.setInsertionPointToStart(thenBlock);
@@ -13494,7 +13497,8 @@ struct WhilePadInductionReduction
     }
 
     {
-      Region &elseRegion = cloneCond ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
+      Region &elseRegion =
+          cloneCond ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
       OpBuilder::InsertionGuard guard(rewriter);
       Block *elseBlock = rewriter.createBlock(&elseRegion);
       rewriter.setInsertionPointToStart(elseBlock);
