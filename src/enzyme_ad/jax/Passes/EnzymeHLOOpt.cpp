@@ -2885,8 +2885,8 @@ struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 
         if (stride != ints[en.index()])
           ints[en.index()] = 1;
-        // If the difference between the starts is not an even multiple of the stride
-        // change the stride to 1
+        // If the difference between the starts is not an even multiple of the
+        // stride change the stride to 1
         if (start != starts[en.index()]) {
           if ((start - starts[en.index()]) % ints[en.index()] != 0) {
             ints[en.index()] = 1;
