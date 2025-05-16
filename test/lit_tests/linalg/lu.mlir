@@ -1,4 +1,4 @@
-// enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
 
@@ -10,7 +10,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_lapack_sgetrf_(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr)
-// CPU-NEXT:  llvm.func @enzymexla_lapack_sgetrf_wrapper_0(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
+// CPU-NEXT:  llvm.func @enzymexla_lapack_sgetrf_wrapper_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.mlir.constant(64 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(1 : i64) : i64
 // CPU-NEXT:    %2 = llvm.alloca %1 x i64 : (i64) -> !llvm.ptr
@@ -28,7 +28,7 @@ module {
 // CPU-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<i32>
 // CPU-NEXT:    %c_4 = stablehlo.constant dense<-1> : tensor<64xi64>
 // CPU-NEXT:    %c_5 = stablehlo.constant dense<-1> : tensor<i64>
-// CPU-NEXT:    %0:3 = enzymexla.jit_call @enzymexla_lapack_sgetrf_wrapper_0 (%arg0, %c_4, %c_5) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>)
+// CPU-NEXT:    %0:3 = enzymexla.jit_call @enzymexla_lapack_sgetrf_wrapper_[[WRAPPER_ID]] (%arg0, %c_4, %c_5) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>)
 // CPU-NEXT:    %1 = stablehlo.subtract %0#1, %c_2 : tensor<64xi64>
 // CPU-NEXT:    %2:2 = stablehlo.while(%iterArg = %c_3, %iterArg_6 = %c) : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:     cond {
