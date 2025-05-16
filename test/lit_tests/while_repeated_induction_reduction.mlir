@@ -99,12 +99,12 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %2 = stablehlo.compare  LT, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:    %3 = "stablehlo.if"(%2) ({
-// CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
-// CHECK-NEXT:    }, {
 // CHECK-NEXT:      %4 = stablehlo.slice %1#1 [0:1, 0:1, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
 // CHECK-NEXT:      %5 = stablehlo.slice %1#1 [0:1, 2031:2032, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
 // CHECK-NEXT:      %6 = stablehlo.concatenate %4, %1#1, %5, dim = 1 : (tensor<1x1x2032xf64>, tensor<1x2032x2032xf64>, tensor<1x1x2032xf64>) -> tensor<1x2034x2032xf64>
 // CHECK-NEXT:      stablehlo.return %6 : tensor<1x2034x2032xf64>
+// CHECK-NEXT:    }, {
+// CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:    }) : (tensor<i1>) -> tensor<1x2034x2032xf64>
 // CHECK-NEXT:    return %3 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:  }
@@ -127,12 +127,12 @@ func.func @while_loop_example2(%arg0: tensor<1x2034x2032xf64>, %arg1: tensor<i32
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %2 = stablehlo.compare  LT, %c, %arg2 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CHECK-NEXT:    %3 = "stablehlo.if"(%2) ({
-// CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
-// CHECK-NEXT:    }, {
 // CHECK-NEXT:      %4 = stablehlo.slice %1#1 [0:1, 0:1, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
 // CHECK-NEXT:      %5 = stablehlo.slice %1#1 [0:1, 2031:2032, 0:2032] : (tensor<1x2032x2032xf64>) -> tensor<1x1x2032xf64>
 // CHECK-NEXT:      %6 = stablehlo.concatenate %4, %1#1, %5, dim = 1 : (tensor<1x1x2032xf64>, tensor<1x2032x2032xf64>, tensor<1x1x2032xf64>) -> tensor<1x2034x2032xf64>
 // CHECK-NEXT:      stablehlo.return %6 : tensor<1x2034x2032xf64>
+// CHECK-NEXT:    }, {
+// CHECK-NEXT:      stablehlo.return %arg0 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:    }) : (tensor<i1>) -> tensor<1x2034x2032xf64>
 // CHECK-NEXT:    return %3 : tensor<1x2034x2032xf64>
 // CHECK-NEXT:  }
