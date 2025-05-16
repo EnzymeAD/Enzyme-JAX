@@ -67,11 +67,11 @@ func.func @while_loop_example(%arg0: tensor<3x2034x2034xf64>, %arg1: tensor<i32>
 
 // CHECK: %[[FINAL_COND:.*]] = stablehlo.compare LT, %[[ZERO]], %[[ARG2]]
 // CHECK: %[[FINAL_RESULT:.*]] = "stablehlo.if"(%[[FINAL_COND]]) ({
-// CHECK: stablehlo.return %[[ARG0]]
-// CHECK: }, {
 // CHECK: %[[FINAL_PADDED:.*]] = stablehlo.pad %[[WHILE_RESULT]]#1, %[[PADDING_VALUE]]
 // CHECK-SAME: low = [1, 1, 1], high = [1, 1, 1], interior = [0, 0, 0]
 // CHECK: stablehlo.return %[[FINAL_PADDED]]
+// CHECK: }, {
+// CHECK: stablehlo.return %[[ARG0]]
 // CHECK: })
 
 // CHECK: return %[[FINAL_RESULT]]
