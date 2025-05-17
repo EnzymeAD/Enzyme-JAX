@@ -562,7 +562,10 @@ struct LUFactorizationOpLowering
           ValueRange{input}, rewriter.getStringAttr("cusolver_getrf_ffi"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
-          /*api_version*/ nullptr,
+          /*api_version*/
+          stablehlo::CustomCallApiVersionAttr::get(
+              rewriter.getContext(),
+              mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
           /*calledcomputations*/ nullptr,
           /*operand_layouts*/
           getSHLOLayout(rewriter, operandRanks, isColMajorArrOperands,
@@ -585,7 +588,10 @@ struct LUFactorizationOpLowering
             rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
             /*has_side_effect*/ nullptr,
             /*backend_config*/ nullptr,
-            /*api_version*/ nullptr,
+            /*api_version*/
+            stablehlo::CustomCallApiVersionAttr::get(
+                rewriter.getContext(),
+                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr,
             /*operand_layouts*/ nullptr,
             /*result_layouts*/ nullptr,

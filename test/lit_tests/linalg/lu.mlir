@@ -56,9 +56,9 @@ module {
 
 // CUDA: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>) {
 // CUDA-NEXT:     %c = stablehlo.constant dense<1> : tensor<64xi32>
-// CUDA-NEXT:     %0:3 = stablehlo.custom_call @cusolver_getrf_ffi(%arg0) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>]} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>)
+// CUDA-NEXT:     %0:3 = stablehlo.custom_call @cusolver_getrf_ffi(%arg0) {api_version = 4 : i32, operand_layouts = [dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>]} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<i32>)
 // CUDA-NEXT:     %1 = stablehlo.subtract %0#1, %c : tensor<64xi32>
-// CUDA-NEXT:     %2 = stablehlo.custom_call @cu_lu_pivots_to_permutation(%1) : (tensor<64xi32>) -> tensor<64xi32>
+// CUDA-NEXT:     %2 = stablehlo.custom_call @cu_lu_pivots_to_permutation(%1) {api_version = 4 : i32} : (tensor<64xi32>) -> tensor<64xi32>
 // CUDA-NEXT:     %3 = stablehlo.add %c, %2 : tensor<64xi32>
 // CUDA-NEXT:     return %0#0, %0#1, %3, %0#2 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
 // CUDA-NEXT: }
