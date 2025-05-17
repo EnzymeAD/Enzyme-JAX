@@ -15221,6 +15221,11 @@ struct ZeroExtentTensorCanon final : RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
+    auto disabledByAttr = failIfFuncOpInterfaceHasAttr(
+        op, StringRef("enzymexla.disable_hlo_opts"), rewriter);
+    if (disabledByAttr.failed())
+      return disabledByAttr;
+
     auto loc = op->getLoc();
 
     if (!isa_and_present<mlir::stablehlo::StablehloDialect>(op->getDialect()))
