@@ -1836,3 +1836,8 @@ def TraingularSolveRealAdjoint : EnzymeHLOPatternOp<
   "triangular_solve_real_adjoint"> {
   let patterns = ["TriangularSolveRealAdjoint"];
 }
+
+def TriagularSolveTranspose : EnzymeHLOPatternOp<
+  "triangular_solve_transpose"> {
+  let patterns = ["TriagularSolveTranspose"];
+}

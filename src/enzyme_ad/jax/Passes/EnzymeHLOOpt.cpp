@@ -19502,6 +19502,63 @@ struct TriangularSolveRealAdjoint
         stablehlo::TransposeAttr::get(op.getContext(),
                                       stablehlo::Transpose::TRANSPOSE));
 
+    return success();
+  }
+};
+
+struct TriagularSolveTranspose
+    : public OpRewritePattern<stablehlo::TriangularSolveOp> {
+  using OpRewritePattern<stablehlo::TriangularSolveOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::TriangularSolveOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transposeOp = op.getA().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return rewriter.notifyMatchFailure(
+          op, "expected `a` to be a transpose operation");
+
+    if (!llvm::hasSingleElement(transposeOp->getUsers()))
+      return rewriter.notifyMatchFailure(op,
+                                         "expected `a` to have a single use");
+
+    auto perm = llvm::to_vector(transposeOp.getPermutation());
+    if (perm[perm.size() - 1] == perm.size() - 2 &&
+        perm[perm.size() - 2] == perm.size() - 1) {
+      perm[perm.size() - 1] = perm.size() - 1;
+      perm[perm.size() - 2] = perm.size() - 2;
+
+      auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+          op.getLoc(), transposeOp.getOperand(), perm);
+
+      auto aTranpose = op.getTransposeA();
+      switch (aTranpose) {
+      case stablehlo::Transpose::NO_TRANSPOSE:
+        rewriter.replaceOpWithNewOp<stablehlo::TriangularSolveOp>(
+            op, newTransposeOp, op.getB(), op.getLeftSideAttr(),
+            op.getLowerAttr(), op.getUnitDiagonalAttr(),
+            stablehlo::TransposeAttr::get(op.getContext(),
+                                          stablehlo::Transpose::TRANSPOSE));
+        break;
+      case stablehlo::Transpose::TRANSPOSE:
+        rewriter.replaceOpWithNewOp<stablehlo::TriangularSolveOp>(
+            op, newTransposeOp, op.getB(), op.getLeftSideAttr(),
+            op.getLowerAttr(), op.getUnitDiagonalAttr(),
+            stablehlo::TransposeAttr::get(op.getContext(),
+                                          stablehlo::Transpose::NO_TRANSPOSE));
+        break;
+      case stablehlo::Transpose::ADJOINT:
+        rewriter.replaceOpWithNewOp<stablehlo::TriangularSolveOp>(
+            op, rewriter.create<chlo::ConjOp>(op.getLoc(), newTransposeOp),
+            op.getB(), op.getLeftSideAttr(), op.getLowerAttr(),
+            op.getUnitDiagonalAttr(),
+            stablehlo::TransposeAttr::get(op.getContext(),
+                                          stablehlo::Transpose::NO_TRANSPOSE));
+        break;
+      }
+
+      return success();
+    }
+
     return failure();
   }
 };
@@ -19966,7 +20023,8 @@ struct EnzymeHLOOptPass
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,
-        TriangularSolveRealAdjoint
+        TriangularSolveRealAdjoint,
+        TriagularSolveTranspose
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
