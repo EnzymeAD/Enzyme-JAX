@@ -19481,6 +19481,31 @@ struct ConcatReshapeElementwise final
   }
 };
 
+struct TriangularSolveRealAdjoint
+    : public CheckedOpRewritePattern<stablehlo::TriangularSolveOp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TriangularSolveOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transposeA = op.getTransposeA();
+    if (transposeA != stablehlo::Transpose::ADJOINT)
+      return rewriter.notifyMatchFailure(
+          op, "`transpose_a` is not TRANSPOSE_ADJOINT");
+
+    if (dyn_cast<ComplexType>(
+            cast<RankedTensorType>(op.getType()).getElementType()))
+      return rewriter.notifyMatchFailure(op, "can't apply to complex numbers");
+
+    rewriter.replaceOpWithNewOp<stablehlo::TriangularSolveOp>(
+        op, op.getA(), op.getB(), op.getLeftSideAttr(), op.getLowerAttr(),
+        op.getUnitDiagonalAttr(),
+        stablehlo::TransposeAttr::get(op.getContext(),
+                                      stablehlo::Transpose::TRANSPOSE));
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19940,7 +19965,8 @@ struct EnzymeHLOOptPass
         ConcatElementwise,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
-        ReduceReduce
+        ReduceReduce,
+        TriangularSolveRealAdjoint
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
