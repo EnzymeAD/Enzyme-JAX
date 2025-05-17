@@ -19492,7 +19492,7 @@ struct TriangularSolveRealAdjoint
       return rewriter.notifyMatchFailure(
           op, "`transpose_a` is not TRANSPOSE_ADJOINT");
 
-    if (dyn_cast<ComplexType>(
+    if (isa<ComplexType>(
             cast<RankedTensorType>(op.getType()).getElementType()))
       return rewriter.notifyMatchFailure(op, "can't apply to complex numbers");
 
