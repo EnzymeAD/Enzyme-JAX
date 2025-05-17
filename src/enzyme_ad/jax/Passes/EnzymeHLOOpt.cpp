@@ -18957,7 +18957,8 @@ struct ConjReal final : public OpRewritePattern<chlo::ConjOp> {
   LogicalResult matchAndRewrite(chlo::ConjOp op,
                                 PatternRewriter &rewriter) const override {
     auto input = op.getOperand();
-    if (isa<ComplexType>(input.getType()))
+    auto elemType = cast<RankedTensorType>(input.getType()).getElementType();
+    if (isa<ComplexType>(elemType))
       return rewriter.notifyMatchFailure(op, "can't apply to complex numbers");
 
     rewriter.replaceAllUsesWith(op.getResult(), input);
