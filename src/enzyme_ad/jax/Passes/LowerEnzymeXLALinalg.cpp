@@ -563,7 +563,7 @@ struct LUFactorizationOpLowering
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
           /*api_version*/
-          CustomCallApiVersionAttr::get(
+          stablehlo::CustomCallApiVersionAttr::get(
               rewriter.getContext(),
               mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
           /*calledcomputations*/ nullptr,
@@ -589,7 +589,7 @@ struct LUFactorizationOpLowering
             /*has_side_effect*/ nullptr,
             /*backend_config*/ nullptr,
             /*api_version*/
-            CustomCallApiVersionAttr::get(
+            stablehlo::CustomCallApiVersionAttr::get(
                 rewriter.getContext(),
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr,
