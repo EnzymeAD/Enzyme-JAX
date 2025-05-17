@@ -1826,3 +1826,8 @@ def ConjReal : EnzymeHLOPatternOp<
   "conj_real"> {
   let patterns = ["ConjReal"];
 }
+
+def TraingularSolveRealAdjoint : EnzymeHLOPatternOp<
+  "triangular_solve_real_adjoint"> {
+  let patterns = ["TriangularSolveRealAdjoint"];
+}
