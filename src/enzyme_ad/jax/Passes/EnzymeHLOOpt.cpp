@@ -18951,6 +18951,21 @@ struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
+struct ConjReal final : public OpRewritePattern<chlo::ConjOp> {
+  using OpRewritePattern<chlo::ConjOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(chlo::ConjOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.getOperand();
+    auto elemType = cast<RankedTensorType>(input.getType()).getElementType();
+    if (isa<ComplexType>(elemType))
+      return rewriter.notifyMatchFailure(op, "can't apply to complex numbers");
+
+    rewriter.replaceAllUsesWith(op.getResult(), input);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19185,7 +19200,7 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad>(context);
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
