@@ -304,7 +304,24 @@ public:
   }
 };
 
-// TODO: implement for OpTraitRewritePattern as well
+LogicalResult failIfDynamicShape(Operation *op, PatternRewriter &rewriter) {
+  for (auto result : op->getResults()) {
+    auto type = dyn_cast<RankedTensorType>(result.getType());
+    if (!type || !type.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "unsupported dynamic shape for output.");
+  }
+
+  for (auto operand : op->getOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || !type.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "unsupported dynamic shape for input.");
+  }
+
+  return success();
+}
+
 template <typename OpTy>
 struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
   using Base = OpRewritePattern<OpTy>;
@@ -320,17 +337,9 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
     }
 
     if (!supportsDynamicShapes()) {
-      auto outType = dyn_cast<RankedTensorType>(op.getType());
-      if (!outType || outType.hasDynamicShape())
-        return rewriter.notifyMatchFailure(
-            op, "unsupported dynamic shape for output.");
-
-      for (auto operand : op->getOperands()) {
-        auto inType = dyn_cast<RankedTensorType>(operand.getType());
-        if (!inType || inType.hasDynamicShape())
-          return rewriter.notifyMatchFailure(
-              op, "unsupported dynamic shape for input.");
-      }
+      LogicalResult res = failIfDynamicShape(op, rewriter);
+      if (res.failed())
+        return res;
     }
 
     return this->matchAndRewriteImpl(op, rewriter);
@@ -346,6 +355,41 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
 
   virtual LogicalResult
   matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const = 0;
+};
+
+template <template <typename> class TraitType>
+struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
+  using Base = OpTraitRewritePattern<TraitType>;
+  using Base::Base;
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (auto func = op->template getParentOfType<FunctionOpInterface>()) {
+      if (auto attrName = disablePatternAttrName()) {
+        if (func->template hasAttrOfType<UnitAttr>(*attrName))
+          return rewriter.notifyMatchFailure(op, "disabled by attribute.");
+      }
+    }
+
+    if (!supportsDynamicShapes()) {
+      auto res = failIfDynamicShape(op, rewriter);
+      if (res.failed())
+        return res;
+    }
+
+    return this->matchAndRewriteImpl(op, rewriter);
+  }
+
+  // funcopinterface level attribute that can be used to disable the pattern
+  virtual std::optional<StringRef> disablePatternAttrName() const {
+    return StringRef("enzymexla.disable_hlo_opts");
+  }
+
+  // override this to return true if the op supports dynamic shapes
+  virtual bool supportsDynamicShapes() const { return false; }
+
+  virtual LogicalResult
+  matchAndRewriteImpl(Operation *op, PatternRewriter &rewriter) const = 0;
 };
 
 struct NoopSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
