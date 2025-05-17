@@ -582,6 +582,11 @@ struct LUFactorizationOpLowering
                 op.getLoc(), pivotCuSolverType,
                 cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))));
 
+        SmallVector<bool> isColMajorArrOperandsPermutation = {true};
+        SmallVector<int64_t> operandRanksPermutation = {pivotRank};
+        SmallVector<bool> isColMajorArrOutputsPermutation = {true};
+        SmallVector<int64_t> outputRanksPermutation = {pivotRank};
+
         auto permutation = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), TypeRange{pivotCuSolverType},
             ValueRange{pivots0indexed.getResult()},
@@ -593,8 +598,12 @@ struct LUFactorizationOpLowering
                 rewriter.getContext(),
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr,
-            /*operand_layouts*/ nullptr,
-            /*result_layouts*/ nullptr,
+            /*operand_layouts*/
+            getSHLOLayout(rewriter, operandRanksPermutation,
+                          isColMajorArrOperandsPermutation, inputRank),
+            /*result_layouts*/
+            getSHLOLayout(rewriter, outputRanksPermutation,
+                          isColMajorArrOutputsPermutation, inputRank),
             /*output_operand_aliases*/ nullptr);
         auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
             op.getLoc(),
