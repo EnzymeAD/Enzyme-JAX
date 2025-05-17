@@ -322,6 +322,20 @@ LogicalResult failIfDynamicShape(Operation *op, PatternRewriter &rewriter) {
   return success();
 }
 
+LogicalResult failIfFuncOpInterfaceHasAttr(Operation *op,
+                                           std::optional<StringRef> attrName,
+                                           PatternRewriter &rewriter) {
+  if (!attrName)
+    return success();
+
+  if (auto func = op->template getParentOfType<FunctionOpInterface>()) {
+    if (func->template hasAttrOfType<UnitAttr>(*attrName))
+      return rewriter.notifyMatchFailure(op, "disabled by attribute.");
+  }
+
+  return success();
+}
+
 template <typename OpTy>
 struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
   using Base = OpRewritePattern<OpTy>;
@@ -329,12 +343,10 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
 
   LogicalResult matchAndRewrite(OpTy op,
                                 PatternRewriter &rewriter) const override {
-    if (auto func = op->template getParentOfType<FunctionOpInterface>()) {
-      if (auto attrName = disablePatternAttrName()) {
-        if (func->template hasAttrOfType<UnitAttr>(*attrName))
-          return rewriter.notifyMatchFailure(op, "disabled by attribute.");
-      }
-    }
+    LogicalResult res =
+        failIfFuncOpInterfaceHasAttr(op, disablePatternAttrName(), rewriter);
+    if (res.failed())
+      return res;
 
     if (!supportsDynamicShapes()) {
       LogicalResult res = failIfDynamicShape(op, rewriter);
@@ -364,12 +376,10 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (auto func = op->template getParentOfType<FunctionOpInterface>()) {
-      if (auto attrName = disablePatternAttrName()) {
-        if (func->template hasAttrOfType<UnitAttr>(*attrName))
-          return rewriter.notifyMatchFailure(op, "disabled by attribute.");
-      }
-    }
+    LogicalResult res =
+        failIfFuncOpInterfaceHasAttr(op, disablePatternAttrName(), rewriter);
+    if (res.failed())
+      return res;
 
     if (!supportsDynamicShapes()) {
       auto res = failIfDynamicShape(op, rewriter);
