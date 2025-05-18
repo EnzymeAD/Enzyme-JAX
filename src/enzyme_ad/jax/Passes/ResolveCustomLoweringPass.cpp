@@ -3,7 +3,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Attributes.h"
-#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -63,12 +62,16 @@ struct ResolveCustomLoweringPass
     };
 
     DenseMap<StringRef, SmallVector<LoweringEntry>> loweringMap;
+    SmallVector<Operation *> opsToRemove;
 
     modOp.walk([&](enzymexla::LoweringRegisterOp op) {
       StringRef opName = op.getOpName();
       auto fn = op.getFnAttr();
       auto config = op.getConfig();
 
+      if (removeRegisterOps) {
+        opsToRemove.push_back(op);
+      }
       loweringMap[opName].emplace_back(LoweringEntry{fn, config});
     });
 
@@ -95,8 +98,6 @@ struct ResolveCustomLoweringPass
     // ----
 
     // Step 2. Go through all the ops and resolve custom lowering
-    SmallVector<Operation *> opsToRemove;
-
     modOp.walk([&](Operation *op) {
       auto configAttr =
           op->getAttrOfType<DictionaryAttr>("enzymexla.lowering.config");
@@ -243,7 +244,7 @@ struct ResolveCustomLoweringPass
         // Generate name for new function
         static int wrapperCounter = 0;
         std::string wrapperName =
-            matchedFn.getValue().str() + std::to_string(wrapperCounter++);
+            matchedFn.getValue().str() + "__" + std::to_string(wrapperCounter++);
         SymbolRefAttr wrapperSym =
             SymbolRefAttr::get(builder.getContext(), wrapperName);
 

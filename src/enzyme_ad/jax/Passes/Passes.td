@@ -705,7 +705,14 @@ def ResolveCustomLoweringPass : Pass<"resolve-custom-lowering", "ModuleOp"> {
     "func::FuncDialect",
   ];
 
-  let options = [];
+  let options =
+    [Option<
+       /*C++ variable name=*/"removeRegisterOps",
+       /*CLI argument=*/"remove_register_ops",
+       /*type=*/"bool",
+       /*default=*/"true",
+       /*description=*/"Remove enzymexla.lowering.register ops after lowering">
+  ];
 }
 
 #endif
