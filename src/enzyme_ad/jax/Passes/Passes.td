@@ -697,4 +697,15 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
 }
 
 
+def ResolveCustomLoweringPass : Pass<"resolve-custom-lowering", "ModuleOp"> {
+  let summary = "Resolve custom lowering";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+
+  let options = [];
+}
+
 #endif
