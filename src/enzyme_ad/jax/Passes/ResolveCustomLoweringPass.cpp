@@ -8,6 +8,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/Passes.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -80,33 +81,16 @@ void wrapRefinedOperands(func::FuncOp func, TypeRange refinedTypes) {
   }
 }
 
-void wrapRefinedResults(func::FuncOp func, TypeRange refinedResultTypes) {
-  Region &body = func.getBody();
-  Block &entryBlock = body.front();
-  Operation *terminator = entryBlock.getTerminator();
-
-  OpBuilder builder(terminator);
-
-  SmallVector<Value> oldReturnValues =
-      llvm::to_vector(terminator->getOperands());
-
-  auto refinedResultsOp = builder.create<enzymexla::LoweringShapeRefinementOp>(
-      terminator->getLoc(), refinedResultTypes, oldReturnValues);
-  builder.create<func::ReturnOp>(terminator->getLoc(),
-                                 ValueRange(refinedResultsOp->getResults()));
-  terminator->erase();
-}
-
 void refineOperandsAndUpdateFunctionSignature(func::FuncOp func,
-                                              TypeRange refinedInputTypes,
-                                              TypeRange refinedResultTypes) {
+                                              TypeRange refinedInputTypes) {
   Region &body = func.getBody();
   OpBuilder builder(body);
   for (int64_t i = 0; i < body.getNumArguments(); ++i) {
     auto arg = body.getArgument(i);
     arg.setType(refinedInputTypes[i]);
   }
-  func.setType(builder.getFunctionType(refinedInputTypes, refinedResultTypes));
+  func.setType(
+      builder.getFunctionType(refinedInputTypes, func.getResultTypes()));
 }
 
 struct ResolveCustomLoweringPass
@@ -126,40 +110,20 @@ struct ResolveCustomLoweringPass
     };
 
     DenseMap<StringRef, SmallVector<LoweringEntry>> loweringMap;
-    SmallVector<Operation *> opsToRemove;
+    SmallVector<Operation *> loweringOpsToRemove, loweredOpsToRemove;
 
     modOp.walk([&](enzymexla::LoweringRegisterOp op) {
       StringRef opName = op.getOpName();
       auto fn = op.getFnAttr();
       auto config = op.getConfig();
 
-      if (removeRegisterOps) {
-        opsToRemove.push_back(op);
-      }
+      if (removeRegisterOps)
+        loweringOpsToRemove.push_back(op);
       loweringMap[opName].emplace_back(LoweringEntry{fn, config});
     });
 
-    // ----
-    // TODO: Remove
-    llvm::errs() << "=== Lowering Map Starts ===\n\n";
-
-    for (const auto &entry : loweringMap) {
-      StringRef opName = entry.first;
-      llvm::errs() << "Op: " << opName << "\n";
-
-      for (const auto &entryVal : entry.second) {
-        llvm::errs() << "  Function: " << entryVal.fn.getValue() << "\n";
-        llvm::errs() << "  Config:\n";
-        for (const auto &kv : entryVal.config.getValue()) {
-          llvm::errs() << "    " << kv.getName() << ": ";
-          kv.getValue().print(llvm::errs());
-          llvm::errs() << "\n";
-        }
-      }
-      llvm::errs() << "\n";
-    }
-    llvm::errs() << "=== Lowering Map Ends ===\n\n";
-    // ----
+    for (auto op : loweringOpsToRemove)
+      op->erase();
 
     // Step 2. Go through all the ops and resolve custom lowering
     modOp.walk([&](Operation *op) {
@@ -169,7 +133,6 @@ struct ResolveCustomLoweringPass
         return;
 
       auto dialectOpName = op->getName().getStringRef();
-      llvm::errs() << "Checking op: " << dialectOpName << "\n";
 
       auto it = loweringMap.find(dialectOpName);
       if (it == loweringMap.end()) {
@@ -199,9 +162,6 @@ struct ResolveCustomLoweringPass
         }
         signalPassFailure();
       } else {
-        llvm::errs() << "  ✔ Matched lowering: "
-                     << matching.front()->fn.getValue() << "\n";
-
         auto matchedFn = matching.front()->fn;
         auto configDict = matching.front()->config;
 
@@ -306,13 +266,6 @@ struct ResolveCustomLoweringPass
         SymbolRefAttr wrapperSym =
             SymbolRefAttr::get(builder.getContext(), wrapperName);
 
-        llvm::errs() << "Wrapper name: " << wrapperName << "\n";
-
-        // Build the new function type from the op's operand and result types
-        auto inputTypes = op->getOperandTypes();
-        auto resultTypes = op->getResultTypes();
-        auto newFnType = builder.getFunctionType(inputTypes, resultTypes);
-
         {
           OpBuilder::InsertionGuard guard(builder);
           builder.setInsertionPointToStart(modOp.getBody());
@@ -330,29 +283,44 @@ struct ResolveCustomLoweringPass
             return signalPassFailure();
           }
 
+          auto inputTypes = op->getOperandTypes();
           wrapRefinedOperands(clonedFuncOp, inputTypes);
-          wrapRefinedResults(clonedFuncOp, resultTypes);
-          refineOperandsAndUpdateFunctionSignature(clonedFuncOp, inputTypes,
-                                                   resultTypes);
+          refineOperandsAndUpdateFunctionSignature(clonedFuncOp, inputTypes);
         }
 
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPoint(op);
         auto call = builder.create<func::CallOp>(
             op->getLoc(), wrapperSym, op->getResultTypes(), op->getOperands());
-        opsToRemove.push_back(op);
+        loweredOpsToRemove.push_back(op);
         op->replaceAllUsesWith(call.getResults());
       }
     });
 
-    llvm::errs() << "=== Lowered All Ops ===\n\n";
+    for (auto op : loweredOpsToRemove)
+      op->erase();
 
     // Step 3. Run shape refinement
+    RewritePatternSet patternsShapeRefinement(ctx);
+    stablehlo::populateStablehloRefineShapesPatterns(&patternsShapeRefinement,
+                                                     ctx);
 
-    // Step 4. Remove enzymexla.lowering.shape_refinement ops
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(
+            modOp, std::move(patternsShapeRefinement), config))) {
+      modOp.emitError("Failed to apply stablehlo shape refinement patterns.");
+      return signalPassFailure();
+    }
 
-    // Cleanup
-    for (auto op : opsToRemove)
-      op->erase();
+    RewritePatternSet patternsCanonDynamism(ctx);
+    stablehlo::populateStablehloCanonicalizeDynamismPatterns(
+        &patternsCanonDynamism, ctx);
+
+    if (failed(applyPatternsAndFoldGreedily(
+            modOp, std::move(patternsCanonDynamism), config))) {
+      modOp.emitError(
+          "Failed to apply stablehlo canonicalize dynamism patterns.");
+      return signalPassFailure();
+    }
   }
 };
