@@ -25,5 +25,21 @@ func.func @main(%arg0: tensor<8x8xf32>) -> tensor<4x4xf32> {
     } : (tensor<4x4xf32>) -> tensor<4x4xf32>
 
     %3 = stablehlo.add %2, %1 : tensor<4x4xf32>
-    return %2 : tensor<4x4xf32>
+    return %3 : tensor<4x4xf32>
 }
+
+// CHECK: func.func private @custom_lowering2__[[COS_ID:[0-9]+]](%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
+// CHECK-NEXT:    %0 = stablehlo.cosine %arg0 : tensor<4x4xf32>
+// CHECK-NEXT:    return %0 : tensor<4x4xf32>
+// CHECK-NEXT:  }
+// CHECK:  func.func private @custom_lowering1__[[SIN_ID:[0-9]+]](%arg0: tensor<8x8xf32>) -> tensor<8x8xf32> {
+// CHECK-NEXT:    %0 = stablehlo.sine %arg0 : tensor<8x8xf32>
+// CHECK-NEXT:    return %0 : tensor<8x8xf32>
+// CHECK-NEXT:  }
+// CHECK:  func.func @main(%arg0: tensor<8x8xf32>) -> tensor<4x4xf32> {
+// CHECK-NEXT:    %0 = call @custom_lowering1__[[SIN_ID]](%arg0) : (tensor<8x8xf32>) -> tensor<8x8xf32>
+// CHECK-NEXT:    %1 = stablehlo.slice %0 [0:4, 0:4] : (tensor<8x8xf32>) -> tensor<4x4xf32>
+// CHECK-NEXT:    %2 = call @custom_lowering2__[[COS_ID]](%1) : (tensor<4x4xf32>) -> tensor<4x4xf32>
+// CHECK-NEXT:    %3 = stablehlo.add %2, %1 : tensor<4x4xf32>
+// CHECK-NEXT:    return %3 : tensor<4x4xf32>
+// CHECK-NEXT:  }
