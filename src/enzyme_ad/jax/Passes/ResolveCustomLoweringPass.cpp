@@ -45,6 +45,70 @@ static bool isSubset(mlir::DictionaryAttr subset,
   return true;
 }
 
+// https://github.com/openxla/stablehlo/blob/a85bcc1dd33d2dbc05670b914644971bf3e49671/stablehlo/transforms/StablehloRefineArguments.cpp#L52C1-L65C2
+stablehlo::CustomCallOp
+makeShapeRefinementOperandWrapper(OpBuilder &builder, Value operand,
+                                  RankedTensorType refinedType) {
+  auto constant = builder.create<stablehlo::ConstantOp>(
+      operand.getLoc(), builder.getI64TensorAttr(refinedType.getShape()));
+  return builder.create<stablehlo::CustomCallOp>(
+      operand.getLoc(), operand.getType(), ValueRange{operand, constant},
+      llvm::SmallVector<NamedAttribute>{
+          builder.getNamedAttr(
+              "call_target_name",
+              builder.getStringAttr(
+                  "stablehlo.shape_refinement_operand_wrapper")),
+          builder.getNamedAttr("indices_of_shape_operands",
+                               builder.getI64TensorAttr({1}))});
+}
+
+void wrapRefinedOperands(func::FuncOp func, TypeRange refinedTypes) {
+  Region &body = func.getBody();
+  OpBuilder builder(body);
+  builder.setInsertionPointToStart(&body.front());
+  for (int64_t i = 0; i < body.getNumArguments(); ++i) {
+    BlockArgument arg = body.getArgument(i);
+    Type argType = arg.getType();
+    Type refinedType = refinedTypes[i];
+    if (argType != refinedType) {
+      auto rankedRefinedType = cast<RankedTensorType>(refinedType);
+      auto customCall =
+          makeShapeRefinementOperandWrapper(builder, arg, rankedRefinedType);
+      auto callResult = customCall.getResult(0);
+      arg.replaceAllUsesExcept(callResult, customCall);
+    }
+  }
+}
+
+void wrapRefinedResults(func::FuncOp func, TypeRange refinedResultTypes) {
+  Region &body = func.getBody();
+  Block &entryBlock = body.front();
+  Operation *terminator = entryBlock.getTerminator();
+
+  OpBuilder builder(terminator);
+
+  SmallVector<Value> oldReturnValues =
+      llvm::to_vector(terminator->getOperands());
+
+  auto refinedResultsOp = builder.create<enzymexla::LoweringShapeRefinementOp>(
+      terminator->getLoc(), refinedResultTypes, oldReturnValues);
+  builder.create<func::ReturnOp>(terminator->getLoc(),
+                                 ValueRange(refinedResultsOp->getResults()));
+  terminator->erase();
+}
+
+void refineOperandsAndUpdateFunctionSignature(func::FuncOp func,
+                                              TypeRange refinedInputTypes,
+                                              TypeRange refinedResultTypes) {
+  Region &body = func.getBody();
+  OpBuilder builder(body);
+  for (int64_t i = 0; i < body.getNumArguments(); ++i) {
+    auto arg = body.getArgument(i);
+    arg.setType(refinedInputTypes[i]);
+  }
+  func.setType(builder.getFunctionType(refinedInputTypes, refinedResultTypes));
+}
+
 struct ResolveCustomLoweringPass
     : public enzyme::impl::ResolveCustomLoweringPassBase<
           ResolveCustomLoweringPass> {
@@ -168,15 +232,13 @@ struct ResolveCustomLoweringPass
 
           if (!operandType || !expectedType) {
             op->emitError() << "Expected ranked tensor types for comparison.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
 
           if (operandType.getRank() != expectedType.getRank()) {
             op->emitError()
                 << "Rank mismatch for operand in lowering function.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
 
           for (int i = 0; i < operandType.getRank(); ++i) {
@@ -191,8 +253,7 @@ struct ResolveCustomLoweringPass
 
           if (operandType.getElementType() != expectedType.getElementType()) {
             op->emitError() << "Element type mismatch in operand.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
         }
 
@@ -213,15 +274,13 @@ struct ResolveCustomLoweringPass
           if (!resultType || !expectedType) {
             op->emitError()
                 << "Expected ranked tensor types for result comparison.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
 
           if (resultType.getRank() != expectedType.getRank()) {
             op->emitError()
                 << "Rank mismatch in result type for lowering function.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
 
           for (int i = 0; i < resultType.getRank(); ++i) {
@@ -236,23 +295,22 @@ struct ResolveCustomLoweringPass
 
           if (resultType.getElementType() != expectedType.getElementType()) {
             op->emitError() << "Element type mismatch in result.";
-            signalPassFailure();
-            return;
+            return signalPassFailure();
           }
         }
 
         // Generate name for new function
         static int wrapperCounter = 0;
-        std::string wrapperName =
-            matchedFn.getValue().str() + "__" + std::to_string(wrapperCounter++);
+        std::string wrapperName = matchedFn.getValue().str() + "__" +
+                                  std::to_string(wrapperCounter++);
         SymbolRefAttr wrapperSym =
             SymbolRefAttr::get(builder.getContext(), wrapperName);
 
         llvm::errs() << "Wrapper name: " << wrapperName << "\n";
 
         // Build the new function type from the op's operand and result types
-        auto inputTypes = llvm::to_vector(op->getOperandTypes());
-        auto resultTypes = llvm::to_vector(op->getResultTypes());
+        auto inputTypes = op->getOperandTypes();
+        auto resultTypes = op->getResultTypes();
         auto newFnType = builder.getFunctionType(inputTypes, resultTypes);
 
         {
@@ -265,6 +323,17 @@ struct ResolveCustomLoweringPass
           auto clonedFn = cast<FunctionOpInterface>(clonedOp);
           clonedFn.setName(wrapperName);
           clonedFn.setPrivate();
+
+          auto clonedFuncOp = cast<func::FuncOp>(clonedOp);
+          if (!clonedFuncOp) {
+            op->emitError() << "Currently we only support lowering func.func";
+            return signalPassFailure();
+          }
+
+          wrapRefinedOperands(clonedFuncOp, inputTypes);
+          wrapRefinedResults(clonedFuncOp, resultTypes);
+          refineOperandsAndUpdateFunctionSignature(clonedFuncOp, inputTypes,
+                                                   resultTypes);
         }
 
         OpBuilder::InsertionGuard guard(builder);
@@ -276,11 +345,14 @@ struct ResolveCustomLoweringPass
       }
     });
 
-    for (auto op : opsToRemove)
-      op->erase();
-
     llvm::errs() << "=== Lowered All Ops ===\n\n";
 
     // Step 3. Run shape refinement
+
+    // Step 4. Remove enzymexla.lowering.shape_refinement ops
+
+    // Cleanup
+    for (auto op : opsToRemove)
+      op->erase();
   }
 };

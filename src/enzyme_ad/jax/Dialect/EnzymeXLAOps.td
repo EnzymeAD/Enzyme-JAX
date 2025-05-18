@@ -224,4 +224,14 @@ def LoweringRegisterOp: EnzymeXLA_Op<"lowering.register", [Pure]> {
   let results = (outs);
 }
 
+def LoweringShapeRefinementOp: EnzymeXLA_Op<"lowering.shape_refinement", [Pure]> {
+  let summary = "Shape refinement operation that is used to preserve validity of intermediate IR";
+
+  let arguments = (ins
+    Variadic<HLO_Tensor>:$operands
+  );
+
+  let results = (outs Variadic<HLO_Tensor>);
+}
+
 #endif // ENZYMEXLA_OPS
