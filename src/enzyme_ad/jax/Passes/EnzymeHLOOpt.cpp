@@ -355,6 +355,8 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
 
     return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
   }
+
+  bool supportsDynamicShapes() { return false; }
 };
 
 template <template <typename> class TraitType, typename Child>
@@ -377,13 +379,13 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
 
     return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
   }
+
+  bool supportsDynamicShapes() { return false; }
 };
 
 struct NoopSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, NoopSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -429,8 +431,6 @@ struct SliceSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -461,8 +461,6 @@ struct SliceSlice final
 struct DynamicSliceToStatic final
     : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceToStatic> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -500,8 +498,6 @@ struct DynamicUpdateSliceElim final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateSliceElim> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -639,8 +635,6 @@ struct ReshapeDUS final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
@@ -708,8 +702,6 @@ struct ReshapeSlice final
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
@@ -768,8 +760,6 @@ struct ReshapeSlice final
 struct ReshapeExtend final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
@@ -833,8 +823,6 @@ struct ReshapeExtend final
 struct ReshapeWrap final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
@@ -900,8 +888,6 @@ struct ReshapeRotate final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a RotateOp
@@ -963,8 +949,6 @@ struct ReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
@@ -1022,8 +1006,6 @@ struct ReshapePad final
 struct TransposeDUS final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -1115,8 +1097,6 @@ struct LowerWrap
     : public CheckedOpRewritePattern<enzymexla::WrapOp, LowerWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::WrapOp wrap,
                                     PatternRewriter &rewriter) const {
     auto concat = lowerWrap(wrap, rewriter, /*replace*/ true);
@@ -1177,8 +1157,6 @@ struct LowerExtend
     : public CheckedOpRewritePattern<enzymexla::ExtendOp, LowerExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp extend,
                                     PatternRewriter &rewriter) const {
     auto concat = lowerExtend(extend, rewriter, /*replace*/ true);
@@ -1225,8 +1203,6 @@ struct LowerRotate
     : public CheckedOpRewritePattern<enzymexla::RotateOp, LowerRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rotate,
                                     PatternRewriter &rewriter) const {
     lowerRotate(rotate, rewriter, /*replace*/ true);
@@ -1250,8 +1226,6 @@ struct LowerRotate
 struct DUSConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
                                     PatternRewriter &rewriter) const {
@@ -1394,10 +1368,7 @@ struct SimplifyBoundary final
   using CheckedOpRewritePattern<T,
                                 SimplifyBoundary<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
 
     SplatElementsAttr elems;
     if (!matchPattern(op.getOperand(), m_Constant(&elems))) {
@@ -1412,8 +1383,6 @@ struct SimplifyBoundary final
 struct SliceInternal final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceInternal> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp slice,
                                     PatternRewriter &rewriter) const {
@@ -1510,8 +1479,6 @@ struct SliceInternal final
 struct ConcatConcatToDUS final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatConcatToDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
@@ -1829,8 +1796,6 @@ struct ConcatToOneDimDUSSlice final
                               ConcatToOneDimDUSSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
 
@@ -1850,8 +1815,6 @@ struct ConcatReshapeToOneDimDUS final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                               ConcatReshapeToOneDimDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
@@ -1900,8 +1863,6 @@ struct DUSDUS final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
                                     PatternRewriter &rewriter) const {
     auto dus2 =
@@ -1941,8 +1902,6 @@ struct DUSDUS final
 struct DUSPad final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
                                     PatternRewriter &rewriter) const {
@@ -2059,8 +2018,6 @@ struct DUSPad final
 struct DUSDUSConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
                                     PatternRewriter &rewriter) const {
@@ -2179,8 +2136,6 @@ struct DynamicUpdateToConcat final
                               DynamicUpdateToConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -2254,8 +2209,6 @@ struct DynamicUpdateToConcat final
 struct SliceOfDynamicUpdate final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfDynamicUpdate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -2355,8 +2308,6 @@ struct SliceOfDynamicUpdate final
 struct SliceDUSToConcat final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceDUSToConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                     PatternRewriter &rewriter) const {
@@ -2523,10 +2474,7 @@ template <typename T> struct LICM : public CheckedOpRewritePattern<T, LICM<T>> {
       : CheckedOpRewritePattern<T, LICM<T>>(context, benefit, generatedNames),
         single_user(single_user) {}
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto whileOp = op->template getParentOfType<stablehlo::WhileOp>();
     if (!whileOp)
       return failure();
@@ -2560,8 +2508,6 @@ struct LICMElementwise
             context, benefit),
         single_user(single_user) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
     if (!isa<stablehlo::WhileOp>(op->getParentOp()))
@@ -2587,8 +2533,6 @@ struct LICMElementwise
 struct SliceBroadcast final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -2690,8 +2634,6 @@ struct SliceTranspose final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -2716,8 +2658,6 @@ struct SliceReduceWindow
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReduceWindow> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceReduceWindow>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -2844,8 +2784,6 @@ struct TransposeDynamicSlice final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeDynamicSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -2888,8 +2826,6 @@ struct TransposeDynamicSlice final
 struct TransposeSlice final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -2964,8 +2900,6 @@ struct TransposeAllUsersSlice final
   using CheckedOpRewritePattern<
       stablehlo::TransposeOp, TransposeAllUsersSlice>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     SmallVector<stablehlo::SliceOp> sliceOps;
@@ -3025,8 +2959,6 @@ struct TransposeAllUsersSlice final
 struct SliceElementwise final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -3207,8 +3139,6 @@ LogicalResult slicePadHelper(
 struct SlicePad final : CheckedOpRewritePattern<stablehlo::SliceOp, SlicePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -3316,8 +3246,6 @@ struct ReduceToReshape final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceToReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
@@ -3352,8 +3280,6 @@ struct ReducePad
     : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReducePad> {
   using CheckedOpRewritePattern<stablehlo::ReduceOp,
                                 ReducePad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -3422,8 +3348,6 @@ struct ConvertConcat final
     : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
                                     PatternRewriter &rewriter) const {
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
@@ -3447,8 +3371,6 @@ struct ConvertConcat final
 struct ConvertConvertFloat final
     : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConvertFloat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
                                     PatternRewriter &rewriter) const {
@@ -3474,8 +3396,6 @@ struct ConvertConvertFloat final
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -3540,8 +3460,6 @@ struct FullReduceReshapeOrTranspose final
     : CheckedOpRewritePattern<stablehlo::ReduceOp,
                               FullReduceReshapeOrTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -3748,8 +3666,6 @@ struct ConcatSlice final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
@@ -3867,8 +3783,6 @@ struct ConcatMultiPad final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatMultiPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
@@ -3933,8 +3847,6 @@ struct ConcatWrap final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
@@ -3980,8 +3892,6 @@ struct ConcatWrap final
 struct SliceConcat final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -4037,8 +3947,6 @@ struct DotReshapeDot final
     : CheckedOpRewritePattern<stablehlo::DotGeneralOp, DotReshapeDot> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -4059,8 +3967,6 @@ struct PadSimplify final
               ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
                                     PatternRewriter &rewriter) const {
@@ -4123,8 +4029,6 @@ struct RotatePad final
     : CheckedOpRewritePattern<enzymexla::RotateOp, RotatePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rotate,
                                     PatternRewriter &rewriter) const {
 
@@ -4157,8 +4061,6 @@ struct ShiftRightLogicalSimplify final
                               ShiftRightLogicalSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ShiftRightLogicalOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -4181,8 +4083,6 @@ struct ShiftRightLogicalSimplify final
 struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
                         bool &retryIfNewDead) const {
@@ -4382,8 +4282,6 @@ struct NegativePadToSlice final
     : CheckedOpRewritePattern<stablehlo::PadOp, NegativePadToSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
                                     PatternRewriter &rewriter) const {
     SmallVector<int64_t> starts;
@@ -4429,10 +4327,7 @@ struct BinopPadToConcat final
   using CheckedOpRewritePattern<T,
                                 BinopPadToConcat<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -4582,8 +4477,6 @@ struct ReshapeIota final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
@@ -4623,8 +4516,6 @@ struct ReshapeIota final
 struct BroadcastIota final
     : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
@@ -4694,8 +4585,6 @@ struct DotReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, DotReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
@@ -4718,8 +4607,6 @@ struct DotReshapePad final
 struct ZeroProductReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ZeroProductReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
@@ -4747,8 +4634,6 @@ struct PadReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, PadReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
@@ -4774,8 +4659,6 @@ struct PadReshapePad final
 struct BinopConstReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, BinopConstReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
@@ -4807,8 +4690,6 @@ struct ConcatAppendingReshape final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                               ConcatAppendingReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
@@ -4893,10 +4774,7 @@ template <typename T>
 struct UnaryPadPush final : CheckedOpRewritePattern<T, UnaryPadPush<T>> {
   using CheckedOpRewritePattern<T, UnaryPadPush<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4925,8 +4803,6 @@ struct UnaryPadPush final : CheckedOpRewritePattern<T, UnaryPadPush<T>> {
 struct TransposePad final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -4966,8 +4842,6 @@ struct ConcatPushBinop final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPushBinop<T>> {
   using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                 ConcatPushBinop<T>>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
@@ -5021,8 +4895,6 @@ struct ConcatFuse final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatFuse> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     if (op->getNumOperands() == 1 &&
@@ -5060,8 +4932,6 @@ struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     if (op->getNumOperands() <= 1)
@@ -5086,8 +4956,6 @@ struct ConcatToBroadcast final
 struct GammaConstProp final
     : CheckedOpRewritePattern<chlo::LgammaOp, GammaConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(chlo::LgammaOp op,
                                     PatternRewriter &rewriter) const {
@@ -5114,8 +4982,6 @@ struct DynamicUpdateSliceConstProp final
                               ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -5217,8 +5083,6 @@ struct NotConstProp final
     : CheckedOpRewritePattern<stablehlo::NotOp, NotConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
                                     PatternRewriter &rewriter) const {
     return unaryConstProp<stablehlo::notOp>(op, rewriter);
@@ -5228,8 +5092,6 @@ struct NotConstProp final
 struct IsFiniteConstProp final
     : CheckedOpRewritePattern<stablehlo::IsFiniteOp, IsFiniteConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
                                     PatternRewriter &rewriter) const {
@@ -5241,8 +5103,6 @@ struct LogConstProp final
     : CheckedOpRewritePattern<stablehlo::LogOp, LogConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
     return unaryConstProp<stablehlo::logOp>(op, rewriter);
@@ -5252,8 +5112,6 @@ struct LogConstProp final
 struct LogPlusConstProp final
     : CheckedOpRewritePattern<stablehlo::Log1pOp, LogPlusConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::Log1pOp op,
                                     PatternRewriter &rewriter) const {
@@ -5265,8 +5123,6 @@ struct AbsConstProp final
     : CheckedOpRewritePattern<stablehlo::AbsOp, AbsConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
                                     PatternRewriter &rewriter) const {
     return unaryConstProp<stablehlo::absOp>(op, rewriter);
@@ -5276,8 +5132,6 @@ struct AbsConstProp final
 struct ChloInfConstProp final
     : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(chlo::IsInfOp op,
                                     PatternRewriter &rewriter) const {
@@ -5332,8 +5186,6 @@ struct ConcatConstProp final
                   ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
@@ -5419,8 +5271,6 @@ struct ReshapeEmptyBroadcast final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeEmptyBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
@@ -5437,8 +5287,6 @@ struct ReshapeEmptyBroadcast final
 struct BroadcastReshape final
     : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
@@ -5511,8 +5359,6 @@ struct BroadcastToReshape final
     : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastToReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -5560,8 +5406,6 @@ struct BroadcastToReshape final
 struct BroadcastPad final
     : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
@@ -5647,8 +5491,6 @@ struct ScatterToDynamicUpdateSlice final
     : CheckedOpRewritePattern<stablehlo::ScatterOp,
                               ScatterToDynamicUpdateSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
@@ -5807,8 +5649,6 @@ struct BinaryOpTransposeSimplify
   using CheckedOpRewritePattern<
       OpType, BinaryOpTransposeSimplify<OpType>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(OpType op,
                                     PatternRewriter &rewriter) const {
     return simplifyBinaryOpWithTranspose(op, rewriter);
@@ -5822,8 +5662,6 @@ struct TransposeUnaryTransposeSimplify
   using CheckedOpRewritePattern<
       stablehlo::TransposeOp,
       TransposeUnaryTransposeSimplify<OpType>>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp outerTransposeOp,
                                     PatternRewriter &rewriter) const {
@@ -5852,8 +5690,6 @@ struct AddSimplify
     : public CheckedOpRewritePattern<stablehlo::AddOp, AddSimplify> {
   using CheckedOpRewritePattern<stablehlo::AddOp,
                                 AddSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
@@ -5912,8 +5748,6 @@ struct ReplaceNegAddWithSubtract
                                      ReplaceNegAddWithSubtract> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
     auto negateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>();
@@ -5934,8 +5768,6 @@ struct SubSimplify
     : public CheckedOpRewritePattern<stablehlo::SubtractOp, SubSimplify> {
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
                                 SubSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
@@ -6002,8 +5834,6 @@ struct NoNanSelfSubSimplify
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
                                 NoNanSelfSubSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6021,8 +5851,6 @@ struct NegateSimplify
     : public CheckedOpRewritePattern<stablehlo::NegOp, NegateSimplify> {
   using CheckedOpRewritePattern<stablehlo::NegOp,
                                 NegateSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
                                     PatternRewriter &rewriter) const {
@@ -6063,8 +5891,6 @@ struct AndSimplify
     : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
   using CheckedOpRewritePattern<stablehlo::AndOp,
                                 AndSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::AndOp op,
                                     PatternRewriter &rewriter) const {
@@ -6115,8 +5941,6 @@ struct OrSimplify
   using CheckedOpRewritePattern<stablehlo::OrOp,
                                 OrSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::OrOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6165,8 +5989,6 @@ struct XorSimplify
     : public CheckedOpRewritePattern<stablehlo::XorOp, XorSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::XorOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6210,8 +6032,6 @@ struct MulSimplify
     : public CheckedOpRewritePattern<stablehlo::MulOp, MulSimplify> {
   using CheckedOpRewritePattern<stablehlo::MulOp,
                                 MulSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -6285,8 +6105,6 @@ struct DivSimplify
   using CheckedOpRewritePattern<stablehlo::DivOp,
                                 DivSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6345,8 +6163,6 @@ struct RemSimplify
   using CheckedOpRewritePattern<stablehlo::RemOp,
                                 RemSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::RemOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6394,8 +6210,6 @@ struct PowSimplify
     : public CheckedOpRewritePattern<stablehlo::PowOp, PowSimplify> {
   using CheckedOpRewritePattern<stablehlo::PowOp,
                                 PowSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
@@ -6504,8 +6318,6 @@ struct BroadcastCompare
                                      BroadcastCompare> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     if (!is_broadcastable_compare(op.getOperand()))
@@ -6549,8 +6361,6 @@ struct IotaSimplify
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
                                     PatternRewriter &rewriter) const {
     size_t size = 1;
@@ -6570,8 +6380,6 @@ struct ConcatToPad
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToPad> {
   using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                 ConcatToPad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
@@ -6616,8 +6424,6 @@ struct PadReduceWindow
                                      PadReduceWindow> {
   using CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
                                 PadReduceWindow>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
                                     PatternRewriter &rewriter) const {
@@ -6672,8 +6478,6 @@ struct ConcatPad
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPad> {
   using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                 ConcatPad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
@@ -6744,8 +6548,6 @@ struct ConvertSimplify
   using CheckedOpRewritePattern<stablehlo::ConvertOp,
                                 ConvertSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
                                     PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
@@ -6775,8 +6577,6 @@ struct SliceSimplify
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSimplify> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   static size_t getDenseElementBitWidth(Type eltType) {
     // Align the width for complex to 8 to make storage and interpretation
@@ -6862,8 +6662,6 @@ struct BroadcastInDimSimplify
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
@@ -6914,8 +6712,6 @@ struct CompareIotaConstSimplify
                                      CompareIotaConstSimplify> {
   using CheckedOpRewritePattern<
       stablehlo::CompareOp, CompareIotaConstSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
@@ -7119,8 +6915,6 @@ struct BroadcastIotaSimplify
     : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
                                      BroadcastIotaSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp broadcast,
                                     PatternRewriter &rewriter) const {
@@ -7386,8 +7180,6 @@ struct DotGeneralSimplify
   using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                                 DotGeneralSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
@@ -7405,8 +7197,6 @@ struct TransposeSimplify
                                      TransposeSimplify> {
   using CheckedOpRewritePattern<stablehlo::TransposeOp,
                                 TransposeSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -7433,8 +7223,6 @@ struct MaxSimplify
     : public CheckedOpRewritePattern<stablehlo::MaxOp, MaxSimplify> {
   using CheckedOpRewritePattern<stablehlo::MaxOp,
                                 MaxSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::MaxOp op,
                                     PatternRewriter &rewriter) const {
@@ -7479,8 +7267,6 @@ struct MinSimplify
   using CheckedOpRewritePattern<stablehlo::MinOp,
                                 MinSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::MinOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getOperand(0) == op.getOperand(1)) {
@@ -7524,8 +7310,6 @@ struct CosSimplify
   using CheckedOpRewritePattern<stablehlo::CosineOp,
                                 CosSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::CosineOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -7557,8 +7341,6 @@ struct SinSimplify
     : public CheckedOpRewritePattern<stablehlo::SineOp, SinSimplify> {
   using CheckedOpRewritePattern<stablehlo::SineOp,
                                 SinSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SineOp op,
                                     PatternRewriter &rewriter) const {
@@ -7592,8 +7374,6 @@ struct SqrtSimplify
   using CheckedOpRewritePattern<stablehlo::SqrtOp,
                                 SqrtSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SqrtOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -7624,8 +7404,6 @@ struct SqrtSimplify
 struct TanhSimplify
     : public CheckedOpRewritePattern<stablehlo::TanhOp, TanhSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TanhOp op,
                                     PatternRewriter &rewriter) const {
@@ -7664,8 +7442,6 @@ struct ExpSimplify
     : public CheckedOpRewritePattern<stablehlo::ExpOp, ExpSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ExpOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -7699,10 +7475,7 @@ struct BinBroadcastSplat final
   using CheckedOpRewritePattern<T,
                                 BinBroadcastSplat<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       mlir::Value opi = op->getOperand(i);
       if (auto broadcast = opi.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
@@ -7731,8 +7504,6 @@ struct AllFinite
   using CheckedOpRewritePattern<stablehlo::IsFiniteOp,
                                 AllFinite>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
                                     PatternRewriter &rewriter) const {
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -7744,8 +7515,6 @@ struct AllFinite
 struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
   using CheckedOpRewritePattern<stablehlo::CompareOp,
                                 NoNan>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
@@ -7770,8 +7539,6 @@ struct TransposeTranspose
                                      TransposeTranspose> {
   using CheckedOpRewritePattern<stablehlo::TransposeOp,
                                 TransposeTranspose>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -7823,8 +7590,6 @@ struct TransposeConvert
   using CheckedOpRewritePattern<stablehlo::ConvertOp,
                                 TransposeConvert>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
                                     PatternRewriter &rewriter) const {
     auto resultType = cast<TensorType>(op.getResult().getType());
@@ -7857,8 +7622,6 @@ struct TransposeDotReorder
                                      TransposeDotReorder> {
   using CheckedOpRewritePattern<stablehlo::TransposeOp,
                                 TransposeDotReorder>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -7958,8 +7721,6 @@ struct TransposeReduce
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
                                     PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
@@ -8026,8 +7787,6 @@ struct TransposeConvolution
                                      TransposeConvolution> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
                                     PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
@@ -8076,8 +7835,6 @@ struct ConvolutionTranspose
     : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
                                      ConvolutionTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp conv,
                                     PatternRewriter &rewriter) const {
@@ -8141,8 +7898,6 @@ struct TransposeEinsum
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeEinsum> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
                                     PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
@@ -8181,8 +7936,6 @@ struct TransposeEinsum
 struct EinsumTranspose
     : public CheckedOpRewritePattern<stablehlo::EinsumOp, EinsumTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::EinsumOp einsum,
                                     PatternRewriter &rewriter) const {
@@ -8229,8 +7982,6 @@ struct EinsumTranspose
 struct DotTranspose
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp, DotTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp dot,
                                     PatternRewriter &rewriter) const {
@@ -8296,8 +8047,6 @@ struct BroadcastReduce
     : public CheckedOpRewritePattern<stablehlo::ReduceOp, BroadcastReduce> {
   using CheckedOpRewritePattern<stablehlo::ReduceOp,
                                 BroadcastReduce>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -8443,10 +8192,7 @@ template <typename T>
 struct BinopConstPad : public CheckedOpRewritePattern<T, BinopConstPad<T>> {
   using CheckedOpRewritePattern<T, BinopConstPad<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       DenseElementsAttr inp;
       if (!matchPattern(op->getOperand(i), m_Constant(&inp)))
@@ -8489,10 +8235,7 @@ template <typename T>
 struct BinopPadPad : public CheckedOpRewritePattern<T, BinopPadPad<T>> {
   using CheckedOpRewritePattern<T, BinopPadPad<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto pad1 = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad1 || anyPadSizesNegative(pad1))
       return failure();
@@ -8526,8 +8269,6 @@ struct AddPadPadToConcat
     : public CheckedOpRewritePattern<stablehlo::AddOp, AddPadPadToConcat> {
   using CheckedOpRewritePattern<stablehlo::AddOp,
                                 AddPadPadToConcat>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
@@ -8717,10 +8458,7 @@ struct BinopBinopPadPad
   using CheckedOpRewritePattern<T,
                                 BinopBinopPadPad<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
 
@@ -8808,10 +8546,7 @@ struct BinopBinopPadConst
   using CheckedOpRewritePattern<T,
                                 BinopBinopPadConst<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad1)
@@ -8861,8 +8596,6 @@ struct MulZeroPad
   using CheckedOpRewritePattern<stablehlo::MulOp,
                                 MulZeroPad>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
     stablehlo::PadOp pad;
@@ -8903,8 +8636,6 @@ struct DivZeroPad
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivZeroPad> {
   using CheckedOpRewritePattern<stablehlo::DivOp,
                                 DivZeroPad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
@@ -8958,8 +8689,6 @@ template <typename T> DenseI64ArrayAttr addLists(T lhs, T rhs) {
 struct PadPad : public CheckedOpRewritePattern<stablehlo::PadOp, PadPad> {
   using CheckedOpRewritePattern<stablehlo::PadOp,
                                 PadPad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
                                     PatternRewriter &rewriter) const {
@@ -9066,8 +8795,6 @@ struct SliceDotGeneral
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceDotGeneral>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto dot = op.getOperand().getDefiningOp<stablehlo::DotGeneralOp>();
@@ -9093,8 +8820,6 @@ struct PadDotGeneral
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp, PadDotGeneral> {
   using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                                 PadDotGeneral>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   bool postPad;
   PadDotGeneral(size_t postPad, MLIRContext *context,
@@ -9362,8 +9087,6 @@ struct SliceReshape
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceReshape>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
@@ -9391,8 +9114,6 @@ struct SliceReshape
 struct SliceReshapePad final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -9453,8 +9174,6 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceIf>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto ifop = op.getOperand().getDefiningOp<stablehlo::IfOp>();
@@ -9510,8 +9229,6 @@ struct SliceReshapeConcat
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceReshapeConcat>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
@@ -9548,8 +9265,6 @@ struct SliceReshapeConcat
 struct SliceReshapeElementwise final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -9593,8 +9308,6 @@ struct SliceReshapeElementwise final
 struct TransposeElementwise final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   bool onlySingleUser;
 
@@ -9648,8 +9361,6 @@ struct TransposeConcat final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
@@ -9678,8 +9389,6 @@ struct TransposeIota final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
@@ -9701,8 +9410,6 @@ struct TransposeIota final
 struct TransposeReduceWindow final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduceWindow> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -9786,8 +9493,6 @@ struct ReshapeOfConcatToConcatOfReshape final
                                      ReshapeOfConcatToConcatOfReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   int64_t computeNewConcatDim(ArrayRef<int64_t> originalShape,
                               ArrayRef<int64_t> reshapedShape,
                               int64_t originalConcatDim) const {
@@ -9866,8 +9571,6 @@ struct ReshapeReduceWindow final
     : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
                                      ReshapeReduceWindow> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
                                     PatternRewriter &rewriter) const {
@@ -10009,8 +9712,6 @@ struct ReshapeElementwise final
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
@@ -10044,8 +9745,6 @@ struct ReshapeElementwise final
 struct SliceReshapeTranspose final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -10085,8 +9784,6 @@ struct SliceReshapeDotGeneral
   using CheckedOpRewritePattern<
       stablehlo::SliceOp, SliceReshapeDotGeneral>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
@@ -10122,8 +9819,6 @@ struct SliceReshapeDotGeneral
 struct ReshuffleAndsCompares final
     : CheckedOpRewritePattern<stablehlo::AndOp, ReshuffleAndsCompares> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::AndOp andOp,
                                     PatternRewriter &rewriter) const {
@@ -10186,8 +9881,6 @@ struct ReshuffleAndsCompares final
 struct SliceReshapeSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
@@ -10266,8 +9959,6 @@ struct GatherSimplify final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
                                     PatternRewriter &rewriter) const {
     DenseIntElementsAttr startIndicesCst;
@@ -10301,8 +9992,6 @@ struct GatherSimplify final
 
 struct CSEIota : CheckedOpRewritePattern<stablehlo::IotaOp, CSEIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
                                     PatternRewriter &rewriter) const {
@@ -10350,8 +10039,7 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
 
   bool supportsDynamicShapes() { return true; }
 
-  LogicalResult matchAndRewriteImpl(T op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     if (op->getNumOperands() > 0)
       for (auto nop : op->getOperand(0).getUsers()) {
         if (nop == op)
@@ -10396,8 +10084,6 @@ struct ConstPropThroughBarrier final
                               ConstPropThroughBarrier> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::OptimizationBarrierOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -10440,8 +10126,6 @@ struct DUSSliceSimplify final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DUSSliceSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
                                     PatternRewriter &rewriter) const {
@@ -10590,8 +10274,6 @@ struct DUSToI32 final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToI32> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
                                     PatternRewriter &rewriter) const {
     auto i32 = rewriter.getI32Type();
@@ -10635,8 +10317,6 @@ struct DUSToI32 final
 struct DUSToConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
                                     PatternRewriter &rewriter) const {
@@ -10780,8 +10460,6 @@ struct DUSToConcat final
 struct DivideDivideSimplify
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivideDivideSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
@@ -10928,8 +10606,6 @@ struct CompareOpCanon final
     : CheckedOpRewritePattern<stablehlo::CompareOp, CompareOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
@@ -11033,8 +10709,6 @@ struct CompareExt final
   using CheckedOpRewritePattern<stablehlo::CompareOp,
                                 CompareExt>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     auto elemType =
@@ -11116,8 +10790,6 @@ struct SelectCompIotaConstSimplify final
     int64_t count;
   };
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
@@ -11277,8 +10949,6 @@ struct SelectCompIotaConstToDUS final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectCompIotaConstToDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
     auto pred = selectOp.getPred().getDefiningOp<stablehlo::AndOp>();
@@ -11417,8 +11087,6 @@ struct SelectPadToDUS final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectPadToDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
     auto pad = selectOp.getPred().getDefiningOp<stablehlo::PadOp>();
@@ -11473,8 +11141,6 @@ struct SelectPadToDUS final
 
 struct AndPadPad final : CheckedOpRewritePattern<stablehlo::AndOp, AndPadPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::AndOp andOp,
                                     PatternRewriter &rewriter) const {
@@ -11618,8 +11284,6 @@ struct SelectOpUsedWithinIf final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectOpUsedWithinIf> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
                                     PatternRewriter &rewriter) const {
     Value pred = op.getPred();
@@ -11677,8 +11341,6 @@ struct SelectOpUsedWithinIf final
 struct SelectOpCanon final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   size_t max_constant_expansion;
   SelectOpCanon(size_t max_constant_expansion, MLIRContext *context,
@@ -11744,8 +11406,6 @@ struct BroadcastInDimOpCanon final
                               BroadcastInDimOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
@@ -11807,8 +11467,6 @@ struct TransposeBroadcastInDimToBroadcastInDim final
       stablehlo::BroadcastInDimOp,
       TransposeBroadcastInDimToBroadcastInDim>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
@@ -11839,8 +11497,6 @@ struct BroadcastInDimTransposeToBroadcastInDim final
   using CheckedOpRewritePattern<
       stablehlo::TransposeOp,
       BroadcastInDimTransposeToBroadcastInDim>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -11878,8 +11534,6 @@ struct BroadcastInDimTransposeToBroadcastInDim final
 struct ConcatenateOpCanon final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatenateOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   size_t max_constant_expansion;
   ConcatenateOpCanon(size_t max_constant_expansion, MLIRContext *context,
@@ -11933,8 +11587,6 @@ struct ConvertOpCanon final
     : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
                                     PatternRewriter &rewriter) const {
     // Check if this convert is a noop.
@@ -11950,8 +11602,6 @@ struct DivideSqrtToMultiplyRsqrt final
     : CheckedOpRewritePattern<stablehlo::DivOp, DivideSqrtToMultiplyRsqrt> {
   using CheckedOpRewritePattern<
       stablehlo::DivOp, DivideSqrtToMultiplyRsqrt>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
@@ -12006,8 +11656,6 @@ struct DynamicBroadcastInDimOpNotActuallyDynamic final
                               DynamicBroadcastInDimOpNotActuallyDynamic> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     RankedTensorType operandType = op.getOperand().getType();
@@ -12041,8 +11689,6 @@ struct ChainedDynamicBroadcastInDimCanonicalization final
                               ChainedDynamicBroadcastInDimCanonicalization> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp bcast,
                                     PatternRewriter &rewriter) const {
     auto precedingBcast =
@@ -12071,8 +11717,6 @@ struct DynamicBroadcastInDimAllDimsNonExpanding final
                               DynamicBroadcastInDimAllDimsNonExpanding> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
@@ -12094,8 +11738,6 @@ struct DynamicBroadcastInDimAllDimsNonExpanding final
 struct NoopReduceOpCanon final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, NoopReduceOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -12131,8 +11773,6 @@ struct NoopReduceOpCanon final
 struct EmptyReduceOpCanon final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, EmptyReduceOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -12182,8 +11822,6 @@ struct DynamicReshapeOpCanon final
                               DynamicReshapeOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // This is a noop when the output type is already a static shape.
@@ -12202,8 +11840,6 @@ struct GetTupleElementOpCanon final
                               GetTupleElementOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::GetTupleElementOp op,
                                     PatternRewriter &rewriter) const {
     auto tuple = op.getOperand().getDefiningOp<stablehlo::TupleOp>();
@@ -12219,8 +11855,6 @@ struct GetTupleElementOpCanon final
 struct RealOpCanon final
     : CheckedOpRewritePattern<stablehlo::RealOp, RealOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
                                     PatternRewriter &rewriter) const {
@@ -12242,8 +11876,6 @@ struct RealOpCanon final
 struct ImagOpCanon final
     : CheckedOpRewritePattern<stablehlo::ImagOp, ImagOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ImagOp op,
                                     PatternRewriter &rewriter) const {
@@ -12268,8 +11900,6 @@ struct ConjComplexNegate final
     : CheckedOpRewritePattern<chlo::ConjOp, ConjComplexNegate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
                                     PatternRewriter &rewriter) const {
     auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
@@ -12291,8 +11921,6 @@ struct GetDimensionSizeOpCanon final
                               GetDimensionSizeOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::GetDimensionSizeOp op,
                                     PatternRewriter &rewriter) const {
     // Fold get_dimension_size when the queried dim is statically known.
@@ -12313,8 +11941,6 @@ struct GetDimensionSizeOpCanon final
 struct NoopReverse final
     : CheckedOpRewritePattern<stablehlo::ReverseOp, NoopReverse> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
                                     PatternRewriter &rewriter) const {
@@ -12347,8 +11973,6 @@ struct NoopReverse final
 struct GatherOpCanon final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gather,
                                     PatternRewriter &rewriter) const {
@@ -12420,8 +12044,6 @@ struct ReshapeOpCanon final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     // Fold noop reshape.
@@ -12444,8 +12066,6 @@ struct ReshapeOpCanon final
 struct MergeConsecutiveReshapes final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, MergeConsecutiveReshapes> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
@@ -12470,8 +12090,6 @@ struct MergeConsecutiveReshapes final
 struct TransposeIsReshape final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIsReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -12510,8 +12128,6 @@ struct TransposeIsReshape final
 struct IfRemoveUnused final
     : CheckedOpRewritePattern<stablehlo::IfOp, IfRemoveUnused> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
@@ -12574,8 +12190,6 @@ struct IfPredPropagation final
     : CheckedOpRewritePattern<stablehlo::IfOp, IfPredPropagation> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
     Value pred = op.getPred();
@@ -12613,8 +12227,6 @@ struct IfPredPropagation final
 struct IfInline final : CheckedOpRewritePattern<stablehlo::IfOp, IfInline> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -12646,8 +12258,6 @@ struct IfToSelect final
     : public CheckedOpRewritePattern<stablehlo::IfOp, IfToSelect> {
   using CheckedOpRewritePattern<stablehlo::IfOp,
                                 IfToSelect>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
@@ -12718,8 +12328,6 @@ struct SpeculateIfPadToSelect final
     : public CheckedOpRewritePattern<stablehlo::IfOp, SpeculateIfPadToSelect> {
   using CheckedOpRewritePattern<
       stablehlo::IfOp, SpeculateIfPadToSelect>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
@@ -12797,8 +12405,6 @@ struct WhileOpInductionReplacement
                                      WhileOpInductionReplacement> {
   using CheckedOpRewritePattern<
       stablehlo::WhileOp, WhileOpInductionReplacement>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
@@ -13026,8 +12632,6 @@ private:
 struct TransposeWhile
     : public CheckedOpRewritePattern<stablehlo::WhileOp, TransposeWhile> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
@@ -13335,8 +12939,6 @@ struct ConcatToOneDimDUS final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToOneDimDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
     if (concatToOneDimDUS(rewriter, outer))
@@ -13348,8 +12950,6 @@ struct ConcatToOneDimDUS final
 
 struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
@@ -13830,8 +13430,6 @@ struct WhileRepeatedInductionReduction
                                      WhileRepeatedInductionReduction> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   template <typename CRangeT, typename RangeT>
   static stablehlo::IfOp
   createConditional(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
@@ -14157,8 +13755,6 @@ struct WhilePadInductionReduction
                                      WhilePadInductionReduction> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   template <typename CRangeT, typename RangeT>
   static stablehlo::IfOp
   createConditional(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
@@ -14418,8 +14014,6 @@ struct WhileInductionReduction
     : public CheckedOpRewritePattern<stablehlo::WhileOp,
                                      WhileInductionReduction> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
@@ -14847,8 +14441,6 @@ struct WhileConcat
     : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
     // Find yield op in the body
@@ -15229,8 +14821,6 @@ struct WhileWrap
   using CheckedOpRewritePattern<stablehlo::WhileOp,
                                 WhileWrap<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
     // Find yield op in the body
@@ -15458,8 +15048,6 @@ struct WhileSimplify
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         hoist_all(hoist_all) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
     SmallVector<unsigned> operands;
@@ -15537,8 +15125,6 @@ struct WhileSimplify
 struct WhileLICM
     : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileLICM> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   bool hoist_all;
   WhileLICM(bool hoist_all, MLIRContext *context, PatternBenefit benefit = 1,
@@ -15676,8 +15262,6 @@ struct DynamicGatherOpIsNotDynamic
       stablehlo::DynamicGatherOp,
       DynamicGatherOpIsNotDynamic>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicGatherOp op,
                                     PatternRewriter &rewriter) const {
     // Check if slice sizes are constant.
@@ -15785,8 +15369,6 @@ struct ReorderElementwiseAndShapeOp final
                                    ReorderElementwiseAndShapeOp> {
   using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
     if (op->getOperands().size() != 1)
@@ -15830,8 +15412,6 @@ struct NoNanAddSubSimplify final
                                      NoNanAddSubSimplify> {
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
                                 NoNanAddSubSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
                       PatternBenefit benefit = 1)
@@ -15909,8 +15489,6 @@ struct CompareSelectSimplify
   using CheckedOpRewritePattern<stablehlo::SelectOp,
                                 CompareSelectSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
                                     PatternRewriter &rewriter) const {
     auto compOp = op.getPred().getDefiningOp<stablehlo::CompareOp>();
@@ -15965,8 +15543,6 @@ struct NotSelectSimplify
   using CheckedOpRewritePattern<stablehlo::SelectOp,
                                 NotSelectSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
                                     PatternRewriter &rewriter) const {
     auto notOp = op.getPred().getDefiningOp<stablehlo::NotOp>();
@@ -15982,8 +15558,6 @@ struct NotSelectSimplify
 struct NotCompare
     : public CheckedOpRewritePattern<stablehlo::NotOp, NotCompare> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
                                     PatternRewriter &rewriter) const {
@@ -16010,8 +15584,6 @@ struct CommonCompareExpressionRewrite
   using CheckedOpRewritePattern<
       stablehlo::CompareOp,
       CommonCompareExpressionRewrite>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
@@ -16072,8 +15644,6 @@ struct CompareCleanup
     : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareCleanup> {
   using CheckedOpRewritePattern<stablehlo::CompareOp,
                                 CompareCleanup>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
@@ -16146,8 +15716,6 @@ struct ScatterUpdateComputationConstProp
   using CheckedOpRewritePattern<
       stablehlo::ScatterOp,
       ScatterUpdateComputationConstProp>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
@@ -16241,8 +15809,6 @@ struct ScatterIndicesAreUnique
   using CheckedOpRewritePattern<
       stablehlo::ScatterOp, ScatterIndicesAreUnique>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getUniqueIndices())
@@ -16318,10 +15884,7 @@ struct AssociativeCommonMulOpReordering final
   using CheckedOpRewritePattern<
       Op, AssociativeCommonMulOpReordering<Op>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(Op op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
@@ -16379,10 +15942,7 @@ struct AssociativeBinaryOpReordering
   using CheckedOpRewritePattern<
       Op, AssociativeBinaryOpReordering<Op>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(Op op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhsOp = op.getRhs().template getDefiningOp<Op>();
     if (!rhsOp)
@@ -16440,8 +16000,6 @@ struct ReduceTransposeSimplify
                                      ReduceTransposeSimplify> {
   using CheckedOpRewritePattern<
       stablehlo::ReduceOp, ReduceTransposeSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -16521,8 +16079,6 @@ struct SignAbsSimplify
     : public CheckedOpRewritePattern<stablehlo::MulOp, SignAbsSimplify> {
   using CheckedOpRewritePattern<stablehlo::MulOp,
                                 SignAbsSimplify>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -16694,8 +16250,6 @@ struct AbsPositiveSimplify
   using CheckedOpRewritePattern<stablehlo::AbsOp,
                                 AbsPositiveSimplify>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -16747,8 +16301,6 @@ struct TransposeReshapeToBroadcast final
     : CheckedOpRewritePattern<stablehlo::TransposeOp,
                               TransposeReshapeToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -16802,8 +16354,6 @@ struct ReshapeTransposeToBroadcast final
       stablehlo::ReshapeOp,
       ReshapeTransposeToBroadcast>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
@@ -16851,8 +16401,6 @@ struct BroadcastInDimIsReshape final
   using CheckedOpRewritePattern<
       stablehlo::BroadcastInDimOp,
       BroadcastInDimIsReshape>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
@@ -16905,8 +16453,6 @@ struct ReshapeToBroadcast final
   using CheckedOpRewritePattern<stablehlo::ReshapeOp,
                                 ReshapeToBroadcast>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshape,
                                     PatternRewriter &rewriter) const {
 
@@ -16942,8 +16488,6 @@ struct PadConcatToConcatPad
                                      PadConcatToConcatPad> {
   using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                 PadConcatToConcatPad>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
@@ -17065,8 +16609,6 @@ struct SliceSelect
   using CheckedOpRewritePattern<stablehlo::SliceOp,
                                 SliceSelect>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                     PatternRewriter &rewriter) const {
 
@@ -17118,8 +16660,6 @@ struct ConstPadConcatToConcat
     : public CheckedOpRewritePattern<stablehlo::PadOp, ConstPadConcatToConcat> {
   using CheckedOpRewritePattern<
       stablehlo::PadOp, ConstPadConcatToConcat>::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::PadOp padOp,
                                     PatternRewriter &rewriter) const {
@@ -17213,10 +16753,7 @@ struct SumToReductionBase
   using CheckedOpRewritePattern<
       ST, SumToReductionBase<ST, Child>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(ST op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(ST op, PatternRewriter &rewriter) const {
     if (!op.getType().getElementType().isFloat())
       return failure();
 
@@ -17726,8 +17263,6 @@ struct TransposeSelect
   using CheckedOpRewritePattern<stablehlo::TransposeOp,
                                 TransposeSelect>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transposeOp,
                                     PatternRewriter &rewriter) const {
     auto selectOp =
@@ -17771,8 +17306,6 @@ struct ReshapeSelect
   using CheckedOpRewritePattern<stablehlo::ReshapeOp,
                                 ReshapeSelect>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
                                     PatternRewriter &rewriter) const {
     auto selectOp = reshapeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
@@ -17813,10 +17346,7 @@ template <typename T>
 struct GroupComms : public CheckedOpRewritePattern<T, GroupComms<T>> {
   using CheckedOpRewritePattern<T, GroupComms<T>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(T end,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(T end, PatternRewriter &rewriter) const {
     if (end->template getParentOfType<enzymexla::CommRegionOp>())
       return failure();
     if (end->template getParentOfType<sdy::ManualComputationOp>())
@@ -17878,8 +17408,6 @@ struct GroupComms : public CheckedOpRewritePattern<T, GroupComms<T>> {
 struct LowerCommRegion
     : public CheckedOpRewritePattern<enzymexla::CommRegionOp, LowerCommRegion> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(enzymexla::CommRegionOp end,
                                     PatternRewriter &rewriter) const {
@@ -17947,8 +17475,6 @@ struct RecognizeRotate
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      RecognizeRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
@@ -18102,8 +17628,6 @@ struct RecognizeWrap
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, RecognizeWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
 
@@ -18197,8 +17721,6 @@ struct ExtendSplat
   using CheckedOpRewritePattern<enzymexla::ExtendOp,
                                 ExtendSplat>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp op,
                                     PatternRewriter &rewriter) const {
     DenseElementsAttr cstAttr;
@@ -18254,8 +17776,6 @@ struct ExtendUnaryElementwise
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp op,
                                     PatternRewriter &rewriter) const {
     return commUnaryOpElementwise(onlySingleUser, op, rewriter);
@@ -18271,8 +17791,6 @@ struct WrapUnaryElementwise
                        ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(enzymexla::WrapOp op,
                                     PatternRewriter &rewriter) const {
@@ -18315,10 +17833,7 @@ struct ExtendElementwise
   using CheckedOpRewritePattern<Op,
                                 ExtendElementwise<Op>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(Op op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     return commBinOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
   }
 };
@@ -18329,10 +17844,7 @@ struct WrapElementwise
   using CheckedOpRewritePattern<Op,
                                 WrapElementwise<Op>>::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
-  LogicalResult matchAndRewriteImpl(Op op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     return commBinOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
   }
 };
@@ -18394,8 +17906,6 @@ struct RecognizeExtend
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      RecognizeExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
@@ -18626,8 +18136,6 @@ struct SliceExtend final
     : CheckedOpRewritePattern<enzymexla::ExtendOp, SliceExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   struct CandidateInfo {
     enzymexla::ExtendOp extendOp;
     stablehlo::SliceOp sliceOp; // Null if it's a direct extend user
@@ -18766,8 +18274,6 @@ struct SliceExtend final
 
 struct SliceWrap final : CheckedOpRewritePattern<enzymexla::WrapOp, SliceWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   struct CandidateInfo {
     enzymexla::WrapOp wrapOp;
@@ -18914,8 +18420,6 @@ struct TransposeWrap final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -18971,8 +18475,6 @@ struct TransposeExtend final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -19026,8 +18528,6 @@ struct TransposeRotate final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
@@ -19078,8 +18578,6 @@ struct TransposeRotate final
 struct ConcatConcatAxisSwap final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatConcatAxisSwap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
@@ -19158,8 +18656,6 @@ struct ConcatConcatAxisSwap final
 struct SliceRotate final
     : CheckedOpRewritePattern<enzymexla::RotateOp, SliceRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   struct CandidateInfo {
     enzymexla::RotateOp rotateOp;
@@ -19295,8 +18791,6 @@ struct SquareAbsSimplify
     : public CheckedOpRewritePattern<stablehlo::MulOp, SquareAbsSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
@@ -19336,8 +18830,6 @@ struct ConcatReshapeSlice
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatReshapeSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
@@ -19503,8 +18995,6 @@ struct ConcatElementwise final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
     if (concatOp.getNumOperands() <= 1)
@@ -19563,8 +19053,6 @@ struct ConcatElementwise final
 struct ConcatReshapeReduce final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReshapeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
@@ -19643,8 +19131,6 @@ struct ReverseTranspose final
     : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
                                     PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
@@ -19674,8 +19160,6 @@ struct ReverseTranspose final
 struct TransposeReverse final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReverse> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
@@ -19707,8 +19191,6 @@ struct ElementwiseReshapeLike
   using CheckedOpTraitRewritePattern<
       OpTrait::Elementwise,
       ElementwiseReshapeLike>::CheckedOpTraitRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
@@ -19763,8 +19245,6 @@ struct ConcatTranspose final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool supportsDynamicShapes() { return false; }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getNumOperands() < 2)
@@ -19810,8 +19290,6 @@ struct ConcatTranspose final
 struct ReduceReduce final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return false; }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
