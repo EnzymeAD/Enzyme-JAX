@@ -3537,6 +3537,29 @@ struct SHLOBroadcastInDimOpBatchInterface
   }
 };
 
+struct SHLOConcatenateOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConcatenateOpBatchInterface,
+                                             stablehlo::ConcatenateOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::ConcatenateOp>(src);
+
+    SmallVector<Value> newInputs;
+    for (auto input : op.getInputs()) {
+      newInputs.push_back(mapper.lookup(input));
+    }
+
+    auto newConcatOp = builder.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(newInputs),
+        op.getDimension() + batchSizes.size());
+
+    mapper.map(src->getResult(0), newConcatOp->getResult(0));
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3635,6 +3658,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);
+    ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
