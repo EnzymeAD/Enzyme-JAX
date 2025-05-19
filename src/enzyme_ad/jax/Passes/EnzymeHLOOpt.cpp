@@ -340,8 +340,8 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
   using Base = OpRewritePattern<OpTy>;
   using Base::Base;
 
-  LogicalResult matchAndRewrite(OpTy op,
-                                PatternRewriter &rewriter) const override final {
+  LogicalResult
+  matchAndRewrite(OpTy op, PatternRewriter &rewriter) const override final {
     LogicalResult res =
         failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
     if (res.failed())
@@ -364,8 +364,9 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   using Base = OpTraitRewritePattern<TraitType>;
   using Base::Base;
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override final {
+  LogicalResult
+  matchAndRewrite(Operation *op,
+                  PatternRewriter &rewriter) const override final {
     LogicalResult res =
         failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
     if (res.failed())
