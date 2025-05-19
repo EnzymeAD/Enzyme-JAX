@@ -3619,6 +3619,49 @@ struct SHLOGatherOpBatchInterface
   }
 };
 
+struct SHLOSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSliceOpBatchInterface,
+                                             stablehlo::SliceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::SliceOp>(src);
+
+    auto newOperand = mapper.lookup(op.getOperand());
+
+    SmallVector<int64_t> newStartIndices, newLimitIndices, newStrides;
+    for (int64_t i = 0; i < batchSizes.size(); i++) {
+      newStartIndices.push_back(0);
+      newLimitIndices.push_back(batchSizes[i]);
+      newStrides.push_back(1);
+    }
+    for (auto [sIndex, lIndex, stride] : llvm::zip(
+             op.getStartIndices(), op.getLimitIndices(), op.getStrides())) {
+      newStartIndices.push_back(sIndex);
+      newLimitIndices.push_back(lIndex);
+      newStrides.push_back(stride);
+    }
+
+    auto newSliceOp = builder.create<stablehlo::SliceOp>(
+        op.getLoc(), newOperand, newStartIndices, newLimitIndices, newStrides);
+
+    mapper.map(src->getResult(0), newSliceOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLODynamicSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSliceOpBatchInterface,
+                                             stablehlo::DynamicSliceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3718,7 +3761,12 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);
     ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
+<<<<<<< HEAD
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
+=======
+    SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
+    DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
+>>>>>>> 57b3d49a (feat: slice op batch interface)
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
