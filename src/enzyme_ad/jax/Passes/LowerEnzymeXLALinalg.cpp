@@ -645,7 +645,7 @@ struct LUFactorizationOpLowering
       // output.
       auto customCall = rewriter.create<stablehlo::CustomCallOp>(
           op.getLoc(), TypeRange{inputType, pivotTPUType, permutationType},
-          ValueRange{input}, rewriter.getStringAttr("LUFactorization"),
+          ValueRange{input}, rewriter.getStringAttr("LuDecomposition"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
           /*api_version*/ nullptr,
