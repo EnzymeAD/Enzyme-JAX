@@ -3560,6 +3560,65 @@ struct SHLOConcatenateOpBatchInterface
   }
 };
 
+struct SHLOGatherOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOGatherOpBatchInterface,
+                                             stablehlo::GatherOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::GatherOp>(src);
+
+    auto newOperand = mapper.lookup(op.getOperand());
+    auto newStartIndices = mapper.lookup(op.getStartIndices());
+
+    SmallVector<int64_t> newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, newStartIndicesBatchingDims, newStartIndexMap,
+        newSliceSizes;
+    int64_t nBatch = batchSizes.size();
+
+    auto oldGatherDimensionNumbers = op.getDimensionNumbers();
+
+    for (auto offsetDim : oldGatherDimensionNumbers.getOffsetDims())
+      newOffsetDims.push_back(offsetDim + nBatch);
+    for (auto collapsedSliceDim :
+         oldGatherDimensionNumbers.getCollapsedSliceDims())
+      newCollapsedSliceDims.push_back(collapsedSliceDim + nBatch);
+
+    for (int64_t i = 0; i < nBatch; i++) {
+      newOperandBatchingDims.push_back(i);
+      newStartIndicesBatchingDims.push_back(i);
+    }
+    for (auto operandBatchingDim :
+         oldGatherDimensionNumbers.getOperandBatchingDims())
+      newOperandBatchingDims.push_back(operandBatchingDim + nBatch);
+    for (auto startIndicesBatchingDim :
+         oldGatherDimensionNumbers.getStartIndicesBatchingDims())
+      newStartIndicesBatchingDims.push_back(startIndicesBatchingDim + nBatch);
+    for (auto startIndexMap : oldGatherDimensionNumbers.getStartIndexMap())
+      newStartIndexMap.push_back(startIndexMap + nBatch);
+
+    auto newIndexVectorDim =
+        oldGatherDimensionNumbers.getIndexVectorDim() + nBatch;
+
+    auto gatherDims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, newStartIndicesBatchingDims, newStartIndexMap,
+        newIndexVectorDim);
+
+    for (int64_t i = 0; i < nBatch; i++)
+      newSliceSizes.push_back(1);
+    for (auto sliceSize : op.getSliceSizes())
+      newSliceSizes.push_back(sliceSize);
+
+    auto newGatherOp = builder.create<stablehlo::GatherOp>(
+        op.getLoc(), newOperand, newStartIndices, gatherDims, newSliceSizes);
+
+    mapper.map(src->getResult(0), newGatherOp->getResult(0));
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3659,6 +3718,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);
     ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
+    GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
