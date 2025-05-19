@@ -89,7 +89,7 @@ module {
 // TPU: func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3x64xi32>, tensor<4x3xi32>) {
 // TPU-NEXT:    %c = stablehlo.constant dense<true> : tensor<i1>
 // TPU-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<4x3x64xi32>
-// TPU-NEXT:    %0:3 = stablehlo.custom_call @LUFactorization(%arg0) : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3x64xi32>)
+// TPU-NEXT:    %0:3 = stablehlo.custom_call @LuDecomposition(%arg0) : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xi32>, tensor<4x3x64xi32>)
 // TPU-NEXT:    %1 = stablehlo.add %c_0, %0#1 : tensor<4x3x64xi32>
 // TPU-NEXT:    %2 = stablehlo.add %c_0, %0#2 : tensor<4x3x64xi32>
 // TPU-NEXT:    %3 = stablehlo.is_finite %0#0 : (tensor<4x3x64x64xf32>) -> tensor<4x3x64x64xi1>
