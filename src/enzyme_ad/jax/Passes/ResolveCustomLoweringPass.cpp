@@ -93,6 +93,37 @@ void refineOperandsAndUpdateFunctionSignature(func::FuncOp func,
       builder.getFunctionType(refinedInputTypes, func.getResultTypes()));
 }
 
+bool areEquivalentTypes(Operation *op, Value operand, Type inType) {
+  auto operandType = cast<RankedTensorType>(operand.getType());
+  auto expectedType = cast<RankedTensorType>(inType);
+
+  if (!operandType || !expectedType) {
+    op->emitError() << "Expected ranked tensor types for comparison.";
+    return false;
+  }
+
+  if (operandType.getRank() != expectedType.getRank()) {
+    op->emitError() << "Rank mismatch for operand in lowering function.";
+    return false;
+  }
+
+  for (int i = 0; i < operandType.getRank(); ++i) {
+    if (!operandType.isDynamicDim(i) && !expectedType.isDynamicDim(i) &&
+        operandType.getDimSize(i) != expectedType.getDimSize(i)) {
+      op->emitError() << "Shape mismatch at dimension " << i
+                      << " in operand type.";
+      return false;
+    }
+  }
+
+  if (operandType.getElementType() != expectedType.getElementType()) {
+    op->emitError() << "Element type mismatch in operand.";
+    return false;
+  }
+
+  return true;
+}
+
 struct ResolveCustomLoweringPass
     : public enzyme::impl::ResolveCustomLoweringPassBase<
           ResolveCustomLoweringPass> {
@@ -137,8 +168,7 @@ struct ResolveCustomLoweringPass
       auto it = loweringMap.find(dialectOpName);
       if (it == loweringMap.end()) {
         op->emitError("No lowering registered for op.");
-        signalPassFailure();
-        return;
+        return signalPassFailure();
       }
 
       SmallVector<const LoweringEntry *> matching;
@@ -150,7 +180,7 @@ struct ResolveCustomLoweringPass
 
       if (matching.empty()) {
         op->emitError("No matching lowering found.");
-        signalPassFailure();
+        return signalPassFailure();
       } else if (matching.size() > 1) {
         op->emitError("Ambiguous lowering match: multiple registered lowerings "
                       "match provided config.");
@@ -160,7 +190,7 @@ struct ResolveCustomLoweringPass
           entry->config.print(llvm::errs());
           llvm::errs() << "\n";
         }
-        signalPassFailure();
+        return signalPassFailure();
       } else {
         auto matchedFn = matching.front()->fn;
         auto configDict = matching.front()->config;
@@ -170,8 +200,7 @@ struct ResolveCustomLoweringPass
         if (!fnOpInterface) {
           op->emitError() << "Matched symbol " << matchedFn.getValue()
                           << " does not implement FunctionOpInterface.";
-          signalPassFailure();
-          return;
+          return signalPassFailure();
         }
 
         auto fnType = dyn_cast<FunctionType>(fnOpInterface.getFunctionType());
@@ -180,83 +209,28 @@ struct ResolveCustomLoweringPass
         if (fnType.getNumInputs() != op->getNumOperands()) {
           op->emitError() << "Operand count mismatch with lowering function "
                           << matchedFn.getValue();
-          signalPassFailure();
-          return;
+          return signalPassFailure();
         }
 
         // Check each operand type (ignoring dynamic sizes)
         for (auto [operand, inp] :
              llvm::zip(op->getOperands(), fnType.getInputs())) {
-          auto operandType = dyn_cast<RankedTensorType>(operand.getType());
-          auto expectedType = dyn_cast<RankedTensorType>(inp);
-
-          if (!operandType || !expectedType) {
-            op->emitError() << "Expected ranked tensor types for comparison.";
+          if (!areEquivalentTypes(op, operand, inp))
             return signalPassFailure();
-          }
-
-          if (operandType.getRank() != expectedType.getRank()) {
-            op->emitError()
-                << "Rank mismatch for operand in lowering function.";
-            return signalPassFailure();
-          }
-
-          for (int i = 0; i < operandType.getRank(); ++i) {
-            if (!operandType.isDynamicDim(i) && !expectedType.isDynamicDim(i) &&
-                operandType.getDimSize(i) != expectedType.getDimSize(i)) {
-              op->emitError()
-                  << "Shape mismatch at dimension " << i << " in operand type.";
-              signalPassFailure();
-              return;
-            }
-          }
-
-          if (operandType.getElementType() != expectedType.getElementType()) {
-            op->emitError() << "Element type mismatch in operand.";
-            return signalPassFailure();
-          }
         }
 
         // Check number of results
         if (fnType.getNumResults() != op->getNumResults()) {
           op->emitError() << "Result count mismatch with lowering function "
                           << matchedFn.getValue();
-          signalPassFailure();
-          return;
+          return signalPassFailure();
         }
 
         // Check each result type (ignoring dynamic sizes)
         for (auto [result, out] :
              llvm::zip(op->getResults(), fnType.getResults())) {
-          auto resultType = dyn_cast<RankedTensorType>(result.getType());
-          auto expectedType = dyn_cast<RankedTensorType>(out);
-
-          if (!resultType || !expectedType) {
-            op->emitError()
-                << "Expected ranked tensor types for result comparison.";
+          if (!areEquivalentTypes(op, result, out))
             return signalPassFailure();
-          }
-
-          if (resultType.getRank() != expectedType.getRank()) {
-            op->emitError()
-                << "Rank mismatch in result type for lowering function.";
-            return signalPassFailure();
-          }
-
-          for (int i = 0; i < resultType.getRank(); ++i) {
-            if (!resultType.isDynamicDim(i) && !expectedType.isDynamicDim(i) &&
-                resultType.getDimSize(i) != expectedType.getDimSize(i)) {
-              op->emitError()
-                  << "Shape mismatch at result dimension " << i << ".";
-              signalPassFailure();
-              return;
-            }
-          }
-
-          if (resultType.getElementType() != expectedType.getElementType()) {
-            op->emitError() << "Element type mismatch in result.";
-            return signalPassFailure();
-          }
         }
 
         // Generate name for new function
