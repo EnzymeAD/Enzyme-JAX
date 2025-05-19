@@ -305,16 +305,16 @@ public:
 };
 
 LogicalResult failIfDynamicShape(Operation *op, PatternRewriter &rewriter) {
-  for (auto result : op->getResults()) {
-    auto type = dyn_cast<RankedTensorType>(result.getType());
-    if (!type || !type.hasStaticShape())
+  for (auto type : op->getResultTypes()) {
+    auto rType = dyn_cast<RankedTensorType>(type);
+    if (!rType || !rType.hasStaticShape())
       return rewriter.notifyMatchFailure(
           op, "unsupported dynamic shape for output.");
   }
 
-  for (auto operand : op->getOperands()) {
-    auto type = dyn_cast<RankedTensorType>(operand.getType());
-    if (!type || !type.hasStaticShape())
+  for (auto type : op->getOperandTypes()) {
+    auto rType = dyn_cast<RankedTensorType>(type);
+    if (!rType || !rType.hasStaticShape())
       return rewriter.notifyMatchFailure(
           op, "unsupported dynamic shape for input.");
   }
@@ -341,7 +341,7 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(OpTy op,
-                                PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override final {
     LogicalResult res =
         failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
     if (res.failed())
@@ -365,7 +365,7 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override final {
     LogicalResult res =
         failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
     if (res.failed())
