@@ -3812,12 +3812,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);
     ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
-<<<<<<< HEAD
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
-=======
     SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
     DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
->>>>>>> 57b3d49a (feat: slice op batch interface)
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
