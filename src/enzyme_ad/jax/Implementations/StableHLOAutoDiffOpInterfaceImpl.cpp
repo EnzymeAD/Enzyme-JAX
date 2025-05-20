@@ -3753,6 +3753,30 @@ struct SHLODynamicUpdateSliceOpBatchInterface
   }
 };
 
+struct SHLOIotaOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
+                                             stablehlo::IotaOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::IotaOp>(src);
+
+    auto origResult = cast<RankedTensorType>(op.getResult().getType());
+
+    SmallVector<int64_t> newShape;
+    newShape.append(batchSizes.begin(), batchSizes.end());
+    newShape.append(origResult.getShape().begin(), origResult.getShape().end());
+
+    auto newIotaOp = builder.create<stablehlo::IotaOp>(
+        op.getLoc(),
+        RankedTensorType::get(newShape, origResult.getElementType()),
+        op.getIotaDimension() + batchSizes.size());
+
+    mapper.map(src->getResult(0), newIotaOp.getResult());
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3859,6 +3883,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
+    IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
