@@ -703,17 +703,23 @@ struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    // Determine the new extend dimension
     int64_t newExtendDim = -1;
-    int64_t oldDimSize = extendOp.getOperand().getType().getShape()[extendDim];
+    SmallVector<int64_t> oneHotDim(extendOp.getType().getShape().size(), 0);
+    oneHotDim[extendDim] = 1;
 
-    for (size_t i = 0; i < operandShape.size(); ++i) {
-      if (operandShape[i] == oldDimSize) {
+    int64_t zero = 0;
+    if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
+                                        /*checkRemoved*/ &zero))
+      return failure();
+
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
+      if (oneHotDim[i]) {
+        if (newExtendDim != -1) {
+          return failure();
+        }
         newExtendDim = i;
-        break;
       }
     }
-
     if (newExtendDim == -1)
       return failure();
 
@@ -765,17 +771,23 @@ struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    // Determine the new wrap dimension
-    int64_t newWrapDim = -1;
-    int64_t oldDimSize = wrapOp.getOperand().getType().getShape()[wrapDim];
+    SmallVector<int64_t> oneHotDim(wrapOp.getType().getShape().size(), 0);
+    oneHotDim[wrapDim] = 1;
 
-    for (size_t i = 0; i < operandShape.size(); ++i) {
-      if (operandShape[i] == oldDimSize) {
+    int64_t zero = 0;
+    if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
+                                        /*checkRemoved*/ &zero))
+      return failure();
+
+    int64_t newWrapDim = -1;
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
+      if (oneHotDim[i]) {
+        if (newWrapDim != -1) {
+          return failure();
+        }
         newWrapDim = i;
-        break;
       }
     }
-
     if (newWrapDim == -1)
       return failure();
 
@@ -827,17 +839,23 @@ struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    // Determine the new rotate dimension
-    int64_t newRotateDim = -1;
-    int64_t oldDimSize = rotateOp.getOperand().getType().getShape()[rotateDim];
+    SmallVector<int64_t> oneHotDim(rotateOp.getType().getShape().size(), 0);
+    oneHotDim[rotateDim] = 1;
 
-    for (size_t i = 0; i < operandShape.size(); ++i) {
-      if (operandShape[i] == oldDimSize) {
+    int64_t zero = 0;
+    if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
+                                        /*checkRemoved*/ &zero))
+      return failure();
+
+    int64_t newRotateDim = -1;
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
+      if (oneHotDim[i]) {
+        if (newRotateDim != -1) {
+          return failure();
+        }
         newRotateDim = i;
-        break;
       }
     }
-
     if (newRotateDim == -1)
       return failure();
 
