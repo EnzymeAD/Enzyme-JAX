@@ -1676,6 +1676,8 @@ public:
         startIndices.push_back(idx);
       }
 
+      auto zeroIdx = makeI64Constant(src->getLoc(), bodyBuilder, 0);
+
       IRMapping origToUnbatch;
       for (auto operand : operands) {
         auto batched = mapper.lookup(operand);
@@ -1685,8 +1687,13 @@ public:
         shape.append(Ty.getShape().begin(), Ty.getShape().end());
         auto sliceTy = Ty.clone(shape);
 
+        SmallVector<Value> operandStartIndices;
+        operandStartIndices.append(startIndices.begin(), startIndices.end());
+        for (auto i = 0; i < Ty.getShape().size(); i++)
+          operandStartIndices.push_back(zeroIdx);
+
         auto sliceOp = bodyBuilder.create<DynamicSliceOp>(
-            src->getLoc(), sliceTy, batched, startIndices, shape);
+            src->getLoc(), sliceTy, batched, operandStartIndices, shape);
 
         auto reshapeOp = bodyBuilder.create<ReshapeOp>(
             src->getLoc(), operand.getType(), sliceOp->getResult(0));
@@ -1708,8 +1715,13 @@ public:
         auto reshapeOp =
             bodyBuilder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
 
+        SmallVector<Value> operandStartIndices;
+        operandStartIndices.append(startIndices.begin(), startIndices.end());
+        for (int i = 0; i < Ty.getShape().size(); ++i)
+          operandStartIndices.push_back(zeroIdx);
+
         auto update = bodyBuilder.create<DynamicUpdateSliceOp>(
-            src->getLoc(), batched, reshapeOp, startIndices);
+            src->getLoc(), batched, reshapeOp, operandStartIndices);
 
         whileBodyOutputs.push_back(update);
       }
@@ -3815,6 +3827,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
     SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
     DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
+    CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
