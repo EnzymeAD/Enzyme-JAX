@@ -2211,7 +2211,135 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       rewriter.replaceOp(ifOp, affineIfOp.getResults());
       return success();
     }
-    return failure();
+
+    bool changed = false;
+    auto condOp = ifOp.getCondition().getDefiningOp();
+    if (isa<AndIOp, OrIOp>(condOp)) {
+      // condition, Negated
+
+      for (auto &opv : condOp->getOpOperands()) {
+
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(condOp);
+
+        SmallVector<AffineExpr, 2> exprs;
+        SmallVector<bool, 2> eqflags;
+        SmallVector<ValueOrInt, 4> applies;
+        if (auto midIf = opv.get().getDefiningOp<AffineIfOp>()) {
+          auto idx = cast<OpResult>(opv.get()).getResultNumber();
+          auto tval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
+                          .getOperand(idx);
+          auto fval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
+                          .getOperand(idx);
+          if (matchPattern(tval, m_One()) && matchPattern(fval, m_Zero()))
+            continue;
+          if (matchPattern(tval, m_Zero()) && matchPattern(fval, m_One()))
+            continue;
+        }
+        for (int i = 0; i < 2; i++) {
+          bool badcmp = false;
+          std::deque<std::pair<Value, bool>> todo = {
+              std::make_pair(opv.get(), i == 1)};
+          while (todo.size()) {
+            auto &&[cur, negated] = todo.front();
+            todo.pop_front();
+            if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
+              if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated)) {
+                badcmp = true;
+                break;
+              }
+              continue;
+            }
+            if (!negated) {
+              if (auto andi = cur.getDefiningOp<AndIOp>()) {
+                todo.emplace_back(andi.getOperand(0), negated);
+                todo.emplace_back(andi.getOperand(1), negated);
+                continue;
+              }
+            }
+            if (negated) {
+              if (auto andi = cur.getDefiningOp<OrIOp>()) {
+                todo.emplace_back(andi.getOperand(0), negated);
+                todo.emplace_back(andi.getOperand(1), negated);
+                continue;
+              }
+            }
+
+            if (auto noti = cur.getDefiningOp<XOrIOp>()) {
+              if (matchPattern(noti.getOperand(1), m_One())) {
+                todo.emplace_back(noti.getOperand(0), !negated);
+                continue;
+              }
+            }
+            if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
+              auto idx = cast<OpResult>(cur).getResultNumber();
+              if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies,
+                          negated)) {
+                badcmp = true;
+                break;
+              }
+              continue;
+            }
+            LLVM_DEBUG(llvm::dbgs() << "illegal condition: " << cur
+                                    << " - negated: " << negated << "\n");
+            badcmp = true;
+            break;
+          }
+
+          if (badcmp)
+            continue;
+
+          SmallVector<Value> operands;
+          auto ity = IndexType::get(ifOp.getContext());
+          for (auto vori : applies) {
+            Value operand = vori.v_val;
+            if (!vori.isValue) {
+              operand = rewriter.create<arith::ConstantIndexOp>(
+                  ifOp.getLoc(), vori.i_val.getSExtValue());
+            }
+            if (!isa<IndexType>(operand.getType())) {
+              operand = rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity,
+                                                            operand);
+            }
+            operands.push_back(operand);
+          }
+
+          auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+          DominanceInfo DI(scope);
+
+          llvm::errs() << " scope: " << *scope << "\n";
+          std::vector<mlir::Type> types = {ifOp.getCondition().getType()};
+
+          auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(),
+                                      exprs, eqflags);
+          fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
+          affine::canonicalizeSetAndOperands(&iset, &operands);
+
+          Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
+                                                                 1, types[0])};
+          Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
+                                                                 0, types[0])};
+
+          affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
+              ifOp.getLoc(), types, iset, operands,
+              /*elseBlock=*/true);
+
+          rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
+          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
+                                                 i == 0 ? tval : fval);
+
+          rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
+          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
+                                                 i == 0 ? fval : tval);
+
+          rewriter.modifyOpInPlace(
+              condOp, [&] { opv.assign(affineIfOp.getResult(0)); });
+          changed = true;
+        }
+      }
+    }
+
+    return success(changed);
   }
 };
 
