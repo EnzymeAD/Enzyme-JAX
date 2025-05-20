@@ -3777,6 +3777,51 @@ struct SHLOIotaOpBatchInterface
   }
 };
 
+struct SHLOSelectOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSelectOpBatchInterface,
+                                             stablehlo::SelectOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::SelectOp>(src);
+
+    auto opPredOld = op.getPred();
+    auto opPredType = cast<RankedTensorType>(opPredOld.getType());
+    auto opResultShape =
+        cast<RankedTensorType>(op.getResult().getType()).getShape();
+
+    stablehlo::SelectOp newSelectOp;
+
+    if (opPredType.getRank() == 0) {
+      // Need a broadcast_in_dim to make the predicate into proper shape
+      SmallVector<int64_t> newShape;
+      newShape.append(batchSizes.begin(), batchSizes.end());
+      newShape.append(opResultShape.begin(), opResultShape.end());
+
+      SmallVector<int64_t> broadcastDims;
+      for (int64_t i = 0; i < batchSizes.size(); i++)
+        broadcastDims.push_back(i);
+
+      auto newPred = builder.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(),
+          RankedTensorType::get(newShape, opPredType.getElementType()),
+          mapper.lookup(opPredOld),
+          builder.getDenseI64ArrayAttr(broadcastDims));
+
+      newSelectOp = builder.create<stablehlo::SelectOp>(
+          op.getLoc(), newPred, mapper.lookup(op.getOnTrue()),
+          mapper.lookup(op.getOnFalse()));
+    } else {
+      newSelectOp = builder.create<stablehlo::SelectOp>(
+          op.getLoc(), mapper.lookup(opPredOld), mapper.lookup(op.getOnTrue()),
+          mapper.lookup(op.getOnFalse()));
+    }
+
+    mapper.map(src->getResult(0), newSelectOp.getResult());
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3884,6 +3929,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
+    SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
