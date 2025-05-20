@@ -704,8 +704,7 @@ struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     int64_t newExtendDim = -1;
-    SmallVector<int64_t> oneHotDim(
-        extendOp.getType().getShape().size(), 0);
+    SmallVector<int64_t> oneHotDim(extendOp.getType().getShape().size(), 0);
     oneHotDim[extendDim] = 1;
 
     int64_t zero = 0;
@@ -713,7 +712,7 @@ struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &zero))
       return failure();
 
-    for (size_t i=0; i<oneHotDim.size(); i++) {
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
       if (oneHotDim[i]) {
         if (newExtendDim != -1) {
           return failure();
@@ -772,8 +771,7 @@ struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    SmallVector<int64_t> oneHotDim(
-        wrapOp.getType().getShape().size(), 0);
+    SmallVector<int64_t> oneHotDim(wrapOp.getType().getShape().size(), 0);
     oneHotDim[wrapDim] = 1;
 
     int64_t zero = 0;
@@ -782,7 +780,7 @@ struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     int64_t newWrapDim = -1;
-    for (size_t i=0; i<oneHotDim.size(); i++) {
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
       if (oneHotDim[i]) {
         if (newWrapDim != -1) {
           return failure();
@@ -841,8 +839,7 @@ struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                                         /*checkRemoved*/ &one))
       return failure();
 
-    SmallVector<int64_t> oneHotDim(
-        rotateOp.getType().getShape().size(), 0);
+    SmallVector<int64_t> oneHotDim(rotateOp.getType().getShape().size(), 0);
     oneHotDim[rotateDim] = 1;
 
     int64_t zero = 0;
@@ -851,7 +848,7 @@ struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       return failure();
 
     int64_t newRotateDim = -1;
-    for (size_t i=0; i<oneHotDim.size(); i++) {
+    for (size_t i = 0; i < oneHotDim.size(); i++) {
       if (oneHotDim[i]) {
         if (newRotateDim != -1) {
           return failure();
