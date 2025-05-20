@@ -3672,14 +3672,14 @@ struct SHLOSliceOpBatchInterface
   }
 };
 
-SmallVector<Value> computeBatchedStartIndices(Operation *op,
-                                              OpBuilder &builder,
+SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
                                               SmallVector<Value> startIndices,
                                               IRMapping &mapper,
                                               ArrayRef<int64_t> batchSizes) {
   auto startIndicesType = cast<RankedTensorType>(startIndices[0].getType());
   auto startIndicesElemType = startIndicesType.getElementType();
-  auto zeroStart = makeIntegerConstant(op->getLoc(), builder, startIndicesElemType, 0);
+  auto zeroStart =
+      makeIntegerConstant(op->getLoc(), builder, startIndicesElemType, 0);
 
   SmallVector<Value> newStartIndices;
   for (int64_t i = 0; i < batchSizes.size(); i++)
@@ -3695,8 +3695,8 @@ SmallVector<Value> computeBatchedStartIndices(Operation *op,
   for (auto sIndex : startIndices) {
     // We need to slice and extract a single element
     auto newStartIndex = builder.create<stablehlo::SliceOp>(
-        op->getLoc(), mapper.lookup(sIndex), innerSliceStarts,
-        innerSliceLimits, innerSliceStrides);
+        op->getLoc(), mapper.lookup(sIndex), innerSliceStarts, innerSliceLimits,
+        innerSliceStrides);
     auto newStartIndexReshape = builder.create<stablehlo::ReshapeOp>(
         op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
         newStartIndex);
@@ -3745,8 +3745,8 @@ struct SHLODynamicUpdateSliceOpBatchInterface
         op, builder, op.getStartIndices(), mapper, batchSizes);
 
     auto newDUS = builder.create<stablehlo::DynamicUpdateSliceOp>(
-        op.getLoc(), mapper.lookup(op.getOperand()), mapper.lookup(op.getUpdate()),
-        startIndices);
+        op.getLoc(), mapper.lookup(op.getOperand()),
+        mapper.lookup(op.getUpdate()), startIndices);
 
     mapper.map(src->getResult(0), newDUS.getResult());
     return success();
