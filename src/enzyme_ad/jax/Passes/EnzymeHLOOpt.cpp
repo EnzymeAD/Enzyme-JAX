@@ -708,6 +708,11 @@ struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         extendOp.getType().getShape().size(), 0);
     oneHotDim[extendDim] = 1;
 
+    int64_t zero = 0;
+    if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
+                                        /*checkRemoved*/ &zero))
+      return failure();
+
     for (size_t i=0; i<oneHotDim.size(); i++) {
       if (oneHotDim[i]) {
         if (newExtendDim != -1) {
@@ -771,7 +776,7 @@ struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         wrapOp.getType().getShape().size(), 0);
     oneHotDim[wrapDim] = 1;
 
-    int64_t zero = 1;
+    int64_t zero = 0;
     if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
                                         /*checkRemoved*/ &zero))
       return failure();
@@ -840,7 +845,7 @@ struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
         rotateOp.getType().getShape().size(), 0);
     oneHotDim[rotateDim] = 1;
 
-    int64_t zero = 1;
+    int64_t zero = 0;
     if (!transformReshapeSlice<int64_t>(op, oneHotDim, /*toFill*/ 0,
                                         /*checkRemoved*/ &zero))
       return failure();
