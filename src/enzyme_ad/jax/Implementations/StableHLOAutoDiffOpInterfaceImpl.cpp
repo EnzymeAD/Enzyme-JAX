@@ -3672,6 +3672,40 @@ struct SHLOSliceOpBatchInterface
   }
 };
 
+SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
+                                              SmallVector<Value> startIndices,
+                                              IRMapping &mapper,
+                                              ArrayRef<int64_t> batchSizes) {
+  auto startIndicesType = cast<RankedTensorType>(startIndices[0].getType());
+  auto startIndicesElemType = startIndicesType.getElementType();
+  auto zeroStart =
+      makeIntegerConstant(op->getLoc(), builder, startIndicesElemType, 0);
+
+  SmallVector<Value> newStartIndices;
+  for (int64_t i = 0; i < batchSizes.size(); i++)
+    newStartIndices.push_back(zeroStart);
+
+  SmallVector<int64_t> innerSliceStarts, innerSliceLimits, innerSliceStrides;
+  for (int64_t i = 0; i < batchSizes.size(); i++) {
+    innerSliceStarts.push_back(0);
+    innerSliceLimits.push_back(1);
+    innerSliceStrides.push_back(1);
+  }
+
+  for (auto sIndex : startIndices) {
+    // We need to slice and extract a single element
+    auto newStartIndex = builder.create<stablehlo::SliceOp>(
+        op->getLoc(), mapper.lookup(sIndex), innerSliceStarts, innerSliceLimits,
+        innerSliceStrides);
+    auto newStartIndexReshape = builder.create<stablehlo::ReshapeOp>(
+        op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
+        newStartIndex);
+    newStartIndices.push_back(newStartIndexReshape.getResult());
+  }
+
+  return newStartIndices;
+}
+
 struct SHLODynamicSliceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLODynamicSliceOpBatchInterface,
                                              stablehlo::DynamicSliceOp> {
@@ -3681,35 +3715,8 @@ struct SHLODynamicSliceOpBatchInterface
                                   ArrayRef<int64_t> batchSizes) const {
     auto op = cast<stablehlo::DynamicSliceOp>(src);
 
-    auto newOperand = mapper.lookup(op.getOperand());
-
-    auto startIndicesElemType =
-        cast<RankedTensorType>(op.getStartIndices().front().getType())
-            .getElementType();
-    auto zeroStart =
-        makeIntegerConstant(op.getLoc(), builder, startIndicesElemType, 0);
-
-    SmallVector<Value> startIndices;
-    for (int64_t i = 0; i < batchSizes.size(); i++)
-      startIndices.push_back(zeroStart);
-
-    SmallVector<int64_t> innerSliceStarts, innerSliceLimits, innerSliceStrides;
-    for (int64_t i = 0; i < batchSizes.size(); i++) {
-      innerSliceStarts.push_back(0);
-      innerSliceLimits.push_back(1);
-      innerSliceStrides.push_back(1);
-    }
-
-    for (auto sIndex : op.getStartIndices()) {
-      // We need to slice and extract a single element
-      auto newStartIndex = builder.create<stablehlo::SliceOp>(
-          op.getLoc(), mapper.lookup(sIndex), innerSliceStarts,
-          innerSliceLimits, innerSliceStrides);
-      auto newStartIndexReshape = builder.create<stablehlo::ReshapeOp>(
-          op.getLoc(), RankedTensorType::get({}, startIndicesElemType),
-          newStartIndex);
-      startIndices.push_back(newStartIndexReshape.getResult());
-    }
+    SmallVector<Value> startIndices = computeBatchedStartIndices(
+        op, builder, op.getStartIndices(), mapper, batchSizes);
 
     SmallVector<int64_t> sliceSizes;
     for (int64_t i = 0; i < batchSizes.size(); i++)
@@ -3718,9 +3725,30 @@ struct SHLODynamicSliceOpBatchInterface
       sliceSizes.push_back(sIndex);
 
     auto newSliceOp = builder.create<stablehlo::DynamicSliceOp>(
-        op.getLoc(), newOperand, startIndices, sliceSizes);
+        op.getLoc(), mapper.lookup(op.getOperand()), startIndices, sliceSizes);
 
     mapper.map(src->getResult(0), newSliceOp.getResult());
+    return success();
+  }
+};
+
+struct SHLODynamicUpdateSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLODynamicUpdateSliceOpBatchInterface,
+          stablehlo::DynamicUpdateSliceOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::DynamicUpdateSliceOp>(src);
+
+    SmallVector<Value> startIndices = computeBatchedStartIndices(
+        op, builder, op.getStartIndices(), mapper, batchSizes);
+
+    auto newDUS = builder.create<stablehlo::DynamicUpdateSliceOp>(
+        op.getLoc(), mapper.lookup(op.getOperand()),
+        mapper.lookup(op.getUpdate()), startIndices);
+
+    mapper.map(src->getResult(0), newDUS.getResult());
     return success();
   }
 };
@@ -3827,6 +3855,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
     SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
     DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
+    DynamicUpdateSliceOp::attachInterface<
+        SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
 
