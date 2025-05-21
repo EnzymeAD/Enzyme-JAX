@@ -940,6 +940,11 @@ public:
     return base;
   }
 
+  void maybeReplaceBase(Value before, Value after) {
+    if (base == before)
+      base = cast<PtrVal>(after);
+  }
+
   void rescope(enzymexla::AffineScopeOp scope) {
     if (!scope->isAncestor(user))
       return;
@@ -1574,6 +1579,9 @@ convertLLVMToAffineAccess(Operation *op,
                                   load.getAddr().getType().getAddressSpace())),
               load.getAddr()),
           idxs);
+      for (auto &a2 : accessBuilders) {
+        a2->maybeReplaceBase(load, newLoad);
+      }
       for (auto attr : attrs) {
         newLoad->setAttr(attr.getName(), attr.getValue());
       }
