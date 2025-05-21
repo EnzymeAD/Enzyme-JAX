@@ -83,7 +83,29 @@ struct PermuteOperandOpInterface
   }
 };
 
+class MemRefInsider
+    : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
+
+template <typename T>
+struct PtrElementModel
+    : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
+          PtrElementModel<T>, T> {};
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
+  registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
+    LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMArrayType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMPointerType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMStructType::attachInterface<MemRefInsider>(*ctx);
+    MemRefType::attachInterface<PtrElementModel<MemRefType>>(*ctx);
+    LLVM::LLVMStructType::attachInterface<
+        PtrElementModel<LLVM::LLVMStructType>>(*ctx);
+    LLVM::LLVMPointerType::attachInterface<
+        PtrElementModel<LLVM::LLVMPointerType>>(*ctx);
+    LLVM::LLVMArrayType::attachInterface<PtrElementModel<LLVM::LLVMArrayType>>(
+        *ctx);
+  });
+
   registry.addExtension(
       +[](mlir::MLIRContext *ctx, enzymexla::EnzymeXLADialect *) {
         enzymexla::WrapOp::attachInterface<

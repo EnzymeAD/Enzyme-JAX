@@ -70,14 +70,6 @@ void registerRemoveTransformPass();
 } // namespace enzyme
 } // namespace mlir
 
-class MemRefInsider
-    : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
-
-template <typename T>
-struct PtrElementModel
-    : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
-          PtrElementModel<T>, T> {};
-
 void prepareRegistry(mlir::DialectRegistry &registry);
 
 int main(int argc, char **argv) {
@@ -106,26 +98,6 @@ int main(int argc, char **argv) {
   mlir::enzyme::registerEnzymeLiftControlFlowToSCFPass();
 
   mlir::arith::registerArithPasses();
-
-  registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
-    LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);
-    LLVM::LLVMArrayType::attachInterface<MemRefInsider>(*ctx);
-    LLVM::LLVMPointerType::attachInterface<MemRefInsider>(*ctx);
-    LLVM::LLVMStructType::attachInterface<MemRefInsider>(*ctx);
-    MemRefType::attachInterface<PtrElementModel<MemRefType>>(*ctx);
-    LLVM::LLVMStructType::attachInterface<
-        PtrElementModel<LLVM::LLVMStructType>>(*ctx);
-    LLVM::LLVMPointerType::attachInterface<
-        PtrElementModel<LLVM::LLVMPointerType>>(*ctx);
-    LLVM::LLVMArrayType::attachInterface<PtrElementModel<LLVM::LLVMArrayType>>(
-        *ctx);
-
-    // This is very stupid but we need it because the SROAWrappers pass does a
-    // round trip to LLVM and the translation from LLVMIR to MLIR loads all
-    // available dialects and doing that in a pass is forbidden. Preload them
-    // here.
-    // ctx->loadAllAvailableDialects();
-  });
 
   // Transform dialect and extensions.
   mlir::transform::registerInterpreterPass();
