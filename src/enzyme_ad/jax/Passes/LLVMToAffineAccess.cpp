@@ -940,6 +940,11 @@ public:
     return base;
   }
 
+  void maybeReplaceBase(Value before, Value after) {
+    if (base == before)
+      base = cast<PtrVal>(after);
+  }
+
   void rescope(enzymexla::AffineScopeOp scope) {
     if (!scope->isAncestor(user))
       return;
@@ -1548,11 +1553,15 @@ convertLLVMToAffineAccess(Operation *op,
           auto expr = mao.map.getResult(0).floorDiv(tySize);
           SmallVector<NamedAttribute> attrs(load->getAttrs().begin(),
                                             load->getAttrs().end());
-          auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
-              load, memref,
+          auto newLoad = rewriter.create<affine::AffineLoadOp>(
+              load.getLoc(), memref,
               AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
                              expr),
               ic(mao.operands));
+          for (auto &a2 : accessBuilders) {
+            a2->maybeReplaceBase(load, newLoad);
+          }
+          rewriter.replaceOp(load, newLoad);
           for (auto attr : attrs) {
             newLoad->setAttr(attr.getName(), attr.getValue());
           }
@@ -1564,8 +1573,8 @@ convertLLVMToAffineAccess(Operation *op,
                                         load->getAttrs().end());
       Value idxs[1] = {
           rewriter.create<arith::ConstantIndexOp>(load.getLoc(), 0)};
-      auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
-          load,
+      auto newLoad = rewriter.create<memref::LoadOp>(
+          load.getLoc(),
           rewriter.create<enzymexla::Pointer2MemrefOp>(
               load.getLoc(),
               MemRefType::get({ShapedType::kDynamic}, ty,
@@ -1574,6 +1583,10 @@ convertLLVMToAffineAccess(Operation *op,
                                   load.getAddr().getType().getAddressSpace())),
               load.getAddr()),
           idxs);
+      for (auto &a2 : accessBuilders) {
+        a2->maybeReplaceBase(load, newLoad);
+      }
+      rewriter.replaceOp(load, newLoad);
       for (auto attr : attrs) {
         newLoad->setAttr(attr.getName(), attr.getValue());
       }
