@@ -1521,7 +1521,7 @@ convertLLVMToAffineAccess(Operation *op,
 
       Type ty = load.getType();
       auto tySize = dl.getTypeSize(ty);
-      if (aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
@@ -1582,7 +1582,7 @@ convertLLVMToAffineAccess(Operation *op,
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
       auto tySize = dl.getTypeSize(ty);
-      if (aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
