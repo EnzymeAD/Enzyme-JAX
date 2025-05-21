@@ -1558,10 +1558,10 @@ convertLLVMToAffineAccess(Operation *op,
               AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
                              expr),
               ic(mao.operands));
-      for (auto &a2 : accessBuilders) {
-        a2->maybeReplaceBase(load, newLoad);
-      }
-      rewriter.replaceOp(load, newLoad);
+          for (auto &a2 : accessBuilders) {
+            a2->maybeReplaceBase(load, newLoad);
+          }
+          rewriter.replaceOp(load, newLoad);
           for (auto attr : attrs) {
             newLoad->setAttr(attr.getName(), attr.getValue());
           }
