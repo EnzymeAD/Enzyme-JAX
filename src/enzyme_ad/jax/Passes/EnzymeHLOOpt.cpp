@@ -304,11 +304,92 @@ public:
   }
 };
 
-struct NoopSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+LogicalResult failIfDynamicShape(Operation *op, PatternRewriter &rewriter) {
+  for (auto type : op->getResultTypes()) {
+    auto rType = dyn_cast<RankedTensorType>(type);
+    if (!rType || !rType.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "unsupported dynamic shape for output.");
+  }
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  for (auto type : op->getOperandTypes()) {
+    auto rType = dyn_cast<RankedTensorType>(type);
+    if (!rType || !rType.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          op, "unsupported dynamic shape for input.");
+  }
+
+  return success();
+}
+
+LogicalResult failIfFuncOpInterfaceHasAttr(Operation *op, StringRef attrName,
+                                           PatternRewriter &rewriter) {
+  if (auto func = op->getParentOfType<FunctionOpInterface>()) {
+    if (func->hasAttrOfType<UnitAttr>(attrName))
+      return rewriter.notifyMatchFailure(op, "disabled by attribute.");
+  }
+
+  return success();
+}
+
+static constexpr StringRef kDisablePatternAttrName =
+    "enzymexla.disable_hlo_opts";
+
+template <typename OpTy, typename Child>
+struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
+  using Base = OpRewritePattern<OpTy>;
+  using Base::Base;
+
+  LogicalResult
+  matchAndRewrite(OpTy op, PatternRewriter &rewriter) const override final {
+    LogicalResult res =
+        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
+    if (res.failed())
+      return res;
+
+    if (!((Child *)this)->supportsDynamicShapes()) {
+      LogicalResult res = failIfDynamicShape(op, rewriter);
+      if (res.failed())
+        return res;
+    }
+
+    return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
+  }
+
+  bool supportsDynamicShapes() { return false; }
+};
+
+template <template <typename> class TraitType, typename Child>
+struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
+  using Base = OpTraitRewritePattern<TraitType>;
+  using Base::Base;
+
+  LogicalResult
+  matchAndRewrite(Operation *op,
+                  PatternRewriter &rewriter) const override final {
+    LogicalResult res =
+        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
+    if (res.failed())
+      return res;
+
+    if (!((Child *)this)->supportsDynamicShapes()) {
+      auto res = failIfDynamicShape(op, rewriter);
+      if (res.failed())
+        return res;
+    }
+
+    return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
+  }
+
+  bool supportsDynamicShapes() { return false; }
+};
+
+struct NoopSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, NoopSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -347,11 +428,12 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
   }
 }
 
-struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -378,11 +460,11 @@ struct SliceSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 struct DynamicSliceToStatic final
-    : OpRewritePattern<mlir::stablehlo::DynamicSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceToStatic> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicSliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -414,11 +496,12 @@ struct DynamicSliceToStatic final
 };
 
 struct DynamicUpdateSliceElim final
-    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                              DynamicUpdateSliceElim> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -535,26 +618,26 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
 }
 
 template <typename T>
-bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op,
-                           SmallVectorImpl<T> &start, T toFill,
-                           T *checkRemoved = nullptr) {
+bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
+                           T toFill, T *checkRemoved = nullptr) {
   return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
 }
 
 template <typename T>
-bool transformReshapeSlice(mlir::stablehlo::ReshapeOp op,
-                           SmallVectorImpl<T> &start, std::function<T()> toFill,
+bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
+                           std::function<T()> toFill,
                            T *checkRemoved = nullptr) {
   return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
 }
 
-struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeDUS final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
     auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
     if (!dus)
@@ -603,24 +686,25 @@ struct ReshapeDUS final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                               dus.getUpdate().getType().getElementType()),
         dus.getUpdate());
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::DynamicUpdateSliceOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         op, newOperand, newUpdate, startIndices);
 
     return success();
   }
 };
 
-struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+struct ReshapeSlice final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeSlice> {
   bool onlySingleUser;
 
   ReshapeSlice(bool onlySingleUser, MLIRContext *context,
                PatternBenefit benefit = 1,
                ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
     auto slice = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
     if (!slice)
@@ -666,7 +750,7 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                               slice.getOperand().getType().getElementType()),
         slice.getOperand());
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::SliceOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
 
     return success();
@@ -674,11 +758,12 @@ struct ReshapeSlice final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 // reshape(extend) -> extend(reshape)
-struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeExtend final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is an ExtendOp
     auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
     if (!extendOp)
@@ -742,11 +827,12 @@ struct ReshapeExtend final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 // reshape(wrap) -> wrap(reshape)
-struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeWrap final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a WrapOp
     auto wrapOp = op.getOperand().getDefiningOp<enzymexla::WrapOp>();
     if (!wrapOp)
@@ -811,11 +897,12 @@ struct ReshapeWrap final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 // reshape(rotate) -> rotate(reshape)
-struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeRotate final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a RotateOp
     auto rotateOp = op.getOperand().getDefiningOp<enzymexla::RotateOp>();
     if (!rotateOp)
@@ -877,11 +964,12 @@ struct ReshapeRotate final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
   }
 };
 
-struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapePad final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Reshape is a DynamicUpdateSlice
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
@@ -927,18 +1015,19 @@ struct ReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
                               pad.getOperand().getType().getElementType()),
         pad.getOperand());
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::PadOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
         op, newOperand, pad.getPaddingValue(), low, high, interior);
 
     return success();
   }
 };
 
-struct TransposeDUS final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeDUS final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if the input to Transpose is a DynamicUpdateSlice
     auto dus = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
     if (!dus)
@@ -1023,11 +1112,12 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
   return newConcat;
 }
 
-struct LowerWrap : public OpRewritePattern<enzymexla::WrapOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LowerWrap
+    : public CheckedOpRewritePattern<enzymexla::WrapOp, LowerWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::WrapOp wrap,
+                                    PatternRewriter &rewriter) const {
     auto concat = lowerWrap(wrap, rewriter, /*replace*/ true);
     if (concat.getInputs().size() == 1) {
       rewriter.replaceOp(concat, concat.getInputs()[0]);
@@ -1082,11 +1172,12 @@ stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
   return newConcat;
 }
 
-struct LowerExtend : public OpRewritePattern<enzymexla::ExtendOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LowerExtend
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp, LowerExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp extend,
+                                    PatternRewriter &rewriter) const {
     auto concat = lowerExtend(extend, rewriter, /*replace*/ true);
     if (concat.getInputs().size() == 1) {
       rewriter.replaceOp(concat, concat.getInputs()[0]);
@@ -1127,11 +1218,12 @@ stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
   return newConcat;
 }
 
-struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LowerRotate
+    : public CheckedOpRewritePattern<enzymexla::RotateOp, LowerRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rotate,
+                                    PatternRewriter &rewriter) const {
     lowerRotate(rotate, rewriter, /*replace*/ true);
     return success();
   }
@@ -1151,11 +1243,11 @@ struct LowerRotate : public OpRewritePattern<enzymexla::RotateOp> {
 //   %idxN_0 %new_concat = stablehlo.concatenate %A, %new_dus, %C, dimension = D
 //   replaceAllUsesWith(%dus, %new_concat)
 struct DUSConcat final
-    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
     auto updateType = cast<RankedTensorType>(dus.getUpdate().getType());
 
     ArrayRef<int64_t> updateShape = updateType.getShape();
@@ -1289,11 +1381,13 @@ struct DUSConcat final
   }
 };
 
-template <typename T> struct SimplifyBoundary final : OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct SimplifyBoundary final
+    : CheckedOpRewritePattern<T, SimplifyBoundary<T>> {
+  using CheckedOpRewritePattern<T,
+                                SimplifyBoundary<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
 
     SplatElementsAttr elems;
     if (!matchPattern(op.getOperand(), m_Constant(&elems))) {
@@ -1305,11 +1399,12 @@ template <typename T> struct SimplifyBoundary final : OpRewritePattern<T> {
   }
 };
 
-struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceInternal final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceInternal> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp slice,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp slice,
+                                    PatternRewriter &rewriter) const {
     int64_t currentOffset = 0;
     int targetInputIdx = -1;
 
@@ -1401,11 +1496,11 @@ struct SliceInternal final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 struct ConcatConcatToDUS final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatConcatToDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
+                                    PatternRewriter &rewriter) const {
     if (outer.getOperands().size() < 2)
       return failure();
     SmallVector<stablehlo::ConcatenateOp> inners;
@@ -1716,11 +1811,12 @@ concat_to_dus_slice_common(PatternRewriter &rewriter, Location loc,
 }
 
 struct ConcatToOneDimDUSSlice final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatToOneDimDUSSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
+                                    PatternRewriter &rewriter) const {
 
     stablehlo::DynamicUpdateSliceOp replacement = concat_to_dus_slice_common(
         rewriter, outer.getLoc(), outer.getType(), outer.getDimension(),
@@ -1735,11 +1831,12 @@ struct ConcatToOneDimDUSSlice final
 };
 
 struct ConcatReshapeToOneDimDUS final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatReshapeToOneDimDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Value> pre_reshape;
     for (auto operand : outer.getOperands()) {
@@ -1781,11 +1878,12 @@ struct ConcatReshapeToOneDimDUS final
   }
 };
 
-struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DUSDUS final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
     auto dus2 =
         dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
 
@@ -1820,11 +1918,12 @@ struct DUSDUS final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
 //   %new_dus = stablehlo.dynamic_update_slice %original_data, %update_data,
 //   %idx_new... %new_pad = stablehlo.pad %new_dus, %pad_val, low=[L...],
 //   high=[H...], interior=[0...] replaceAllUsesWith(%dus, %new_pad)
-struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DUSPad final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
 
     // 1. Check if the operand being updated comes from a pad op.
     auto padOp = dus.getOperand().getDefiningOp<stablehlo::PadOp>();
@@ -1936,11 +2035,11 @@ struct DUSPad final : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
 };
 
 struct DUSDUSConcat final
-    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp dus,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
     auto dus2 =
         dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
 
@@ -2052,11 +2151,12 @@ struct DUSDUSConcat final
 };
 
 struct DynamicUpdateToConcat final
-    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                              DynamicUpdateToConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2125,11 +2225,12 @@ struct DynamicUpdateToConcat final
   }
 };
 
-struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceOfDynamicUpdate final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfDynamicUpdate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2223,11 +2324,12 @@ struct SliceOfDynamicUpdate final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
-struct SliceDUSToConcat final : OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceDUSToConcat final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceDUSToConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                    PatternRewriter &rewriter) const {
 
     auto dusOp =
         sliceOp.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
@@ -2382,16 +2484,16 @@ static bool definedOutside(Value v, Operation *op) {
 
 // Replace while op iteration variables which are not updated with their
 // upcoming value
-template <typename T> struct LICM : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T> struct LICM : public CheckedOpRewritePattern<T, LICM<T>> {
+  using CheckedOpRewritePattern<T, LICM<T>>::CheckedOpRewritePattern;
+
   bool single_user;
   LICM(bool single_user, MLIRContext *context, PatternBenefit benefit = 1,
        ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern<T>(context, benefit, generatedNames),
+      : CheckedOpRewritePattern<T, LICM<T>>(context, benefit, generatedNames),
         single_user(single_user) {}
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto whileOp = op->template getParentOfType<stablehlo::WhileOp>();
     if (!whileOp)
       return failure();
@@ -2412,16 +2514,21 @@ template <typename T> struct LICM : public OpRewritePattern<T> {
   }
 };
 
-struct LICMElementwise : public OpTraitRewritePattern<OpTrait::Elementwise> {
-  using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
+struct LICMElementwise
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          LICMElementwise> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise, LICMElementwise>::CheckedOpTraitRewritePattern;
+
   bool single_user;
   LICMElementwise(bool single_user, MLIRContext *context,
                   PatternBenefit benefit = 1)
-      : OpTraitRewritePattern<OpTrait::Elementwise>(context, benefit),
+      : CheckedOpTraitRewritePattern<OpTrait::Elementwise, LICMElementwise>(
+            context, benefit),
         single_user(single_user) {}
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
     if (!isa<stablehlo::WhileOp>(op->getParentOp()))
       return failure();
     for (auto operand : op->getOperands()) {
@@ -2442,11 +2549,12 @@ struct LICMElementwise : public OpTraitRewritePattern<OpTrait::Elementwise> {
 };
 
 // slice(broadcast x) -> broadcast(slice x)
-struct SliceBroadcast final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceBroadcast final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2541,11 +2649,12 @@ stablehlo::SliceOp sliceTransposeHelper(stablehlo::TransposeOp transpose,
 }
 
 // slice(transpose x) -> transpose(slice x)
-struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceTranspose final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2564,11 +2673,13 @@ struct SliceTranspose final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 // slice(reduce_window x, last_idx) -> reduce x
-struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
+struct SliceReduceWindow
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReduceWindow> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceReduceWindow>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reduceWindow =
         op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
     if (!reduceWindow)
@@ -2689,11 +2800,11 @@ struct SliceReduceWindow : public OpRewritePattern<mlir::stablehlo::SliceOp> {
 
 // transpose(dynamic_slice x) -> dynamic_slice(transpose x)
 struct TransposeDynamicSlice final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeDynamicSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2731,11 +2842,12 @@ struct TransposeDynamicSlice final
 };
 
 // transpose(slice x) -> slice(transpose x)
-struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeSlice final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -2802,11 +2914,13 @@ struct TransposeSlice final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 struct TransposeAllUsersSlice final
-    : public OpRewritePattern<stablehlo::TransposeOp> {
-  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeAllUsersSlice> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp, TransposeAllUsersSlice>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<stablehlo::SliceOp> sliceOps;
     for (auto user : op->getUsers()) {
       auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
@@ -2861,11 +2975,12 @@ struct TransposeAllUsersSlice final
   }
 };
 
-struct SliceElementwise final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceElementwise final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
@@ -3003,7 +3118,8 @@ LogicalResult slicePadHelper(
       return failure();
 
     // slice goes from [nstart, nend]
-    // pad result is [0..lpad][lpad...outshape-hpad][outshape-hpad...outshape]
+    // pad result is [0..lpad][lpad... outshape - hpad][outshape - hpad...
+    // outshape]
 
     // start of slice starts after end of value being padded
     if (nstart >= outshape - hpad) {
@@ -3039,11 +3155,11 @@ LogicalResult slicePadHelper(
 }
 
 // slice(pad x) -> pad(slice x)
-struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SlicePad final : CheckedOpRewritePattern<stablehlo::SliceOp, SlicePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -3089,7 +3205,7 @@ struct SlicePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 // From
-// https://github.com/openxla/stablehlo/blob/5d1a9c892500c2e9fecbfedfa66ffe84ff1caf7b/stablehlo/dialect/StablehloOps.cpp#L1498C1-L1532C1
+// https:github.com/openxla/stablehlo/blob/5d1a9c892500c2e9fecbfedfa66ffe84ff1caf7b/stablehlo/dialect/StablehloOps.cpp#L1498C1-L1532C1
 bool hasSameOperandAndResultTypes(Operation &op) {
   Type expected;
   if (op.getNumResults() != 0)
@@ -3145,11 +3261,12 @@ static bool isEligibleForCompactPrint(stablehlo::ReduceOp op) {
   return llvm::equal(innerOp.getResults(), retOp.getOperands());
 }
 
-struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReduceToReshape final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceToReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
       return failure();
     if (!isEligibleForCompactPrint(op))
@@ -3178,11 +3295,13 @@ struct ReduceToReshape final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
-struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
+struct ReducePad
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReducePad> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReducePad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
       return rewriter.notifyMatchFailure(
           op, "only single-operand single-init reduce is supported");
@@ -3193,7 +3312,7 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
     }
 
     Value input = op.getInputs()[0];
-    auto pad = input.getDefiningOp<mlir::stablehlo::PadOp>();
+    auto pad = input.getDefiningOp<stablehlo::PadOp>();
     if (!pad) {
       return rewriter.notifyMatchFailure(op, "input source is not a pad op");
     }
@@ -3244,11 +3363,12 @@ struct ReducePad : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
-struct ConvertConcat final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConvertConcat final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concat)
       return failure();
@@ -3268,11 +3388,11 @@ struct ConvertConcat final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
 };
 
 struct ConvertConvertFloat final
-    : OpRewritePattern<mlir::stablehlo::ConvertOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConvertFloat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
     auto conv0 = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
     if (!conv0)
       return failure();
@@ -3292,11 +3412,12 @@ struct ConvertConvertFloat final
   }
 };
 
-struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReduceConcat final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
       return failure();
 
@@ -3355,11 +3476,12 @@ struct ReduceConcat final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 };
 
 struct FullReduceReshapeOrTranspose final
-    : OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReduceOp,
+                              FullReduceReshapeOrTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
       return failure();
 
@@ -3559,11 +3681,12 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                                  otherSliceStrides);
 }
 
-struct ConcatSlice final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConcatSlice final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
 
     SmallVector<Value> newOperands;
@@ -3675,11 +3798,12 @@ bool canMergePadsAlongAxis(int dimension, stablehlo::PadOp pad,
   return true;
 }
 
-struct ConcatMultiPad final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConcatMultiPad final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatMultiPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
 
     SmallVector<Value> newOperands;
@@ -3738,11 +3862,12 @@ bool canMergeWrapsAlongAxis(int dimension, enzymexla::WrapOp wrap,
   return true;
 }
 
-struct ConcatWrap final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConcatWrap final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     auto dim = op.getDimension();
 
     SmallVector<Value> newOperands;
@@ -3783,11 +3908,12 @@ struct ConcatWrap final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
   }
 };
 
-struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceConcat final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -3810,16 +3936,16 @@ struct SliceConcat final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 DenseElementsAttr fromTensor(stablehlo::Tensor tensor) {
-  return mlir::stablehlo::makeDenseElementsAttr(tensor);
+  return stablehlo::makeDenseElementsAttr(tensor);
 }
 
 /*
-%22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision =
-[DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) -> tensor<288xf32>
-%27 = stablehlo.reshape %22 : (tensor<288xf32>) -> tensor<144x2xf32>
-%28 = stablehlo.dot_general %6, %27, batching_dims = [0] x [0], contracting_dims
-= [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>,
-tensor<144x2xf32>) -> tensor<144x2xf32>
+%22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision
+= [DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) ->
+tensor<288xf32> %27 = stablehlo.reshape %22 : (tensor<288xf32>) ->
+tensor<144x2xf32> %28 = stablehlo.dot_general %6, %27, batching_dims = [0] x
+[0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] :
+(tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
 
 should become
 
@@ -3829,18 +3955,19 @@ should become
 contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] :
 (tensor<144x2x288xf32>, tensor<288xf32>) -> tensor<2x144xf32>
 
-%28 = stablehlo.dot_general %6, %22, batching_dims = [0] x [1], contracting_dims
-= [2] x [0], precision = [DEFAULT, DEFAULT] : (tensor<144x2x2xf32>,
-tensor<144x2xf32>) -> tensor<144x2xf32>
+%28 = stablehlo.dot_general %6, %22, batching_dims = [0] x [1],
+contracting_dims = [2] x [0], precision = [DEFAULT, DEFAULT] :
+(tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
 
 TODO
 */
 
-struct DotReshapeDot final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DotReshapeDot final
+    : CheckedOpRewritePattern<stablehlo::DotGeneralOp, DotReshapeDot> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -3849,18 +3976,19 @@ struct DotReshapeDot final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct PadSimplify final
+    : CheckedOpRewritePattern<stablehlo::PadOp, PadSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
   size_t max_constant_expansion;
 
   PadSimplify(size_t max_constant_expansion, MLIRContext *context,
               PatternBenefit benefit = 1,
               ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getOperand(), m_AnyZeroFloat())) {
       if (matchPattern(op.getPaddingValue(), m_AnyZeroFloat())) {
@@ -3888,9 +4016,9 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
         for (auto sz : op.getType().getShape())
           size *= sz;
         if (size < max_constant_expansion) {
-          auto ten = mlir::stablehlo::constantOp(inp);
-          auto out = fromTensor(mlir::stablehlo::padOp(
-              mlir::stablehlo::constantOp(inp), mlir::stablehlo::constantOp(pv),
+          auto ten = stablehlo::constantOp(inp);
+          auto out = fromTensor(stablehlo::padOp(
+              stablehlo::constantOp(inp), stablehlo::constantOp(pv),
               stablehlo::Sizes(op.getEdgePaddingLow()),
               stablehlo::Sizes(op.getInteriorPadding()), op.getType()));
 
@@ -3916,11 +4044,12 @@ struct PadSimplify final : OpRewritePattern<mlir::stablehlo::PadOp> {
   }
 };
 
-struct RotatePad final : OpRewritePattern<enzymexla::RotateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct RotatePad final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, RotatePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rotate,
+                                    PatternRewriter &rewriter) const {
 
     auto pad = rotate.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
@@ -3947,19 +4076,20 @@ struct RotatePad final : OpRewritePattern<enzymexla::RotateOp> {
 };
 
 struct ShiftRightLogicalSimplify final
-    : OpRewritePattern<mlir::stablehlo::ShiftRightLogicalOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ShiftRightLogicalOp,
+                              ShiftRightLogicalSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ShiftRightLogicalOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ShiftRightLogicalOp op,
+                                    PatternRewriter &rewriter) const {
 
     DenseElementsAttr lhs;
     matchPattern(op.getLhs(), m_Constant(&lhs));
     DenseElementsAttr rhs;
     matchPattern(op.getRhs(), m_Constant(&rhs));
     if (lhs && rhs) {
-      auto out = fromTensor(mlir::stablehlo::shiftRightLogicalOp(
-          mlir::stablehlo::constantOp(lhs), mlir::stablehlo::constantOp(rhs),
+      auto out = fromTensor(stablehlo::shiftRightLogicalOp(
+          stablehlo::constantOp(lhs), stablehlo::constantOp(rhs),
           op.getType()));
 
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
@@ -3969,8 +4099,9 @@ struct ShiftRightLogicalSimplify final
   }
 };
 
-struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileDeadResults final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
                         bool &retryIfNewDead) const {
@@ -3980,7 +4111,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
 
     // Or if the corresponding argument is being used in computing the
     // condition.
-    auto whileOp = cast<mlir::stablehlo::WhileOp>(result.getOwner());
+    auto whileOp = cast<stablehlo::WhileOp>(result.getOwner());
     Value condArgument =
         whileOp.getCond().getArgument(result.getResultNumber());
     SetVector<Operation *> forwardSlice;
@@ -4053,7 +4184,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     }
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(terminator);
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
@@ -4064,8 +4195,8 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
     return false;
   }
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::WhileOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<int64_t> deadResults;
     do {
       bool newDead = false;
@@ -4137,7 +4268,7 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
       bodyBlockArgsLocs.push_back(op.getBody().getArgument(i).getLoc());
     }
 
-    auto updated = rewriter.create<mlir::stablehlo::WhileOp>(
+    auto updated = rewriter.create<stablehlo::WhileOp>(
         op->getLoc(), resultTypes, operands, op->getAttrs());
     SmallVector<Value> resultReplacements;
     for (int64_t old = 0, upd = 0, end = op->getNumResults(); old < end;
@@ -4166,11 +4297,12 @@ struct WhileDeadResults final : OpRewritePattern<mlir::stablehlo::WhileOp> {
   }
 };
 
-struct NegativePadToSlice final : OpRewritePattern<mlir::stablehlo::PadOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct NegativePadToSlice final
+    : CheckedOpRewritePattern<stablehlo::PadOp, NegativePadToSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<int64_t> starts;
     SmallVector<int64_t> limits;
     SmallVector<int64_t> strides;
@@ -4202,16 +4334,19 @@ struct NegativePadToSlice final : OpRewritePattern<mlir::stablehlo::PadOp> {
 
 /*
 
-    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
-   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191, %1192
-   : tensor<2xf32>
+    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior =
+    [0] :
+   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191,
+   %1192 : tensor<2xf32>
 
 */
-template <typename T> struct BinopPadToConcat final : OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinopPadToConcat final
+    : CheckedOpRewritePattern<T, BinopPadToConcat<T>> {
+  using CheckedOpRewritePattern<T,
+                                BinopPadToConcat<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -4357,11 +4492,12 @@ template <typename T> struct BinopPadToConcat final : OpRewritePattern<T> {
   }
 };
 
-struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeIota final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
     if (!iota)
       return failure();
@@ -4397,11 +4533,11 @@ struct ReshapeIota final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 struct BroadcastIota final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
     if (!iota)
       return failure();
@@ -4464,11 +4600,12 @@ LogicalResult reshapePadHelper(stablehlo::ReshapeOp op,
   return success();
 }
 
-struct DotReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DotReshapePad final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, DotReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4487,11 +4624,11 @@ struct DotReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 struct ZeroProductReshapePad final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ZeroProductReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4512,11 +4649,12 @@ struct ZeroProductReshapePad final
   }
 };
 
-struct PadReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct PadReshapePad final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, PadReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4538,11 +4676,11 @@ struct PadReshapePad final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 struct BinopConstReshapePad final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, BinopConstReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4568,11 +4706,12 @@ struct BinopConstReshapePad final
 };
 
 struct ConcatAppendingReshape final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatAppendingReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumOperands() != 2)
       return failure();
 
@@ -4650,11 +4789,11 @@ struct ConcatAppendingReshape final
   }
 };
 
-template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct UnaryPadPush final : CheckedOpRewritePattern<T, UnaryPadPush<T>> {
+  using CheckedOpRewritePattern<T, UnaryPadPush<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4680,11 +4819,12 @@ template <typename T> struct UnaryPadPush final : OpRewritePattern<T> {
   }
 };
 
-struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposePad final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -4718,11 +4858,12 @@ struct TransposePad final : OpRewritePattern<stablehlo::TransposeOp> {
 
 template <typename T>
 struct ConcatPushBinop final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPushBinop<T>> {
+  using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                ConcatPushBinop<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumOperands() != 2)
       return failure();
 
@@ -4769,11 +4910,12 @@ struct ConcatPushBinop final
   }
 };
 
-struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConcatFuse final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatFuse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumOperands() == 1 &&
         op->getOperand(0).getType() == op.getType()) {
       rewriter.replaceOp(op, op->getOperand(0));
@@ -4806,11 +4948,11 @@ struct ConcatFuse final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 };
 
 struct ConcatToBroadcast final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumOperands() <= 1)
       return failure();
     for (auto opv : op->getOperands())
@@ -4830,17 +4972,18 @@ struct ConcatToBroadcast final
   }
 };
 
-struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct GammaConstProp final
+    : CheckedOpRewritePattern<chlo::LgammaOp, GammaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::chlo::LgammaOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(chlo::LgammaOp op,
+                                    PatternRewriter &rewriter) const {
     // return if not constant
     DenseElementsAttr inputAttr;
     if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
       return failure();
-    Value result = mlir::stablehlo::materializeLgamma(rewriter, op.getLoc(),
-                                                      op->getOperands());
+    Value result =
+        stablehlo::materializeLgamma(rewriter, op.getLoc(), op->getOperands());
     rewriter.replaceOp(op, result);
 
     return success();
@@ -4848,18 +4991,19 @@ struct GammaConstProp final : OpRewritePattern<mlir::chlo::LgammaOp> {
 };
 
 struct DynamicUpdateSliceConstProp final
-    : OpRewritePattern<mlir::stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                              DynamicUpdateSliceConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
   size_t max_constant_expansion;
 
   DynamicUpdateSliceConstProp(size_t max_constant_expansion,
                               MLIRContext *context, PatternBenefit benefit = 1,
                               ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicUpdateSliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
 
     size_t size = 1;
     for (auto sz : op.getType().getShape())
@@ -4898,14 +5042,14 @@ struct DynamicUpdateSliceConstProp final
     if (!legal)
       return failure();
 
-    stablehlo::Tensor operandTen = mlir::stablehlo::constantOp(operandConstant);
-    stablehlo::Tensor updateTen = mlir::stablehlo::constantOp(updateConstant);
+    stablehlo::Tensor operandTen = stablehlo::constantOp(operandConstant);
+    stablehlo::Tensor updateTen = stablehlo::constantOp(updateConstant);
     SmallVector<stablehlo::Tensor> inps;
     for (auto &c : constants)
-      inps.push_back(mlir::stablehlo::constantOp(c));
+      inps.push_back(stablehlo::constantOp(c));
 
-    auto out = mlir::stablehlo::dynamicUpdateSliceOp(operandTen, updateTen,
-                                                     inps, op.getType());
+    auto out = stablehlo::dynamicUpdateSliceOp(operandTen, updateTen, inps,
+                                               op.getType());
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                        fromTensor(out));
 
@@ -4936,7 +5080,7 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
         {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
     inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
   } else {
-    inputTen = mlir::stablehlo::constantOp(inputAttr);
+    inputTen = stablehlo::constantOp(inputAttr);
   }
   // get the resultType
   auto resultType = cast<ShapedType>(ty);
@@ -4954,58 +5098,62 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
   return success();
 }
 
-struct NotConstProp final : OpRewritePattern<mlir::stablehlo::NotOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct NotConstProp final
+    : CheckedOpRewritePattern<stablehlo::NotOp, NotConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::NotOp op,
-                                PatternRewriter &rewriter) const override {
-    return unaryConstProp<mlir::stablehlo::notOp>(op, rewriter);
+  LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
+                                    PatternRewriter &rewriter) const {
+    return unaryConstProp<stablehlo::notOp>(op, rewriter);
   }
 };
 
-struct IsFiniteConstProp final : OpRewritePattern<mlir::stablehlo::IsFiniteOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct IsFiniteConstProp final
+    : CheckedOpRewritePattern<stablehlo::IsFiniteOp, IsFiniteConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IsFiniteOp op,
-                                PatternRewriter &rewriter) const override {
-    return unaryConstProp<mlir::stablehlo::isFiniteOp>(op, rewriter);
+  LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
+                                    PatternRewriter &rewriter) const {
+    return unaryConstProp<stablehlo::isFiniteOp>(op, rewriter);
   }
 };
 
-struct LogConstProp final : OpRewritePattern<mlir::stablehlo::LogOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LogConstProp final
+    : CheckedOpRewritePattern<stablehlo::LogOp, LogConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::LogOp op,
-                                PatternRewriter &rewriter) const override {
-    return unaryConstProp<mlir::stablehlo::logOp>(op, rewriter);
+  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
+                                    PatternRewriter &rewriter) const {
+    return unaryConstProp<stablehlo::logOp>(op, rewriter);
   }
 };
 
-struct LogPlusConstProp final : OpRewritePattern<mlir::stablehlo::Log1pOp> {
+struct LogPlusConstProp final
+    : CheckedOpRewritePattern<stablehlo::Log1pOp, LogPlusConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::stablehlo::Log1pOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::Log1pOp op,
+                                    PatternRewriter &rewriter) const {
     return unaryConstProp<stablehlo::log1pOp>(op, rewriter);
   }
 };
 
-struct AbsConstProp final : OpRewritePattern<mlir::stablehlo::AbsOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct AbsConstProp final
+    : CheckedOpRewritePattern<stablehlo::AbsOp, AbsConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::AbsOp op,
-                                PatternRewriter &rewriter) const override {
-    return unaryConstProp<mlir::stablehlo::absOp>(op, rewriter);
+  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
+                                    PatternRewriter &rewriter) const {
+    return unaryConstProp<stablehlo::absOp>(op, rewriter);
   }
 };
 
-struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ChloInfConstProp final
+    : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::chlo::IsInfOp op,
-                                PatternRewriter &rewriter) const override {
-
+  LogicalResult matchAndRewriteImpl(chlo::IsInfOp op,
+                                    PatternRewriter &rewriter) const {
     // return if not constant
     DenseElementsAttr inputAttr;
     if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
@@ -5041,7 +5189,7 @@ struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
     }
 
     // replace op with the bool const op
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, op->getResultTypes()[0], outAttr);
 
     return success();
@@ -5049,17 +5197,17 @@ struct ChloInfConstProp final : OpRewritePattern<mlir::chlo::IsInfOp> {
 };
 
 struct ConcatConstProp final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
   size_t max_constant_expansion;
   ConcatConstProp(size_t max_constant_expansion, MLIRContext *context,
                   PatternBenefit benefit = 1,
                   ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -5127,9 +5275,9 @@ struct ConcatConstProp final
 
       SmallVector<stablehlo::Tensor> inps;
       for (auto &c : constants)
-        inps.push_back(mlir::stablehlo::constantOp(c));
+        inps.push_back(stablehlo::constantOp(c));
       auto out =
-          mlir::stablehlo::concatenateOp(inps, op.getDimension(), op.getType());
+          stablehlo::concatenateOp(inps, op.getDimension(), op.getType());
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                          fromTensor(out));
       return success();
@@ -5139,11 +5287,11 @@ struct ConcatConstProp final
 };
 
 struct ReshapeEmptyBroadcast final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeEmptyBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!bcast)
       return failure();
@@ -5156,11 +5304,11 @@ struct ReshapeEmptyBroadcast final
 };
 
 struct BroadcastReshape final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
@@ -5227,11 +5375,11 @@ struct BroadcastReshape final
 };
 
 struct BroadcastToReshape final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastToReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -5275,13 +5423,13 @@ struct BroadcastToReshape final
 };
 
 struct BroadcastPad final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, BroadcastPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
 
-    auto pad = op.getOperand().getDefiningOp<mlir::stablehlo::PadOp>();
+    auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
 
@@ -5359,11 +5507,12 @@ std::optional<Value> is_same_in_axis(OpBuilder &rewriter, ShapedType outTy,
 }
 
 struct ScatterToDynamicUpdateSlice final
-    : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterToDynamicUpdateSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
     Block &body = op.getUpdateComputation().front();
     if (body.getOperations().size() != 1)
       return failure();
@@ -5513,22 +5662,28 @@ LogicalResult simplifyBinaryOpWithTranspose(OpType op,
 }
 
 template <typename OpType>
-struct BinaryOpTransposeSimplify : public OpRewritePattern<OpType> {
-  using OpRewritePattern<OpType>::OpRewritePattern;
+struct BinaryOpTransposeSimplify
+    : public CheckedOpRewritePattern<OpType,
+                                     BinaryOpTransposeSimplify<OpType>> {
+  using CheckedOpRewritePattern<
+      OpType, BinaryOpTransposeSimplify<OpType>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(OpType op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(OpType op,
+                                    PatternRewriter &rewriter) const {
     return simplifyBinaryOpWithTranspose(op, rewriter);
   }
 };
 
 template <typename OpType>
 struct TransposeUnaryTransposeSimplify
-    : public OpRewritePattern<stablehlo::TransposeOp> {
-  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeUnaryTransposeSimplify<OpType>> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      TransposeUnaryTransposeSimplify<OpType>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::TransposeOp outerTransposeOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp outerTransposeOp,
+                                    PatternRewriter &rewriter) const {
     auto unaryOp =
         outerTransposeOp.getOperand().template getDefiningOp<OpType>();
     if (!unaryOp && !isOnlyUsedInOperation(unaryOp, outerTransposeOp))
@@ -5550,11 +5705,13 @@ struct TransposeUnaryTransposeSimplify
   }
 };
 
-struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
-  using OpRewritePattern<mlir::stablehlo::AddOp>::OpRewritePattern;
+struct AddSimplify
+    : public CheckedOpRewritePattern<stablehlo::AddOp, AddSimplify> {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                AddSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::AddOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getLhs(), m_Zero())) {
@@ -5605,11 +5762,13 @@ struct AddSimplify : public OpRewritePattern<mlir::stablehlo::AddOp> {
   }
 };
 
-struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReplaceNegAddWithSubtract
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     ReplaceNegAddWithSubtract> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::AddOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
     auto negateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>();
 
     if (!negateOp)
@@ -5624,11 +5783,13 @@ struct ReplaceNegAddWithSubtract : public OpRewritePattern<stablehlo::AddOp> {
   }
 };
 
-struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
-  using OpRewritePattern<mlir::stablehlo::SubtractOp>::OpRewritePattern;
+struct SubSimplify
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp, SubSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                SubSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SubtractOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getRhs(), m_Zero())) {
@@ -5644,7 +5805,7 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
 
     if (isa<IntegerType>(op.getType().getElementType()) &&
         op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, rewriter.getZeroAttr(op.getType()));
       return success();
     }
@@ -5687,14 +5848,16 @@ struct SubSimplify : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
 };
 
 struct NoNanSelfSubSimplify
-    : public OpRewritePattern<mlir::stablehlo::SubtractOp> {
-  using OpRewritePattern<mlir::stablehlo::SubtractOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     NoNanSelfSubSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                NoNanSelfSubSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SubtractOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, rewriter.getZeroAttr(op.getType()));
       return success();
     }
@@ -5703,11 +5866,13 @@ struct NoNanSelfSubSimplify
   }
 };
 
-struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
-  using OpRewritePattern<mlir::stablehlo::NegOp>::OpRewritePattern;
+struct NegateSimplify
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegateSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegateSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::NegOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -5741,11 +5906,13 @@ struct NegateSimplify : public OpRewritePattern<mlir::stablehlo::NegOp> {
   }
 };
 
-struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
-  using OpRewritePattern<mlir::stablehlo::AndOp>::OpRewritePattern;
+struct AndSimplify
+    : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
+  using CheckedOpRewritePattern<stablehlo::AndOp,
+                                AndSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::AndOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (op.getLhs() == op.getRhs()) {
       rewriter.replaceOp(op, op.getLhs());
@@ -5788,11 +5955,13 @@ struct AndSimplify : public OpRewritePattern<mlir::stablehlo::AndOp> {
   }
 };
 
-struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
-  using OpRewritePattern<mlir::stablehlo::OrOp>::OpRewritePattern;
+struct OrSimplify
+    : public CheckedOpRewritePattern<stablehlo::OrOp, OrSimplify> {
+  using CheckedOpRewritePattern<stablehlo::OrOp,
+                                OrSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::OrOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::OrOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (op.getLhs() == op.getRhs()) {
       rewriter.replaceOp(op, op.getLhs());
@@ -5835,11 +6004,12 @@ struct OrSimplify : public OpRewritePattern<mlir::stablehlo::OrOp> {
   }
 };
 
-struct XorSimplify : public OpRewritePattern<mlir::stablehlo::XorOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct XorSimplify
+    : public CheckedOpRewritePattern<stablehlo::XorOp, XorSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::XorOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::XorOp op,
+                                    PatternRewriter &rewriter) const {
 
     // false ^ x -> x
     for (int i = 0; i < 2; i++) {
@@ -5877,11 +6047,13 @@ struct XorSimplify : public OpRewritePattern<mlir::stablehlo::XorOp> {
   }
 };
 
-struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
-  using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
+struct MulSimplify
+    : public CheckedOpRewritePattern<stablehlo::MulOp, MulSimplify> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                MulSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
 
     // 0 * x -> x
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
@@ -5947,11 +6119,13 @@ struct MulSimplify : public OpRewritePattern<mlir::stablehlo::MulOp> {
   }
 };
 
-struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
-  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+struct DivSimplify
+    : public CheckedOpRewritePattern<stablehlo::DivOp, DivSimplify> {
+  using CheckedOpRewritePattern<stablehlo::DivOp,
+                                DivSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
 
     // 0 / x -> 0 [assume non nan here]
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
@@ -6003,11 +6177,13 @@ struct DivSimplify : public OpRewritePattern<mlir::stablehlo::DivOp> {
   }
 };
 
-struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
-  using OpRewritePattern<mlir::stablehlo::RemOp>::OpRewritePattern;
+struct RemSimplify
+    : public CheckedOpRewritePattern<stablehlo::RemOp, RemSimplify> {
+  using CheckedOpRewritePattern<stablehlo::RemOp,
+                                RemSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::RemOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::RemOp op,
+                                    PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getRhs(), m_One())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -6049,11 +6225,13 @@ struct RemSimplify : public OpRewritePattern<mlir::stablehlo::RemOp> {
   }
 };
 
-struct PowSimplify : public OpRewritePattern<mlir::stablehlo::PowOp> {
-  using OpRewritePattern<mlir::stablehlo::PowOp>::OpRewritePattern;
+struct PowSimplify
+    : public CheckedOpRewritePattern<stablehlo::PowOp, PowSimplify> {
+  using CheckedOpRewritePattern<stablehlo::PowOp,
+                                PowSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::PowOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -6155,11 +6333,12 @@ bool is_broadcastable_compare(Value operand) {
 }
 
 struct BroadcastCompare
-    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                                     BroadcastCompare> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     if (!is_broadcastable_compare(op.getOperand()))
       return failure();
 
@@ -6189,34 +6368,40 @@ struct BroadcastCompare
   }
 };
 
-struct IotaSimplify : public OpRewritePattern<mlir::stablehlo::IotaOp> {
-  using OpRewritePattern<mlir::stablehlo::IotaOp>::OpRewritePattern;
+struct IotaSimplify
+    : public CheckedOpRewritePattern<stablehlo::IotaOp, IotaSimplify> {
+  using CheckedOpRewritePattern<stablehlo::IotaOp,
+                                IotaSimplify>::CheckedOpRewritePattern;
+
   size_t max_constant_expansion;
   IotaSimplify(size_t max_constant_expansion, MLIRContext *context,
                PatternBenefit benefit = 1,
                ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-  LogicalResult matchAndRewrite(mlir::stablehlo::IotaOp op,
-                                PatternRewriter &rewriter) const final {
+
+  LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
+                                    PatternRewriter &rewriter) const {
     size_t size = 1;
     for (auto sz : op.getType().getShape())
       size *= sz;
     if (size >= max_constant_expansion)
       return failure();
 
-    auto out = mlir::stablehlo::iotaOp(op.getIotaDimension(), op.getType());
+    auto out = stablehlo::iotaOp(op.getIotaDimension(), op.getType());
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
                                                        fromTensor(out));
     return success();
   }
 };
 
-struct ConcatToPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
+struct ConcatToPad
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToPad> {
+  using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                ConcatToPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getNumOperands() < 2)
       return failure();
 
@@ -6254,11 +6439,13 @@ struct ConcatToPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 
 // reduce_window(pad(x, lo, hi, 0)) -> reduce_window(x, pad_lo=lo, pad_hi=hi)
 struct PadReduceWindow
-    : public OpRewritePattern<mlir::stablehlo::ReduceWindowOp> {
-  using OpRewritePattern<mlir::stablehlo::ReduceWindowOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                                     PadReduceWindow> {
+  using CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                                PadReduceWindow>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceWindowOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumOperands() != 2)
       return failure();
 
@@ -6269,7 +6456,7 @@ struct PadReduceWindow
 
     Value operand = op->getOperand(0), initValue = op->getOperand(1);
 
-    auto padOp = operand.getDefiningOp<mlir::stablehlo::PadOp>();
+    auto padOp = operand.getDefiningOp<stablehlo::PadOp>();
     if (!padOp || !llvm::all_of(padOp.getInteriorPadding(),
                                 [](int64_t pad) { return pad == 0; }))
       return failure();
@@ -6294,7 +6481,7 @@ struct PadReduceWindow
     auto newPaddingAttr =
         mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
 
-    auto newOp = rewriter.create<mlir::stablehlo::ReduceWindowOp>(
+    auto newOp = rewriter.create<stablehlo::ReduceWindowOp>(
         op.getLoc(), op.getResult(0).getType(), padOp.getOperand(), initValue,
         op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
         op.getBaseDilationsAttr(), op.getWindowDilationsAttr(), newPaddingAttr);
@@ -6306,11 +6493,13 @@ struct PadReduceWindow
   }
 };
 
-struct ConcatPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern<mlir::stablehlo::ConcatenateOp>::OpRewritePattern;
+struct ConcatPad
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPad> {
+  using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                ConcatPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getNumOperands() < 2)
       return failure();
 
@@ -6371,13 +6560,15 @@ struct ConcatPad : public OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
     }
     return failure();
   }
-};
+}; // namespace
 
-struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
-  using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
+struct ConvertSimplify
+    : public CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertSimplify> {
+  using CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                ConvertSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
@@ -6388,9 +6579,9 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
             RankedTensorType::get({}, inp.getType().getElementType())));
         ty = RankedTensorType::get({}, op.getType().getElementType());
       } else {
-        ten = mlir::stablehlo::constantOp(inp);
+        ten = stablehlo::constantOp(inp);
       }
-      auto out = fromTensor(mlir::stablehlo::convertOp(ten, ty));
+      auto out = fromTensor(stablehlo::convertOp(ten, ty));
       if (inp.isSplat())
         out = out.resizeSplat(op.getType());
 
@@ -6401,8 +6592,10 @@ struct ConvertSimplify : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
   }
 };
 
-struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern<mlir::stablehlo::SliceOp>::OpRewritePattern;
+struct SliceSimplify
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceSimplify>::CheckedOpRewritePattern;
 
   static size_t getDenseElementBitWidth(Type eltType) {
     // Align the width for complex to 8 to make storage and interpretation
@@ -6422,8 +6615,8 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
     return getDenseElementStorageWidth(getDenseElementBitWidth(elementType));
   }
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
@@ -6460,8 +6653,8 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
           out =
               DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), values);
         } else {
-          auto ten = mlir::stablehlo::constantOp(inp);
-          out = fromTensor(mlir::stablehlo::sliceOp(
+          auto ten = stablehlo::constantOp(inp);
+          out = fromTensor(stablehlo::sliceOp(
               ten, stablehlo::Sizes(op.getStartIndices()),
               stablehlo::Sizes(op.getStrides()), op.getType()));
         }
@@ -6475,18 +6668,21 @@ struct SliceSimplify : public OpRewritePattern<mlir::stablehlo::SliceOp> {
 };
 
 struct BroadcastInDimSimplify
-    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                                     BroadcastInDimSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::BroadcastInDimOp,
+      BroadcastInDimSimplify>::CheckedOpRewritePattern;
 
   size_t max_constant_expansion;
   BroadcastInDimSimplify(size_t max_constant_expansion, MLIRContext *context,
                          PatternBenefit benefit = 1,
                          ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
@@ -6499,10 +6695,9 @@ struct BroadcastInDimSimplify
           size *= sz;
         if (size >= max_constant_expansion)
           return failure();
-        auto ten = mlir::stablehlo::constantOp(inp);
-        out = fromTensor(mlir::stablehlo::broadcastInDimOp(
-            ten, mlir::stablehlo::Axes(op.getBroadcastDimensions()),
-            op.getType()));
+        auto ten = stablehlo::constantOp(inp);
+        out = fromTensor(stablehlo::broadcastInDimOp(
+            ten, stablehlo::Axes(op.getBroadcastDimensions()), op.getType()));
       }
 
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
@@ -6532,11 +6727,13 @@ reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
 }
 
 struct CompareIotaConstSimplify
-    : public OpRewritePattern<stablehlo::CompareOp> {
-  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CompareIotaConstSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::CompareOp, CompareIotaConstSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::CompareOp cmpOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
     auto lhs = cmpOp.getLhs();
     auto rhs = cmpOp.getRhs();
 
@@ -6734,11 +6931,12 @@ struct CompareIotaConstSimplify
 };
 
 struct BroadcastIotaSimplify
-    : public OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                                     BroadcastIotaSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp broadcast,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp broadcast,
+                                    PatternRewriter &rewriter) const {
     auto operand = broadcast.getOperand();
     DenseIntElementsAttr input;
     matchPattern(operand, m_Constant(&input));
@@ -6785,7 +6983,7 @@ struct BroadcastIotaSimplify
             if (legal) {
               auto ITy = RankedTensorType::get(
                   result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+              auto iota = rewriter.create<stablehlo::IotaOp>(
                   loc, ITy, broadcast.getBroadcastDimensions()[0]);
               auto cmp = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -6810,7 +7008,7 @@ struct BroadcastIotaSimplify
             if (legal) {
               auto ITy = RankedTensorType::get(
                   result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+              auto iota = rewriter.create<stablehlo::IotaOp>(
                   loc, ITy, broadcast.getBroadcastDimensions()[0]);
               auto cmp = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -6842,7 +7040,7 @@ struct BroadcastIotaSimplify
             if (legal) {
               auto ITy = RankedTensorType::get(
                   result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+              auto iota = rewriter.create<stablehlo::IotaOp>(
                   loc, ITy, broadcast.getBroadcastDimensions()[0]);
               auto cmp = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -6874,7 +7072,7 @@ struct BroadcastIotaSimplify
             if (legal) {
               auto ITy = RankedTensorType::get(
                   result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+              auto iota = rewriter.create<stablehlo::IotaOp>(
                   loc, ITy, broadcast.getBroadcastDimensions()[0]);
               auto cmp = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -6924,7 +7122,7 @@ struct BroadcastIotaSimplify
             if (legal && firstTrue != -1 && firstFalseAgain != -1) {
               auto ITy = RankedTensorType::get(
                   result_shape, rewriter.getIntegerType(32, false));
-              auto iota = rewriter.create<mlir::stablehlo::IotaOp>(
+              auto iota = rewriter.create<stablehlo::IotaOp>(
                   loc, ITy, broadcast.getBroadcastDimensions()[0]);
               auto cmp1 = rewriter.create<stablehlo::CompareOp>(
                   loc, iota,
@@ -6970,23 +7168,22 @@ struct BroadcastIotaSimplify
         }
 
         // build the replacement operations
-        auto iota = rewriter.create<mlir::stablehlo::IotaOp>(loc, result_type,
-                                                             broadcast_dim);
+        auto iota =
+            rewriter.create<stablehlo::IotaOp>(loc, result_type, broadcast_dim);
         auto stride_attr = mlir::DenseElementsAttr::get(
             operand.getType().cloneWith(result_shape, elemType),
             rewriter.getIntegerAttr(elemType, diff));
         auto start_attr = mlir::DenseElementsAttr::get(
             operand.getType().cloneWith(result_shape, elemType),
             rewriter.getIntegerAttr(elemType, start));
-        auto stride_const = rewriter.create<mlir::stablehlo::ConstantOp>(
+        auto stride_const = rewriter.create<stablehlo::ConstantOp>(
             loc, result_type, stride_attr);
-        auto start_const = rewriter.create<mlir::stablehlo::ConstantOp>(
+        auto start_const = rewriter.create<stablehlo::ConstantOp>(
             loc, result_type, start_attr);
-        auto mul =
-            rewriter.create<mlir::stablehlo::MulOp>(loc, iota, stride_const);
+        auto mul = rewriter.create<stablehlo::MulOp>(loc, iota, stride_const);
 
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::AddOp>(broadcast,
-                                                            start_const, mul);
+        rewriter.replaceOpWithNewOp<stablehlo::AddOp>(broadcast, start_const,
+                                                      mul);
         return success();
       }
       return failure();
@@ -6997,14 +7194,16 @@ struct BroadcastIotaSimplify
 };
 
 struct DotGeneralSimplify
-    : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralSimplify> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getRhs(), m_AnyZeroFloat())) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, rewriter.getZeroAttr(op.getType()));
       return success();
     }
@@ -7013,11 +7212,13 @@ struct DotGeneralSimplify
 };
 
 struct TransposeSimplify
-    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeSimplify> {
+  using CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                TransposeSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     DenseElementsAttr inp;
     matchPattern(op->getOperand(0), m_Constant(&inp));
     if (inp) {
@@ -7026,9 +7227,9 @@ struct TransposeSimplify
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        out = fromTensor(mlir::stablehlo::transposeOp(
-            stablehlo::constantOp(inp),
-            mlir::stablehlo::Axes(op.getPermutation()), op.getType()));
+        out = fromTensor(stablehlo::transposeOp(
+            stablehlo::constantOp(inp), stablehlo::Axes(op.getPermutation()),
+            op.getType()));
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
@@ -7037,11 +7238,13 @@ struct TransposeSimplify
   }
 };
 
-struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
-  using OpRewritePattern<mlir::stablehlo::MaxOp>::OpRewritePattern;
+struct MaxSimplify
+    : public CheckedOpRewritePattern<stablehlo::MaxOp, MaxSimplify> {
+  using CheckedOpRewritePattern<stablehlo::MaxOp,
+                                MaxSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::MaxOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::MaxOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getOperand(0) == op.getOperand(1)) {
       rewriter.replaceOp(op, op.getOperand(0));
       return success();
@@ -7078,11 +7281,13 @@ struct MaxSimplify : public OpRewritePattern<mlir::stablehlo::MaxOp> {
   }
 };
 
-struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
-  using OpRewritePattern<mlir::stablehlo::MinOp>::OpRewritePattern;
+struct MinSimplify
+    : public CheckedOpRewritePattern<stablehlo::MinOp, MinSimplify> {
+  using CheckedOpRewritePattern<stablehlo::MinOp,
+                                MinSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::MinOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::MinOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getOperand(0) == op.getOperand(1)) {
       rewriter.replaceOp(op, op.getOperand(0));
       return success();
@@ -7119,11 +7324,13 @@ struct MinSimplify : public OpRewritePattern<mlir::stablehlo::MinOp> {
   }
 };
 
-struct CosSimplify : public OpRewritePattern<mlir::stablehlo::CosineOp> {
-  using OpRewritePattern<mlir::stablehlo::CosineOp>::OpRewritePattern;
+struct CosSimplify
+    : public CheckedOpRewritePattern<stablehlo::CosineOp, CosSimplify> {
+  using CheckedOpRewritePattern<stablehlo::CosineOp,
+                                CosSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::CosineOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::CosineOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -7149,11 +7356,13 @@ struct CosSimplify : public OpRewritePattern<mlir::stablehlo::CosineOp> {
   }
 };
 
-struct SinSimplify : public OpRewritePattern<mlir::stablehlo::SineOp> {
-  using OpRewritePattern<mlir::stablehlo::SineOp>::OpRewritePattern;
+struct SinSimplify
+    : public CheckedOpRewritePattern<stablehlo::SineOp, SinSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SineOp,
+                                SinSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SineOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SineOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -7179,11 +7388,13 @@ struct SinSimplify : public OpRewritePattern<mlir::stablehlo::SineOp> {
   }
 };
 
-struct SqrtSimplify : public OpRewritePattern<mlir::stablehlo::SqrtOp> {
-  using OpRewritePattern<mlir::stablehlo::SqrtOp>::OpRewritePattern;
+struct SqrtSimplify
+    : public CheckedOpRewritePattern<stablehlo::SqrtOp, SqrtSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SqrtOp,
+                                SqrtSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SqrtOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SqrtOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -7209,11 +7420,12 @@ struct SqrtSimplify : public OpRewritePattern<mlir::stablehlo::SqrtOp> {
   }
 };
 
-struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TanhSimplify
+    : public CheckedOpRewritePattern<stablehlo::TanhOp, TanhSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TanhOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TanhOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -7245,11 +7457,12 @@ struct TanhSimplify : public OpRewritePattern<mlir::stablehlo::TanhOp> {
   }
 };
 
-struct ExpSimplify : public OpRewritePattern<mlir::stablehlo::ExpOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ExpSimplify
+    : public CheckedOpRewritePattern<stablehlo::ExpOp, ExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ExpOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ExpOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Attribute> constants;
     constants.assign(op->getNumOperands(), Attribute());
@@ -7275,11 +7488,13 @@ struct ExpSimplify : public OpRewritePattern<mlir::stablehlo::ExpOp> {
   }
 };
 
-template <typename T> struct BinBroadcastSplat final : OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinBroadcastSplat final
+    : CheckedOpRewritePattern<T, BinBroadcastSplat<T>> {
+  using CheckedOpRewritePattern<T,
+                                BinBroadcastSplat<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       mlir::Value opi = op->getOperand(i);
       if (auto broadcast = opi.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
@@ -7303,31 +7518,32 @@ template <typename T> struct BinBroadcastSplat final : OpRewritePattern<T> {
   }
 };
 
-struct AllFinite : public OpRewritePattern<mlir::stablehlo::IsFiniteOp> {
-  using OpRewritePattern<mlir::stablehlo::IsFiniteOp>::OpRewritePattern;
+struct AllFinite
+    : public CheckedOpRewritePattern<stablehlo::IsFiniteOp, AllFinite> {
+  using CheckedOpRewritePattern<stablehlo::IsFiniteOp,
+                                AllFinite>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IsFiniteOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
+                                    PatternRewriter &rewriter) const {
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
     return success();
   }
 };
 
-struct NoNan : public OpRewritePattern<mlir::stablehlo::CompareOp> {
-  using OpRewritePattern<mlir::stablehlo::CompareOp>::OpRewritePattern;
+struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                NoNan>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
-      if (op.getComparisonDirection() ==
-          mlir::stablehlo::ComparisonDirection::EQ) {
+      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
         return success();
       }
-      if (op.getComparisonDirection() ==
-          mlir::stablehlo::ComparisonDirection::NE) {
+      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
         return success();
@@ -7338,20 +7554,21 @@ struct NoNan : public OpRewritePattern<mlir::stablehlo::CompareOp> {
 };
 
 struct TransposeTranspose
-    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeTranspose> {
+  using CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                TransposeTranspose>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
 
-    auto convertOp = operand.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    auto convertOp = operand.getDefiningOp<stablehlo::ConvertOp>();
     if (convertOp) {
       operand = convertOp.getOperand();
     }
 
-    auto definingTranspose =
-        operand.getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto definingTranspose = operand.getDefiningOp<stablehlo::TransposeOp>();
     if (!definingTranspose)
       return rewriter.notifyMatchFailure(op, "not a transpose(transpose)");
 
@@ -7387,11 +7604,13 @@ size_t getBitWidth(mlir::Type ty) {
   return ty.getIntOrFloatBitWidth();
 }
 
-struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
-  using OpRewritePattern<mlir::stablehlo::ConvertOp>::OpRewritePattern;
+struct TransposeConvert
+    : public CheckedOpRewritePattern<stablehlo::ConvertOp, TransposeConvert> {
+  using CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                TransposeConvert>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
     auto resultType = cast<TensorType>(op.getResult().getType());
     auto operandType = cast<TensorType>(op.getOperand().getType());
     if (!resultType.hasStaticShape() || !operandType.hasStaticShape())
@@ -7402,8 +7621,7 @@ struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
             getBitWidth(operandType.getElementType()))
       return failure();
 
-    auto transpose =
-        op.getOperand().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto transpose = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
     if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
       return failure();
 
@@ -7419,21 +7637,23 @@ struct TransposeConvert : public OpRewritePattern<mlir::stablehlo::ConvertOp> {
 };
 
 struct TransposeDotReorder
-    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeDotReorder> {
+  using CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                TransposeDotReorder>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
 
     auto operand = op.getOperand();
-    auto convert = operand.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    auto convert = operand.getDefiningOp<stablehlo::ConvertOp>();
     if (convert) {
       operand = convert.getOperand();
       if (!llvm::hasSingleElement(convert->getUsers()))
         return failure();
     }
 
-    auto dot = operand.getDefiningOp<mlir::stablehlo::DotGeneralOp>();
+    auto dot = operand.getDefiningOp<stablehlo::DotGeneralOp>();
     if (!dot || !llvm::hasSingleElement(dot->getUsers()))
       return failure();
 
@@ -7516,13 +7736,14 @@ struct TransposeDotReorder
   }
 };
 
-struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeReduce
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
+                                    PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
-    auto reduce = operand.getDefiningOp<mlir::stablehlo::ReduceOp>();
+    auto reduce = operand.getDefiningOp<stablehlo::ReduceOp>();
     if (!reduce)
       return failure();
 
@@ -7581,13 +7802,14 @@ struct TransposeReduce : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 struct TransposeConvolution
-    : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeConvolution> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
+                                    PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
-    auto conv = operand.getDefiningOp<mlir::stablehlo::ConvolutionOp>();
+    auto conv = operand.getDefiningOp<stablehlo::ConvolutionOp>();
     if (!conv || !llvm::hasSingleElement(operand.getUsers()))
       return failure();
 
@@ -7616,7 +7838,7 @@ struct TransposeConvolution
         dimensionNumbers.getKernelSpatialDimensions(), outputBatchDimension,
         outputFeatureDimension, outputSpatialDimensions);
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConvolutionOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
         transpose, transpose.getType(), conv.getLhs(), conv.getRhs(),
         conv.getWindowStridesAttr(), conv.getPaddingAttr(),
         conv.getLhsDilationAttr(), conv.getRhsDilationAttr(),
@@ -7629,15 +7851,14 @@ struct TransposeConvolution
 };
 
 struct ConvolutionTranspose
-    : public OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     ConvolutionTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvolutionOp conv,
-                                PatternRewriter &rewriter) const final {
-    auto lhs_trans =
-        conv.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
-    auto rhs_trans =
-        conv.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp conv,
+                                    PatternRewriter &rewriter) const {
+    auto lhs_trans = conv.getLhs().getDefiningOp<stablehlo::TransposeOp>();
+    auto rhs_trans = conv.getRhs().getDefiningOp<stablehlo::TransposeOp>();
     if (!lhs_trans && !rhs_trans)
       return failure();
 
@@ -7692,13 +7913,14 @@ struct ConvolutionTranspose
 };
 
 // transpose(einsum) -> einsum
-struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeEinsum
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeEinsum> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp transpose,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transpose,
+                                    PatternRewriter &rewriter) const {
     auto operand = transpose.getOperand();
-    auto einsum = operand.getDefiningOp<mlir::stablehlo::EinsumOp>();
+    auto einsum = operand.getDefiningOp<stablehlo::EinsumOp>();
     if (!einsum || !llvm::hasSingleElement(operand.getUsers()))
       return failure();
 
@@ -7730,17 +7952,16 @@ struct TransposeEinsum : public OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 // einsum(transpose(x), transpose(y)) -> einsum(x, y)
-struct EinsumTranspose : public OpRewritePattern<mlir::stablehlo::EinsumOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct EinsumTranspose
+    : public CheckedOpRewritePattern<stablehlo::EinsumOp, EinsumTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::EinsumOp einsum,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::EinsumOp einsum,
+                                    PatternRewriter &rewriter) const {
     llvm::StringRef einsumConfig = einsum.getEinsumConfig();
 
-    auto lhs_trans =
-        einsum.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
-    auto rhs_trans =
-        einsum.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto lhs_trans = einsum.getLhs().getDefiningOp<stablehlo::TransposeOp>();
+    auto rhs_trans = einsum.getRhs().getDefiningOp<stablehlo::TransposeOp>();
     if (!lhs_trans && !rhs_trans)
       return failure();
 
@@ -7768,7 +7989,7 @@ struct EinsumTranspose : public OpRewritePattern<mlir::stablehlo::EinsumOp> {
       }
     }
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::EinsumOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::EinsumOp>(
         einsum, einsum.getType(),
         lhs_trans ? lhs_trans.getOperand() : einsum.getLhs(),
         rhs_trans ? rhs_trans.getOperand() : einsum.getRhs(),
@@ -7777,11 +7998,12 @@ struct EinsumTranspose : public OpRewritePattern<mlir::stablehlo::EinsumOp> {
   }
 };
 
-struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DotTranspose
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp, DotTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp dot,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp dot,
+                                    PatternRewriter &rewriter) const {
 
     auto dim = dot.getDotDimensionNumbers();
     size_t numLHSResults = dot.getLhs().getType().getRank() -
@@ -7792,12 +8014,12 @@ struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
                            dim.getRhsBatchingDimensions().size() -
                            dim.getRhsContractingDimensions().size();
 
-    auto lhsTrans = dot.getLhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto lhsTrans = dot.getLhs().getDefiningOp<stablehlo::TransposeOp>();
     bool fuseLhs = false;
     if (lhsTrans)
       fuseLhs = numLHSResults <= 1; // otherwise we need to transpose the result
 
-    auto rhsTrans = dot.getRhs().getDefiningOp<mlir::stablehlo::TransposeOp>();
+    auto rhsTrans = dot.getRhs().getDefiningOp<stablehlo::TransposeOp>();
     bool fuseRhs = false;
     if (rhsTrans)
       fuseRhs = numRHSResults <= 1; // otherwise we need to transpose the result
@@ -7840,11 +8062,13 @@ struct DotTranspose : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
   }
 };
 
-struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern<mlir::stablehlo::ReduceOp>::OpRewritePattern;
+struct BroadcastReduce
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, BroadcastReduce> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                BroadcastReduce>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
       return rewriter.notifyMatchFailure(
           op, "only single-operand single-init reduce is supported");
@@ -7856,7 +8080,7 @@ struct BroadcastReduce : public OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     Value input = op.getInputs()[0];
     auto inputType = cast<TensorType>(input.getType());
-    auto broadcast = input.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>();
+    auto broadcast = input.getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!broadcast) {
       return rewriter.notifyMatchFailure(op,
                                          "input source is not a broadcast op");
@@ -7983,10 +8207,11 @@ static LogicalResult getDefiningZeroPadding(OpTy op, PatternRewriter &rewriter,
   return success();
 }
 
-template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinopConstPad : public CheckedOpRewritePattern<T, BinopConstPad<T>> {
+  using CheckedOpRewritePattern<T, BinopConstPad<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       DenseElementsAttr inp;
       if (!matchPattern(op->getOperand(i), m_Constant(&inp)))
@@ -8025,10 +8250,11 @@ template <typename T> struct BinopConstPad : public OpRewritePattern<T> {
   }
 };
 
-template <typename T> struct BinopPadPad : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinopPadPad : public CheckedOpRewritePattern<T, BinopPadPad<T>> {
+  using CheckedOpRewritePattern<T, BinopPadPad<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     auto pad1 = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad1 || anyPadSizesNegative(pad1))
       return failure();
@@ -8058,11 +8284,13 @@ template <typename T> struct BinopPadPad : public OpRewritePattern<T> {
   }
 };
 
-struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
-  using OpRewritePattern<stablehlo::AddOp>::OpRewritePattern;
+struct AddPadPadToConcat
+    : public CheckedOpRewritePattern<stablehlo::AddOp, AddPadPadToConcat> {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                AddPadPadToConcat>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::AddOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
     auto pad1 = op->getOperand(0).template getDefiningOp<stablehlo::PadOp>();
     if (!pad1 || anyPadSizesNegative(pad1))
       return failure();
@@ -8243,10 +8471,13 @@ struct AddPadPadToConcat : public OpRewritePattern<stablehlo::AddOp> {
   }
 };
 
-template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinopBinopPadPad
+    : public CheckedOpRewritePattern<T, BinopBinopPadPad<T>> {
+  using CheckedOpRewritePattern<T,
+                                BinopBinopPadPad<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
 
@@ -8328,10 +8559,13 @@ template <typename T> struct BinopBinopPadPad : public OpRewritePattern<T> {
   }
 };
 
-template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct BinopBinopPadConst
+    : public CheckedOpRewritePattern<T, BinopBinopPadConst<T>> {
+  using CheckedOpRewritePattern<T,
+                                BinopBinopPadConst<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     for (int i = 0; i < 2; i++) {
       auto pad1 = op->getOperand(i).template getDefiningOp<stablehlo::PadOp>();
       if (!pad1)
@@ -8376,11 +8610,13 @@ template <typename T> struct BinopBinopPadConst : public OpRewritePattern<T> {
   }
 };
 
-struct MulZeroPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
-  using OpRewritePattern<mlir::stablehlo::MulOp>::OpRewritePattern;
+struct MulZeroPad
+    : public CheckedOpRewritePattern<stablehlo::MulOp, MulZeroPad> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                MulZeroPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
     stablehlo::PadOp pad;
     Value otherArg;
     bool otherIsLHS;
@@ -8415,11 +8651,13 @@ struct MulZeroPad : public OpRewritePattern<mlir::stablehlo::MulOp> {
   }
 };
 
-struct DivZeroPad : public OpRewritePattern<mlir::stablehlo::DivOp> {
-  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+struct DivZeroPad
+    : public CheckedOpRewritePattern<stablehlo::DivOp, DivZeroPad> {
+  using CheckedOpRewritePattern<stablehlo::DivOp,
+                                DivZeroPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
     stablehlo::PadOp pad;
     Value otherArg;
     bool otherIsLHS;
@@ -8467,11 +8705,12 @@ template <typename T> DenseI64ArrayAttr addLists(T lhs, T rhs) {
   return DenseI64ArrayAttr::get(context, sum);
 }
 
-struct PadPad : public OpRewritePattern<mlir::stablehlo::PadOp> {
-  using OpRewritePattern<mlir::stablehlo::PadOp>::OpRewritePattern;
+struct PadPad : public CheckedOpRewritePattern<stablehlo::PadOp, PadPad> {
+  using CheckedOpRewritePattern<stablehlo::PadOp,
+                                PadPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::PadOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
+                                    PatternRewriter &rewriter) const {
     auto definingPad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!definingPad || definingPad.getPaddingValue() != op.getPaddingValue()) {
       return rewriter.notifyMatchFailure(op, "no compatible defining pad");
@@ -8570,11 +8809,13 @@ sliceDotGeneralHelper(stablehlo::DotGeneralOp dot, ArrayRef<int64_t> starts,
       RankedTensorType::get(resShape, dot.getType().getElementType()));
 }
 
-struct SliceDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceDotGeneral> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceDotGeneral>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto dot = op.getOperand().getDefiningOp<stablehlo::DotGeneralOp>();
     if (!dot) {
       return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
@@ -8594,17 +8835,20 @@ struct SliceDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
-struct PadDotGeneral : public OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern<mlir::stablehlo::DotGeneralOp>::OpRewritePattern;
+struct PadDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp, PadDotGeneral> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                PadDotGeneral>::CheckedOpRewritePattern;
 
   bool postPad;
   PadDotGeneral(size_t postPad, MLIRContext *context,
                 PatternBenefit benefit = 1,
                 ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames), postPad(postPad) {}
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        postPad(postPad) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
     stablehlo::PadOp pad;
     Value otherArg;
     bool otherIsLHS;
@@ -8857,11 +9101,13 @@ LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
   return success();
 }
 
-struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceReshape
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshape> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceReshape>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape) {
       return rewriter.notifyMatchFailure(op, "defining op is not a reshape");
@@ -8884,11 +9130,12 @@ struct SliceReshape : public OpRewritePattern<stablehlo::SliceOp> {
 };
 
 // slice(reshape(pad x)) -> pad(slice x)
-struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceReshapePad final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -8942,11 +9189,12 @@ struct SliceReshapePad final : OpRewritePattern<mlir::stablehlo::SliceOp> {
   }
 };
 
-struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceIf>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto ifop = op.getOperand().getDefiningOp<stablehlo::IfOp>();
     if (!ifop)
       return failure();
@@ -8995,11 +9243,13 @@ struct SliceIf : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
-struct SliceReshapeConcat : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceReshapeConcat
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcat> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceReshapeConcat>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
@@ -9032,11 +9282,11 @@ struct SliceReshapeConcat : public OpRewritePattern<stablehlo::SliceOp> {
 };
 
 struct SliceReshapeElementwise final
-    : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
@@ -9075,19 +9325,19 @@ struct SliceReshapeElementwise final
 };
 
 struct TransposeElementwise final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   bool onlySingleUser;
 
   TransposeElementwise(bool onlySingleUser, MLIRContext *context,
                        PatternBenefit benefit = 1,
                        ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
@@ -9126,11 +9376,12 @@ struct TransposeElementwise final
   }
 };
 
-struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeConcat final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concat)
       return failure();
@@ -9153,11 +9404,12 @@ struct TransposeConcat final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
   }
 };
 
-struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeIota final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
     if (!iota)
       return failure();
@@ -9175,11 +9427,11 @@ struct TransposeIota final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 struct TransposeReduceWindow final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduceWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto reduce = op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
     if (!reduce)
       return failure();
@@ -9256,8 +9508,9 @@ struct TransposeReduceWindow final
 
 // reshape(concat(...)) -> concat(reshape(...))
 struct ReshapeOfConcatToConcatOfReshape final
-    : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeOfConcatToConcatOfReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   int64_t computeNewConcatDim(ArrayRef<int64_t> originalShape,
                               ArrayRef<int64_t> reshapedShape,
@@ -9280,11 +9533,11 @@ struct ReshapeOfConcatToConcatOfReshape final
     return newConcatDim;
   }
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
+                                    PatternRewriter &rewriter) const {
     // Check if the operand of the reshape is a concatenate operation
     auto concatOp =
-        reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::ConcatenateOp>();
+        reshapeOp.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concatOp)
       return failure();
 
@@ -9320,13 +9573,13 @@ struct ReshapeOfConcatToConcatOfReshape final
 
       auto newReshapeType =
           RankedTensorType::get(shape, operandType.getElementType());
-      auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
+      auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
           reshapeOp.getLoc(), newReshapeType, operand);
       concatOperands.push_back(newReshapeOp);
     }
 
     // Create a new concat operation with the reshaped operands
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConcatenateOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         reshapeOp, concatOperands, newDim);
     return success();
   }
@@ -9334,20 +9587,21 @@ struct ReshapeOfConcatToConcatOfReshape final
 
 // reshape(reduce_window(...)) -> reduce_window(reshape(...))
 struct ReshapeReduceWindow final
-    : public OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeReduceWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshapeOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
+                                    PatternRewriter &rewriter) const {
     // Check if the operand of the reshape is a reduce_window operation
     auto reduceWindow =
-        reshapeOp.getOperand().getDefiningOp<mlir::stablehlo::ReduceWindowOp>();
+        reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
     if (!reduceWindow)
       return failure();
 
     // Check if there is any non-reshape user of this reduce_window operation
     if (llvm::any_of(reduceWindow->getUsers(), [&](Operation *user) {
-          return !isa<mlir::stablehlo::ReshapeOp>(user);
+          return !isa<stablehlo::ReshapeOp>(user);
         }))
       return failure();
 
@@ -9446,10 +9700,10 @@ struct ReshapeReduceWindow final
       reshapeDim++;
     }
 
-    auto newReshapeOp = rewriter.create<mlir::stablehlo::ReshapeOp>(
+    auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
         reshapeOp.getLoc(), reshapeType, reduceWindow.getInputs()[0]);
     auto newReduceWindowOp =
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::ReduceWindowOp>(
+        rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
             reshapeOp, TypeRange(reshapeType), newReshapeOp->getResults(),
             reduceWindow.getInitValues(),
             rewriter.getDenseI64ArrayAttr(windowDims),
@@ -9467,17 +9721,18 @@ struct ReshapeReduceWindow final
   }
 };
 
-struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
+struct ReshapeElementwise final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeElementwise> {
   bool onlySingleUser;
 
   ReshapeElementwise(bool onlySingleUser, MLIRContext *context,
                      PatternBenefit benefit = 1,
                      ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
@@ -9507,11 +9762,11 @@ struct ReshapeElementwise final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 
 // slice(transpose x) -> transpose(slice x)
 struct SliceReshapeTranspose final
-    : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -9542,11 +9797,14 @@ struct SliceReshapeTranspose final
   }
 };
 
-struct SliceReshapeDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceReshapeDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::SliceOp,
+                                     SliceReshapeDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::SliceOp, SliceReshapeDotGeneral>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
@@ -9577,24 +9835,23 @@ struct SliceReshapeDotGeneral : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
-struct ReshuffleAndsCompares final : OpRewritePattern<mlir::stablehlo::AndOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshuffleAndsCompares final
+    : CheckedOpRewritePattern<stablehlo::AndOp, ReshuffleAndsCompares> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp andOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::AndOp andOp,
+                                    PatternRewriter &rewriter) const {
     SmallVector<Value> conjuncts;
     SmallVector<Operation *> worklist;
     worklist.push_back(andOp);
     while (!worklist.empty()) {
-      auto andOp = cast<mlir::stablehlo::AndOp>(worklist.pop_back_val());
-      if (auto lhsAndOp =
-              andOp.getLhs().getDefiningOp<mlir::stablehlo::AndOp>()) {
+      auto andOp = cast<stablehlo::AndOp>(worklist.pop_back_val());
+      if (auto lhsAndOp = andOp.getLhs().getDefiningOp<stablehlo::AndOp>()) {
         worklist.push_back(lhsAndOp);
       } else {
         conjuncts.push_back(andOp.getLhs());
       }
-      if (auto lhsAndOp =
-              andOp.getRhs().getDefiningOp<mlir::stablehlo::AndOp>()) {
+      if (auto lhsAndOp = andOp.getRhs().getDefiningOp<stablehlo::AndOp>()) {
         worklist.push_back(lhsAndOp);
       } else {
         conjuncts.push_back(andOp.getRhs());
@@ -9605,7 +9862,7 @@ struct ReshuffleAndsCompares final : OpRewritePattern<mlir::stablehlo::AndOp> {
 
     Value compareLhs = nullptr;
     auto compares = llvm::filter_to_vector(conjuncts, [&](Value v) {
-      auto cmpOp = v.getDefiningOp<mlir::stablehlo::CompareOp>();
+      auto cmpOp = v.getDefiningOp<stablehlo::CompareOp>();
       if (!cmpOp)
         return false;
       if (compareLhs == nullptr)
@@ -9613,40 +9870,39 @@ struct ReshuffleAndsCompares final : OpRewritePattern<mlir::stablehlo::AndOp> {
       else if (compareLhs != cmpOp.getLhs())
         return false;
       return cmpOp.getComparisonDirection() ==
-             mlir::stablehlo::ComparisonDirection::LE;
+             stablehlo::ComparisonDirection::LE;
     });
 
     if (compares.size() <= 1)
       return failure();
 
-    Value running =
-        compares[0].getDefiningOp<mlir::stablehlo::CompareOp>().getRhs();
+    Value running = compares[0].getDefiningOp<stablehlo::CompareOp>().getRhs();
     for (unsigned i = 1, e = compares.size(); i < e; ++i) {
-      Value minRhs =
-          compares[i].getDefiningOp<mlir::stablehlo::CompareOp>().getRhs();
-      running = rewriter.create<mlir::stablehlo::MinOp>(andOp.getLoc(), running,
-                                                        minRhs);
+      Value minRhs = compares[i].getDefiningOp<stablehlo::CompareOp>().getRhs();
+      running =
+          rewriter.create<stablehlo::MinOp>(andOp.getLoc(), running, minRhs);
     }
-    Value replacement = rewriter.create<mlir::stablehlo::CompareOp>(
+    Value replacement = rewriter.create<stablehlo::CompareOp>(
         compares[0].getLoc(), compareLhs, running,
-        mlir::stablehlo::ComparisonDirection::LE);
+        stablehlo::ComparisonDirection::LE);
 
     for (Value conjunct : conjuncts) {
       if (llvm::is_contained(compares, conjunct))
         continue;
-      replacement = rewriter.create<mlir::stablehlo::AndOp>(
-          andOp.getLoc(), replacement, conjunct);
+      replacement = rewriter.create<stablehlo::AndOp>(andOp.getLoc(),
+                                                      replacement, conjunct);
     }
     rewriter.replaceOp(andOp, replacement);
     return success();
   }
 };
 
-struct SliceReshapeSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceReshapeSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SliceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
       return failure();
@@ -9673,7 +9929,7 @@ struct SliceReshapeSlice final : OpRewritePattern<mlir::stablehlo::SliceOp> {
 } // namespace
 
 // Rewritten from
-// https://github.com/openxla/stablehlo/blob/4f180d3c2236a15f82f29aad1b47f6ea2c14fc52/stablehlo/reference/Ops.cpp#L1381
+// https:github.com/openxla/stablehlo/blob/4f180d3c2236a15f82f29aad1b47f6ea2c14fc52/stablehlo/reference/Ops.cpp#L1381
 // using https://openxla.org/xla/operation_semantics#gather
 // becuase xla/openxla differ in semantics
 stablehlo::Index index(stablehlo::Tensor tensor) {
@@ -9718,11 +9974,12 @@ bool is_iota(ArrayRef<int64_t> idx) {
 
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
-struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct GatherSimplify final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
     DenseIntElementsAttr startIndicesCst;
     if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
       return failure();
@@ -9752,11 +10009,11 @@ struct GatherSimplify final : OpRewritePattern<mlir::stablehlo::GatherOp> {
   }
 };
 
-struct CSEIota : OpRewritePattern<stablehlo::IotaOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct CSEIota : CheckedOpRewritePattern<stablehlo::IotaOp, CSEIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::IotaOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
+                                    PatternRewriter &rewriter) const {
     bool anyCsed = false;
     Operation *next = op->getNextNode();
     while (next) {
@@ -9796,11 +10053,12 @@ bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
   }
 }
 
-template <typename T> struct CSE final : OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
+  using CheckedOpRewritePattern<T, CSE<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T op,
-                                PatternRewriter &rewriter) const override {
+  bool supportsDynamicShapes() { return true; }
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
     if (op->getNumOperands() > 0)
       for (auto nop : op->getOperand(0).getUsers()) {
         if (nop == op)
@@ -9841,11 +10099,12 @@ template <typename T> struct CSE final : OpRewritePattern<T> {
 };
 
 struct ConstPropThroughBarrier final
-    : OpRewritePattern<mlir::stablehlo::OptimizationBarrierOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::OptimizationBarrierOp,
+                              ConstPropThroughBarrier> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::OptimizationBarrierOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::OptimizationBarrierOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<Value> replacements;
     bool changed = false;
@@ -9883,11 +10142,12 @@ struct ConstPropThroughBarrier final
 // If there is a dus where part of the updated region is not used by later slice
 // operations, pre-slice the operand and update to the original dus
 struct DUSSliceSimplify final
-    : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                              DUSSliceSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
+                                    PatternRewriter &rewriter) const {
     auto res = dusOp.getResult();
     auto update = dusOp.getUpdate();
     auto updateShape = update.getType().getShape();
@@ -10029,11 +10289,12 @@ struct DUSSliceSimplify final
   }
 };
 
-struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DUSToI32 final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToI32> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
+                                    PatternRewriter &rewriter) const {
     auto i32 = rewriter.getI32Type();
 
     auto unrankedI32 = RankedTensorType::get({}, i32);
@@ -10072,11 +10333,12 @@ struct DUSToI32 final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
 // Replaces DUS with a combination of slices and concats.
 // Each run of the pattern handles one dimension at a time.
-struct DUSToConcat final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DUSToConcat final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dusOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
+                                    PatternRewriter &rewriter) const {
 
     // --- Get Info & Check Static Requirements ---
     Value targetOperand = dusOp.getOperand();
@@ -10214,11 +10476,12 @@ struct DUSToConcat final : OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 // I.   (div a (div b c)) -> (div (mul a c) b)
 // II.  (div (div a b) c) -> (div a (mul b c))
 // III. (div (div a b) (div c d)) -> (div (mul a d) (mul b c))
-struct DivideDivideSimplify : public OpRewritePattern<stablehlo::DivOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct DivideDivideSimplify
+    : public CheckedOpRewritePattern<stablehlo::DivOp, DivideDivideSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::DivOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
@@ -10306,9 +10569,9 @@ static TypedAttr foldBinaryOpIntOrFloat(TypedAttr lhs, TypedAttr rhs,
   return nullptr;
 }
 
-static mlir::stablehlo::ComparisonDirection
-invertDirection(mlir::stablehlo::ComparisonDirection direction) {
-  using mlir::stablehlo::ComparisonDirection;
+static stablehlo::ComparisonDirection
+invertDirection(stablehlo::ComparisonDirection direction) {
+  using stablehlo::ComparisonDirection;
 
   switch (direction) {
   case ComparisonDirection::EQ:
@@ -10327,11 +10590,11 @@ invertDirection(mlir::stablehlo::ComparisonDirection direction) {
   llvm::report_fatal_error("Unhandled case");
 }
 
-static APInt calculateComp(mlir::stablehlo::ComparisonType kind,
-                           mlir::stablehlo::ComparisonDirection direction,
+static APInt calculateComp(stablehlo::ComparisonType kind,
+                           stablehlo::ComparisonDirection direction,
                            const APInt &lhs, const APInt &rhs) {
-  using mlir::stablehlo::ComparisonDirection;
-  using mlir::stablehlo::ComparisonType;
+  using stablehlo::ComparisonDirection;
+  using stablehlo::ComparisonType;
   assert(llvm::is_contained({ComparisonType::SIGNED, ComparisonType::UNSIGNED},
                             kind) &&
          "Not an integer comparison");
@@ -10358,11 +10621,12 @@ static APInt calculateComp(mlir::stablehlo::ComparisonType kind,
   llvm_unreachable("Unhandled case");
 }
 
-struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct CompareOpCanon final
+    : CheckedOpRewritePattern<stablehlo::CompareOp, CompareOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
 
     {
@@ -10375,15 +10639,15 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
         auto ty = isSplat
                       ? RankedTensorType::get({}, op.getType().getElementType())
                       : op.getType();
-        auto out = fromTensor(mlir::stablehlo::compareOp(
+        auto out = fromTensor(stablehlo::compareOp(
             isSplat
                 ? stablehlo::makeTensor(lhs.resizeSplat(RankedTensorType::get(
                       {}, lhs.getType().getElementType())))
-                : mlir::stablehlo::constantOp(lhs),
+                : stablehlo::constantOp(lhs),
             isSplat
                 ? stablehlo::makeTensor(rhs.resizeSplat(RankedTensorType::get(
                       {}, rhs.getType().getElementType())))
-                : mlir::stablehlo::constantOp(rhs),
+                : stablehlo::constantOp(rhs),
             op.getComparisonDirection(), ty));
         if (isSplat)
           out = out.resizeSplat(op.getType());
@@ -10396,7 +10660,7 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
 
     // Bail out on non-integer comparison.
     // TODO: Support more comparison types.
-    using mlir::stablehlo::ComparisonType;
+    using stablehlo::ComparisonType;
     std::optional<ComparisonType> compType = op.getCompareType();
     if (!compType ||
         !llvm::is_contained({ComparisonType::SIGNED, ComparisonType::UNSIGNED},
@@ -10404,7 +10668,7 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
       return failure();
     }
 
-    using mlir::stablehlo::ComparisonDirection;
+    using stablehlo::ComparisonDirection;
     ComparisonDirection direction = op.getComparisonDirection();
     Value lhs = op.getLhs();
     Value rhs = op.getRhs();
@@ -10414,14 +10678,14 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
       case ComparisonDirection::EQ:
       case ComparisonDirection::GE:
       case ComparisonDirection::LE: {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, SplatElementsAttr::get(type, rewriter.getBoolAttr(true)));
         return success();
       }
       case ComparisonDirection::GT:
       case ComparisonDirection::LT:
       case ComparisonDirection::NE: {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, rewriter.getZeroAttr(type));
         return success();
       }
@@ -10451,7 +10715,7 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
              [direction, kind = *compType](const APInt &a, const APInt &b) {
                return calculateComp(kind, direction, a, b);
              }))) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(op, res);
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, res);
       return success();
     }
 
@@ -10459,11 +10723,13 @@ struct CompareOpCanon final : OpRewritePattern<mlir::stablehlo::CompareOp> {
   }
 };
 
-struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
-  using OpRewritePattern<mlir::stablehlo::CompareOp>::OpRewritePattern;
+struct CompareExt final
+    : CheckedOpRewritePattern<stablehlo::CompareOp, CompareExt> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareExt>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::CompareOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
     auto elemType =
         cast<RankedTensorType>(op.getLhs().getType()).getElementType();
     if (!elemType.isInteger())
@@ -10471,12 +10737,12 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
 
     auto direction = op.getComparisonDirection();
 
-    auto lhsConvert = op.getLhs().getDefiningOp<mlir::stablehlo::ConvertOp>();
-    auto rhsConvert = op.getRhs().getDefiningOp<mlir::stablehlo::ConvertOp>();
+    auto lhsConvert = op.getLhs().getDefiningOp<stablehlo::ConvertOp>();
+    auto rhsConvert = op.getRhs().getDefiningOp<stablehlo::ConvertOp>();
     if (!lhsConvert && !rhsConvert)
       return failure();
 
-    auto isConvertFromBool = [](mlir::stablehlo::ConvertOp cvtOp) -> bool {
+    auto isConvertFromBool = [](stablehlo::ConvertOp cvtOp) -> bool {
       return cvtOp && cast<RankedTensorType>(cvtOp.getOperand().getType())
                           .getElementType()
                           .isInteger(1);
@@ -10495,8 +10761,8 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
         rewriter.replaceOp(op, lhsConvert.getOperand());
         return success();
       } else if (matchPattern(op.getRhs(), m_Zero())) {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
-            op, lhsConvert.getOperand());
+        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op,
+                                                      lhsConvert.getOperand());
         return success();
       }
     }
@@ -10507,8 +10773,8 @@ struct CompareExt final : OpRewritePattern<mlir::stablehlo::CompareOp> {
         rewriter.replaceOp(op, rhsConvert.getOperand());
         return success();
       } else if (matchPattern(op.getLhs(), m_Zero())) {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::NotOp>(
-            op, rhsConvert.getOperand());
+        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op,
+                                                      rhsConvert.getOperand());
         return success();
       }
     }
@@ -10536,14 +10802,16 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
 }
 
 struct SelectCompIotaConstSimplify final
-    : OpRewritePattern<mlir::stablehlo::SelectOp> {
+    : CheckedOpRewritePattern<stablehlo::SelectOp,
+                              SelectCompIotaConstSimplify> {
   struct slice_data {
     Value tensor;
     int64_t count;
   };
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
-                                PatternRewriter &rewriter) const override {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
+                                    PatternRewriter &rewriter) const {
     DenseIntElementsAttr inp;
 
     Value compare = selectOp.getPred();
@@ -10580,9 +10848,9 @@ struct SelectCompIotaConstSimplify final
       return failure();
 
     stablehlo::IotaOp iota;
-    if (!(matchPattern(cmpLHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+    if (!(matchPattern(cmpLHS, m_Op<stablehlo::IotaOp>()) &&
           matchPattern(cmpRHS, m_Constant(&inp)))) {
-      if (matchPattern(cmpRHS, m_Op<mlir::stablehlo::IotaOp>()) &&
+      if (matchPattern(cmpRHS, m_Op<stablehlo::IotaOp>()) &&
           matchPattern(cmpLHS, m_Constant(&inp))) {
         // incoming: const `op` iota
         // treat the match as iota `op` const
@@ -10697,10 +10965,11 @@ struct SelectCompIotaConstSimplify final
 };
 
 struct SelectCompIotaConstToDUS final
-    : OpRewritePattern<mlir::stablehlo::SelectOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
-                                PatternRewriter &rewriter) const override {
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectCompIotaConstToDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
+                                    PatternRewriter &rewriter) const {
     auto pred = selectOp.getPred().getDefiningOp<stablehlo::AndOp>();
     if (!pred)
       return failure();
@@ -10833,10 +11102,12 @@ struct SelectCompIotaConstToDUS final
   }
 };
 
-struct SelectPadToDUS final : OpRewritePattern<mlir::stablehlo::SelectOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp selectOp,
-                                PatternRewriter &rewriter) const override {
+struct SelectPadToDUS final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectPadToDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
+                                    PatternRewriter &rewriter) const {
     auto pad = selectOp.getPred().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -10887,10 +11158,11 @@ struct SelectPadToDUS final : OpRewritePattern<mlir::stablehlo::SelectOp> {
   }
 };
 
-struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(mlir::stablehlo::AndOp andOp,
-                                PatternRewriter &rewriter) const override {
+struct AndPadPad final : CheckedOpRewritePattern<stablehlo::AndOp, AndPadPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AndOp andOp,
+                                    PatternRewriter &rewriter) const {
     auto padLHS = andOp.getLhs().getDefiningOp<stablehlo::PadOp>();
     if (!padLHS)
       return failure();
@@ -11028,11 +11300,11 @@ struct AndPadPad final : OpRewritePattern<mlir::stablehlo::AndOp> {
 };
 
 struct SelectOpUsedWithinIf final
-    : OpRewritePattern<mlir::stablehlo::SelectOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectOpUsedWithinIf> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
     Value pred = op.getPred();
     Value result = op.getResult();
 
@@ -11085,16 +11357,19 @@ struct SelectOpUsedWithinIf final
   }
 };
 
-struct SelectOpCanon final : OpRewritePattern<mlir::stablehlo::SelectOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SelectOpCanon final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
   size_t max_constant_expansion;
   SelectOpCanon(size_t max_constant_expansion, MLIRContext *context,
                 PatternBenefit benefit = 1,
                 ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-  LogicalResult matchAndRewrite(mlir::stablehlo::SelectOp op,
-                                PatternRewriter &rewriter) const override {
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
 
     Value trueVal = op.getOnTrue();
@@ -11139,18 +11414,19 @@ struct SelectOpCanon final : OpRewritePattern<mlir::stablehlo::SelectOp> {
       newValues.push_back(condElem ? trueElem : falseElem);
     }
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(type, newValues));
     return success();
   }
 };
 
 struct BroadcastInDimOpCanon final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                              BroadcastInDimOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
 
     TypedValue<RankedTensorType> operand = op.getOperand();
@@ -11167,7 +11443,7 @@ struct BroadcastInDimOpCanon final
     // Handle splat broadcasts.
     if (SplatElementsAttr cstAttr;
         matchPattern(operand, m_Constant(&cstAttr))) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, SplatElementsAttr::get(op.getType(),
                                      cstAttr.getSplatValue<Attribute>()));
       return success();
@@ -11177,13 +11453,12 @@ struct BroadcastInDimOpCanon final
         type.getNumElements() == operandTy.getNumElements()) {
       // BroadcastInDim equivalent to reshape.
       if (isDimsIota) {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::ReshapeOp>(op, type,
-                                                                operand);
+        rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, type, operand);
         return success();
       }
       // BroadcastInDim equivalent to transpose.
       if (type.getRank() == operandTy.getRank()) {
-        rewriter.replaceOpWithNewOp<mlir::stablehlo::TransposeOp>(
+        rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
             op, type, operand, getInversePermutation(dims));
         return success();
       }
@@ -11191,11 +11466,11 @@ struct BroadcastInDimOpCanon final
 
     // Eliminate redundant nested BroadcastInDim.
     if (auto definingOp =
-            operand.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+            operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
       auto newIndices = llvm::to_vector(
           llvm::map_range(definingOp.getBroadcastDimensions(),
                           [&dims](int64_t dim) { return dims[dim]; }));
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::BroadcastInDimOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
           op, type, definingOp.getOperand(), newIndices);
       return success();
     }
@@ -11205,11 +11480,14 @@ struct BroadcastInDimOpCanon final
 };
 
 struct TransposeBroadcastInDimToBroadcastInDim final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                              TransposeBroadcastInDimToBroadcastInDim> {
+  using CheckedOpRewritePattern<
+      stablehlo::BroadcastInDimOp,
+      TransposeBroadcastInDimToBroadcastInDim>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
     if (!transposeOp)
       return failure();
@@ -11233,11 +11511,14 @@ struct TransposeBroadcastInDimToBroadcastInDim final
 };
 
 struct BroadcastInDimTransposeToBroadcastInDim final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern<mlir::stablehlo::TransposeOp>::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp,
+                              BroadcastInDimTransposeToBroadcastInDim> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      BroadcastInDimTransposeToBroadcastInDim>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto broadcastOp =
         op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!broadcastOp)
@@ -11270,16 +11551,18 @@ struct BroadcastInDimTransposeToBroadcastInDim final
 };
 
 struct ConcatenateOpCanon final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatenateOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
   size_t max_constant_expansion;
   ConcatenateOpCanon(size_t max_constant_expansion, MLIRContext *context,
                      PatternBenefit benefit = 1,
                      ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         max_constant_expansion(max_constant_expansion) {}
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
     if (!type.hasStaticShape())
       return failure();
@@ -11313,17 +11596,18 @@ struct ConcatenateOpCanon final
     }
 
     assert(newElems.size() == numElems);
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(op.getType(), newElems));
     return success();
   }
 };
 
-struct ConvertOpCanon final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConvertOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConvertOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if this convert is a noop.
     if (op.getOperand().getType() != op.getType())
       return failure();
@@ -11334,11 +11618,12 @@ struct ConvertOpCanon final : OpRewritePattern<mlir::stablehlo::ConvertOp> {
 };
 
 struct DivideSqrtToMultiplyRsqrt final
-    : OpRewritePattern<mlir::stablehlo::DivOp> {
-  using OpRewritePattern<mlir::stablehlo::DivOp>::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DivOp, DivideSqrtToMultiplyRsqrt> {
+  using CheckedOpRewritePattern<
+      stablehlo::DivOp, DivideSqrtToMultiplyRsqrt>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DivOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
     auto rhsOp = op.getRhs().getDefiningOp<stablehlo::SqrtOp>();
     if ((!rhsOp) || !rhsOp->hasOneUse())
       return failure();
@@ -11386,11 +11671,12 @@ static OpTy refineOpWithNewOp(PatternRewriter &rewriter, Operation *op,
 /// If a DynamicBroadCastInDimOp is not actually dynamic, use an ordinary
 /// BroadcastInDimOp.
 struct DynamicBroadcastInDimOpNotActuallyDynamic final
-    : OpRewritePattern<mlir::stablehlo::DynamicBroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicBroadcastInDimOp,
+                              DynamicBroadcastInDimOpNotActuallyDynamic> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicBroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType operandType = op.getOperand().getType();
     if (!operandType.hasStaticShape())
       return rewriter.notifyMatchFailure(op, "requires operand static shape");
@@ -11398,7 +11684,7 @@ struct DynamicBroadcastInDimOpNotActuallyDynamic final
     RankedTensorType type = op.getType();
     // output has static shape, replace with broadcast_in_dim
     if (type.hasStaticShape()) {
-      rewriter.replaceOpWithNewOp<mlir::stablehlo::BroadcastInDimOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
           op, type, op.getOperand(), op.getBroadcastDimensionsAttr());
       return success();
     }
@@ -11407,7 +11693,7 @@ struct DynamicBroadcastInDimOpNotActuallyDynamic final
     // then replace with broadcast_in_dim
     if (llvm::SmallVector<int64_t> shape;
         succeeded(hlo::matchInts(op.getOutputDimensions(), shape))) {
-      refineOpWithNewOp<mlir::stablehlo::BroadcastInDimOp>(
+      refineOpWithNewOp<stablehlo::BroadcastInDimOp>(
           rewriter, op, RankedTensorType::get(shape, type.getElementType()),
           op.getOperand(), op.getBroadcastDimensionsAttr());
       return success();
@@ -11418,14 +11704,14 @@ struct DynamicBroadcastInDimOpNotActuallyDynamic final
 };
 
 struct ChainedDynamicBroadcastInDimCanonicalization final
-    : OpRewritePattern<mlir::stablehlo::DynamicBroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicBroadcastInDimOp,
+                              ChainedDynamicBroadcastInDimCanonicalization> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicBroadcastInDimOp bcast,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp bcast,
+                                    PatternRewriter &rewriter) const {
     auto precedingBcast =
-        bcast.getOperand()
-            .getDefiningOp<mlir::stablehlo::DynamicBroadcastInDimOp>();
+        bcast.getOperand().getDefiningOp<stablehlo::DynamicBroadcastInDimOp>();
     if (!precedingBcast)
       return failure();
 
@@ -11436,7 +11722,7 @@ struct ChainedDynamicBroadcastInDimCanonicalization final
     }
     auto composedBcastDims = rewriter.getDenseI64ArrayAttr(composition);
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::DynamicBroadcastInDimOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicBroadcastInDimOp>(
         bcast, bcast.getType(), precedingBcast.getOperand(),
         bcast.getOutputDimensions(), composedBcastDims);
     return success();
@@ -11446,11 +11732,12 @@ struct ChainedDynamicBroadcastInDimCanonicalization final
 // If all dimensions are known to be nonexpanding from the attribute, replace
 // the dynamic broadcast with a cast.
 struct DynamicBroadcastInDimAllDimsNonExpanding final
-    : OpRewritePattern<mlir::stablehlo::DynamicBroadcastInDimOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicBroadcastInDimOp,
+                              DynamicBroadcastInDimAllDimsNonExpanding> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicBroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicBroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     RankedTensorType type = op.getType();
 
     if (!op.getKnownNonexpandingDimensions() ||
@@ -11467,11 +11754,12 @@ struct DynamicBroadcastInDimAllDimsNonExpanding final
   }
 };
 
-struct NoopReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct NoopReduceOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, NoopReduceOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     // No dimensions to reduce.
     if (op.getDimensions().empty()) {
       rewriter.replaceOp(op, op.getInputs());
@@ -11480,7 +11768,7 @@ struct NoopReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 
     // If all returned values in the ReduceOp region exists outside the
     // region, replace the ReduceOp with those values.
-    if (auto retOp = dyn_cast<mlir::stablehlo::ReturnOp>(
+    if (auto retOp = dyn_cast<stablehlo::ReturnOp>(
             op.getBody().front().getTerminator())) {
       Region *retRegion = retOp->getParentRegion();
       if (llvm::any_of(retOp.getResults(), [retRegion](Value result) {
@@ -11501,11 +11789,12 @@ struct NoopReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
   }
 };
 
-struct EmptyReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct EmptyReduceOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, EmptyReduceOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     // We require all reduce shapes to be the same, up to the element types, so
     // we can just use the first operand and the first result as
     // representatives.
@@ -11525,8 +11814,8 @@ struct EmptyReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
       SmallVector<Value> broadcasts(op.getNumResults());
       for (auto [bcast, init, outTy] : llvm::zip_equal(
                broadcasts, op.getInitValues(), op.getResultTypes())) {
-        bcast = rewriter.create<mlir::stablehlo::BroadcastInDimOp>(loc, outTy,
-                                                                   init, empty);
+        bcast = rewriter.create<stablehlo::BroadcastInDimOp>(loc, outTy, init,
+                                                             empty);
       }
       rewriter.replaceOp(op, broadcasts);
       return success();
@@ -11539,7 +11828,7 @@ struct EmptyReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
     SmallVector<Value> broadcasts(op.getNumResults());
     for (auto [bcast, init, shape, outTy] : llvm::zip_equal(
              broadcasts, op.getInitValues(), shapes, op.getResultTypes())) {
-      bcast = rewriter.create<mlir::stablehlo::DynamicBroadcastInDimOp>(
+      bcast = rewriter.create<stablehlo::DynamicBroadcastInDimOp>(
           loc, outTy, init, shape, empty);
     }
     rewriter.replaceOp(op, broadcasts);
@@ -11548,29 +11837,31 @@ struct EmptyReduceOpCanon final : OpRewritePattern<mlir::stablehlo::ReduceOp> {
 };
 
 struct DynamicReshapeOpCanon final
-    : OpRewritePattern<mlir::stablehlo::DynamicReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::DynamicReshapeOp,
+                              DynamicReshapeOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::DynamicReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // This is a noop when the output type is already a static shape.
     RankedTensorType type = op.getType();
     if (!type.hasStaticShape())
       return failure();
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReshapeOp>(op, type,
-                                                            op.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, type,
+                                                      op.getOperand());
     return success();
   }
 };
 
 struct GetTupleElementOpCanon final
-    : OpRewritePattern<mlir::stablehlo::GetTupleElementOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::GetTupleElementOp,
+                              GetTupleElementOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::GetTupleElementOp op,
-                                PatternRewriter &rewriter) const override {
-    auto tuple = op.getOperand().getDefiningOp<mlir::stablehlo::TupleOp>();
+  LogicalResult matchAndRewriteImpl(stablehlo::GetTupleElementOp op,
+                                    PatternRewriter &rewriter) const {
+    auto tuple = op.getOperand().getDefiningOp<stablehlo::TupleOp>();
     if (!tuple)
       return failure();
 
@@ -11580,18 +11871,19 @@ struct GetTupleElementOpCanon final
   }
 };
 
-struct RealOpCanon final : OpRewritePattern<mlir::stablehlo::RealOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct RealOpCanon final
+    : CheckedOpRewritePattern<stablehlo::RealOp, RealOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::RealOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
     auto elTy = op.getOperand().getType().getElementType();
     if (!isa<ComplexType>(elTy)) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
 
-    auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
+    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
     if (!complex)
       return failure();
 
@@ -11600,11 +11892,12 @@ struct RealOpCanon final : OpRewritePattern<mlir::stablehlo::RealOp> {
   }
 };
 
-struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ImagOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ImagOp, ImagOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ImagOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ImagOp op,
+                                    PatternRewriter &rewriter) const {
     auto elTy = op.getOperand().getType().getElementType();
     if (!isa<ComplexType>(elTy)) {
       rewriter.replaceOp(op, rewriter.create<stablehlo::ConstantOp>(
@@ -11612,7 +11905,7 @@ struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
       return success();
     }
 
-    auto complex = op.getOperand().getDefiningOp<mlir::stablehlo::ComplexOp>();
+    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
     if (!complex)
       return failure();
 
@@ -11622,11 +11915,12 @@ struct ImagOpCanon final : OpRewritePattern<mlir::stablehlo::ImagOp> {
 };
 
 // (conj (complex a, (neg b))) -> (complex a b)
-struct ConjComplexNegate final : OpRewritePattern<mlir::chlo::ConjOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConjComplexNegate final
+    : CheckedOpRewritePattern<chlo::ConjOp, ConjComplexNegate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(chlo::ConjOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
     auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
     if (!complex)
       return failure();
@@ -11642,11 +11936,12 @@ struct ConjComplexNegate final : OpRewritePattern<mlir::chlo::ConjOp> {
 };
 
 struct GetDimensionSizeOpCanon final
-    : OpRewritePattern<mlir::stablehlo::GetDimensionSizeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::GetDimensionSizeOp,
+                              GetDimensionSizeOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::GetDimensionSizeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::GetDimensionSizeOp op,
+                                    PatternRewriter &rewriter) const {
     // Fold get_dimension_size when the queried dim is statically known.
     RankedTensorType operandTy = op.getOperand().getType();
 
@@ -11656,17 +11951,18 @@ struct GetDimensionSizeOpCanon final
 
     auto elemTy = cast<IntegerType>(op.getType().getElementType());
     IntegerAttr elemVal = rewriter.getIntegerAttr(elemTy, dimSize);
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(op.getType(), elemVal));
     return success();
   }
 };
 
-struct NoopReverse final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct NoopReverse final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, NoopReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReverseOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<int64_t> newDimensions;
     auto dimensions = op.getDimensions();
     auto shape = op.getResult().getType().getShape();
@@ -11693,17 +11989,17 @@ struct NoopReverse final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
 
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
-struct GatherOpCanon final : OpRewritePattern<mlir::stablehlo::GatherOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct GatherOpCanon final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp gather,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gather,
+                                    PatternRewriter &rewriter) const {
     DenseIntElementsAttr index;
     if (!matchPattern(gather.getStartIndices(), m_Constant(&index)))
       return failure();
 
-    mlir::stablehlo::GatherDimensionNumbersAttr dnums =
-        gather.getDimensionNumbers();
+    stablehlo::GatherDimensionNumbersAttr dnums = gather.getDimensionNumbers();
     if (dnums.getIndexVectorDim() != 0 || index.getType().getRank() > 1)
       return failure();
 
@@ -11739,7 +12035,7 @@ struct GatherOpCanon final : OpRewritePattern<mlir::stablehlo::GatherOp> {
 
     Type elementType = gather.getType().getElementType();
     auto sliceType = RankedTensorType::get(sliceShape, elementType);
-    Value result = rewriter.create<mlir::stablehlo::SliceOp>(
+    Value result = rewriter.create<stablehlo::SliceOp>(
         gather.getLoc(), sliceType, gather.getOperand(),
         rewriter.getDenseI64ArrayAttr(sliceStart),
         rewriter.getDenseI64ArrayAttr(sliceEnd),
@@ -11753,8 +12049,8 @@ struct GatherOpCanon final : OpRewritePattern<mlir::stablehlo::GatherOp> {
           reshapeShape.push_back(dim);
       }
       auto reshapeType = RankedTensorType::get(reshapeShape, elementType);
-      result = rewriter.create<mlir::stablehlo::ReshapeOp>(gather.getLoc(),
-                                                           reshapeType, result);
+      result = rewriter.create<stablehlo::ReshapeOp>(gather.getLoc(),
+                                                     reshapeType, result);
     }
 
     result.setType(gather.getType());
@@ -11763,11 +12059,12 @@ struct GatherOpCanon final : OpRewritePattern<mlir::stablehlo::GatherOp> {
   }
 };
 
-struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReshapeOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Fold noop reshape.
     if (op.getType() == op.getOperand().getType()) {
       rewriter.replaceOp(op, op.getOperand());
@@ -11779,18 +12076,18 @@ struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
     if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
       return failure();
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, cstAttr.reshape(op.getType()));
     return success();
   }
 };
 
 struct MergeConsecutiveReshapes final
-    : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, MergeConsecutiveReshapes> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     // Fold noop reshape.
     auto operand = op.getOperand();
     if (op.getType() == operand.getType()) {
@@ -11799,7 +12096,7 @@ struct MergeConsecutiveReshapes final
     }
 
     // Fold reshape(reshape(x)).
-    auto reshapeOp = operand.getDefiningOp<mlir::stablehlo::ReshapeOp>();
+    auto reshapeOp = operand.getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshapeOp)
       return rewriter.notifyMatchFailure(
           op, "requires defining op of operand to be Reshape");
@@ -11810,11 +12107,11 @@ struct MergeConsecutiveReshapes final
 };
 
 struct TransposeIsReshape final
-    : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIsReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto input = op.getOperand();
     auto permutation = op.getPermutation();
 
@@ -11842,17 +12139,17 @@ struct TransposeIsReshape final
       if (nonZeroPerms[i - 1] > nonZeroPerms[i])
         return rewriter.notifyMatchFailure(op, "memory layout change");
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReshapeOp>(op, op.getType(),
-                                                            input);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), input);
     return success();
   }
 };
 
-struct IfRemoveUnused final : OpRewritePattern<mlir::stablehlo::IfOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct IfRemoveUnused final
+    : CheckedOpRewritePattern<stablehlo::IfOp, IfRemoveUnused> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
 
     SmallVector<bool> resultUsed(op->getNumResults(), true);
 
@@ -11908,11 +12205,12 @@ struct IfRemoveUnused final : OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
-struct IfPredPropagation final : OpRewritePattern<mlir::stablehlo::IfOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct IfPredPropagation final
+    : CheckedOpRewritePattern<stablehlo::IfOp, IfPredPropagation> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
     Value pred = op.getPred();
     bool anyModified = false;
 
@@ -11945,11 +12243,11 @@ struct IfPredPropagation final : OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
-struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct IfInline final : CheckedOpRewritePattern<stablehlo::IfOp, IfInline> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
 
     auto iszero = matchPattern(op.getPred(), m_Zero());
     auto isone = matchPattern(op.getPred(), m_One());
@@ -11974,12 +12272,14 @@ struct IfInline final : OpRewritePattern<mlir::stablehlo::IfOp> {
   }
 };
 
-// https://github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
-struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
-  using OpRewritePattern<mlir::stablehlo::IfOp>::OpRewritePattern;
+// https:github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
+struct IfToSelect final
+    : public CheckedOpRewritePattern<stablehlo::IfOp, IfToSelect> {
+  using CheckedOpRewritePattern<stablehlo::IfOp,
+                                IfToSelect>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
         op.getFalseBranch().empty())
       return failure();
@@ -12004,7 +12304,7 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
       return failure();
 
     auto replacement =
-        rewriter.create<mlir::stablehlo::IfOp>(op.getLoc(), nonHoistable, pred);
+        rewriter.create<stablehlo::IfOp>(op.getLoc(), nonHoistable, pred);
     replacement.getTrueBranch().takeBody(op.getTrueBranch());
     replacement.getFalseBranch().takeBody(op.getFalseBranch());
 
@@ -12027,17 +12327,15 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
       } else if (trueVal == falseVal)
         results[it.index()] = trueVal;
       else
-        results[it.index()] = rewriter.create<mlir::stablehlo::SelectOp>(
+        results[it.index()] = rewriter.create<stablehlo::SelectOp>(
             op.getLoc(), pred, trueVal, falseVal);
     }
 
     rewriter.setInsertionPointToEnd(&replacement.getTrueBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(trueTerm,
-                                                           trueReturns);
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(trueTerm, trueReturns);
 
     rewriter.setInsertionPointToEnd(&replacement.getFalseBranch().front());
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ReturnOp>(falseTerm,
-                                                           falseReturns);
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(falseTerm, falseReturns);
 
     rewriter.replaceOp(op, results);
     return success();
@@ -12046,11 +12344,12 @@ struct IfToSelect final : public OpRewritePattern<mlir::stablehlo::IfOp> {
 
 // https://github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
 struct SpeculateIfPadToSelect final
-    : public OpRewritePattern<mlir::stablehlo::IfOp> {
-  using OpRewritePattern<mlir::stablehlo::IfOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::IfOp, SpeculateIfPadToSelect> {
+  using CheckedOpRewritePattern<
+      stablehlo::IfOp, SpeculateIfPadToSelect>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::IfOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
     if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
         op.getFalseBranch().empty())
       return failure();
@@ -12121,11 +12420,13 @@ bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
 // 2. Addition of constant step value
 // 3. Less than comparision
 struct WhileOpInductionReplacement
-    : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern<stablehlo::WhileOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileOpInductionReplacement> {
+  using CheckedOpRewritePattern<
+      stablehlo::WhileOp, WhileOpInductionReplacement>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Only handle while loops with identifiable iteration patterns
     bool canonicalized = false;
 
@@ -12347,11 +12648,12 @@ private:
   }
 };
 
-struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeWhile
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, TransposeWhile> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
@@ -12514,7 +12816,7 @@ struct TransposeWhile : public OpRewritePattern<stablehlo::WhileOp> {
   }
 };
 
-bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
+bool isLegalConcatToOneDimDUS(stablehlo::ConcatenateOp outer,
                               stablehlo::SliceOp *lhsP,
                               stablehlo::SliceOp *rhsP = nullptr,
                               Value *operand = nullptr) {
@@ -12593,8 +12895,7 @@ bool isLegalConcatToOneDimDUS(mlir::stablehlo::ConcatenateOp outer,
 }
 
 stablehlo::DynamicUpdateSliceOp
-concatToOneDimDUS(PatternRewriter &rewriter,
-                  mlir::stablehlo::ConcatenateOp outer) {
+concatToOneDimDUS(PatternRewriter &rewriter, stablehlo::ConcatenateOp outer) {
   stablehlo::SliceOp lhs = nullptr;
   stablehlo::SliceOp rhs = nullptr;
   if (!isLegalConcatToOneDimDUS(outer, &lhs, &rhs))
@@ -12654,11 +12955,11 @@ concatToOneDimDUS(PatternRewriter &rewriter,
 }
 
 struct ConcatToOneDimDUS final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToOneDimDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
+                                    PatternRewriter &rewriter) const {
     if (concatToOneDimDUS(rewriter, outer))
       return success();
     else
@@ -12666,11 +12967,11 @@ struct ConcatToOneDimDUS final
   }
 };
 
-struct WhileDUS : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
@@ -13144,8 +13445,9 @@ stablehlo::ConcatenateOp detectReplicationPadding(Value yieldOperand) {
 }
 
 struct WhileRepeatedInductionReduction
-    : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileRepeatedInductionReduction> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   template <typename CRangeT, typename RangeT>
   static stablehlo::IfOp
@@ -13246,8 +13548,8 @@ struct WhileRepeatedInductionReduction
     return ifOp;
   }
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find the index of IV and the step to check for 1 iteration
     auto ivInfo = extractSimpleIVInfo(whileOp);
     if (!ivInfo.isValid)
@@ -13468,8 +13770,9 @@ struct WhileRepeatedInductionReduction
 };
 
 struct WhilePadInductionReduction
-    : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhilePadInductionReduction> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   template <typename CRangeT, typename RangeT>
   static stablehlo::IfOp
@@ -13547,8 +13850,8 @@ struct WhilePadInductionReduction
     return ifOp;
   }
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find the index of IV and the step to check for 1 iteration
     auto ivInfo = extractSimpleIVInfo(whileOp);
     if (!ivInfo.isValid)
@@ -13726,11 +14029,13 @@ struct WhilePadInductionReduction
   }
 };
 
-struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileInductionReduction
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileInductionReduction> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
@@ -14151,11 +14456,12 @@ struct WhileInductionReduction : public OpRewritePattern<stablehlo::WhileOp> {
 
 // TODO: this is not valid in general but presumes the inner structure is valid
 // from the input
-struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileConcat
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
@@ -14529,11 +14835,13 @@ struct WhileConcat : public OpRewritePattern<stablehlo::WhileOp> {
 // TODO: this is not valid in general but presumes the inner structure is valid
 // from the input
 template <typename T>
-struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileWrap
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileWrap<T>> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileWrap<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
     // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
@@ -14748,17 +15056,19 @@ struct WhileWrap : public OpRewritePattern<stablehlo::WhileOp> {
 
 // Replace while op iteration variables which are not updated with their
 // upcoming value
-struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileSimplify
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
   bool hoist_all;
   WhileSimplify(bool hoist_all, MLIRContext *context,
                 PatternBenefit benefit = 1,
                 ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         hoist_all(hoist_all) {}
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<unsigned> operands;
 
     Block *cond = &op.getCond().front(), *body = &op.getBody().front();
@@ -14831,16 +15141,18 @@ struct WhileSimplify : public OpRewritePattern<stablehlo::WhileOp> {
 
 // Replace while op iteration variables which are not updated with their
 // upcoming value
-struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WhileLICM
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileLICM> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
   bool hoist_all;
   WhileLICM(bool hoist_all, MLIRContext *context, PatternBenefit benefit = 1,
             ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         hoist_all(hoist_all) {}
 
-  LogicalResult matchAndRewrite(stablehlo::WhileOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<unsigned> operands;
 
     Block *cond = &op.getCond().front(), *body = &op.getBody().front();
@@ -14963,11 +15275,14 @@ struct WhileLICM : public OpRewritePattern<stablehlo::WhileOp> {
 };
 
 struct DynamicGatherOpIsNotDynamic
-    : public OpRewritePattern<stablehlo::DynamicGatherOp> {
-  using OpRewritePattern<stablehlo::DynamicGatherOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::DynamicGatherOp,
+                                     DynamicGatherOpIsNotDynamic> {
+  using CheckedOpRewritePattern<
+      stablehlo::DynamicGatherOp,
+      DynamicGatherOpIsNotDynamic>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::DynamicGatherOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicGatherOp op,
+                                    PatternRewriter &rewriter) const {
     // Check if slice sizes are constant.
     DenseIntElementsAttr sliceSizesAttr;
     if (!matchPattern(op.getSliceSizes(), m_Constant(&sliceSizesAttr))) {
@@ -15024,11 +15339,17 @@ struct ZeroExtentTensorCanon final : RewritePattern {
   ZeroExtentTensorCanon(MLIRContext *context,
                         PatternBenefit benefit = PatternBenefit(1))
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
   LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const {
+    auto disabledByAttr =
+        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
+    if (disabledByAttr.failed())
+      return disabledByAttr;
+
     auto loc = op->getLoc();
 
-    if (!isa_and_present<mlir::stablehlo::StablehloDialect>(op->getDialect()))
+    if (!isa_and_present<stablehlo::StablehloDialect>(op->getDialect()))
       return rewriter.notifyMatchFailure(op, "not stablehlo");
 
     // If the result is a zero-extent tensor, replace the whole op with an empty
@@ -15063,11 +15384,12 @@ struct ZeroExtentTensorCanon final : RewritePattern {
 };
 
 struct ReorderElementwiseAndShapeOp final
-    : OpTraitRewritePattern<OpTrait::Elementwise> {
-  using OpTraitRewritePattern::OpTraitRewritePattern;
+    : CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                   ReorderElementwiseAndShapeOp> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
     if (op->getOperands().size() != 1)
       return rewriter.notifyMatchFailure(op, "expected to be unary");
 
@@ -15076,9 +15398,9 @@ struct ReorderElementwiseAndShapeOp final
       return rewriter.notifyMatchFailure(
           op, "expected to have an op before elementise op");
 
-    if (!isa<mlir::stablehlo::ReshapeOp>(definingOp) &&
-        !isa<mlir::stablehlo::TransposeOp>(definingOp) &&
-        !isa<mlir::stablehlo::BroadcastOp>(definingOp))
+    if (!isa<stablehlo::ReshapeOp>(definingOp) &&
+        !isa<stablehlo::TransposeOp>(definingOp) &&
+        !isa<stablehlo::BroadcastOp>(definingOp))
       return rewriter.notifyMatchFailure(
           op, "defining operation of unexpected type");
 
@@ -15105,12 +15427,14 @@ struct ReorderElementwiseAndShapeOp final
 // c = a + b; d = c - b => d = a
 // c = a + b; d = b - c => d = -a
 struct NoNanAddSubSimplify final
-    : public OpRewritePattern<stablehlo::SubtractOp> {
-  using OpRewritePattern<stablehlo::SubtractOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     NoNanAddSubSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                NoNanAddSubSimplify>::CheckedOpRewritePattern;
 
   NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
                       PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit),
+      : CheckedOpRewritePattern(context, benefit),
         allowOnFloatingPointMath(allowOnFloatingPointMath) {}
 
   // Apply the pattern only if the output types are integers or if the pattern
@@ -15124,8 +15448,8 @@ struct NoNanAddSubSimplify final
     return allowOnFloatingPointMath;
   }
 
-  LogicalResult matchAndRewrite(stablehlo::SubtractOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
     auto subOutTy = op.getResult().getType();
@@ -15178,11 +15502,14 @@ private:
 
 // a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
 // a < b ? a : b or a <= b ? a : b ---> minimum(a, b)
-struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
-  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+struct CompareSelectSimplify
+    : public CheckedOpRewritePattern<stablehlo::SelectOp,
+                                     CompareSelectSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                CompareSelectSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
     auto compOp = op.getPred().getDefiningOp<stablehlo::CompareOp>();
     if (!compOp)
       return failure();
@@ -15230,11 +15557,13 @@ struct CompareSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
 };
 
 // select(!op, lhs, rhs) --> select(op, rhs, lhs)
-struct NotSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
-  using OpRewritePattern<stablehlo::SelectOp>::OpRewritePattern;
+struct NotSelectSimplify
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, NotSelectSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                NotSelectSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
     auto notOp = op.getPred().getDefiningOp<stablehlo::NotOp>();
     if (!notOp)
       return failure();
@@ -15245,11 +15574,12 @@ struct NotSelectSimplify : public OpRewritePattern<stablehlo::SelectOp> {
   }
 };
 
-struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct NotCompare
+    : public CheckedOpRewritePattern<stablehlo::NotOp, NotCompare> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::NotOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
+                                    PatternRewriter &rewriter) const {
     auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
     if (!cmp)
       return failure();
@@ -15268,11 +15598,14 @@ struct NotCompare : public OpRewritePattern<stablehlo::NotOp> {
 };
 
 struct CommonCompareExpressionRewrite
-    : public OpRewritePattern<stablehlo::CompareOp> {
-  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CommonCompareExpressionRewrite> {
+  using CheckedOpRewritePattern<
+      stablehlo::CompareOp,
+      CommonCompareExpressionRewrite>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
@@ -15326,11 +15659,13 @@ reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
   }
 }
 
-struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
-  using OpRewritePattern<stablehlo::CompareOp>::OpRewritePattern;
+struct CompareCleanup
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareCleanup> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareCleanup>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::CompareOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
 
     if (!cast<RankedTensorType>(lhs.getType())
@@ -15395,11 +15730,14 @@ struct CompareCleanup : public OpRewritePattern<stablehlo::CompareOp> {
 };
 
 struct ScatterUpdateComputationConstProp
-    : public OpRewritePattern<stablehlo::ScatterOp> {
-  using OpRewritePattern<stablehlo::ScatterOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     ScatterUpdateComputationConstProp> {
+  using CheckedOpRewritePattern<
+      stablehlo::ScatterOp,
+      ScatterUpdateComputationConstProp>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
     if (!op.getUniqueIndices())
       return failure();
 
@@ -15484,11 +15822,14 @@ private:
   };
 };
 
-struct ScatterIndicesAreUnique : public OpRewritePattern<stablehlo::ScatterOp> {
-  using OpRewritePattern<stablehlo::ScatterOp>::OpRewritePattern;
+struct ScatterIndicesAreUnique
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     ScatterIndicesAreUnique> {
+  using CheckedOpRewritePattern<
+      stablehlo::ScatterOp, ScatterIndicesAreUnique>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ScatterOp op,
-                                PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getUniqueIndices())
       return failure(); // already unique, no need to do anything
 
@@ -15557,10 +15898,12 @@ private:
 
 // (add (mul a x) (mul a y)) -> (mul a (add x y))
 template <typename Op>
-struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
-  using OpRewritePattern<Op>::OpRewritePattern;
+struct AssociativeCommonMulOpReordering final
+    : public CheckedOpRewritePattern<Op, AssociativeCommonMulOpReordering<Op>> {
+  using CheckedOpRewritePattern<
+      Op, AssociativeCommonMulOpReordering<Op>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
@@ -15613,10 +15956,12 @@ struct AssociativeCommonMulOpReordering final : public OpRewritePattern<Op> {
 // Case 3: (op x (op y (op x y))) -> (op (op x y) (op x y))
 // Case 4: (op x (op y (op y x))) -> (op (op x y) (op x y))
 template <typename Op>
-struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
-  using OpRewritePattern<Op>::OpRewritePattern;
+struct AssociativeBinaryOpReordering
+    : public CheckedOpRewritePattern<Op, AssociativeBinaryOpReordering<Op>> {
+  using CheckedOpRewritePattern<
+      Op, AssociativeBinaryOpReordering<Op>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(Op op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhsOp = op.getRhs().template getDefiningOp<Op>();
     if (!rhsOp)
@@ -15669,11 +16014,14 @@ struct AssociativeBinaryOpReordering : public OpRewritePattern<Op> {
   }
 };
 
-struct ReduceTransposeSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
-  using OpRewritePattern<stablehlo::ReduceOp>::OpRewritePattern;
+struct ReduceTransposeSimplify
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceTransposeSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp, ReduceTransposeSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1) // TODO: support for multiple inputs
       return failure();
 
@@ -15746,11 +16094,13 @@ struct ReduceTransposeSimplify : public OpRewritePattern<stablehlo::ReduceOp> {
 
 // (mul (sign x) (abs x)) -> x
 // (mul (abs x) (sign x)) -> x
-struct SignAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
-  using OpRewritePattern<stablehlo::MulOp>::OpRewritePattern;
+struct SignAbsSimplify
+    : public CheckedOpRewritePattern<stablehlo::MulOp, SignAbsSimplify> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                SignAbsSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::MulOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getOperand(0);
     auto rhs = op.getOperand(1);
 
@@ -15914,11 +16264,13 @@ bool opResultIsAlwaysNonNegative(Operation *op) {
   return false;
 }
 
-struct AbsPositiveSimplify : public OpRewritePattern<stablehlo::AbsOp> {
-  using OpRewritePattern<stablehlo::AbsOp>::OpRewritePattern;
+struct AbsPositiveSimplify
+    : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
+  using CheckedOpRewritePattern<stablehlo::AbsOp,
+                                AbsPositiveSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::AbsOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
+                                    PatternRewriter &rewriter) const {
 
     auto operand = op.getOperand();
     if (isa<ComplexType>(operand.getType().getElementType()))
@@ -15965,11 +16317,12 @@ findReshapeInsertionDims(RankedTensorType inputType,
 }
 
 struct TransposeReshapeToBroadcast final
-    : OpRewritePattern<stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::TransposeOp,
+                              TransposeReshapeToBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshapeOp)
       return failure();
@@ -16014,11 +16367,14 @@ struct TransposeReshapeToBroadcast final
 };
 
 struct ReshapeTransposeToBroadcast final
-    : OpRewritePattern<stablehlo::ReshapeOp> {
-  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                              ReshapeTransposeToBroadcast> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReshapeOp,
+      ReshapeTransposeToBroadcast>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
     if (!transposeOp)
       return failure();
@@ -16059,11 +16415,14 @@ struct ReshapeTransposeToBroadcast final
 };
 
 struct BroadcastInDimIsReshape final
-    : OpRewritePattern<mlir::stablehlo::BroadcastInDimOp> {
-  using OpRewritePattern<mlir::stablehlo::BroadcastInDimOp>::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                              BroadcastInDimIsReshape> {
+  using CheckedOpRewritePattern<
+      stablehlo::BroadcastInDimOp,
+      BroadcastInDimIsReshape>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::BroadcastInDimOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
     auto input = op.getOperand();
     auto outputType = op.getType();
     auto inputType = input.getType();
@@ -16108,11 +16467,13 @@ struct BroadcastInDimIsReshape final
   }
 };
 
-struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern<mlir::stablehlo::ReshapeOp>::OpRewritePattern;
+struct ReshapeToBroadcast final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeToBroadcast> {
+  using CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                ReshapeToBroadcast>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp reshape,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshape,
+                                    PatternRewriter &rewriter) const {
 
     auto inShape = reshape.getOperand().getType().getShape();
     auto outShape = reshape.getResult().getType().getShape();
@@ -16142,11 +16503,13 @@ struct ReshapeToBroadcast final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
 };
 
 struct PadConcatToConcatPad
-    : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern<stablehlo::ConcatenateOp>::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     PadConcatToConcatPad> {
+  using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                PadConcatToConcatPad>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
 
     if (concatOp.getNumOperands() <= 1) {
       return failure();
@@ -16260,11 +16623,13 @@ struct PadConcatToConcatPad
   }
 };
 
-struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
-  using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
+struct SliceSelect
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSelect> {
+  using CheckedOpRewritePattern<stablehlo::SliceOp,
+                                SliceSelect>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                    PatternRewriter &rewriter) const {
 
     auto selOp = sliceOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
 
@@ -16310,11 +16675,13 @@ struct SliceSelect : public OpRewritePattern<stablehlo::SliceOp> {
   }
 };
 
-struct ConstPadConcatToConcat : public OpRewritePattern<stablehlo::PadOp> {
-  using OpRewritePattern<stablehlo::PadOp>::OpRewritePattern;
+struct ConstPadConcatToConcat
+    : public CheckedOpRewritePattern<stablehlo::PadOp, ConstPadConcatToConcat> {
+  using CheckedOpRewritePattern<
+      stablehlo::PadOp, ConstPadConcatToConcat>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::PadOp padOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp padOp,
+                                    PatternRewriter &rewriter) const {
     auto concatOp =
         padOp.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concatOp)
@@ -16400,11 +16767,12 @@ template <typename T> struct Term {
 };
 
 template <typename ST, typename Child>
-struct SumToReductionBase : public OpRewritePattern<ST> {
-  using OpRewritePattern<ST>::OpRewritePattern;
+struct SumToReductionBase
+    : public CheckedOpRewritePattern<ST, SumToReductionBase<ST, Child>> {
+  using CheckedOpRewritePattern<
+      ST, SumToReductionBase<ST, Child>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(ST op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(ST op, PatternRewriter &rewriter) const {
     if (!op.getType().getElementType().isFloat())
       return failure();
 
@@ -16909,11 +17277,13 @@ struct SumToReduceWindow
   }
 };
 
-struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
-  using OpRewritePattern<stablehlo::TransposeOp>::OpRewritePattern;
+struct TransposeSelect
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeSelect> {
+  using CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                TransposeSelect>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::TransposeOp transposeOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp transposeOp,
+                                    PatternRewriter &rewriter) const {
     auto selectOp =
         transposeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
     if (!selectOp)
@@ -16950,11 +17320,13 @@ struct TransposeSelect : public OpRewritePattern<stablehlo::TransposeOp> {
   }
 };
 
-struct ReshapeSelect : public OpRewritePattern<stablehlo::ReshapeOp> {
-  using OpRewritePattern<stablehlo::ReshapeOp>::OpRewritePattern;
+struct ReshapeSelect
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeSelect> {
+  using CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                ReshapeSelect>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ReshapeOp reshapeOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
+                                    PatternRewriter &rewriter) const {
     auto selectOp = reshapeOp.getOperand().getDefiningOp<stablehlo::SelectOp>();
     if (!selectOp)
       return failure();
@@ -16989,11 +17361,11 @@ struct ReshapeSelect : public OpRewritePattern<stablehlo::ReshapeOp> {
   }
 };
 
-template <typename T> struct GroupComms : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
+template <typename T>
+struct GroupComms : public CheckedOpRewritePattern<T, GroupComms<T>> {
+  using CheckedOpRewritePattern<T, GroupComms<T>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(T end,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(T end, PatternRewriter &rewriter) const {
     if (end->template getParentOfType<enzymexla::CommRegionOp>())
       return failure();
     if (end->template getParentOfType<sdy::ManualComputationOp>())
@@ -17052,11 +17424,12 @@ template <typename T> struct GroupComms : public OpRewritePattern<T> {
   }
 };
 
-struct LowerCommRegion : public OpRewritePattern<enzymexla::CommRegionOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct LowerCommRegion
+    : public CheckedOpRewritePattern<enzymexla::CommRegionOp, LowerCommRegion> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::CommRegionOp end,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::CommRegionOp end,
+                                    PatternRewriter &rewriter) const {
     IRMapping map;
     for (auto &op : end.getBody().front()) {
       if (isa<stablehlo::ReturnOp>(op)) {
@@ -17117,11 +17490,13 @@ bool isRotateLike(int dimension, Value lhs, Value rhs,
   return true;
 }
 
-struct RecognizeRotate : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct RecognizeRotate
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     RecognizeRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
     if (concat.getOperands().size() < 2)
       return failure();
     for (int i = 1; i < concat.getOperands().size(); i++) {
@@ -17268,11 +17643,12 @@ bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
   return true;
 }
 
-struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct RecognizeWrap
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, RecognizeWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
 
     int concatDim = concat.getDimension();
     SmallVector<Value> operands = llvm::to_vector(concat.getOperands());
@@ -17359,11 +17735,13 @@ struct RecognizeWrap : public OpRewritePattern<stablehlo::ConcatenateOp> {
   }
 };
 
-struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
-  using OpRewritePattern<enzymexla::ExtendOp>::OpRewritePattern;
+struct ExtendSplat
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp, ExtendSplat> {
+  using CheckedOpRewritePattern<enzymexla::ExtendOp,
+                                ExtendSplat>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp op,
+                                    PatternRewriter &rewriter) const {
     DenseElementsAttr cstAttr;
     if (!matchPattern(op.getOperand(), m_Constant(&cstAttr)))
       return failure();
@@ -17371,7 +17749,7 @@ struct ExtendSplat : public OpRewritePattern<enzymexla::ExtendOp> {
     if (!cstAttr.isSplat())
       return failure();
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, SplatElementsAttr::get(op.getType(),
                                    cstAttr.getSplatValue<Attribute>()));
 
@@ -17406,32 +17784,35 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
   return success(anyModified);
 }
 
-struct ExtendUnaryElementwise : public OpRewritePattern<enzymexla::ExtendOp> {
+struct ExtendUnaryElementwise
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp,
+                                     ExtendUnaryElementwise> {
   bool onlySingleUser;
 
   ExtendUnaryElementwise(bool onlySingleUser, MLIRContext *context,
                          PatternBenefit benefit = 1,
                          ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  LogicalResult matchAndRewrite(enzymexla::ExtendOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp op,
+                                    PatternRewriter &rewriter) const {
     return commUnaryOpElementwise(onlySingleUser, op, rewriter);
   }
 };
 
-struct WrapUnaryElementwise : public OpRewritePattern<enzymexla::WrapOp> {
+struct WrapUnaryElementwise
+    : public CheckedOpRewritePattern<enzymexla::WrapOp, WrapUnaryElementwise> {
   bool onlySingleUser;
 
   WrapUnaryElementwise(bool onlySingleUser, MLIRContext *context,
                        PatternBenefit benefit = 1,
                        ArrayRef<StringRef> generatedNames = {})
-      : OpRewritePattern(context, benefit, generatedNames),
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
-  LogicalResult matchAndRewrite(enzymexla::WrapOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::WrapOp op,
+                                    PatternRewriter &rewriter) const {
     return commUnaryOpElementwise(onlySingleUser, op, rewriter);
   }
 };
@@ -17465,20 +17846,24 @@ LogicalResult commBinOpElementWise(Op op, PatternRewriter &rewriter) {
   return success();
 };
 
-template <typename Op> struct ExtendElementwise : public OpRewritePattern<Op> {
-  using OpRewritePattern<Op>::OpRewritePattern;
+template <typename Op>
+struct ExtendElementwise
+    : public CheckedOpRewritePattern<Op, ExtendElementwise<Op>> {
+  using CheckedOpRewritePattern<Op,
+                                ExtendElementwise<Op>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(Op op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     return commBinOpElementWise<Op, enzymexla::ExtendOp>(op, rewriter);
   }
 };
 
-template <typename Op> struct WrapElementwise : public OpRewritePattern<Op> {
-  using OpRewritePattern<Op>::OpRewritePattern;
+template <typename Op>
+struct WrapElementwise
+    : public CheckedOpRewritePattern<Op, WrapElementwise<Op>> {
+  using CheckedOpRewritePattern<Op,
+                                WrapElementwise<Op>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(Op op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     return commBinOpElementWise<Op, enzymexla::WrapOp>(op, rewriter);
   }
 };
@@ -17536,11 +17921,13 @@ LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
   return success();
 }
 
-struct RecognizeExtend : public OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct RecognizeExtend
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     RecognizeExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
     unsigned dim = concat.getDimension();
     if (concat.getNumOperands() == 2) {
       StaticSlice lhs;
@@ -17764,16 +18151,17 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   return false;
 }
 
-struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceExtend final
+    : CheckedOpRewritePattern<enzymexla::ExtendOp, SliceExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   struct CandidateInfo {
     enzymexla::ExtendOp extendOp;
     stablehlo::SliceOp sliceOp; // Null if it's a direct extend user
   };
 
-  LogicalResult matchAndRewrite(enzymexla::ExtendOp triggerExtendOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp triggerExtendOp,
+                                    PatternRewriter &rewriter) const {
 
     Value triggerOperand = triggerExtendOp.getOperand();
     auto triggerSliceOp = triggerOperand.getDefiningOp<stablehlo::SliceOp>();
@@ -17903,16 +18291,16 @@ struct SliceExtend final : OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
-struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceWrap final : CheckedOpRewritePattern<enzymexla::WrapOp, SliceWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   struct CandidateInfo {
     enzymexla::WrapOp wrapOp;
     stablehlo::SliceOp sliceOp; // Null if it's a direct wrap user
   };
 
-  LogicalResult matchAndRewrite(enzymexla::WrapOp triggerWrapOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::WrapOp triggerWrapOp,
+                                    PatternRewriter &rewriter) const {
 
     Value triggerOperand = triggerWrapOp.getOperand();
     auto triggerSliceOp = triggerOperand.getDefiningOp<stablehlo::SliceOp>();
@@ -18047,11 +18435,12 @@ struct SliceWrap final : OpRewritePattern<enzymexla::WrapOp> {
 };
 
 // transpose(wrap) -> wrap(transpose)
-struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeWrap final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -18101,11 +18490,12 @@ struct TransposeWrap final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 // transpose(extend) -> extend(transpose)
-struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeExtend final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -18153,11 +18543,12 @@ struct TransposeExtend final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 // transpose(rotate) -> rotate(transpose)
-struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeRotate final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
@@ -18204,11 +18595,11 @@ struct TransposeRotate final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 struct ConcatConcatAxisSwap final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatConcatAxisSwap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp outer,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
+                                    PatternRewriter &rewriter) const {
     if (outer.getOperands().size() < 2)
       return failure();
 
@@ -18281,16 +18672,17 @@ struct ConcatConcatAxisSwap final
   }
 };
 
-struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SliceRotate final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, SliceRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   struct CandidateInfo {
     enzymexla::RotateOp rotateOp;
     stablehlo::SliceOp sliceOp; // Null if it's a direct extend user
   };
 
-  LogicalResult matchAndRewrite(enzymexla::RotateOp triggerRotateOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp triggerRotateOp,
+                                    PatternRewriter &rewriter) const {
 
     Value triggerOperand = triggerRotateOp.getOperand();
     auto triggerSliceOp = triggerOperand.getDefiningOp<stablehlo::SliceOp>();
@@ -18414,11 +18806,12 @@ struct SliceRotate final : OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
-struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct SquareAbsSimplify
+    : public CheckedOpRewritePattern<stablehlo::MulOp, SquareAbsSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::MulOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
@@ -18442,7 +18835,7 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
       rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
           op, rewriter.create<stablehlo::MulOp>(
                   op.getLoc(), operand,
-                  rewriter.create<mlir::chlo::ConjOp>(op.getLoc(), operand)));
+                  rewriter.create<chlo::ConjOp>(op.getLoc(), operand)));
       return success();
     } else {
       // abs(x)^2 = x * x
@@ -18453,11 +18846,12 @@ struct SquareAbsSimplify : public OpRewritePattern<stablehlo::MulOp> {
 };
 
 struct ConcatReshapeSlice
-    : public mlir::OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatReshapeSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concatOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
     auto concatDim = concatOp.getDimension();
     auto ndims = cast<RankedTensorType>(concatOp.getType()).getRank();
 
@@ -18617,11 +19011,11 @@ bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
 }
 
 struct ConcatElementwise final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
     if (concatOp.getNumOperands() <= 1)
       return failure();
 
@@ -18676,11 +19070,11 @@ struct ConcatElementwise final
 };
 
 struct ConcatReshapeReduce final
-    : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReshapeReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
     if (concatOp.getNumOperands() <= 1)
       return failure();
 
@@ -18752,11 +19146,12 @@ struct ConcatReshapeReduce final
 };
 
 // reverse(transpose x) -> transpose(reverse x)
-struct ReverseTranspose final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReverseTranspose final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::ReverseOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
     auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
     if (!transposeOp)
       return failure();
@@ -18781,11 +19176,12 @@ struct ReverseTranspose final : OpRewritePattern<mlir::stablehlo::ReverseOp> {
 };
 
 // transpose(reverse x) -> reverse(transpose x)
-struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct TransposeReverse final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::TransposeOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
     auto reverseOp = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
     if (!reverseOp)
       return failure();
@@ -18809,11 +19205,14 @@ struct TransposeReverse final : OpRewritePattern<mlir::stablehlo::TransposeOp> {
 };
 
 struct ElementwiseReshapeLike
-    : public OpTraitRewritePattern<OpTrait::Elementwise> {
-  using OpTraitRewritePattern<OpTrait::Elementwise>::OpTraitRewritePattern;
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseReshapeLike> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      ElementwiseReshapeLike>::CheckedOpTraitRewritePattern;
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
     SmallVector<Value> parentOperands;
     Operation *operandOp = nullptr;
     for (auto operand : op->getOperands()) {
@@ -18861,11 +19260,12 @@ struct ElementwiseReshapeLike
   }
 };
 
-struct ConcatTranspose final : OpRewritePattern<stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ConcatTranspose final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getNumOperands() < 2)
       return failure();
 
@@ -18906,11 +19306,12 @@ struct ConcatTranspose final : OpRewritePattern<stablehlo::ConcatenateOp> {
   }
 };
 
-struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct ReduceReduce final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(stablehlo::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
       return rewriter.notifyMatchFailure(
           op, "reduce op has more than one input. not yet supported");
@@ -18969,11 +19370,13 @@ struct ReduceReduce final : OpRewritePattern<stablehlo::ReduceOp> {
   }
 };
 
-struct ConjReal final : public OpRewritePattern<chlo::ConjOp> {
-  using OpRewritePattern<chlo::ConjOp>::OpRewritePattern;
+struct ConjReal final : public CheckedOpRewritePattern<chlo::ConjOp, ConjReal> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewrite(chlo::ConjOp op,
-                                PatternRewriter &rewriter) const override {
+  bool supportsDynamicShapes() { return true; }
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
     auto input = op.getOperand();
     auto elemType = cast<RankedTensorType>(input.getType()).getElementType();
     if (isa<ComplexType>(elemType))
@@ -18994,7 +19397,7 @@ namespace enzyme {
 }; // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
-   // clang-format on
+// clang-format on
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
@@ -19445,7 +19848,8 @@ struct EnzymeHLOOptPass
         ReduceReduce
       >(context);
 
-    patterns.add<SumToReduceWindow<stablehlo::AddOp>, SumToReduceWindow<stablehlo::SubtractOp>>(context);
+    patterns.add<SumToReduceWindow<stablehlo::AddOp>,
+    SumToReduceWindow<stablehlo::SubtractOp>>(context);
 
     patterns.add<WhileSimplify>(false, context);
 
