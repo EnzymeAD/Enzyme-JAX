@@ -2307,7 +2307,6 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
           auto *scope = affine::getAffineScope(ifOp)->getParentOp();
           DominanceInfo DI(scope);
 
-          llvm::errs() << " scope: " << *scope << "\n";
           std::vector<mlir::Type> types = {ifOp.getCondition().getType()};
 
           auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(),
