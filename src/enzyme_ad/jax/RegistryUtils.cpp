@@ -90,7 +90,7 @@ template <typename T>
 struct PtrElementModel
     : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
           PtrElementModel<T>, T> {};
-          
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
     LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);
