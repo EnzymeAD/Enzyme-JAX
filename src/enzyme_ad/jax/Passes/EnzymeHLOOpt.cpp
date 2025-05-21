@@ -19387,6 +19387,100 @@ struct ConjReal final : public CheckedOpRewritePattern<chlo::ConjOp, ConjReal> {
   }
 };
 
+struct ConcatReshapeElementwise final
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatReshapeElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+
+    auto concatDim = concatOp.getDimension();
+
+    SmallVector<Operation *> concatOpOperands;
+
+    for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
+      auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshapeOp)
+        return rewriter.notifyMatchFailure(concatOp, "not a reshape op");
+
+      RankedTensorType reshapeOpInputType = reshapeOp.getOperand().getType();
+      RankedTensorType reshapeOpOutputType = reshapeOp.getResult().getType();
+
+      SmallVector<int64_t> insertionDims =
+          findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
+
+      if (insertionDims.size() != 1)
+        return rewriter.notifyMatchFailure(
+            concatOp, "reshape op has more than one insertion dim");
+
+      if (insertionDims[0] != concatDim)
+        return rewriter.notifyMatchFailure(
+            concatOp, "concat dim is not same as insertion dim");
+
+      auto vdefOp = reshapeOp.getOperand().getDefiningOp();
+      if (!vdefOp)
+        return failure();
+
+      if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
+        if (concatOpOperands.size() != 0) {
+          if (!OperationEquivalence::isEquivalentTo(
+                  concatOpOperands[0], vdefOp,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr))
+            return rewriter.notifyMatchFailure(
+                concatOp, "elementwise op is not equivalent to first");
+        }
+
+        if (!isOnlyUsedInOperation(vdefOp, reshapeOp))
+          return rewriter.notifyMatchFailure(
+              concatOp, "elementwise op is not only used in reshape op");
+
+        concatOpOperands.push_back(vdefOp);
+      } else {
+        return rewriter.notifyMatchFailure(concatOp, "not a valid elementwise");
+      }
+    }
+
+    SmallVector<Value> elementwiseOperands;
+
+    for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
+      SmallVector<Value> newConcatOperands;
+      for (auto v : concatOpOperands) {
+        auto inputOp = v->getOperand(i);
+
+        auto inputType = cast<RankedTensorType>(inputOp.getType());
+        auto inputShape = inputType.getShape();
+        SmallVector<int64_t> outputShape;
+        for (int j = 0; j < concatDim; j++)
+          outputShape.push_back(inputShape[j]);
+        outputShape.push_back(1);
+        for (int j = concatDim + 1; j < (inputShape.size() + 1); j++)
+          outputShape.push_back(inputShape[j - 1]);
+
+        auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+            concatOp.getLoc(),
+            RankedTensorType::get(outputShape, inputType.getElementType()),
+            inputOp);
+        newConcatOperands.push_back(newReshapeOp.getResult());
+      }
+      auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+          concatOp.getLoc(), newConcatOperands, concatDim);
+      elementwiseOperands.push_back(newConcatOp.getResult());
+    }
+
+    auto newElementwiseOp = rewriter.create(
+        concatOp.getLoc(), concatOpOperands[0]->getName().getIdentifier(),
+        ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
+        concatOpOperands[0]->getAttrs(), {}, {});
+
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19844,6 +19938,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
+        ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce
       >(context);
