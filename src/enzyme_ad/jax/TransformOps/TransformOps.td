@@ -2184,6 +2184,7 @@ def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_bro
   let patterns = ["ConcatenateBroadcastInDim"];
 }
 
+<<<<<<< HEAD
 def ApplyElementwiseRotatePatterns : EnzymeHLOPatternOp<"elementwise_rotate"> {
   let patterns = ["ElementwiseRotate"];
 }
@@ -2194,4 +2195,19 @@ def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
 
 def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
+=======
+def ApplyConcatReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_dot_general"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::DotGeneralOp>"];
+}
+
+def ApplyConcatReshapeGatherPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_gather"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::GatherOp>"];
+}
+
+def ApplyConcatReshapeIotaPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_iota"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::IotaOp>"];
+>>>>>>> b81f7eca (feat: general concat reshape to batching pass)
 }
