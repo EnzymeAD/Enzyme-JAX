@@ -2123,3 +2123,18 @@ def ApplyTransposeFFT : EnzymeHLOPatternOp<"transpose_fft"> {
 def ApplyTransposeReshapePatterns : EnzymeHLOPatternOp<"transpose_reshape"> {
   let patterns = ["TransposeReshape"];
 }
+
+def ApplyConcatReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_dot_general"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::DotGeneralOp>"];
+}
+
+def ApplyConcatReshapeGatherPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_gather"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::GatherOp>"];
+}
+
+def ApplyConcatReshapeIotaPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_iota"> {
+  let patterns = ["ConcatReshapeOpToBatch<stablehlo::IotaOp>"];
+}
