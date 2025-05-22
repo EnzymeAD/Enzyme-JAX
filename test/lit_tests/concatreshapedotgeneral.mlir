@@ -1,5 +1,3 @@
-
-
 module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
     %0 = stablehlo.slice %arg0 [4:5, 0:4, 0:3] : (tensor<5x4x3xf64>) -> tensor<1x4x3xf64>
