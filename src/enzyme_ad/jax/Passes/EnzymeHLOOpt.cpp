@@ -19486,7 +19486,7 @@ struct TriangularSolveRealAdjoint
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::TriangularSolveOp op,
-                                PatternRewriter &rewriter) const override {
+                                    PatternRewriter &rewriter) const override {
     auto transposeA = op.getTransposeA();
     if (transposeA != stablehlo::Transpose::ADJOINT)
       return rewriter.notifyMatchFailure(
