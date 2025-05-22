@@ -22539,7 +22539,7 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   SmallVector<Operation *> concatOpOperands;
 
   for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
-    auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>();
+    auto reshapeOp = v.template getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshapeOp)
       return rewriter.notifyMatchFailure(concatOp, "not a reshape op");
 
