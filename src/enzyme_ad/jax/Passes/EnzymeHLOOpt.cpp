@@ -22094,13 +22094,13 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
               concatOpOperands[0], vdefOp,
               OperationEquivalence::ignoreValueEquivalence, nullptr,
               OperationEquivalence::IgnoreLocations, nullptr))
-        return rewriter.notifyMatchFailure(
-            concatOp, "op is not equivalent to first");
+        return rewriter.notifyMatchFailure(concatOp,
+                                           "op is not equivalent to first");
     }
 
     if (!isOnlyUsedInOperation(vdefOp, reshapeOp))
-      return rewriter.notifyMatchFailure(
-          concatOp, "op is not only used in reshape op");
+      return rewriter.notifyMatchFailure(concatOp,
+                                         "op is not only used in reshape op");
 
     concatOpOperands.push_back(vdefOp);
   }
@@ -22218,8 +22218,6 @@ struct ConcatReshapeOpToBatch
     return generalConcatReshapeOpToBatch<OpTy>(concatOp, rewriter);
   }
 };
-
-// TODO: lu/cholesky
 
 ///////////////  End Imported from stablehlo
 
