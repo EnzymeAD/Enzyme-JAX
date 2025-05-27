@@ -918,6 +918,7 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                   >;
 
 /// Helpers - Max/Min
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
@@ -1290,8 +1291,7 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
 
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
-                      // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
-                      (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
+                      (Select (Compare $x, (HLOConstantFP<"0">), (EQ)), (HLOConstantFP<"0">), (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x))))
                     ]
                   >;
 
