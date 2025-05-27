@@ -2223,6 +2223,7 @@ public:
     if (!gutils->isConstantValue(op->getResult(0)) ||
         !gutils->isConstantValue(op->getResult(1)) ||
         !gutils->isConstantValue(op->getResult(2))) {
+      auto inDiffe = gutils->diffe(op->getResult(0), builder);
       gutils->zeroDiffe(op->getResult(0), builder);
 
       auto opOperand0 = gutils->popCache(caches[0], builder);
@@ -2231,9 +2232,8 @@ public:
       auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
 
       auto gradOp = builder.create<BatchNormGradOp>(
-          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
-          gutils->diffe(op->getOperand(0), builder), op.getEpsilonAttr(),
-          op.getFeatureIndexAttr());
+          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2, inDiffe,
+          op.getEpsilonAttr(), op.getFeatureIndexAttr());
 
       if (!gutils->isConstantValue(op->getOperand(0))) {
         gutils->addToDiffe(op->getOperand(0), gradOp.getResult(0), builder);
