@@ -19481,6 +19481,107 @@ struct ConcatReshapeElementwise final
   }
 };
 
+struct TransposeBatchNormTraining final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeBatchNormTraining> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto batchnormTrainingOp =
+        op.getOperand().getDefiningOp<stablehlo::BatchNormTrainingOp>();
+    if (!batchnormTrainingOp)
+      return failure();
+
+    if (op.getOperand() != batchnormTrainingOp.getOutput())
+      return failure();
+
+    auto permutation = op.getPermutation();
+    auto newFeatureIndex = permutation[batchnormTrainingOp.getFeatureIndex()];
+
+    auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), batchnormTrainingOp.getOperand(), permutation);
+    auto newBatchNormOp = rewriter.create<stablehlo::BatchNormTrainingOp>(
+        op.getLoc(), newTransposeOp.getResult(), batchnormTrainingOp.getScale(),
+        batchnormTrainingOp.getOffset(), batchnormTrainingOp.getEpsilon(),
+        newFeatureIndex);
+
+    rewriter.replaceAllUsesWith(op->getResult(0), newBatchNormOp->getResult(0));
+    rewriter.replaceAllUsesWith(batchnormTrainingOp->getResult(1),
+                                newBatchNormOp->getResult(1));
+    rewriter.replaceAllUsesWith(batchnormTrainingOp->getResult(2),
+                                newBatchNormOp->getResult(2));
+
+    return success();
+  }
+};
+
+struct TransposeBatchNormInference final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeBatchNormInference> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto batchnormInferenceOp =
+        op.getOperand().getDefiningOp<stablehlo::BatchNormInferenceOp>();
+    if (!batchnormInferenceOp)
+      return failure();
+
+    if (op.getOperand() != batchnormInferenceOp.getResult())
+      return failure();
+
+    auto permutation = op.getPermutation();
+    auto newFeatureIndex = permutation[batchnormInferenceOp.getFeatureIndex()];
+
+    auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), batchnormInferenceOp.getOperand(), permutation);
+    rewriter.replaceOpWithNewOp<stablehlo::BatchNormInferenceOp>(
+        op, newTransposeOp.getResult(), batchnormInferenceOp.getScale(),
+        batchnormInferenceOp.getOffset(), batchnormInferenceOp.getMean(),
+        batchnormInferenceOp.getVariance(), batchnormInferenceOp.getEpsilon(),
+        newFeatureIndex);
+    return success();
+  }
+};
+
+struct TransposeBatchNormGrad final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeBatchNormGrad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto batchnormGradOp =
+        op.getOperand().getDefiningOp<stablehlo::BatchNormGradOp>();
+    if (!batchnormGradOp)
+      return failure();
+
+    if (op.getOperand() != batchnormGradOp.getGradOperand())
+      return failure();
+
+    auto permutation = op.getPermutation();
+    auto newFeatureIndex = permutation[batchnormGradOp.getFeatureIndex()];
+
+    auto transposeOperand = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), batchnormGradOp.getOperand(), permutation);
+    auto transposeGradOutput = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), batchnormGradOp.getGradOutput(), permutation);
+
+    auto newBatchNormOp = rewriter.create<stablehlo::BatchNormGradOp>(
+        op.getLoc(), transposeOperand, batchnormGradOp.getScale(),
+        batchnormGradOp.getMean(), batchnormGradOp.getVariance(),
+        transposeGradOutput, batchnormGradOp.getEpsilon(), newFeatureIndex);
+
+    rewriter.replaceAllUsesWith(op->getResult(0), newBatchNormOp->getResult(0));
+    rewriter.replaceAllUsesWith(batchnormGradOp->getResult(1),
+                                newBatchNormOp->getResult(1));
+    rewriter.replaceAllUsesWith(batchnormGradOp->getResult(2),
+                                newBatchNormOp->getResult(2));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19836,11 +19937,12 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns
-          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
-               TransposeIota, TransposeReduceWindow, TransposeReduce,
-               TransposeSelect, TransposeDynamicSlice, TransposeReverse>(
-              context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
+                   TransposeDUS, TransposeIota, TransposeReduceWindow,
+                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
+                   TransposeReverse, TransposeBatchNormTraining,
+                   TransposeBatchNormInference, TransposeBatchNormGrad>(
+          context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
