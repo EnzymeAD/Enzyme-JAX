@@ -1831,3 +1831,18 @@ def ConjReal : EnzymeHLOPatternOp<
   "conj_real"> {
   let patterns = ["ConjReal"];
 }
+
+def ApplyTransposeBatchNormTrainingPatterns : EnzymeHLOPatternOp<
+    "transpose_batch_norm_training"> {
+  let patterns = ["TransposeBatchNormTraining"];
+}
+
+def ApplyTransposeBatchNormInferencePatterns : EnzymeHLOPatternOp<
+    "transpose_batch_norm_inference"> {
+  let patterns = ["TransposeBatchNormInference"];
+}
+
+def ApplyTransposeBatchNormGradPatterns : EnzymeHLOPatternOp<
+    "transpose_batch_norm_grad"> {
+  let patterns = ["TransposeBatchNormGrad"];
+}
