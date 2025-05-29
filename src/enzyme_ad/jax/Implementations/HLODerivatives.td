@@ -115,9 +115,26 @@ def Einsum : HLOInst<"EinsumOp">;
 def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
 def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
 
+/// Helpers - Max/Min
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
+def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
+def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+
 // Others
-def CheckedMul : HLOInst<"MulOp">;
-def CheckedDiv : HLOInst<"DivOp">;
+def CheckedMul : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Mul $diffret, $x)),
+                    (Mul $diffret, $x)
+                  )>;
+
+def CheckedDiv : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Div $diffret, $x)),
+                    (Div $diffret, $x)
+                  )>;
 
 // Helpers
 def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -917,12 +934,6 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     )
                   >;
 
-/// Helpers - Max/Min
-def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
-def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
-def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
-def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
-
 def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEinsumConfig();
 }]>;
@@ -990,7 +1001,7 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
                       (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
                       (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
                     ],
-                    (Div (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
+                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
                   >;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
@@ -1127,8 +1138,8 @@ def : HLODerivative<"DivOp", (Op $x, $y),
                     [
                       (CheckedDiv (DiffeRet), $y),
                       (Neg (Mul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
-                    ]
-                    // (CheckedDiv (FSub (SelectIfActive $x, (FMul (Shadow $x), $y), (Zero $x)), (SelectIfActive $y, (FMul (Shadow $y), $x), (Zero $y))), (FMul $y, $y))
+                    ],
+                    (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
                   >;
 
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
@@ -1255,7 +1266,7 @@ def : HLOInactiveOp<"RngBitGeneratorOp">;
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"-2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
-                      (Div (DiffeRet), (Mul (HLOConstantFP<"-2"> $x), (Mul $x, (Sqrt $x))))
+                      (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"-2"> $x), (Mul $x, (Sqrt $x))))
                     ]
                   >;
 
