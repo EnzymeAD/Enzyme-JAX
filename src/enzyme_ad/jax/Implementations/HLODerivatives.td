@@ -1137,7 +1137,7 @@ def : HLOInactiveOp<"CreateTokenOp">;
 def : HLODerivative<"DivOp", (Op $x, $y),
                     [
                       (CheckedDiv (DiffeRet), $y),
-                      (Neg (Mul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
+                      (Neg (CheckedMul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
                     ],
                     (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
                   >;
