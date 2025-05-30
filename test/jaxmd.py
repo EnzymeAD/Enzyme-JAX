@@ -79,9 +79,6 @@ class JAXMD(EnzymeJaxTest):
             # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
             new_state, new_nbrs = step(0, (state, nbrs))
             return (
-                new_state.position,
-                new_state.momentum,
-                new_state.force,
                 new_state.mass,
                 new_state.chain.position,
                 new_state.chain.momentum,
@@ -111,7 +108,15 @@ class JAXMD(EnzymeJaxTest):
         # for i, v in enumerate(self.ins):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
-        self.douts = tuple(x.copy() for x in self.ins)
+        self.douts = [
+        
+            state.mass,
+            state.chain.position,
+            state.chain.momentum,
+            state.chain.mass,
+            state.chain.tau,
+            state.chain.kinetic_energy,
+        ]
         self.AllPipelines = pipelines()
         # No support for stablehlo.scatter atm
         # self.revfilter = justjax
