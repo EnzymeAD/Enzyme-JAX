@@ -19708,11 +19708,7 @@ struct IfOpLiftCommonOps final
 
     for (auto [trueOp, falseOp] : opsToLift) {
       rewriter.modifyOpInPlace(trueOp, [&]() { trueOp->moveBefore(op); });
-
-      for (int i = 0; i < falseOp->getNumResults(); ++i)
-        rewriter.replaceAllUsesWith(falseOp->getResult(i),
-                                    trueOp->getResult(i));
-      rewriter.eraseOp(falseOp);
+      rewriter.replaceOp(falseOp, trueOp);
     }
 
     return success();
