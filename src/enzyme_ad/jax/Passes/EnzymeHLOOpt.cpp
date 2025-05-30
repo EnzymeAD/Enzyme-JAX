@@ -19620,6 +19620,59 @@ struct SelectBroadcastInDim final
   }
 };
 
+struct TransposeIf final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIf> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ifOp = op.getOperand().getDefiningOp<stablehlo::IfOp>();
+    if (!ifOp)
+      return failure();
+    if (!llvm::hasSingleElement(op.getOperand().getUses()))
+      return failure();
+
+    auto opRes = cast<OpResult>(op.getOperand());
+    ssize_t opIdx = opRes.getResultNumber();
+
+    SmallVector<Type> ifResultTypes = llvm::to_vector(ifOp.getResultTypes());
+    ifResultTypes[opIdx] = op.getType();
+
+    auto newIfOp = rewriter.create<stablehlo::IfOp>(op.getLoc(), ifResultTypes,
+                                                    ifOp.getPred());
+
+    Operation *trueTerm = ifOp.getTrueBranch().front().getTerminator();
+    Operation *falseTerm = ifOp.getFalseBranch().front().getTerminator();
+
+    rewriter.setInsertionPoint(trueTerm);
+    auto newTrue = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), trueTerm->getOperands()[opIdx], op.getPermutation());
+    rewriter.modifyOpInPlace(trueTerm,
+                             [&] { trueTerm->setOperand(opIdx, newTrue); });
+
+    rewriter.setInsertionPoint(falseTerm);
+    auto newFalse = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), falseTerm->getOperands()[opIdx], op.getPermutation());
+    rewriter.modifyOpInPlace(falseTerm,
+                             [&] { falseTerm->setOperand(opIdx, newFalse); });
+
+    newIfOp.getTrueBranch().takeBody(ifOp.getTrueBranch());
+    newIfOp.getFalseBranch().takeBody(ifOp.getFalseBranch());
+
+    for (int i = 0; i < ifOp.getNumResults(); i++) {
+      if (i == opIdx) {
+        rewriter.replaceAllUsesWith(op.getResult(), newIfOp.getResult(i));
+      } else {
+        rewriter.replaceAllUsesWith(ifOp.getResult(i), newIfOp.getResult(i));
+      }
+    }
+
+    rewriter.eraseOp(op);
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19976,12 +20029,12 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
-                   TransposeDUS, TransposeIota, TransposeReduceWindow,
-                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
-                   TransposeReverse, TransposeBatchNormTraining,
-                   TransposeBatchNormInference, TransposeBatchNormGrad>(
-          context);
+      patterns
+          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
+               TransposeIota, TransposeReduceWindow, TransposeReduce,
+               TransposeSelect, TransposeDynamicSlice, TransposeReverse,
+               TransposeBatchNormTraining, TransposeBatchNormInference,
+               TransposeBatchNormGrad, TransposeIf>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 

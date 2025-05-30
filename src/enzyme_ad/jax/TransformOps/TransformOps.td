@@ -1851,3 +1851,8 @@ def ApplySelectBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "select_broadcast_in_dim"> {
   let patterns = ["SelectBroadcastInDim"];
 }
+
+def ApplyTransposeIfPatterns : EnzymeHLOPatternOp<
+    "transpose_if"> {
+  let patterns = ["TransposeIf"];
+}
