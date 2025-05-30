@@ -19672,6 +19672,7 @@ struct TransposeIf final
     return success();
   }
 };
+
 struct IfOpLiftCommonOps final
     : public CheckedOpRewritePattern<stablehlo::IfOp, IfOpLiftCommonOps> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -19706,15 +19707,12 @@ struct IfOpLiftCommonOps final
       return rewriter.notifyMatchFailure(op, "no common ops found");
 
     for (auto [trueOp, falseOp] : opsToLift) {
-      Operation *liftedOp = rewriter.clone(*trueOp);
-
-      for (int i = 0; i < trueOp->getNumResults(); ++i)
-        rewriter.replaceAllUsesWith(trueOp->getResult(i),
-                                    liftedOp->getResult(i));
+      rewriter.modifyOpInPlace(trueOp, [&]() { trueOp->moveBefore(op); });
 
       for (int i = 0; i < falseOp->getNumResults(); ++i)
         rewriter.replaceAllUsesWith(falseOp->getResult(i),
-                                    liftedOp->getResult(i));
+                                    trueOp->getResult(i));
+      rewriter.eraseOp(falseOp);
     }
 
     return success();
