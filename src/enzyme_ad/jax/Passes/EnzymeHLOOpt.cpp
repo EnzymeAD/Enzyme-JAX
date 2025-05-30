@@ -19672,6 +19672,54 @@ struct TransposeIf final
     return success();
   }
 };
+struct IfOpLiftCommonOps final
+    : public CheckedOpRewritePattern<stablehlo::IfOp, IfOpLiftCommonOps> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
+    mlir::Region &trueRegion = op.getTrueBranch();
+    mlir::Region &falseRegion = op.getFalseBranch();
+
+    SmallVector<std::pair<Operation *, Operation *>> opsToLift;
+
+    auto &trueBlock = trueRegion.front();
+    auto &falseBlock = falseRegion.front();
+
+    for (auto trueIt = trueBlock.begin();
+         !trueIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++trueIt) {
+      Operation *trueOp = &*trueIt;
+
+      for (auto falseIt = falseBlock.begin();
+           !falseIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++falseIt) {
+        Operation *falseOp = &*falseIt;
+
+        if (OperationEquivalence::isEquivalentTo(
+                trueOp, falseOp, OperationEquivalence::IgnoreLocations)) {
+          opsToLift.emplace_back(trueOp, falseOp);
+          break;
+        }
+      }
+    }
+
+    if (opsToLift.empty())
+      return rewriter.notifyMatchFailure(op, "no common ops found");
+
+    for (auto [trueOp, falseOp] : opsToLift) {
+      Operation *liftedOp = rewriter.clone(*trueOp);
+
+      for (int i = 0; i < trueOp->getNumResults(); ++i)
+        rewriter.replaceAllUsesWith(trueOp->getResult(i),
+                                    liftedOp->getResult(i));
+
+      for (int i = 0; i < falseOp->getNumResults(); ++i)
+        rewriter.replaceAllUsesWith(falseOp->getResult(i),
+                                    liftedOp->getResult(i));
+    }
+
+    return success();
+  }
+};
 
 ///////////////  End Imported from stablehlo
 
@@ -20134,7 +20182,8 @@ struct EnzymeHLOOptPass
         ConcatElementwise,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
-        ReduceReduce
+        ReduceReduce,
+        IfOpLiftCommonOps
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
