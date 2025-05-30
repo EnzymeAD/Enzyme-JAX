@@ -19582,6 +19582,44 @@ struct TransposeBatchNormGrad final
   }
 };
 
+struct SelectBroadcastInDim final
+    : public CheckedOpRewritePattern<stablehlo::SelectOp,
+                                     SelectBroadcastInDim> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcastOp = op.getPred().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastOp)
+      return failure();
+
+    auto bcastOpOperand = bcastOp.getOperand();
+    auto bcastOpOperandType = cast<RankedTensorType>(bcastOpOperand.getType());
+    auto bcastOpOperandShape = bcastOpOperandType.getShape();
+
+    if (bcastOpOperandShape.size() == 0) {
+      // 0-dim tensor
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+          op, bcastOpOperand, op.getOnTrue(), op.getOnFalse());
+      return success();
+    } else if (bcastOpOperandShape.size() == 1) {
+      if (bcastOpOperandShape[0] != 1)
+        return failure();
+
+      // 1-dim tensor of size (1,)
+      auto reshapedPred = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(),
+          RankedTensorType::get({}, bcastOpOperandType.getElementType()),
+          bcastOpOperand);
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+          op, reshapedPred, op.getOnTrue(), op.getOnFalse());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19798,7 +19836,8 @@ struct EnzymeHLOOptPass
              SimplifyBoundary<enzymexla::ExtendOp>,
              SimplifyBoundary<enzymexla::WrapOp>,
              SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-             ReshapeTransposeToBroadcast>(context, PatternBenefit(65000));
+             ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
+            context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

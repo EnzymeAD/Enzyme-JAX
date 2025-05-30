@@ -1846,3 +1846,8 @@ def ApplyTransposeBatchNormGradPatterns : EnzymeHLOPatternOp<
     "transpose_batch_norm_grad"> {
   let patterns = ["TransposeBatchNormGrad"];
 }
+
+def ApplySelectBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "select_broadcast_in_dim"> {
+  let patterns = ["SelectBroadcastInDim"];
+}
