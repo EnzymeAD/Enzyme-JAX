@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=select_op_used_within_if" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 module {
   func.func @main(%pred: tensor<i1>, %a: tensor<f32>, %b: tensor<f32>) -> tensor<f32> {
