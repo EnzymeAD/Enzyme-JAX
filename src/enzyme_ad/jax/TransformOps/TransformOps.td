@@ -1856,3 +1856,8 @@ def ApplyTransposeIfPatterns : EnzymeHLOPatternOp<
     "transpose_if"> {
   let patterns = ["TransposeIf"];
 }
+
+def ApplyIfOpLiftCommonOpsPatterns : EnzymeHLOPatternOp<
+    "if_op_lift_common_ops"> {
+  let patterns = ["IfOpLiftCommonOps"];
+}
