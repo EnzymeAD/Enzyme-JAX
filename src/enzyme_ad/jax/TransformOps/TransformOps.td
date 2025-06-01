@@ -1871,3 +1871,8 @@ def ApplyInvolutionConjSimplifyPatterns : EnzymeHLOPatternOp<
     "involution_conj_simplify"> {
   let patterns = ["InvolutionSimplify<chlo::ConjOp>"];
 }
+
+def ApplyInvolutionNotSimplifyPatterns : EnzymeHLOPatternOp<
+    "involution_not_simplify"> {
+  let patterns = ["InvolutionSimplify<stablehlo::NotOp>"];
+}

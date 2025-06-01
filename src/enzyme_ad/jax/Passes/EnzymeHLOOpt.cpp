@@ -20196,6 +20196,7 @@ struct EnzymeHLOOptPass
         ReduceReduce,
         IfOpLiftCommonOps,
         InvolutionSimplify<stablehlo::NegOp>,
+        InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>
       >(context);
 
