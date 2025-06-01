@@ -1341,7 +1341,7 @@ def IRFFTMaskedScaling : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   fftOutShape[rank - 1] = fftOutShape[rank - 1] == 0 ? 0 : fftOutShape[rank - 1] / 2 + 1;
 
   int64_t n = fftOutShape[rank - 1];
-  bool isOdd = to_i64(fftLength[rank - 1]) % 2 == 1;
+  bool isOdd = to_i64(fftLength[fftLength.size() - 1]) % 2 == 1;
 
   float scaling = 1;
   for (auto l : fftLength)
