@@ -1319,13 +1319,69 @@ def RFFTPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def RFFTPaddingZero : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto inDiffe = gutils->diffe(op->getResult(0), builder);
-  auto diffeType = cast<RankedTensorType>(inDiffe.getType());
+  auto diffeType = cast<RankedTensorType>(
+      gutils->diffe(op->getResult(0), builder).getType());
   auto zeroType = RankedTensorType::get({}, diffeType.getElementType());
-  auto zero = builder.create<ConstantOp>(
+  builder.create<ConstantOp>(
       op->getLoc(), zeroType,
       cast<ElementsAttr>(makeAttr(zeroType, 0)));
-  zero;
+}]>;
+
+def IRFFTMaskedScaling : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto diffeType = cast<RankedTensorType>(
+      gutils->diffe(op->getResult(0), builder).getType());
+  auto diffeShape = llvm::to_vector(diffeType.getShape());
+  auto rank = diffeShape.size();
+
+  auto fftLength = llvm::to_vector(op.getFftLength());
+
+  SmallVector<int64_t> fftOutShape;
+  for (auto l : diffeShape)
+    fftOutShape.push_back(l);
+  fftOutShape[rank - 1] = fftOutShape[rank - 1] == 0 ? 0 : fftOutShape[rank - 1] / 2 + 1;
+
+  int64_t n = fftOutShape[rank - 1];
+  bool isOdd = to_i64(fftLength[rank - 1]) % 2 == 1;
+
+  float scaling = 1;
+  for (auto l : fftLength)
+    scaling *= to_i64(l);
+  scaling = 1.0 / scaling;
+
+  auto elemType = diffeType.getElementType();
+
+  auto maskBeginType = RankedTensorType::get({1}, elemType);
+  auto maskBegin = builder.create<ConstantOp>(
+      op->getLoc(), maskBeginType,
+      cast<ElementsAttr>(makeAttr(maskBeginType, scaling)));
+
+  auto maskMiddleType = RankedTensorType::get({n - 2 + isOdd}, elemType);
+  auto maskMiddle = builder.create<ConstantOp>(
+      op->getLoc(), maskMiddleType,
+      cast<ElementsAttr>(makeAttr(maskMiddleType, 2 * scaling)));
+
+  auto maskEndType = RankedTensorType::get({1 - isOdd}, elemType);
+  auto maskEnd = builder.create<ConstantOp>(
+      op->getLoc(), maskEndType,
+      cast<ElementsAttr>(makeAttr(maskEndType, scaling)));
+
+  auto mask = builder.create<ConcatenateOp>(
+      op->getLoc(), ValueRange{maskBegin, maskMiddle, maskEnd},
+      /*dimension=*/0);
+
+  auto zero = builder.create<ConstantOp>(
+      op->getLoc(), RankedTensorType::get({n}, elemType),
+      cast<ElementsAttr>(makeAttr(RankedTensorType::get({n}, elemType), 0)));
+
+  auto complex = builder.create<ComplexOp>(op->getLoc(), ValueRange{mask, zero});
+
+  builder.create<BroadcastInDimOp>(
+      op->getLoc(),
+      RankedTensorType::get(
+        fftOutShape, cast<RankedTensorType>(complex.getType()).getElementType()),
+      complex,
+      getBroadcastInDimsAttr(
+        builder, ArrayRef<int64_t>({static_cast<int64_t>(rank - 1)})));
 }]>;
 
 def : HLODerivative<"FftOp",
@@ -1352,7 +1408,9 @@ def : HLODerivative<"FftOp",
         (
           SelectIfIRFFT
           (
-            Fft (DiffeRet), (FftType), (FftLength) // XXX: fixme
+            Mul
+            (Fft (DiffeRet), (RFFTType), (FftLength)),
+            (IRFFTMaskedScaling)
           ),
           (
             Fft (DiffeRet), (FftType), (FftLength)

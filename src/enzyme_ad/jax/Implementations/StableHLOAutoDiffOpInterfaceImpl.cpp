@@ -22,7 +22,6 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
-#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
@@ -211,6 +210,11 @@ Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
   }
 
   return builder.create(state);
+}
+
+static inline DenseI64ArrayAttr getBroadcastInDimsAttr(OpBuilder &builder,
+                                                       ArrayRef<int64_t> dims) {
+  return builder.getDenseI64ArrayAttr(dims);
 }
 
 namespace {
@@ -3858,124 +3862,6 @@ struct StablehloSubSimplifyMathInterface
 
     return failure();
   }
-};
-
-class AutoDiffFftOpRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffFftOpRev,
-                                                       FftOp> {
-public:
-  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
-                                         MGradientUtilsReverse *gutils,
-                                         SmallVector<Value> caches) const {
-    auto op = cast<stablehlo::FftOp>(orig);
-
-    Value inDiffe = gutils->diffe(op->getResult(0), builder);
-    gutils->zeroDiffe(op->getResult(0), builder);
-
-    auto fftType = op.getFftType();
-    auto fftLength = op.getFftLength();
-
-    Value gradInput;
-    if (fftType == FftType::RFFT) {
-      // RFFT adjoint is a bit more involved, so we compute the adjoint of
-      // RFFT computed via FFT which is effectively:
-      //
-      //   y = fft(x, fft_lengths)
-      //   n = fft_lengths[-1]
-      //   y[..., 1:(n // 2)]
-      auto n = fftLength[fftLength.size() - 1];
-      auto nHalf = n / 2;
-
-      auto outShape = cast<RankedTensorType>(op.getType()).getShape();
-
-      SmallVector<int64_t> paddingZeros(outShape.size(), 0);
-      SmallVector<int64_t> paddingHigh(outShape.size(), 0);
-      paddingHigh[outShape.size() - 1] = outShape[outShape.size() - 1] - nHalf;
-
-      auto diffeType = cast<RankedTensorType>(inDiffe.getType());
-      auto zeroType = RankedTensorType::get({}, diffeType.getElementType());
-      auto zero = builder.create<stablehlo::ConstantOp>(
-          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
-
-      auto paddedIndiffe =
-          builder
-              .create<stablehlo::PadOp>(op.getLoc(), inDiffe, zero,
-                                        getI64Attr(builder, paddingZeros),
-                                        getI64Attr(builder, paddingHigh),
-                                        getI64Attr(builder, paddingZeros))
-              .getResult();
-
-      auto fftOut = builder.create<FftOp>(op.getLoc(), paddedIndiffe,
-                                          FftType::FFT, fftLength);
-
-      gradInput = builder.create<stablehlo::RealOp>(op.getLoc(), fftOut);
-    } else if (fftType == FftType::IRFFT) {
-      auto fftOut =
-          builder.create<FftOp>(op.getLoc(), inDiffe, FftType::RFFT, fftLength);
-
-      auto fftOutShape = cast<RankedTensorType>(fftOut.getType()).getShape();
-      auto n = fftOutShape[fftOutShape.size() - 1];
-      auto isOdd = fftLength[fftLength.size() - 1] % 2 == 1;
-
-      auto elemType = cast<RankedTensorType>(fftOut.getType()).getElementType();
-
-      auto maskBeginType = RankedTensorType::get({1}, elemType);
-
-      auto maskBegin = builder.create<stablehlo::ConstantOp>(
-          orig->getLoc(), maskBeginType,
-          cast<ElementsAttr>(makeAttr(maskBeginType, 1)));
-
-      auto maskMiddleType = RankedTensorType::get({n - 2 + isOdd}, elemType);
-      auto maskMiddle = builder.create<stablehlo::ConstantOp>(
-          orig->getLoc(), maskMiddleType,
-          cast<ElementsAttr>(makeAttr(maskMiddleType, 2)));
-
-      auto maskEndType = RankedTensorType::get({1 - isOdd}, elemType);
-      auto maskEnd = builder.create<stablehlo::ConstantOp>(
-          orig->getLoc(), maskEndType,
-          cast<ElementsAttr>(makeAttr(maskEndType, 1)));
-
-      auto mask = builder.create<stablehlo::ConcatenateOp>(
-          orig->getLoc(), ValueRange{maskBegin, maskMiddle, maskEnd},
-          /*dimension=*/0);
-
-      auto expandedMask = builder.create<stablehlo::BroadcastInDimOp>(
-          orig->getLoc(), fftOut.getType(), mask,
-          ArrayRef<int64_t>({static_cast<int64_t>(fftOutShape.size()) - 1}));
-
-      auto scaled = builder.create<stablehlo::MulOp>(orig->getLoc(), fftOut,
-                                                     expandedMask);
-
-      float scale = 1.0;
-      for (auto l : fftLength)
-        scale *= l;
-
-      auto scaleOp = builder.create<stablehlo::ConstantOp>(
-          orig->getLoc(), fftOut.getType(),
-          cast<ElementsAttr>(makeAttr(fftOut.getType(), scale)));
-
-      auto scaledFinal =
-          builder.create<stablehlo::MulOp>(orig->getLoc(), scaled, scaleOp);
-
-      gradInput = builder.create<chlo::ConjOp>(orig->getLoc(), scaledFinal);
-    } else { // FFT & IFFT
-      gradInput =
-          builder.create<FftOp>(op.getLoc(), inDiffe, fftType, fftLength);
-    }
-
-    if (!gutils->isConstantValue(op->getOperand(0)))
-      gutils->addToDiffe(op->getOperand(0), gradInput, builder);
-
-    return success();
-  }
-
-  SmallVector<Value> cacheValues(Operation *orig,
-                                 MGradientUtilsReverse *gutils) const {
-    return {};
-  }
-
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
 };
 
 } // namespace

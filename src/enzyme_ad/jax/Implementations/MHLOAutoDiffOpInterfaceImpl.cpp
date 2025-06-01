@@ -67,6 +67,10 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+static inline DenseIntElementsAttr
+getBroadcastInDimsAttr(OpBuilder &builder, ArrayRef<int64_t> dims) {
+  return builder.getI64VectorAttr(dims);
+}
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace
