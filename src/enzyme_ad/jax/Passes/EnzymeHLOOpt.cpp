@@ -19683,6 +19683,7 @@ struct IfOpLiftCommonOps final
     mlir::Region &falseRegion = op.getFalseBranch();
 
     SmallVector<std::pair<Operation *, Operation *>> opsToLift;
+    llvm::SmallPtrSet<Operation *, 8> falseOpsMatched;
 
     auto &trueBlock = trueRegion.front();
     auto &falseBlock = falseRegion.front();
@@ -19695,9 +19696,13 @@ struct IfOpLiftCommonOps final
            !falseIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++falseIt) {
         Operation *falseOp = &*falseIt;
 
+        if (falseOpsMatched.contains(falseOp))
+          continue;
+
         if (OperationEquivalence::isEquivalentTo(
                 trueOp, falseOp, OperationEquivalence::IgnoreLocations)) {
           opsToLift.emplace_back(trueOp, falseOp);
+          falseOpsMatched.insert(falseOp);
           break;
         }
       }
@@ -19706,10 +19711,19 @@ struct IfOpLiftCommonOps final
     if (opsToLift.empty())
       return rewriter.notifyMatchFailure(op, "no common ops found");
 
+    auto mod = op->getParentOfType<ModuleOp>();
+
+    llvm::errs() << "mod before: " << mod << "\n";
+
     for (auto [trueOp, falseOp] : opsToLift) {
+      llvm::errs() << "trueOp: " << *trueOp << "\n";
+      llvm::errs() << "falseOp: " << *falseOp << "\n";
+
       rewriter.modifyOpInPlace(trueOp, [&]() { trueOp->moveBefore(op); });
       rewriter.replaceOp(falseOp, trueOp);
     }
+
+    llvm::errs() << "mod after: " << mod << "\n";
 
     return success();
   }
