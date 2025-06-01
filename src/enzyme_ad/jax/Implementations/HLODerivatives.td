@@ -958,35 +958,6 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   builder.getStringAttr(output + "," + lhs + "->" + rhs);
 }]>;
 
-// def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-//   op.getFftType();
-// }]>;
-
-// def FftTypeInverse : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-//   FftType ret;
-//   switch (op.getFftType()) {
-//     case FftType::FFT: {ret = FftType::IFFT; break;}
-//     case FftType::IFFT: {ret = FftType::FFT; break;}
-//     case FftType::RFFT: {ret = FftType::IRFFT; break;}
-//     case FftType::IRFFT: {ret = FftType::RFFT; break;}
-//   }
-//   ret;
-// }]>;
-
-// def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-//   op.getFftLength();
-// }]>;
-
-// def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-//   auto op_type = cast<RankedTensorType>(op->getResult(0).getType());
-//   auto lengths = op.getFftLength();
-//   auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
-
-//   auto ret_constant = builder.create<ConstantOp>(op.getLoc(), builder.getDenseI64ArrayAttr(ArrayRef<int64_t>({N})));
-//   auto ret_broadcast = builder.create<BroadcastInDimOp>(op.getLoc(), op_type.clone(op_type.getShape(), builder.getI64Type()), ret_constant, builder.getI64VectorAttr(op_type.getShape()));
-//   builder.create<ConvertOp>(op.getLoc(), op->getResult(0).getType(), ret_broadcast);
-// }]>;
-
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -1155,16 +1126,6 @@ def : HLOInactiveOp<"DynamicIotaOp">;
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
-
-// TODO fix `rfft` and `irfft` derivatives:
-// - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` =>
-// def : HLODerivative<"FftOp", (Op $x),
-//                     [
-//                       (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
-//                     ],
-//                     (Fft (Shadow $x), (FftType), (FftLength))
-//                   >;
 
 def : HLOInactiveOp<"FloorOp">;
 
