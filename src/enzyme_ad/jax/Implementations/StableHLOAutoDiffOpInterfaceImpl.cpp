@@ -3869,9 +3869,6 @@ public:
                                          SmallVector<Value> caches) const {
     auto op = cast<stablehlo::FftOp>(orig);
 
-    if (gutils->isConstantValue(op->getResult(0)))
-      return success(); // skip if no adjoint needed
-
     Value inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
