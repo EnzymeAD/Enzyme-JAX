@@ -19715,6 +19715,23 @@ struct IfOpLiftCommonOps final
   }
 };
 
+// used for ops that dont define the Involution trait
+template <typename OpTy>
+struct InvolutionSimplify
+    : public CheckedOpRewritePattern<OpTy, InvolutionSimplify<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, InvolutionSimplify<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().template getDefiningOp<OpTy>();
+    if (!operandOp)
+      return failure();
+
+    rewriter.replaceOp(op, operandOp.getOperand());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20177,7 +20194,10 @@ struct EnzymeHLOOptPass
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,
-        IfOpLiftCommonOps
+        IfOpLiftCommonOps,
+        InvolutionSimplify<stablehlo::NegOp>,
+        InvolutionSimplify<stablehlo::NotOp>,
+        InvolutionSimplify<chlo::ConjOp>
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
