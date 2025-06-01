@@ -103,6 +103,8 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
+def Conj : Inst<"ConjOp", "chlo", "", "">;
+
 /// StableHLO - WIP operations
 def ReturnOp : HLOInst<"ReturnOp">;
 
@@ -1408,9 +1410,12 @@ def : HLODerivative<"FftOp",
         (
           SelectIfIRFFT
           (
-            Mul
-            (Fft (DiffeRet), (RFFTType), (FftLength)),
-            (IRFFTMaskedScaling)
+            Conj
+            (
+              Mul
+              (Fft (DiffeRet), (RFFTType), (FftLength)),
+              (IRFFTMaskedScaling)
+            )
           ),
           (
             Fft (DiffeRet), (FftType), (FftLength)

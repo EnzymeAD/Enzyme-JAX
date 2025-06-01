@@ -22,6 +22,7 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
