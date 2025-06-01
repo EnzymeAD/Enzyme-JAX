@@ -54,6 +54,7 @@ struct InitTraceOpLowering : public OpRewritePattern<enzyme::initTraceOp> {
       static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto loweredTraceType = RankedTensorType::get({1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string initTraceFn = "enzyme_probprog_init_trace";
 
@@ -90,7 +91,7 @@ struct InitTraceOpLowering : public OpRewritePattern<enzyme::initTraceOp> {
 
       // Call the LLVM function with enzymexla.jit_call
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), TypeRange{llvmPtrType},
+          op.getLoc(), TypeRange{loweredTraceType},
           mlir::FlatSymbolRefAttr::get(ctx, fnName), ValueRange{},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/rewriter.getArrayAttr({}),
