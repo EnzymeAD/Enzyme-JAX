@@ -1861,3 +1861,18 @@ def ApplyIfOpLiftCommonOpsPatterns : EnzymeHLOPatternOp<
     "if_op_lift_common_ops"> {
   let patterns = ["IfOpLiftCommonOps"];
 }
+
+def ApplyInvolutionNegSimplifyPatterns : EnzymeHLOPatternOp<
+    "involution_neg_simplify"> {
+  let patterns = ["InvolutionSimplify<stablehlo::NegOp>"];
+}
+
+def ApplyInvolutionConjSimplifyPatterns : EnzymeHLOPatternOp<
+    "involution_conj_simplify"> {
+  let patterns = ["InvolutionSimplify<chlo::ConjOp>"];
+}
+
+def ApplyInvolutionNotSimplifyPatterns : EnzymeHLOPatternOp<
+    "involution_not_simplify"> {
+  let patterns = ["InvolutionSimplify<stablehlo::NotOp>"];
+}
