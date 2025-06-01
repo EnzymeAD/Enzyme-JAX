@@ -18,7 +18,7 @@ module @"reactant_\E2\88\87test_fft" attributes {mhlo.num_partitions = 1 : i64, 
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x4xf32> {tf.aliasing_output = 1 : i32}) -> (tensor<3x4xf32>, tensor<3x4xf32>) {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<[[(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)], [(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)], [(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)]]> : tensor<3x3xcomplex<f32>>
+// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)], [(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)], [(1.000000e+00,0.000000e+00), (2.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)]]> : tensor<3x3xcomplex<f32>>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f32>>
 // CHECK-NEXT:     %cst_1 = stablehlo.constant dense<(1.200000e+01,0.000000e+00)> : tensor<3x3xcomplex<f32>>
 // CHECK-NEXT:     %cst_2 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3x3xcomplex<f32>>
