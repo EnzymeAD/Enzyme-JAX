@@ -1881,3 +1881,8 @@ def ApplyRealConjSimplifyPatterns : EnzymeHLOPatternOp<
     "real_conj_simplify"> {
   let patterns = ["RealConjSimplify"];
 }
+
+def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
+    "conj_complex_simplify"> {
+  let patterns = ["ConjComplexSimplify"];
+}
