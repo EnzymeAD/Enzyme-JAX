@@ -21,8 +21,8 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "stablehlo/dialect/ChloOps.h"
+#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 #include "src/enzyme_ad/jax/Utils.h"
