@@ -19638,6 +19638,7 @@ struct TransposeIf final
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifOp.getResultTypes());
     ifResultTypes[opIdx] = op.getType();
 
+    rewriter.setInsertionPoint(ifOp);
     auto newIfOp = rewriter.create<stablehlo::IfOp>(op.getLoc(), ifResultTypes,
                                                     ifOp.getPred());
 
@@ -19711,19 +19712,10 @@ struct IfOpLiftCommonOps final
     if (opsToLift.empty())
       return rewriter.notifyMatchFailure(op, "no common ops found");
 
-    auto mod = op->getParentOfType<ModuleOp>();
-
-    llvm::errs() << "mod before: " << mod << "\n";
-
     for (auto [trueOp, falseOp] : opsToLift) {
-      llvm::errs() << "trueOp: " << *trueOp << "\n";
-      llvm::errs() << "falseOp: " << *falseOp << "\n";
-
       rewriter.modifyOpInPlace(trueOp, [&]() { trueOp->moveBefore(op); });
       rewriter.replaceOp(falseOp, trueOp);
     }
-
-    llvm::errs() << "mod after: " << mod << "\n";
 
     return success();
   }
