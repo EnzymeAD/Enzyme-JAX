@@ -1,8 +1,8 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -38,15 +38,72 @@ template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
     return IntegerAttr::get(elemType, val);
 }
 
-struct InitTraceOpLowering : public OpRewritePattern<enzyme::initTraceOp> {
+struct FuncOpConversion : public OpConversionPattern<func::FuncOp> {
+  using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  InitTraceOpLowering(std::string backend, MLIRContext *context,
-                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+  FuncOpConversion(std::string backend, TypeConverter &typeConverter,
+                   MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
 
-  LogicalResult matchAndRewrite(enzyme::initTraceOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(func::FuncOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+
+    // For now: only convert functions that return a single enzyme.Trace
+    if (op.getFunctionType().getNumResults() != 1 ||
+        !isa<enzyme::TraceType>(op.getFunctionType().getResult(0)))
+      return failure();
+
+    auto newResultType = RankedTensorType::get(
+        {1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+
+    SmallVector<Type> newResultTypes = {newResultType};
+    auto newFuncType = FunctionType::get(ctx, op.getFunctionType().getInputs(),
+                                         newResultTypes);
+
+    rewriter.modifyOpInPlace(op, [&] { op.setType(newFuncType); });
+
+    return success();
+  }
+};
+
+struct ReturnOpConversion : public OpConversionPattern<func::ReturnOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  ReturnOpConversion(std::string backend, TypeConverter &typeConverter,
+                     MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // For now: only convert returns of a single enzyme.Trace
+    if (op.getNumOperands() != 1 ||
+        !isa<enzyme::TraceType>(op.getOperand(0).getType()))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<func::ReturnOp>(op, adaptor.getOperands());
+    return success();
+  }
+};
+
+struct InitTraceOpConversion : public OpConversionPattern<enzyme::initTraceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  InitTraceOpConversion(std::string backend, TypeConverter &typeConverter,
+                        MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::initTraceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
 
     if (backend == "cpu") {
@@ -54,7 +111,8 @@ struct InitTraceOpLowering : public OpRewritePattern<enzyme::initTraceOp> {
       static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-      auto loweredTraceType = RankedTensorType::get({1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+      auto loweredTraceType = RankedTensorType::get(
+          {1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string initTraceFn = "enzyme_probprog_init_trace";
 
@@ -116,13 +174,36 @@ struct LowerEnzymeProbProgPass
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
+
+    TypeConverter typeConverter;
+    typeConverter.addConversion([](Type t) { return t; });
+    typeConverter.addConversion([&](enzyme::TraceType t) {
+      return RankedTensorType::get(
+          {1},
+          IntegerType::get(context, /*bitwidth=*/64, IntegerType::Unsigned));
+    });
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect>();
+    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<enzymexla::EnzymeXLADialect>();
+    target.addLegalOp<UnrealizedConversionCastOp>();
+    target.addIllegalOp<enzyme::initTraceOp>();
+
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp f) {
+      return typeConverter.isSignatureLegal(f.getFunctionType());
+    });
+    target.addDynamicallyLegalOp<func::ReturnOp>(
+        [&](func::ReturnOp r) { return typeConverter.isLegal(r); });
+
     RewritePatternSet patterns(context);
+    patterns.add<InitTraceOpConversion>(backend, typeConverter, context);
+    patterns.add<FuncOpConversion>(backend, typeConverter, context);
+    patterns.add<ReturnOpConversion>(backend, typeConverter, context);
 
-    patterns.add<InitTraceOpLowering>(backend, context);
-
-    GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }
