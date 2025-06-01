@@ -31,14 +31,13 @@ module @"reactant_\E2\88\87test_fft" attributes {mhlo.num_partitions = 1 : i64, 
 // CHECK-NEXT:     %4 = stablehlo.complex %cst, %cst_1 : tensor<3xcomplex<f32>>
 // CHECK-NEXT:     %5 = stablehlo.broadcast_in_dim %4, dims = [1] : (tensor<3xcomplex<f32>>) -> tensor<3x3xcomplex<f32>>
 // CHECK-NEXT:     %6 = stablehlo.multiply %3, %5 : tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:     %7 = chlo.conj %6 : tensor<3x3xcomplex<f32>> -> tensor<3x3xcomplex<f32>>
 
-// CHECK-NEXT:     %8 = stablehlo.add %cst_2, %7 : tensor<3x3xcomplex<f32>>
+// CHECK-NEXT:     %7 = stablehlo.add %cst_2, %6 : tensor<3x3xcomplex<f32>>
 
-// CHECK-NEXT:     %9 = chlo.conj %8 : tensor<3x3xcomplex<f32>> -> tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:     %10 = stablehlo.pad %9, %cst_0, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<3x3xcomplex<f32>>, tensor<complex<f32>>) -> tensor<3x4xcomplex<f32>>
-// CHECK-NEXT:     %11 = stablehlo.fft %10, type =  FFT, length = [3, 4] : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xcomplex<f32>>
-// CHECK-NEXT:     %12 = stablehlo.real %11 : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xf32>
+// CHECK-NEXT:     %8 = chlo.conj %7 : tensor<3x3xcomplex<f32>> -> tensor<3x3xcomplex<f32>>
+// CHECK-NEXT:     %9 = stablehlo.pad %8, %cst_0, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<3x3xcomplex<f32>>, tensor<complex<f32>>) -> tensor<3x4xcomplex<f32>>
+// CHECK-NEXT:     %10 = stablehlo.fft %9, type =  FFT, length = [3, 4] : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xcomplex<f32>>
+// CHECK-NEXT:     %11 = stablehlo.real %10 : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xf32>
 
-// CHECK-NEXT:     return %12, %arg0 : tensor<3x4xf32>, tensor<3x4xf32>
+// CHECK-NEXT:     return %11, %arg0 : tensor<3x4xf32>, tensor<3x4xf32>
 // CHECK-NEXT:   }
