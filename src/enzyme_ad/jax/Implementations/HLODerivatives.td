@@ -1281,3 +1281,86 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     ],
                     (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
+
+// FFT rules
+def SelectIfRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::RFFT">;
+def SelectIfIRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::IRFFT">;
+
+def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftType();
+}]>;
+
+def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftLength();
+}]>;
+
+def RFFTType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  FftType::RFFT;
+}]>;
+def FFTType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  FftType::FFT;
+}]>;
+
+def RFFTPaddingZeros : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> paddingZeros(cast<RankedTensorType>(op.getType()).getRank(), 0);
+  getI64Attr(builder, paddingZeros);
+}]>;
+
+def RFFTPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto outShape = cast<RankedTensorType>(op.getType()).getShape();
+
+  auto fftlength = llvm::to_vector(op.getFftLength());
+  int64_t nHalf = to_i64(fftlength[fftlength.size() - 1]) / 2;
+
+  SmallVector<int64_t> paddingHigh(outShape.size(), 0);
+  paddingHigh[outShape.size() - 1] = outShape[outShape.size() - 1] - nHalf;
+
+  getI64Attr(builder, paddingHigh);
+}]>;
+
+def RFFTPaddingZero : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto inDiffe = gutils->diffe(op->getResult(0), builder);
+  auto diffeType = cast<RankedTensorType>(inDiffe.getType());
+  auto zeroType = RankedTensorType::get({}, diffeType.getElementType());
+  auto zero = builder.create<ConstantOp>(
+      op->getLoc(), zeroType,
+      cast<ElementsAttr>(makeAttr(zeroType, 0)));
+  zero;
+}]>;
+
+def : HLODerivative<"FftOp",
+    (Op $x),
+    [
+      (
+        SelectIfRFFT
+        (
+          Real
+          (
+            Fft
+            (
+              Pad
+              (DiffeRet),
+              (RFFTPaddingZero),
+              (RFFTPaddingZeros),
+              (RFFTPaddingHigh),
+              (RFFTPaddingZeros)
+            ),
+            (FFTType),
+            (FftLength)
+          )
+        ),
+        (
+          SelectIfIRFFT
+          (
+            Fft (DiffeRet), (FftType), (FftLength) // XXX: fixme
+          ),
+          (
+            Fft (DiffeRet), (FftType), (FftLength)
+          )
+        )
+      )
+    ],
+    (
+      Fft (Shadow $x), (FftType), (FftLength)
+    )
+>;

@@ -3978,33 +3978,6 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
-class AutoDiffFftOpFwd
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffFftOpFwd, FftOp> {
-public:
-  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
-                                         MGradientUtils *gutils) const {
-    auto op = cast<FftOp>(orig);
-
-    Value operand = op.getOperand();
-    Value tangentOperand;
-
-    if (gutils->isConstantValue(operand)) {
-      tangentOperand = dyn_cast<AutoDiffTypeInterface>(operand.getType())
-                           .createNullValue(builder, orig->getLoc());
-    } else {
-      tangentOperand = gutils->invertPointerM(operand, builder);
-    }
-
-    auto newFftOp = builder.create<FftOp>(orig->getLoc(), tangentOperand,
-                                          op.getFftType(), op.getFftLength());
-
-    gutils->setDiffe(op.getResult(), newFftOp.getResult(), builder);
-    gutils->eraseIfUnused(orig);
-
-    return success();
-  }
-};
-
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -4048,8 +4021,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
-    FftOp::attachInterface<AutoDiffFftOpFwd>(*context);
-    FftOp::attachInterface<AutoDiffFftOpRev>(*context);
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);

@@ -24,6 +24,7 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
