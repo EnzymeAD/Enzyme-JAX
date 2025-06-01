@@ -27,6 +27,7 @@
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include <cstdint>
 
 using namespace mlir;
@@ -213,26 +214,6 @@ Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
 }
 
 namespace {
-
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType)) {
-    return FloatAttr::get(elemType, val);
-  } else if (isa<IntegerType>(elemType)) {
-    return IntegerAttr::get(elemType, val);
-  } else if (auto complexType = dyn_cast<ComplexType>(elemType)) {
-    auto elementType = complexType.getElementType();
-    auto realAttr = makeAttr(elementType, val);
-    auto imagAttr = makeAttr(elementType, 0);
-
-    SmallVector<Attribute> complexVals = {realAttr, imagAttr};
-    return ArrayAttr::get(elemType.getContext(), complexVals);
-  } else {
-    llvm_unreachable("Unsupported type");
-  }
-}
 
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
