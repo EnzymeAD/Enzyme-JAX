@@ -3963,7 +3963,7 @@ public:
 
       auto expandedMask = builder.create<stablehlo::BroadcastInDimOp>(
           orig->getLoc(), fftOut.getType(), mask,
-          ArrayRef<int64_t>({fftOutShape.size() - 1}));
+          ArrayRef<int64_t>({static_cast<int64_t>(fftOutShape.size()) - 1}));
 
       auto scaled = builder.create<stablehlo::MulOp>(orig->getLoc(), fftOut,
                                                      expandedMask);
@@ -3984,8 +3984,6 @@ public:
       gradInput =
           builder.create<FftOp>(op.getLoc(), inDiffe, fftType, fftLength);
     }
-
-    llvm::errs() << "gradInput: " << gradInput << "\n";
 
     if (!gutils->isConstantValue(op->getOperand(0)))
       gutils->addToDiffe(op->getOperand(0), gradInput, builder);
