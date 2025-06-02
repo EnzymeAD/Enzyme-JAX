@@ -1876,3 +1876,13 @@ def ApplyInvolutionNotSimplifyPatterns : EnzymeHLOPatternOp<
     "involution_not_simplify"> {
   let patterns = ["InvolutionSimplify<stablehlo::NotOp>"];
 }
+
+def ApplyRealConjSimplifyPatterns : EnzymeHLOPatternOp<
+    "real_conj_simplify"> {
+  let patterns = ["RealConjSimplify"];
+}
+
+def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
+    "conj_complex_simplify"> {
+  let patterns = ["ConjComplexSimplify"];
+}
