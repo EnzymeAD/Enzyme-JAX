@@ -84,6 +84,55 @@ Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
 
+static void addMemoryEffectsFromAttr(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
+    ArrayAttr effectsAttr) {
+  for (auto attr : effectsAttr) {
+    auto strAttr = dyn_cast<StringAttr>(attr);
+    assert(strAttr &&
+           "enzymexla.memory_effects must be a ArrayAttr<StringAttr>");
+
+    StringRef kind = strAttr.getValue();
+    if (kind == "allocate")
+      effects.emplace_back(MemoryEffects::Allocate::get());
+    else if (kind == "free")
+      effects.emplace_back(MemoryEffects::Free::get());
+    else if (kind == "write")
+      effects.emplace_back(MemoryEffects::Write::get());
+    else if (kind == "read")
+      effects.emplace_back(MemoryEffects::Read::get());
+    else
+      assert(false && "enzymexla.memory_effects has an invalid value");
+  }
+}
+
+static void
+addAllMemoryEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Allocate::get());
+  effects.emplace_back(MemoryEffects::Free::get());
+  effects.emplace_back(MemoryEffects::Write::get());
+  effects.emplace_back(MemoryEffects::Read::get());
+}
+
+void KernelCallOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
+  assert(moduleOp && "KernelCallOp must be inside a ModuleOp");
+
+  auto callee =
+      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  assert(callee && "KernelCallOp must have a valid function");
+
+  auto effectsAttr =
+      callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
+  if (!effectsAttr) {
+    addAllMemoryEffects(effects);
+    return;
+  }
+
+  addMemoryEffectsFromAttr(effects, effectsAttr);
+}
+
 LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
@@ -122,6 +171,26 @@ void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
 Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
 
 Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
+
+void JITCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
+  assert(moduleOp && "JITCallOp must be inside a ModuleOp");
+
+  auto callee =
+      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  assert(callee && "JITCallOp must have a valid function");
+
+  auto effectsAttr =
+      callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
+  if (!effectsAttr) {
+    addAllMemoryEffects(effects);
+    return;
+  }
+
+  addMemoryEffectsFromAttr(effects, effectsAttr);
+}
 
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
@@ -231,7 +300,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-      outputAliases);
+      outputAliases, launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <>
@@ -241,7 +310,8 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return rewriter.create<enzymexla::JITCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, outputAliases);
+      /*resultLayouts*/ nullptr, outputAliases,
+      launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <typename OpTy>
@@ -261,7 +331,6 @@ public:
     {
       bool potentialReadNone = false;
       for (auto arg : fn.front().getArguments()) {
-        auto operandIndex = arg.getArgNumber();
         bool readnone = arg.use_empty();
         if (!readnone)
           continue;
@@ -321,7 +390,7 @@ public:
         mlir::function_interface_impl::eraseFunctionArguments(fn, deadArgs,
                                                               fty2);
       } else {
-        fn.eraseArguments(deadArgs);
+        (void)fn.eraseArguments(deadArgs);
       }
     });
 
@@ -378,8 +447,8 @@ public:
     auto src = op.getSource().getDefiningOp<Memref2PointerOp>();
     if (!src)
       return failure();
-    auto smt = src.getSource().getType().cast<MemRefType>();
-    auto omt = op.getType().cast<MemRefType>();
+    auto smt = cast<MemRefType>(src.getSource().getType());
+    auto omt = cast<MemRefType>(op.getType());
     if (smt.getShape().size() != omt.getShape().size())
       return failure();
     for (unsigned i = 1; i < smt.getShape().size(); i++) {
@@ -409,12 +478,12 @@ public:
     if (!src)
       return failure();
 
-    if (src.getSource().getType().cast<MemRefType>().getShape().size() != 1)
+    if (cast<MemRefType>(src.getSource().getType()).getShape().size() != 1)
       return failure();
 
     Value idx[] = {src.getIndex()};
-    auto PET = op.getType().cast<LLVM::LLVMPointerType>().getElementType();
-    auto MET = src.getSource().getType().cast<MemRefType>().getElementType();
+    auto PET = cast<LLVM::LLVMPointerType>(op.getType()).getElementType();
+    auto MET = cast<MemRefType>(src.getSource().getType()).getElementType();
     if (PET != MET) {
       Value ps;
       if (PET)
@@ -481,13 +550,13 @@ public:
     if (!dst)
       return failure();
 
-    auto dstTy = dst.getSource().getType().cast<MemRefType>();
+    auto dstTy = cast<MemRefType>(dst.getSource().getType());
 
     Value srcv = op.getSrc();
     auto src = srcv.getDefiningOp<enzymexla::Memref2PointerOp>();
     if (!src)
       return failure();
-    auto srcTy = src.getSource().getType().cast<MemRefType>();
+    auto srcTy = cast<MemRefType>(src.getSource().getType());
     if (srcTy.getShape().size() != dstTy.getShape().size())
       return failure();
 
@@ -592,10 +661,10 @@ public:
     if (!dst)
       return failure();
 
-    auto dstTy = dst.getSource().getType().cast<MemRefType>();
+    auto dstTy = cast<MemRefType>(dst.getSource().getType());
     Type elTy = dstTy.getElementType();
 
-    if (!elTy.isa<IntegerType, FloatType>())
+    if (!isa<IntegerType, FloatType>(elTy))
       return failure();
 
     size_t width = 1;
@@ -656,7 +725,7 @@ public:
       val =
           rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, IT.getWidth());
     else {
-      auto FT = elTy.cast<FloatType>();
+      auto FT = cast<FloatType>(elTy);
       val = rewriter.create<arith::ConstantFloatOp>(
           op.getLoc(), APFloat(FT.getFloatSemantics(), "0"), FT);
     }
@@ -691,7 +760,8 @@ public:
 void Memref2PointerOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<
-      // Memref2Pointer2MemrefCast, Memref2PointerIndex, Memref2PointerBitCast,
+      // Memref2Pointer2MemrefCast, Memref2PointerIndex,
+      // Memref2PointerBitCast,
       Memref2Pointer2MemrefCast, Memref2PointerBitCast,
 
       SetSimplification<LLVM::MemsetOp>, CopySimplification<LLVM::MemcpyOp>,
@@ -774,13 +844,13 @@ public:
     if (!src)
       return failure();
 
-    auto mt = src.getType().cast<MemRefType>();
+    auto mt = cast<MemRefType>(src.getType());
 
-    // Fantastic optimization, disabled for now to make a hard debug case easier
-    // to find.
+    // Fantastic optimization, disabled for now to make a hard debug case
+    // easier to find.
     if (auto before =
             src.getSource().getDefiningOp<enzymexla::Memref2PointerOp>()) {
-      auto mt0 = before.getSource().getType().cast<MemRefType>();
+      auto mt0 = cast<MemRefType>(before.getSource().getType());
       if (mt0.getElementType() == mt.getElementType()) {
         auto sh0 = mt0.getShape();
         auto sh = mt.getShape();
@@ -890,11 +960,14 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
 
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
+  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast>(context);
+  /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
                  MetaPointer2Memref<memref::StoreOp>,
                  MetaPointer2Memref<affine::AffineLoadOp>,
                  MetaPointer2Memref<affine::AffineStoreOp>>(context);
+                 */
 }
 
 OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
@@ -929,4 +1002,62 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
     }
   }
   return nullptr;
+}
+
+LogicalResult WrapOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  WrapOpAdaptor adaptor(operands, attributes, properties, regions);
+  if (adaptor.getLhs() < 0)
+    return failure();
+  if (adaptor.getRhs() < 0)
+    return failure();
+  if (adaptor.getDimension() < 0)
+    return failure();
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimension() >= RT.getShape().size())
+    return failure();
+
+  SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
+  if (resShape[adaptor.getDimension()] != -1)
+    resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+LogicalResult ExtendOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
+  if (adaptor.getLhs() < 0)
+    return failure();
+  if (adaptor.getRhs() < 0)
+    return failure();
+  if (adaptor.getDimension() < 0)
+    return failure();
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimension() >= RT.getShape().size())
+    return failure();
+
+  SmallVector<int64_t> resShape = llvm::to_vector(RT.getShape());
+  if (resShape[adaptor.getDimension()] != -1)
+    resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+void CommRegionOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the ExecuteRegionOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getResults()));
 }

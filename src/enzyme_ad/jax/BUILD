@@ -1,10 +1,20 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
-load("@pybind11_bazel//:build_defs.bzl", "pybind_extension", "pybind_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
+load("@rules_python//python:py_library.bzl", "py_library")
 
-exports_files(["enzymexlamlir-opt.cpp", "RegistryUtils.cpp"])
+exports_files([
+    "enzymexlamlir-opt.cpp",
+    "RegistryUtils.cpp",
+])
 
 licenses(["notice"])
+
+
+config_setting(
+    name = "is_clang_build",
+    define_values = {"using_clang": "true"},
+)
 
 package(
     default_visibility = ["//:__subpackages__"],
@@ -14,9 +24,10 @@ package(
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
+    copts = ["-Wno-vla-cxx-extension"],
     deps = [
+        "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:ffi",
-        "@xla//xla/ffi:ffi_api"
     ],
 )
 
@@ -28,12 +39,19 @@ cc_library(
     ],
 )
 
-
-pybind_library(
+cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
     hdrs = ["clang_compile.h"],
+    copts = [
+        "-Wno-implicit-fallthrough",
+        "-Wno-non-virtual-dtor",
+        "-Wno-pessimizing-move",
+        "-Wno-unused-result",
+        "-Wno-unused-variable",
+    ],
     deps = [
+        "@nanobind",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -82,32 +100,35 @@ td_library(
     ],
     deps = [
         "@llvm-project//mlir:TransformDialectTdFiles",
-    ]
+    ],
 )
 
 gentbl_cc_library(
     name = "TransformOpsIncGen",
-    tbl_outs = [(
+    tbl_outs = [
+        (
             ["-gen-op-decls"],
             "TransformOps/TransformOps.h.inc",
-        ), (
+        ),
+        (
             ["-gen-op-defs"],
             "TransformOps/TransformOps.cpp.inc",
-        ), (
+        ),
+        (
             ["-gen-op-interface-decls"],
             "TransformOps/OpInterfaces.h.inc",
-        ), (
+        ),
+        (
             ["-gen-op-interface-defs"],
             "TransformOps/OpInterfaces.cpp.inc",
         ),
     ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "TransformOps/TransformOps.td",
     deps = [
         ":TransformOpsTdFiles",
     ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
-
 
 td_library(
     name = "CommDialectFiles",
@@ -163,13 +184,13 @@ gentbl_cc_library(
     name = "TransformOpsImplIncGen",
     tbl_outs = [(
         ["-gen-populate-patterns-interface-impl"],
-        "TransformOps/TransformOpsImpl.cpp.inc"
+        "TransformOps/TransformOpsImpl.cpp.inc",
     )],
+    tblgen = "//:enzymexlamlir-tblgen",
     td_file = "TransformOps/TransformOps.td",
     deps = [
         ":TransformOpsTdFiles",
     ],
-    tblgen = "//:enzymexlamlir-tblgen",
 )
 
 td_library(
@@ -179,37 +200,39 @@ td_library(
     ],
     deps = [
         "@llvm-project//mlir:TransformDialectTdFiles",
-    ]
+    ],
 )
 
 gentbl_cc_library(
     name = "RaisingTransformOpsIncGen",
-    tbl_outs = [(
+    tbl_outs = [
+        (
             ["-gen-op-decls"],
             "TransformOps/RaisingTransformOps.h.inc",
-        ), (
+        ),
+        (
             ["-gen-op-defs"],
             "TransformOps/RaisingTransformOps.cpp.inc",
         ),
     ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "TransformOps/RaisingTransformOps.td",
     deps = [
         ":RaisingTransformOpsTdFiles",
     ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
 )
 
 gentbl_cc_library(
     name = "RaisingTransformOpsImplIncGen",
     tbl_outs = [(
         ["-gen-populate-raising-patterns-interface-impl"],
-        "TransformOps/RaisingTransformOpsImpl.cpp.inc"
+        "TransformOps/RaisingTransformOpsImpl.cpp.inc",
     )],
+    tblgen = "//:enzymexlamlir-tblgen",
     td_file = "TransformOps/RaisingTransformOps.td",
     deps = [
         ":RaisingTransformOpsTdFiles",
     ],
-    tblgen = "//:enzymexlamlir-tblgen",
 )
 
 gentbl_cc_library(
@@ -218,56 +241,65 @@ gentbl_cc_library(
         (
             ["-gen-populate-raising-patterns-func-decls"],
             "TransformOps/RaisingTransformPatterns.h.inc",
-        ), (
+        ),
+        (
             ["-gen-populate-raising-patterns-func-defs"],
             "TransformOps/RaisingTransformPatterns.cpp.inc",
-        )],
+        ),
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
     td_file = "TransformOps/RaisingTransformOps.td",
     deps = [
         ":RaisingTransformOpsTdFiles",
     ],
-    tblgen = "//:enzymexlamlir-tblgen",
 )
 
 cc_library(
     name = "RaisingTransformOps",
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
+    copts = select({
+        "//conditions:default": [],
+        ":is_clang_build": ["-fbracket-depth=768"],
+    }),
     deps = [
+        ":RaisingTransformOpsImplIncGen",
+        ":RaisingTransformOpsIncGen",
+        ":RaisingTransformPatternsIncGen",
         "@llvm-project//mlir:AffineDialect",
-        "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LinalgTransformOps",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFUtils",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
-        "@llvm-project//mlir:SCFUtils",
-        ":RaisingTransformOpsIncGen",
-        ":RaisingTransformOpsImplIncGen",
-        ":RaisingTransformPatternsIncGen",
     ],
 )
 
 cc_library(
     name = "TransformOps",
     srcs = [
-        "TransformOps/TransformOps.cpp",
         "TransformOps/GenerateApplyPatterns.cpp",
+        "TransformOps/TransformOps.cpp",
     ],
+    copts = select({
+        "//conditions:default": [],
+        ":is_clang_build": ["-fbracket-depth=768"],
+    }),
     hdrs = ["TransformOps/TransformOps.h"],
     deps = [
+        ":TransformOpsImplIncGen",
+        ":TransformOpsIncGen",
+        ":XLADerivatives",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LinalgTransformOps",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
-        ":TransformOpsIncGen",
-        ":TransformOpsImplIncGen",
-        ":CommDialectIncGen",
-        ":XLADerivatives",
     ],
 )
 
@@ -410,6 +442,7 @@ td_library(
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
         "@llvm-project//mlir:ViewLikeInterfaceTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterface",
     ],
 )
 
@@ -441,7 +474,11 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/EnzymeXLAOps.td",
-    deps = [":EnzymeXLADialectTdFiles", "@enzyme//:EnzymeDialectTdFiles", "@stablehlo//:stablehlo_ops_td_files"],
+    deps = [
+        ":EnzymeXLADialectTdFiles",
+        "@enzyme//:EnzymeDialectTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
 )
 
 gentbl_cc_library(
@@ -450,20 +487,48 @@ gentbl_cc_library(
         (
             ["-gen-populate-patterns-func-decls"],
             "Passes/EnzymeHLOPatterns.h.inc",
-        ), (
+        ),
+        (
             ["-gen-populate-patterns-func-defs"],
             "Passes/EnzymeHLOPatterns.cpp.inc",
-        )],
+        ),
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
     td_file = "TransformOps/TransformOps.td",
     deps = [
         ":TransformOpsTdFiles",
     ],
-    tblgen = "//:enzymexlamlir-tblgen",
+)
+
+gentbl_cc_library(
+    name = "StablehloOptPatternsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-rewriters"],
+            "Passes/StablehloOptPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/StablehloOptPatterns.td",
+    deps = [
+        ":StablehloOptPatternsTdFiles",
+    ],
+)
+
+td_library(
+    name = "StablehloOptPatternsTdFiles",
+    srcs = [
+        "Passes/StablehloOptPatterns.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
 )
 
 cc_library(
     name = "XLADerivatives",
-    visibility = ["//visibility:public"],
     srcs = glob(
         [
             "Implementations/*.cpp",
@@ -475,159 +540,175 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
+        "Utils.h",
     ]),
     copts = [
         "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=missing-braces",
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":CommDialect",
         ":CommPasses",
+        ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":CommPassesIncGen",
-        ":EnzymeHLOPatternsIncGen",
+        ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
-        ":RaisingTransformOps",
-        "@llvm-project//mlir:DLTIDialect",
-        "@llvm-project//mlir:GPUPipelines",
+        ":StablehloOptPatternsIncGen",
+        ":chlo-derivatives",
+        ":mhlo-derivatives",
+        ":stablehlo-derivatives",
+        "//src/external/isl:Isl",
+        "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
+        "@llvm-project//llvm:IPO",
+        "@llvm-project//llvm:InstCombine",
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:OrcTargetProcess",
         "@llvm-project//llvm:Passes",
         "@llvm-project//llvm:Scalar",
-        "@llvm-project//llvm:InstCombine",
-        "@llvm-project//llvm:IPO",
-        ":mhlo-derivatives",
-        ":stablehlo-derivatives",
-        ":chlo-derivatives",
-        "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:MemorySlotInterfaces",
-        "@llvm-project//mlir:Analysis",
-        "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AffineAnalysis",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AffineToStandard",
+        "@llvm-project//mlir:AffineTransforms",
+        "@llvm-project//mlir:AffineUtils",
+        "@llvm-project//mlir:Analysis",
         "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
-        "@llvm-project//mlir:SCFToOpenMP",
-        "@llvm-project//mlir:OpenMPToLLVM",
         "@llvm-project//mlir:ControlFlowInterfaces",
-        "@llvm-project//mlir:ViewLikeInterface",
-        "@llvm-project//mlir:ControlFlowToSCF",
         "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:ControlFlowToSCF",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FromLLVMIRTranslation",
+        "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
         "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:AffineToStandard",
-        "@llvm-project//mlir:ArithToLLVM",
-        "@llvm-project//mlir:MemRefTransforms",
-        "@llvm-project//mlir:MemRefUtils",
-        "@llvm-project//mlir:TransformDialect",
-        "@llvm-project//mlir:TransformDialectInterfaces",
-        "@llvm-project//mlir:TransformDialectTransforms",
-        "@llvm-project//mlir:GPUToGPURuntimeTransforms",
+        "@llvm-project//mlir:FuncToLLVM",
+        "@llvm-project//mlir:FuncTransforms",
+        "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:GPUCommonTransforms",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:GPUPipelines",
+        "@llvm-project//mlir:GPUToGPURuntimeTransforms",
         "@llvm-project//mlir:GPUToNVVMTransforms",
         "@llvm-project//mlir:GPUTransforms",
-        "@llvm-project//mlir:UBDialect",
-        "@llvm-project//mlir:LinalgTransforms",
-        "@llvm-project//mlir:ToLLVMIRTranslation",
-        "@llvm-project//mlir:FuncToLLVM",
-        "@llvm-project//mlir:SCFDialect",
-        "@llvm-project//mlir:SCFUtils",
-        "@llvm-project//mlir:GPUDialect",
-        "@llvm-project//mlir:FuncTransforms",
-        "@llvm-project//mlir:Transforms",
-        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:IndexToLLVM",
-        "@llvm-project//mlir:NVVMToLLVM",
-        "@llvm-project//mlir:ReconcileUnrealizedCasts",
-        "@llvm-project//mlir:SCFToControlFlow",
+        "@llvm-project//mlir:LLVMCommonConversion",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LinalgTransforms",
+        "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
-        "@llvm-project//mlir:VectorToLLVM",
-        "@llvm-project//mlir:UBToLLVM",
-        "@llvm-project//mlir:VectorToSCF",
-        "@llvm-project//mlir:OpenMPDialect",
-        "@llvm-project//mlir:MemRefToLLVM",
-        "@llvm-project//mlir:NVGPUToNVVM",
-        "@llvm-project//mlir:MathDialect",
-        "@llvm-project//mlir:NVGPUDialect",
-        "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:MemRefDialect",
-        "@llvm-project//mlir:FunctionInterfaces",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:LLVMCommonConversion",
-        "@llvm-project//mlir:SideEffectInterfaces",
-        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:MemRefToLLVM",
+        "@llvm-project//mlir:MemRefTransforms",
+        "@llvm-project//mlir:MemRefUtils",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:NVGPUToNVVM",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:NVVMToLLVM",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:OpenMPToLLVM",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:ReconcileUnrealizedCasts",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFToControlFlow",
+        "@llvm-project//mlir:SCFToOpenMP",
+        "@llvm-project//mlir:SCFUtils",
+        "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
-        "@llvm-project//mlir:TransformUtils",
-        "@llvm-project//mlir:TranslateLib",
-        "@llvm-project//mlir:FromLLVMIRTranslation",
+        "@llvm-project//mlir:ToLLVMIRTranslation",
         "@llvm-project//mlir:ToLLVMIRTranslationRegistration",
-        "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
-        "@stablehlo//:reference_ops",
-        "@stablehlo//:stablehlo_ops",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
+        "@llvm-project//mlir:InliningUtils",
+        "@llvm-project//mlir:TransformDialectTransforms",
+        "@llvm-project//mlir:TransformUtils",
+        "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:TranslateLib",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:UBToLLVM",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:VectorDialect",
+        "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:VectorToSCF",
+        "@llvm-project//mlir:ViewLikeInterface",
+        "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
+        "@stablehlo//:reference_ops",
+        "@stablehlo//:reference_types",
+        "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
         "@xla//xla/mlir_hlo",
     ],
 )
 
-pybind_library(
+cc_library(
     name = "compile_with_xla",
-    srcs = ["compile_with_xla.cc", "RegistryUtils.cpp"],
+    srcs = [
+        "RegistryUtils.cpp",
+        "compile_with_xla.cc",
+    ],
     hdrs = glob([
         "compile_with_xla.h",
         "Implementations/*.h",
         "Passes/*.h",
-        "RegistryUtils.h"
+        "RegistryUtils.h",
     ]),
+    copts = [
+        "-Wno-implicit-fallthrough",
+        "-Wno-non-virtual-dtor",
+        "-Wno-pessimizing-move",
+        "-Wno-unused-result",
+        "-Wno-unused-variable",
+        "-Wno-vla-cxx-extension",
+    ],
     deps = [
+        "@nanobind",
         ":XLADerivatives",
         ":TransformOps",
-        # This is similar to xla_binary rule and is needed to make XLA client compile.
-        # "@tsl//tsl/framework:allocator",
-        # "@tsl//tsl/framework:allocator_registry_impl",
+        "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
         "@tsl//tsl/platform:tensor_float_32_utils",
-	"@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
         "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
         "@xla//xla/tsl/profiler/utils:time_utils_impl",
         "@xla//xla/tsl/protobuf:dnn_proto_cc_impl",
         "@xla//xla/tsl/protobuf:histogram_proto_cc",
         "@xla//xla/tsl/protobuf:histogram_proto_cc_impl",
         "@xla//xla/tsl/protobuf:protos_all_cc_impl",
-
-        # This is similar to xla_binary rule and is needed to make XLA client compile.
-        "@xla//xla:autotune_results_proto_cc",
-        "@xla//xla:autotune_results_proto_cc_impl",
-        "@xla//xla:autotuning_proto_cc",
-        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla/client",
         "@xla//xla/client:client_library",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/client:local_client",
-        "@xla//xla/client:xla_computation",
+        "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/service",
         "@xla//xla/service:metrics_proto_cc",
         "@xla//xla/service:metrics_proto_cc_impl",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
-        "@xla//xla/service:buffer_assignment_proto_cc",
-        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service/cpu:cpu_executable",
         "@xla//xla/service/cpu:backend_config_proto_cc",
         "@xla//xla/service/gpu:backend_configs_cc",
@@ -635,9 +716,11 @@ pybind_library(
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_proto_cc_impl",
         "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
-        "@xla//xla/stream_executor:device_description_proto_cc",
-        "@xla//xla/stream_executor:device_description_proto_cc_impl",
-        "@xla//xla/translate/mhlo_to_hlo:type_to_shape",
+        "@xla//xla/hlo/translate/mhlo_to_hlo:type_to_shape",
+        "@xla//xla:autotune_results_proto_cc",
+        "@xla//xla:autotune_results_proto_cc_impl",
+        "@xla//xla:autotuning_proto_cc",
+        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -654,25 +737,63 @@ pybind_library(
 
         # MHLO stuff.
         "@xla//xla/mlir_hlo",
-        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+        "@xla//xla/hlo/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
         "@xla//xla/hlo/ir:hlo",
-
-        # This is necessary for XLA protobufs to link
-        "@com_google_protobuf//:protobuf",
 
         # MLIR dialects and parser.
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:UBDialect",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
+        "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:LLVMIRTransforms",
         "@llvm-project//mlir:NVVMTarget",
         "@llvm-project//mlir:LinalgTransformOps",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:IndexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:ConvertToLLVM",
+        "@llvm-project//mlir:FuncToLLVM",
+        "@llvm-project//mlir:MathToLLVM",
+        "@llvm-project//mlir:MemRefToLLVM",
+        "@llvm-project//mlir:NVVMToLLVM",
+        "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:UBToLLVM",
+        "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMIRToLLVMTranslation",
+        "@llvm-project//mlir:LLVMIRToNVVMTranslation",
+
+        # Shardy stuff
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
+
+        # XLA stuff
         "@xla//xla/mlir_hlo:all_passes",
         "@xla//xla:printer",
 
@@ -687,16 +808,33 @@ pybind_library(
 
 pybind_extension(
     name = "enzyme_call",
-    srcs = ["enzyme_call.cc",
-            "RegistryUtils.cpp"
+    srcs = [
+        "RegistryUtils.cpp",
+        "enzyme_call.cc",
     ],
+    copts = [
+        "-Wno-implicit-fallthrough",
+        "-Wno-non-virtual-dtor",
+        "-Wno-pessimizing-move",
+        "-Wno-unused-result",
+        "-Wno-unused-variable",
+        "-Wno-vla-cxx-extension",
+    ],
+    linkopts = select({
+    "@platforms//os:macos":[
+	"-undefined", "dynamic_lookup"
+    ],
+    "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"],
     deps = [
-        ":cpu",
-        ":gpu",
+        "@nanobind",
+        ":TransformOps",
         ":clang_compile",
         ":compile_with_xla",
-        ":TransformOps",
+        ":cpu",
+        ":gpu",
+        ":XLADerivatives",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@enzyme//:EnzymeStatic",
@@ -710,14 +848,63 @@ pybind_extension(
         "@llvm-project//mlir:CAPIIR",
         "@llvm-project//mlir:MLIRBindingsPythonHeaders",
         "@llvm-project//mlir:NVVMTarget",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMIRTransforms",
+        "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:FuncExtensions",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:ConvertToLLVM",
+        "@llvm-project//mlir:FuncToLLVM",
+        "@llvm-project//mlir:MemRefToLLVM",
+        "@llvm-project//mlir:NVVMToLLVM",
+        "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:UBToLLVM",
+        "@llvm-project//mlir:IndexToLLVM",
+        "@llvm-project//mlir:MathToLLVM",
+        "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ComplexDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:LinalgTransformOps",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SparseTensorDialect",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMIRToLLVMTranslation",
+        "@llvm-project//mlir:LLVMIRToNVVMTranslation",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
         "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:chlo_ops",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:env_impl",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/mlir_hlo:all_passes",
         "@xla//xla/mlir_hlo:deallocation_passes",
+        "@xla//xla/mlir_hlo:mlir_hlo",
         "@xla//xla/service/cpu:cpu_executable",
+        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/stream_executor:stream_executor_impl",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:env_impl",
         "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
+        "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
     ],
 )

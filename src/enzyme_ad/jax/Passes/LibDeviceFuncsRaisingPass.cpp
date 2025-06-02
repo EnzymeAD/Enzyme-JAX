@@ -12,6 +12,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 
@@ -42,10 +43,10 @@ public:
 
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
-    if (isa<LLVM::LLVMArrayType, LLVM::LLVMFixedVectorType,
-            LLVM::LLVMScalableVectorType>(llvmNDVectorTy)) {
+    if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
+
     Operation *newOp = rewriter.create(
         op->getLoc(), rewriter.getStringAttr(TargetOp::getOperationName()),
         operands, op->getResultTypes(), attrConvert.getAttrs());
@@ -160,7 +161,7 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
     if (!callee)
       return failure();
 
@@ -176,6 +177,44 @@ private:
   StringAttr funcName;
 };
 
+template <typename TargetOp>
+class CallToOpIntAdaptRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  CallToOpIntAdaptRaising(MLIRContext *context, StringRef funcNameStr)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        funcName(StringAttr::get(context, funcNameStr)) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() != funcName)
+      return failure();
+
+    auto newOp = rewriter.create<TargetOp>(
+        op->getLoc(), op->getOperand(0).getType(), op->getOperands());
+    auto sourceType = cast<IntegerType>(op->getOperand(0).getType());
+    auto targetType = cast<IntegerType>(op->getResultTypes()[0]);
+    if (targetType.getWidth() > sourceType.getWidth()) {
+      rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, targetType,
+                                                  newOp->getResult(0));
+    } else if (targetType.getWidth() < sourceType.getWidth()) {
+      rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, targetType,
+                                                   newOp->getResult(0));
+    } else {
+      rewriter.replaceOp(op, newOp);
+    }
+
+    return success();
+  }
+
+private:
+  StringAttr funcName;
+};
+
 class IsFPClassRaising : public OpRewritePattern<LLVM::CallOp> {
 public:
   IsFPClassRaising(MLIRContext *context)
@@ -184,56 +223,43 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = callable.dyn_cast<SymbolRefAttr>();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
     if (!callee)
       return failure();
 
     if (callee.getLeafReference() == "__nv_isnand" ||
-        callee.getLeafReference() == "__nv_isnan") {
+        callee.getLeafReference() == "__nv_isnan" ||
+        callee.getLeafReference() == "__nv_isnanf") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
-                                           op->getOperands()[0], 3));
+          rewriter.create<math::IsNaNOp>(op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
-    // https://llvm.org/docs/LangRef.html#llvm-is-fpclass
-    /*
-     *
-Bit #
-
-floating-point class
-
-0 Signaling NaN
-
-1 Quiet NaN
-
-2 Negative infinity
-
-3 Negative normal
-
-4 Negative subnormal
-
-5 Negative zero
-
-6 Positive zero
-
-7 Positive subnormal
-
-8 Positive normal
-
-9 Positive infinity
-
-2**3 + 2**4 + 2**5 + 2**6 + 2**7 + 2**8
-*/
     if (callee.getLeafReference() == "__nv_isfinited" ||
-        callee.getLeafReference() == "__nv_isfinite") {
+        callee.getLeafReference() == "__nv_isfinite" ||
+        callee.getLeafReference() == "__nv_isfinitef") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<LLVM::IsFPClass>(op.getLoc(), rewriter.getI1Type(),
-                                           op->getOperands()[0],
-                                           ((1 << 3) | (1 << 4) | (1 << 5) |
-                                            (1 << 6) | (1 << 7) | (1 << 8))));
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+      return success();
+    }
+
+    if (callee.getLeafReference() == "__nv_finited" ||
+        callee.getLeafReference() == "__nv_finite" ||
+        callee.getLeafReference() == "__nv_finitef") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+      return success();
+    }
+
+    if (callee.getLeafReference() == "__nv_isinfd" ||
+        callee.getLeafReference() == "__nv_isinf" ||
+        callee.getLeafReference() == "__nv_isinff") {
+      rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
+          op, op->getResultTypes(),
+          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
@@ -297,6 +323,8 @@ using RoundEvenOpLowering =
     ConvertFMFMathFromLLVMPattern<math::RoundEvenOp, LLVM::RoundEvenOp>;
 using RoundOpLowering =
     ConvertFMFMathFromLLVMPattern<math::RoundOp, LLVM::RoundOp>;
+using RintOpLowering =
+    ConvertFMFMathFromLLVMPattern<math::RoundEvenOp, LLVM::RintOp>;
 using SinOpLowering = ConvertFMFMathFromLLVMPattern<math::SinOp, LLVM::SinOp>;
 using SqrtOpLowering =
     ConvertFMFMathFromLLVMPattern<math::SqrtOp, LLVM::SqrtOp>;
@@ -384,12 +412,15 @@ using SubFOpLowering =
 using SubIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::SubIOp, LLVM::SubOp,
                                     AttrConvertOverflowFromLLVM>;
-// using TruncFOpLowering =
-//    ConstrainedVectorConvertFromLLVMPattern<arith::TruncFOp, LLVM::FPTruncOp,
-//                                          false>;
-// using ConstrainedTruncFOpLowering = ConstrainedVectorConvertFromLLVMPattern<
-//    arith::TruncFOp, LLVM::ConstrainedFPTruncIntr, true,
-//    arith::AttrConverterConstrainedFPFromLLVM>;
+// TODO the LLVM -> Arith conversion does
+// arith::TruncFOp {rounding_mode=constrained} -> LLVM::ConstrainedFPTruncIntr
+// arith::TruncFOp {} -> LLVM::FPTruncIntr
+// for now we map both to plain truncfop
+using TruncFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::TruncFOp, LLVM::FPTruncOp>;
+using ConstrainedTruncFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::TruncFOp,
+                                    LLVM::ConstrainedFPTruncIntr>;
 using TruncIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
@@ -401,6 +432,14 @@ using CmpIOpLowering =
 using CmpFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
                                     AttrConvertFastMathFromLLVM>;
+using CountLeadingZerosOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CountLeadingZerosOp,
+                                    LLVM::CountLeadingZerosOp>;
+using CountTrailingZerosOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CountTrailingZerosOp,
+                                    LLVM::CountTrailingZerosOp>;
+using CtPopOpLowering =
+    InvVectorConvertFromLLVMPattern<math::CtPopOp, LLVM::CtPopOp>;
 
 struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
   using OpRewritePattern<LLVM::ConstantOp>::OpRewritePattern;
@@ -416,6 +455,54 @@ struct ConstantOpLowering : public OpRewritePattern<LLVM::ConstantOp> {
   }
 };
 
+struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
+  using OpRewritePattern<LLVM::FreezeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::FreezeOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, op.getOperand());
+    return success();
+  }
+};
+
+struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
+  ReadOnlyAllocaElim(MLIRContext *context)
+      : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
+
+  LogicalResult matchAndRewrite(LLVM::AllocaOp alloca,
+                                PatternRewriter &rewriter) const override {
+    Value ptr = alloca.getResult();
+    SmallVector<Operation *> deadUsers;
+
+    // Check all users of the alloca
+    for (Operation *user : ptr.getUsers()) {
+      // Allow lifetime markers
+      if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
+        deadUsers.push_back(user);
+        continue;
+      }
+
+      if (auto memcpy = dyn_cast<LLVM::MemcpyOp>(user)) {
+        // If stores into allocation, keep it
+        if (memcpy.getDst() == ptr)
+          return failure();
+
+        deadUsers.push_back(user);
+      } else {
+        // Found non-read/lifetime user
+        return failure();
+      }
+    }
+
+    for (Operation *user : llvm::reverse(deadUsers)) {
+      rewriter.eraseOp(user);
+    }
+    rewriter.eraseOp(alloca);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -426,6 +513,12 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
+                                                                   "__nv_clz");
+  patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
+      context, "__nv_clzll");
+  patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popc");
+  patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
                                     "__nv_fmod");
@@ -475,6 +568,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_log2", "__nv_fast_log2f");
   populateOpPatterns<math::PowFOp>(converter, patterns, "__nv_powf", "__nv_pow",
                                    "__nv_fast_powf");
+  populateOpPatterns<arith::DivFOp>(converter, patterns, "__nv_fdividef",
+                                    "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
                                     "__nv_round");
   populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
@@ -499,6 +594,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                        "__nv_fmaxf");
   populateOpPatterns<arith::MinNumFOp>(converter, patterns, "__nv_fmin",
                                        "__nv_fminf");
+  populateOpPatterns<math::TruncOp>(converter, patterns, "__nv_trunc",
+                                    "__nv_truncf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
@@ -510,19 +607,17 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,
-               // CountLeadingZerosOpLowering,
-               // CountTrailingZerosOpLowering,
-               // CtPopFOpLowering,
-               Exp2OpLowering,
+               CountLeadingZerosOpLowering, CountTrailingZerosOpLowering,
+               CtPopFOpLowering, Exp2OpLowering,
                // ExpM1OpLowering,
                ExpOpLowering, FPowIOpLowering, FloorOpLowering, FmaOpLowering,
                Log10OpLowering, Log2OpLowering, LogOpLowering, PowFOpLowering,
-               RoundEvenOpLowering, RoundOpLowering,
+               RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
 
   patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
-
+  patterns.add<ReadOnlyAllocaElim>(converter);
   patterns
       .add<AddFOpLowering, AddIOpLowering, AndIOpLowering,
            // AddUIExtendedOpLowering,
@@ -539,9 +634,9 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,
            RemUIOpLowering, SelectOpLowering, ShLIOpLowering, ShRSIOpLowering,
            ShRUIOpLowering, SIToFPOpLowering, SubFOpLowering, SubIOpLowering,
-           // TruncFOpLowering,
-           // ConstrainedTruncFOpLowering,
-           TruncIOpLowering, UIToFPOpLowering, XOrIOpLowering>(converter);
+           TruncFOpLowering, ConstrainedTruncFOpLowering, TruncIOpLowering,
+           UIToFPOpLowering, XOrIOpLowering>(converter);
+  populateSelectExtractPatterns(patterns);
 }
 
 namespace {
@@ -554,6 +649,8 @@ struct LibDeviceFuncsRaisingPass
     RewritePatternSet patterns(getOperation()->getContext());
     populateLLVMToMathPatterns(getOperation()->getContext(), patterns);
     populateLibDeviceFuncsToOpsPatterns(getOperation()->getContext(), patterns);
+    if (remove_freeze)
+      patterns.add<RemoveFreeze>(getOperation()->getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();

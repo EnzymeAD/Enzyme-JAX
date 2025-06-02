@@ -1,12 +1,20 @@
 name: Python-Black
 
-on: [push, pull_request]
+on:
+  push:
+    paths:
+      - '.github/workflows/python_format.yml'
+      - '**/*.py'
+  pull_request:
+    paths:
+      - '.github/workflows/python_format.yml'
+      - '**/*.py'
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: psf/black@stable
         with:
           options: "--check --verbose"

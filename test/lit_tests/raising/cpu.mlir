@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-llvm-to-cf,enzyme-lift-cf-to-scf,libdevice-funcs-raise,canonicalize,llvm-to-affine-access)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-llvm-to-cf,enzyme-lift-cf-to-scf,libdevice-funcs-raise,affine-cfg,canonicalize,llvm-to-affine-access)" | FileCheck %s
 module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
     llvm.unreachable
@@ -31,15 +31,12 @@ module {
 }
 
 // CHECK:   func.func private @kern$par0(%arg0: !llvm.ptr<1>) {
-// CHECK-NEXT:     %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
-// CHECK-NEXT:     affine.parallel (%arg1, %arg2, %arg3, %arg4, %arg5, %arg6) = (0, 0, 0, 0, 0, 0) to (1, 1, 1, 1, 1, 40) {
-// CHECK-NEXT:       affine.if #set(%arg4) {
-// CHECK-NEXT:         llvm.call fastcc @throw_boundserror_2676() : () -> ()
-// CHECK-NEXT:       } else {
-// CHECK-NEXT:         %1 = affine.load %0[%arg4 * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
+// CHECK-NEXT:     affine.parallel (%arg1) = (0) to (40) {
+// CHECK-NEXT:         %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
+// CHECK-NEXT:         %1 = affine.load %0[0] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
 // CHECK-NEXT:         %2 = arith.muli %1, %1 : i64
-// CHECK-NEXT:         affine.store %2, %0[%arg4 * 8] {alignment = 1 : i64, ordering = 0 : i64, polymer.access.type = i64} : memref<?xi64, 1>
-// CHECK-NEXT:       }
+// CHECK-NEXT:         %3 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr<1>) -> memref<?xi64, 1>
+// CHECK-NEXT:         affine.store %2, %3[0] {alignment = 1 : i64, ordering = 0 : i64} : memref<?xi64, 1>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }

@@ -1,6 +1,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -10,13 +11,13 @@ LogicalResult WhileLoopInfo::computeInfo() {
   auto &condBlk = op.getCond().front();
   if (condBlk.getOperations().size() != 2)
     return failure();
-  auto condTerm = cast<stablehlo::ReturnOp>(&condBlk.back());
+  auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
   auto condV = condTerm->getOperand(0);
   auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
   if (!cond)
     return failure();
 
-  auto induct = cond.getOperand(0).dyn_cast<BlockArgument>();
+  auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
   if (!induct)
     return failure();
   if (induct.getOwner() != &condBlk)
@@ -25,7 +26,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
   if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
     return failure();
 
-  auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
+  auto bodyTerm =
+      cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
   if (!inc)
@@ -33,18 +35,26 @@ LogicalResult WhileLoopInfo::computeInfo() {
 
   auto loopBodyBlock = &op.getBody().front();
 
-  auto incba = inc.getOperand(0).dyn_cast<BlockArgument>();
+  auto incba0 = dyn_cast<BlockArgument>(inc.getOperand(0));
+  auto incba1 = dyn_cast<BlockArgument>(inc.getOperand(1));
 
-  if (!incba)
+  bool found = false;
+
+  if (incba0 && (incba0.getOwner() == loopBodyBlock) &&
+      (incba0.getArgNumber() == induct.getArgNumber())) {
+    step = inc.getOperand(1);
+    found = true;
+  }
+
+  if (!found && incba1 && (incba1.getOwner() == loopBodyBlock) &&
+      (incba1.getArgNumber() == induct.getArgNumber())) {
+    step = inc.getOperand(0);
+    found = true;
+  }
+
+  if (!found)
     return failure();
 
-  if (incba.getOwner() != loopBodyBlock)
-    return failure();
-
-  if (incba.getArgNumber() != induct.getArgNumber())
-    return failure();
-
-  step = inc.getOperand(1);
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
 
@@ -85,10 +95,18 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
     return {};
   }
 
-  // numIters = (limit - start) / step;
-  Value numIters = builder.create<stablehlo::DivOp>(
-      op->getLoc(),
-      builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start), step);
+  Value numIters;
+  if (isConstant()) {
+    numIters = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), start.getType(),
+        cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
+  } else {
+    // numIters = (limit - start) / step;
+    numIters = builder.create<stablehlo::DivOp>(
+        op->getLoc(),
+        builder.create<stablehlo::SubtractOp>(op->getLoc(), limit, start),
+        step);
+  }
 
   return numIters;
 }

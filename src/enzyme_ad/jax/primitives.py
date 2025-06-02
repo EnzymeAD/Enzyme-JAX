@@ -12,7 +12,6 @@ from jax.interpreters import mlir as jax_mlir
 from jax.interpreters import ad
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import stablehlo, func
-from jax.lib import xla_client
 import jax.numpy as jnp
 
 from . import enzyme_call
@@ -28,6 +27,13 @@ from enum import Enum
 import jax.extend
 
 Primitive = jax.extend.core.Primitive
+
+try:
+    register_custom_call_target = partial(jax.ffi.register_ffi_target, api_version=0)
+except AttributeError:
+    from jax.lib import xla_client
+
+    register_custom_call_target = xla_client.register_custom_call_target
 
 
 class PipelineConfig:
@@ -155,7 +161,7 @@ noop_reverse<16>;
 const_prop_through_barrier<16>;
 slice_slice<16>;
 shift_right_logical_simplify<16>;
-pad_simplify<16>;
+pad_simplify<16>(1024);
 negative_pad_to_slice<16>;
 tanh_simplify<16>;
 exp_simplify<16>;
@@ -174,10 +180,11 @@ dynamic_update_to_concat<1>;
 slice_of_dynamic_update<1>;
 slice_elementwise<1>;
 slice_pad<1>;
+slice_reduce_window<1>;
 pad_reduce_window<1>;
 dot_reshape_dot<1>;
-concat_const_prop<1>;
-dynamic_update_slice_const_prop<1>;
+concat_const_prop<1>(1024);
+dynamic_update_slice_const_prop<1>(1024);
 log_const_prop<1>;
 log_plus_one_const_prop<1>;
 chlo_inf_const_prop<1>;
@@ -191,8 +198,14 @@ scatter_to_dynamic_update_slice<1>;
 reduce_concat<1>;
 slice_concat<1>;
 concat_slice<1>;
+select_comp_iota_const_simplify;
 select_op_used_within_if<1>;
+dus_dus<1>;
+dus_dus_concat<1>;
+transpose_dus<1>;
 replace_neg_add_with_subtract<16>;
+sign_abs_simplify<1>;
+abs_positive_simplify<1>;
 
 bin_broadcast_splat_add<1>;
 bin_broadcast_splat_subtract<1>;
@@ -205,6 +218,7 @@ transpose_simplify<16>;
 reshape_empty_broadcast<1>;
 add_pad_pad_to_concat<1>;
 broadcast_reshape<1>;
+broadcast_iota_simplify;
 
 binary_op_transpose_simplify_add<1>;
 binary_op_transpose_simplify_sub<1>;
@@ -225,7 +239,7 @@ common_compare_expression_rewrite;
 not_select_simplify;
 scatter_update_computation_const_prop;
 scatter_indices_are_unique;
-transpose_reduce_simplify;
+reduce_transpose_simplify;
 
 transpose_unary_transpose_abs<1>;
 transpose_unary_transpose_neg<1>;
@@ -294,11 +308,15 @@ if_remove_unused<1>;
 if_inline<1>;
 if_to_select<1>;
 if_pred_propagation<1>;
-while_simplify<1>;
+while_simplify<1>(0);
 while_deadresult<1>;
+
+broadcastindim_is_reshape<1>;
 
 dot_reshape_pad<1>;
 pad_dot_general<1>(1);
+
+reshape_reduce_window<1>;
             },
             transform-interpreter,
             enzyme-hlo-remove-transform
@@ -769,8 +787,13 @@ def _enzyme_primal_lowering(
                 sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
                 out_types = tuple(list(out_types) + [sa])
 
+            i32_type = ir.IntegerType.get_signless(32)
             custom_call = stablehlo.CustomCallOp(
-                out_types, mlir_args, call_target_name="jaxzyme.primal"
+                out_types,
+                mlir_args,
+                call_target_name="jaxzyme.primal",
+                backend_config=ir.StringAttr.get("backend"),
+                api_version=ir.IntegerAttr.get(i32_type, 3),
             )
             results = tuple(t for t in custom_call.results)
 
@@ -816,8 +839,13 @@ def _enzyme_primal_lowering(
             sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
             out_types = out_types + (sa,)
 
+        i32_type = ir.IntegerType.get_signless(32)
         custom_call = stablehlo.CustomCallOp(
-            out_types, mlir_args, call_target_name="jaxzyme.primal"
+            out_types,
+            mlir_args,
+            call_target_name="jaxzyme.primal",
+            backend_config=ir.StringAttr.get("backend"),
+            api_version=ir.IntegerAttr.get(i32_type, 3),
         )
 
         results = custom_call.results
@@ -886,8 +914,13 @@ def _enzyme_fwd_lowering(
         sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
         out_types = out_types + (sa, sa)
 
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        out_types, mlir_args, call_target_name="jaxzyme.fwd"
+        out_types,
+        mlir_args,
+        call_target_name="jaxzyme.fwd",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
 
     results = custom_call.results
@@ -951,8 +984,14 @@ def _enzyme_aug_lowering(
         out_types = out_types + (sa,)
 
     mlir_args = (identifier_op,) + in_args
+
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        out_types, mlir_args, call_target_name="jaxzyme.aug"
+        out_types,
+        mlir_args,
+        call_target_name="jaxzyme.aug",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
 
     results = custom_call.results
@@ -1025,8 +1064,13 @@ def _enzyme_rev_lowering(
         sa = ir.RankedTensorType.get((tmpBuf,), ir.IntegerType.get_signless(8))
         rev_return_types = rev_return_types + (sa,)
 
+    i32_type = ir.IntegerType.get_signless(32)
     custom_call = stablehlo.CustomCallOp(
-        rev_return_types, mlir_args, call_target_name="jaxzyme.rev"
+        rev_return_types,
+        mlir_args,
+        call_target_name="jaxzyme.rev",
+        backend_config=ir.StringAttr.get("backend"),
+        api_version=ir.IntegerAttr.get(i32_type, 3),
     )
     results = custom_call.results
     if tmpBuf != 0:
@@ -1153,7 +1197,7 @@ _enzyme_primal_p.def_impl(_enzyme_primal_impl)
 _enzyme_primal_p.def_abstract_eval(_enzyme_primal_abstract_eval)
 jax_mlir.register_lowering(_enzyme_primal_p, _enzyme_primal_lowering)
 
-xla_client.register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
+register_custom_call_target("jaxzyme.primal", enzyme_call.get_callback())
 
 _enzyme_fwd_p = Primitive("enzyme_fwd")
 _enzyme_fwd_p.multiple_results = True
@@ -1161,7 +1205,7 @@ _enzyme_fwd_p.def_impl(_enzyme_fwd_impl)
 _enzyme_fwd_p.def_abstract_eval(_enzyme_fwd_abstract_eval)
 jax_mlir.register_lowering(_enzyme_fwd_p, _enzyme_fwd_lowering)
 
-xla_client.register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
+register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 
 
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
@@ -1267,18 +1311,10 @@ _enzyme_aug_p.def_impl(_enzyme_aug_impl)
 _enzyme_aug_p.def_abstract_eval(_enzyme_aug_abstract_eval)
 jax_mlir.register_lowering(_enzyme_aug_p, _enzyme_aug_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="cpu"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="CUDA"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="ROCM"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.aug", enzyme_call.get_callback(), platform="tpu"
-)
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="cpu")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="CUDA")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="ROCM")
+register_custom_call_target("jaxzyme.aug", enzyme_call.get_callback(), platform="tpu")
 
 _enzyme_shadow_aug_p = Primitive("enzyme_shadow_aug")
 _enzyme_shadow_aug_p.multiple_results = True
@@ -1291,18 +1327,10 @@ _enzyme_rev_p.def_impl(_enzyme_rev_impl)
 _enzyme_rev_p.def_abstract_eval(_enzyme_rev_abstract_eval)
 jax_mlir.register_lowering(_enzyme_rev_p, _enzyme_rev_lowering)
 
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="cpu"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM"
-)
-xla_client.register_custom_call_target(
-    "jaxzyme.rev", enzyme_call.get_callback(), platform="tpu"
-)
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="cpu")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM")
+register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="tpu")
 
 
 from jax._src.interpreters import partial_eval as pe

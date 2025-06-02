@@ -24,16 +24,18 @@ include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+include "stablehlo/dialect/Base.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
-def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
+def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn, 
+    FlatSymbolRefAttr:$fn,
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
@@ -46,7 +48,8 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
     DefaultValuedOptionalAttr<
-        ArrayAttr, "{}">:$output_operand_aliases
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
   );
 
   let results = (outs Variadic<AnyType>);
@@ -59,17 +62,18 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let hasCanonicalizer = 1;
 }
 
-def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, Pure]> {
+def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn, 
+    FlatSymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
     DefaultValuedOptionalAttr<
-        ArrayAttr, "{}">:$output_operand_aliases
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
   );
 
   let results = (outs Variadic<AnyType>);
@@ -129,6 +133,79 @@ def AffineScopeOp : EnzymeXLA_Op<"scope", [
     Results<(outs Variadic<AnyType>:$results)> {
   let summary = "Inline affine scope";
   let regions = (region SizedRegion<1>:$region);
+}
+
+def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
+  let summary = "Takes `amount` from the start of the tensor in `dimension` and appends it to the end";
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    SI32Attr:$amount,
+    SI32Attr:$dimension
+  );
+  let results = (outs HLO_Tensor:$result);
+}
+
+def WrapOp: EnzymeXLA_Op<
+      "wrap",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Wrap operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$lhs,
+    I64Attr:$rhs,
+    I64Attr:$dimension
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
+def ExtendOp: EnzymeXLA_Op<
+      "extend",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Extend operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$lhs,
+    I64Attr:$rhs,
+    I64Attr:$dimension
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
+def CommRegionOp : EnzymeXLA_Op<"comm_region", [
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+    RecursiveMemoryEffects, RecursivelySpeculatable]> {
+  let summary = "container op for grouping communication";
+
+  let results = (outs Variadic<AnyType>);
+
+  let regions = (region
+    SizedRegion<1>:$body /*while_i3*/
+  );
+}
+
+def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
+  let summary = "LU factorization operation with RowMaximum pivoting.";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$pivots,
+    HLO_Tensor:$permutation,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
 }
 
 #endif // ENZYMEXLA_OPS

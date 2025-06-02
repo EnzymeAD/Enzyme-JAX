@@ -51,8 +51,7 @@ func.func @ifft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // REVERSE-IFFT-NEXT:    return %4 : tensor<4xcomplex<f32>>
 // REVERSE-IFFT-NEXT:  }
 
-// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
-// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-RFFT
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
 
 func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
   %y = "stablehlo.fft"(%x) {
@@ -68,8 +67,52 @@ func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
 // FORWARD-RFFT-NEXT:       return %1, %0 : tensor<3xcomplex<f32>>, tensor<3xcomplex<f32>>
 // FORWARD-RFFT-NEXT:   }
 
-// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
-// TODO enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE-IRFFT
+// RUN: enzymexlamlir-opt --pass-pipeline='builtin.module(enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"},remove-unnecessary-enzyme-ops,inline,enzyme-hlo-opt)' %s | FileCheck %s --check-prefix=REVERSE-RFFT
+
+module {
+  func.func private @"Const{typeof(fn)}(Main.fn)_autodiff"(%arg0: tensor<4xf64>) -> (tensor<f64>, tensor<4xf64>) {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0 = stablehlo.fft %arg0, type =  RFFT, length = [4] : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
+    %1 = chlo.conj %0 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+    %2 = stablehlo.multiply %0, %1 : tensor<3xcomplex<f64>>
+    %3 = stablehlo.real %2 : (tensor<3xcomplex<f64>>) -> tensor<3xf64>
+    %4 = stablehlo.reduce(%3 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<3xf64>, tensor<f64>) -> tensor<f64>
+    return %4, %arg0 : tensor<f64>, tensor<4xf64>
+  }
+  func.func @main(%arg0: tensor<4xf64> {tf.aliasing_output = 1 : i32}) -> (tensor<4xf64>, tensor<4xf64>) {
+    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
+    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4xf64>
+    %0:2 = enzyme.autodiff @"Const{typeof(fn)}(Main.fn)_autodiff"(%arg0, %cst, %cst_0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<4xf64>, tensor<f64>, tensor<4xf64>) -> (tensor<4xf64>, tensor<4xf64>)
+    return %0#1, %0#0 : tensor<4xf64>, tensor<4xf64>
+  }
+}
+
+// REVERSE-RFFT: func.func @main(%arg0: tensor<4xf64> {tf.aliasing_output = 1 : i32}) -> (tensor<4xf64>, tensor<4xf64>) {
+// REVERSE-RFFT-NEXT:      %cst = stablehlo.constant dense<-0.000000e+00> : tensor<3xf64>
+// REVERSE-RFFT-NEXT:      %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<3xf64>
+// REVERSE-RFFT-NEXT:      %cst_1 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f64>>
+// REVERSE-RFFT-NEXT:      %cst_2 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %0 = stablehlo.fft %arg0, type =  RFFT, length = [4] : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %1 = chlo.conj %0 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %2 = stablehlo.complex %cst_0, %cst : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %3 = stablehlo.add %cst_2, %2 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %4 = chlo.conj %3 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %5 = stablehlo.multiply %4, %1 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %6 = chlo.conj %5 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %7 = stablehlo.add %cst_2, %6 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %8 = stablehlo.multiply %4, %0 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %9 = chlo.conj %8 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %10 = stablehlo.add %cst_2, %9 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %11 = chlo.conj %10 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %12 = stablehlo.add %7, %11 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %13 = chlo.conj %12 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %14 = stablehlo.pad %13, %cst_1, low = [0], high = [1], interior = [0] : (tensor<3xcomplex<f64>>, tensor<complex<f64>>) -> tensor<4xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %15 = stablehlo.fft %14, type =  FFT, length = [4] : (tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %16 = stablehlo.real %15 : (tensor<4xcomplex<f64>>) -> tensor<4xf64>
+// REVERSE-RFFT-NEXT:      return %16, %arg0 : tensor<4xf64>, tensor<4xf64>
+// REVERSE-RFFT-NEXT: }
+
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=irfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
 
 func.func @irfft(%x : tensor<3xcomplex<f32>>) -> tensor<4xf32> {
   %y = "stablehlo.fft"(%x) {
@@ -84,3 +127,35 @@ func.func @irfft(%x : tensor<3xcomplex<f32>>) -> tensor<4xf32> {
 // FORWARD-IRFFT-NEXT:       %1 = stablehlo.fft %arg0, type =  IRFFT, length = [4] : (tensor<3xcomplex<f32>>) -> tensor<4xf32>
 // FORWARD-IRFFT-NEXT:       return %1, %0 : tensor<4xf32>, tensor<4xf32>
 // FORWARD-IRFFT-NEXT:   }
+
+// RUN: enzymexlamlir-opt --pass-pipeline='builtin.module(enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"},remove-unnecessary-enzyme-ops,inline,enzyme-hlo-opt)' %s | FileCheck %s --check-prefix=REVERSE-IRFFT
+
+module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
+  func.func private @"Const{typeof(fn3)}(Main.fn3)_autodiff"(%arg0: tensor<3xcomplex<f64>>) -> (tensor<f64>, tensor<3xcomplex<f64>>) {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0 = stablehlo.fft %arg0, type =  IRFFT, length = [4] : (tensor<3xcomplex<f64>>) -> tensor<4xf64>
+    %1 = stablehlo.multiply %0, %0 : tensor<4xf64>
+    %2 = stablehlo.reduce(%1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4xf64>, tensor<f64>) -> tensor<f64>
+    return %2, %arg0 : tensor<f64>, tensor<3xcomplex<f64>>
+  }
+  func.func @main(%arg0: tensor<3xcomplex<f64>> {tf.aliasing_output = 1 : i32}) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) {
+    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
+    %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3xcomplex<f64>>
+    %0:2 = enzyme.autodiff @"Const{typeof(fn3)}(Main.fn3)_autodiff"(%arg0, %cst, %cst_0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<3xcomplex<f64>>, tensor<f64>, tensor<3xcomplex<f64>>) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>)
+    return %0#1, %0#0 : tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>
+  }
+}
+
+// REVERSE-IRFFT: func.func @main(%arg0: tensor<3xcomplex<f64>> {tf.aliasing_output = 1 : i32}) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) {
+// REVERSE-IRFFT-NEXT:      %cst = stablehlo.constant dense<[2.500000e-01, 5.000000e-01, 2.500000e-01]> : tensor<3xf64>
+// REVERSE-IRFFT-NEXT:      %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
+// REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg0, type =  IRFFT, length = [4] : (tensor<3xcomplex<f64>>) -> tensor<4xf64>
+// REVERSE-IRFFT-NEXT:      %1 = stablehlo.add %cst_0, %cst_0 : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %2 = stablehlo.add %0, %0 : tensor<4xf64>
+// REVERSE-IRFFT-NEXT:      %3 = stablehlo.fft %2, type =  RFFT, length = [4] : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %4 = stablehlo.complex %cst, %cst_1 : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %5 = stablehlo.multiply %3, %4 : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %6 = stablehlo.add %1, %5 : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      return %6, %arg0 : tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:    }

@@ -42,6 +42,23 @@ def PropagateConstantBoundsPass
   ];
 }
 
+def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp"> {
+  let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_iterations",
+      /*CLI argument=*/"max_iterations",
+      /*type=*/"int32_t",
+      /*default=*/"8",
+      /*description=*/"propgate memory effects up to this many iterations (only for call graphs with cycles)">,
+    Option<
+      /*C++ variable name=*/"assume_no_memory_effects",
+      /*CLI argument=*/"assume_no_memory_effects",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"assume no memory effects for ops not implementing MemoryEffectOpInterface">];
+}
+
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
@@ -70,7 +87,7 @@ def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
   let dependentDialects =
-      ["stablehlo::StablehloDialect", "tensor::TensorDialect"];
+      ["stablehlo::StablehloDialect", "tensor::TensorDialect", "enzymexla::EnzymeXLADialect", "chlo::ChloDialect"];
   let options = [
     Option<
         /*C++ variable name=*/"all_finite",
@@ -130,7 +147,39 @@ def PrintPass : Pass<"print"> {
       /*CLI argument=*/"stdout",
       /*type=*/"bool",
       /*default=*/"true",
-      /*description=*/"Whether to print to stdout (vs stderr)">];
+      /*description=*/"Whether to print to stdout (vs stderr)">,
+      Option</*C++ variable name=*/"debug",
+      /*CLI argument=*/"debug",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to print to stdout (vs stderr)">,
+      Option</*C++ variable name=*/"generic",
+      /*CLI argument=*/"generic",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Whether to print to generic mlir form">,
+      ];
+}
+
+def SortMemory : Pass<"sort-memory"> {
+  let summary = "Sort memory accesses";
+}
+
+def PrintLocationPass : Pass<"print-location"> {
+  let summary = "Print locations of attributed operations";
+  let options = [Option<
+      /*C++ variable name=*/"shouldPrint",
+      /*CLI argument=*/"print",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to print the location">,
+    Option<
+      /*C++ variable name=*/"shouldAttach",
+      /*CLI argument=*/"attach",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to attach the location as attribute">,
+    ];
 }
 
 def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
@@ -184,6 +233,14 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "math::MathDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"remove_freeze",
+        /*CLI argument=*/"remove_freeze",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to remove llvm freeze operations">,
   ];
 }
 
@@ -276,6 +333,30 @@ def LowerKernelPass : Pass<"lower-kernel"> {
         /*type=*/"std::string",
         /*default=*/"\"cuda\"",
         /*description=*/"HW backend">,
+  ];
+}
+
+def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
+  let summary = "Lower enzymexla linalg ops";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"blasIntWidth",
+        /*CLI argument=*/"blas_int_width",
+        /*type=*/"int",
+        /*default=*/"64",
+        /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
   ];
 }
 
@@ -439,11 +520,18 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   let summary = "";
   let dependentDialects = [
+    "LLVM::LLVMDialect",
     "memref::MemRefDialect",
     "affine::AffineDialect",
     "vector::VectorDialect",
     "enzymexla::EnzymeXLADialect",
     "vector::VectorDialect",
+  ];
+}
+
+def SimplifyAffineExprsPass : Pass<"simplify-affine-exprs"> {
+  let summary = "";
+  let dependentDialects = [
   ];
 }
 
@@ -460,6 +548,7 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "math::MathDialect",
+    "ub::UBDialect",
   ];
 }
 
@@ -468,6 +557,142 @@ def AffineCFG : Pass<"affine-cfg"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "affine::AffineDialect",
+  ];
+}
+
+def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
+  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
+def OptimizeCommunication : Pass<"optimize-communication"> {
+  let summary = "Optimize communication";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "sdy::SdyDialect",
+  ];
+  let options =
+  [Option<
+       /*C++ variable name=*/"periodic_concat",
+       /*CLI argument=*/"periodic_concat",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"rotate_comm",
+       /*CLI argument=*/"rotate_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Rotate to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"rotate_to_pad_comm",
+       /*CLI argument=*/"rotate_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform a rotate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"wrap_comm",
+       /*CLI argument=*/"wrap_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Wrap to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"extend_comm",
+       /*CLI argument=*/"extend_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Extend to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"dus_to_pad_manual_comp_comm",
+       /*CLI argument=*/"dus_to_pad_manual_comp_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a DUS with Padding with Manual Computation to optimize the communication">,
+       Option</*C++ variable name=*/"dus_to_pad_comm",
+       /*CLI argument=*/"dus_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform a DUS with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"concat_two_operands_comm",
+       /*CLI argument=*/"concat_two_operands_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Concatenate two operands to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"concat_to_pad_comm",
+       /*CLI argument=*/"concat_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"extend_to_pad_comm",
+       /*CLI argument=*/"extend_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"concat_two_dus_like",
+       /*CLI argument=*/"concat_two_dus_like",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a two-concat with pads and a manual select">,
+       Option<
+       /*C++ variable name=*/"extend_dus_like",
+       /*CLI argument=*/"extend_dus_like",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a two-concat with pads and a manual select">,
+       Option<
+       /*C++ variable name=*/"wrap_to_pad_comm",
+       /*CLI argument=*/"wrap_to_pad_comm",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform a Wrap with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"reorder_associative",
+       /*CLI argument=*/"reorder_associative",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Reorder associative operations to minimize communication">];
+}
+
+def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
+  let summary = "Raise affine parallel loops to stablehlo ops if possible";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "stablehlo::StablehloDialect",
+    "func::FuncDialect",
+  ];
+  let options =
+      [Option<
+           /*C++ variable name=*/"err_if_not_fully_raised",
+           /*CLI argument=*/"err_if_not_fully_raised",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Whether to throw a pass error if not fully raised">,
+       Option<
+           /*C++ variable name=*/"enable_lockstep_for",
+           /*CLI argument=*/"enable_lockstep_for",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"dump_failed_lockstep",
+           /*CLI argument=*/"dump_failed_lockstep",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"prefer_while_raising",
+           /*CLI argument=*/"prefer_while_raising",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Whether to prefer raising to while instead of unrolling">,
   ];
 }
 

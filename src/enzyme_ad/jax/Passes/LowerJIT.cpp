@@ -105,7 +105,7 @@ void buildCommonPassPipeline(
   pm.addPass(createConvertNVGPUToNVVMPass());
   pm.addPass(createGpuKernelOutliningPass());
   pm.addPass(createConvertVectorToSCFPass());
-  pm.addPass(createConvertSCFToCFPass());
+  pm.addPass(createSCFToControlFlowPass());
   pm.addPass(createConvertNVVMToLLVMPass());
   pm.addPass(createConvertFuncToLLVMPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
@@ -117,7 +117,6 @@ void buildCommonPassPipeline(
   nvvmTargetOptions.optLevel = options.optLevel;
   pm.addPass(createGpuNVVMAttachTarget(nvvmTargetOptions));
   pm.addPass(createLowerAffinePass());
-  pm.addPass(createArithToLLVMConversionPass());
   ConvertIndexToLLVMPassOptions convertIndexToLLVMPassOpt;
   convertIndexToLLVMPassOpt.indexBitwidth = options.indexBitWidth;
   pm.addPass(createConvertIndexToLLVMPass(convertIndexToLLVMPassOpt));
@@ -172,6 +171,9 @@ void buildLowerToNVVMPassPipeline(
 
   // GPUModule-specific stuff
   buildGpuPassPipeline(pm, options);
+
+  // Moved here to address https://github.com/EnzymeAD/Enzyme-JAX/issues/482
+  pm.addPass(createArithToLLVMConversionPass());
 
   // Host post-GPUModule-specific stuff
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
@@ -232,7 +234,7 @@ bool initJIT() {
         llvm::orc::LLJITBuilder()
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES, const llvm::Triple &OLL)
+                [](llvm::orc::ExecutionSession &ES)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
                       llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
@@ -290,7 +292,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     return {};
 
   llvmModule->setDataLayout(JIT->getDataLayout());
-  llvmModule->setTargetTriple(JIT->getTargetTriple().getTriple());
+  llvmModule->setTargetTriple(JIT->getTargetTriple());
 
   auto LibA =
       JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
@@ -491,7 +493,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, loadModRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -517,7 +520,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, loadFuncRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -582,7 +586,8 @@ void rewriteKernelCallABI(
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
       auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+          builder
+              .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
               ->getResult(0);
       mlir::Value args[2] = {addr_glob, kernRes};
       builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -591,8 +596,8 @@ void rewriteKernelCallABI(
     if (cuStreamSynchronizePtr) {
       auto addr_glob_int = builder.create<LLVM::ConstantOp>(
           loc, i64, builder.getI64IntegerAttr(cuStreamSynchronizePtr));
-      auto addr_glob =
-          builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int);
+      auto addr_glob = builder.create<LLVM::IntToPtrOp>(
+          loc, ptrty, addr_glob_int.getResult());
       mlir::Value args[2] = {addr_glob, op.getAsyncObject()};
       auto syncRes =
           builder.create<LLVM::CallOp>(loc, cusync_ty, args)->getResult(0);
@@ -606,7 +611,8 @@ void rewriteKernelCallABI(
         auto addr_glob_int = builder.create<LLVM::ConstantOp>(
             loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
         auto addr_glob =
-            builder.create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int)
+            builder
+                .create<LLVM::IntToPtrOp>(loc, ptrty, addr_glob_int.getResult())
                 ->getResult(0);
         mlir::Value args[2] = {addr_glob, syncRes};
         builder.create<LLVM::CallOp>(loc, curesult_handler_ty, args);
@@ -725,11 +731,16 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   SmallVector<mlir::Value> arguments;
   for (auto arg : op.getArguments()) {
     LLVM::GEPArg args[1] = {arg.getArgNumber()};
-    auto gep =
-        builder.create<LLVM::GEPOp>(loc, ptrty, ptrty, buffers, args, true);
+    auto gep = builder.create<LLVM::GEPOp>(
+        loc, ptrty, ptrty, buffers, args,
+        mlir::LLVM::GEPNoWrapFlags(mlir::LLVM::GEPNoWrapFlags::inbounds));
     auto argTy = arg.getType();
     if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
       argTy = AT.getElementType();
+    }
+    if (auto AT = dyn_cast<MemRefType>(argTy)) {
+      argTy =
+          LLVM::LLVMPointerType::get(AT.getContext(), AT.getMemorySpaceAsInt());
     }
     auto ld = builder.create<LLVM::LoadOp>(loc, argTy, gep);
     arguments.push_back(ld);
@@ -745,6 +756,11 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       int64_t c0[1] = {0};
       newval = builder.create<LLVM::InsertValueOp>(
           newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+    }
+
+    if (auto AT = dyn_cast<MemRefType>(oldarg.getType())) {
+      newval = builder.create<enzymexla::Pointer2MemrefOp>(
+          newarg.getLoc(), oldarg.getType(), newval);
     }
 
     map.map(oldarg, newval);
@@ -795,11 +811,20 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     id++;
     PassManager pm(submod.getContext());
     if (numGPUModule == 0) {
+      SmallVector<Operation *> toErase;
+      submod.walk([&](LLVM::InlineAsmOp asmop) {
+        if (asmop.getAsmString() == "exit;") {
+          toErase.push_back(asmop);
+        }
+      });
+      for (auto op : toErase) {
+        op->erase();
+      }
       pm.addPass(createLowerAffinePass());
       if (openmp)
         pm.addPass(createConvertSCFToOpenMPPass());
       else
-        pm.addPass(createConvertSCFToCFPass());
+        pm.addPass(createSCFToControlFlowPass());
 
       buildLowerToCPUPassPipeline(pm);
       auto subres = pm.run(submod);
@@ -965,12 +990,19 @@ struct LowerJITPass
           NamedAttribute(rewriter.getStringAttr("attr"), backendstr));
       auto dattr = DictionaryAttr::get(op.getContext(), names);
 
+      BoolAttr hasSideEffectAttr;
+      if (op.getXlaSideEffectFreeAttr()) {
+        hasSideEffectAttr = rewriter.getBoolAttr(false);
+      } else { // use our analysis if no attribute is provided
+        rewriter.getBoolAttr(!isMemoryEffectFree(op));
+      }
+
       Operation *replacement;
       if (backend == "cuda")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ dattr,
             /* api_version*/
             CustomCallApiVersionAttr::get(
@@ -982,7 +1014,7 @@ struct LowerJITPass
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
             rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ rewriter.getBoolAttr(false),
+            /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ backendstr,
             /* api_version*/
             CustomCallApiVersionAttr::get(

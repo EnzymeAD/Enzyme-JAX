@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [openstack22]
+        os: [openstack22-large]
         python: ["3.10", "3.11", "3.12"]
     timeout-minutes: 500
     steps:
@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install --user numpy twine
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
       - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
@@ -36,7 +36,7 @@ jobs:
           cat BUILD
           sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
           cat WORKSPACE
-      - uses: bazel-contrib/setup-bazel@0.13.0
+      - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true

@@ -22,10 +22,13 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include "src/enzyme_ad/jax/Utils.h"
+#include <cstdint>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -52,22 +55,30 @@ static llvm::ArrayRef<bool> getBoolIter(llvm::ArrayRef<bool> vals) {
   return vals;
 }
 
-static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
-  auto Ty = builder.getI64Type();
-  auto unrankedTensorType = RankedTensorType::get({}, Ty);
+Value makeIntegerConstant(Location loc, OpBuilder &builder, Type type,
+                          int64_t val) {
+  auto unrankedTensorType = RankedTensorType::get({}, type);
   return builder
       .create<ConstantOp>(loc, unrankedTensorType,
                           SplatElementsAttr::get(
                               unrankedTensorType,
-                              ArrayRef<Attribute>(IntegerAttr::get(Ty, val))))
+                              ArrayRef<Attribute>(IntegerAttr::get(type, val))))
       .getResult();
 }
+
+static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
+  return makeIntegerConstant(loc, builder, builder.getI64Type(), val);
+}
+
+static Value makeI32Constant(Location loc, OpBuilder &builder, int32_t val) {
+  return makeIntegerConstant(loc, builder, builder.getI32Type(), val);
+}
+
 static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
-  auto elemType =
-      op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto elemType = cast<ShapedType>(op->getResult(0).getType()).getElementType();
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
@@ -80,7 +91,135 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+bool blockCmp(Block *a, Block *b);
+
+bool opCmp(Operation *a, Operation *b) {
+  if (a == b)
+    return false;
+
+  // Ancestors are less than their descendants.
+  if (a->isProperAncestor(b)) {
+    return true;
+  } else if (b->isProperAncestor(a->getParentOp())) {
+    return false;
+  }
+
+  // Move a and b to be direct descendents of the same op
+  while (!a->getParentOp()->isAncestor(b))
+    a = a->getParentOp();
+
+  while (!b->getParentOp()->isAncestor(a))
+    b = b->getParentOp();
+
+  assert(a->getParentOp() == b->getParentOp());
+
+  if (a->getBlock() == b->getBlock()) {
+    return a->isBeforeInBlock(b);
+  } else {
+    return blockCmp(a->getBlock(), b->getBlock());
+  }
+}
+
+bool regionCmp(Region *a, Region *b) {
+  if (a == b)
+    return false;
+
+  // Ancestors are less than their descendants.
+  if (a->getParentOp()->isProperAncestor(b->getParentOp())) {
+    return true;
+  } else if (b->getParentOp()->isProperAncestor(a->getParentOp())) {
+    return false;
+  }
+
+  if (a->getParentOp() == b->getParentOp()) {
+    return a->getRegionNumber() < b->getRegionNumber();
+  }
+  return opCmp(a->getParentOp(), b->getParentOp());
+}
+
+bool blockCmp(Block *a, Block *b) {
+  if (a == b)
+    return false;
+
+  // Ancestors are less than their descendants.
+  if (a->getParent()->isProperAncestor(b->getParent())) {
+    return true;
+  } else if (b->getParent()->isProperAncestor(a->getParent())) {
+    return false;
+  }
+
+  if (a->getParent() == b->getParent()) {
+    // If the blocks are in the same region, then the first one in
+    // the region is less than the second one.
+    for (auto &bb : *b->getParent()) {
+      if (&bb == a)
+        return true;
+    }
+    return false;
+  }
+
+  return regionCmp(a->getParent(), b->getParent());
+}
+
+// This function returns whether a < b
+bool valueCmp(Value a, Value b) {
+  // Equal values are not less than each other.
+  if (a == b)
+    return false;
+
+  auto ba = dyn_cast<BlockArgument>(a);
+  auto bb = dyn_cast<BlockArgument>(b);
+  // Define block arguments are less than non-block arguments.
+  if (ba && !bb)
+    return true;
+  if (!ba && bb)
+    return false;
+  if (ba && bb) {
+    if (ba.getOwner() == bb.getOwner()) {
+      return ba.getArgNumber() < bb.getArgNumber();
+    }
+    return blockCmp(ba.getOwner(), bb.getOwner());
+  }
+
+  OpResult ra = cast<OpResult>(a);
+  OpResult rb = cast<OpResult>(b);
+
+  if (ra.getOwner() == rb.getOwner()) {
+    return ra.getResultNumber() < rb.getResultNumber();
+  } else {
+    return opCmp(ra.getOwner(), rb.getOwner());
+  }
+}
+
+Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
+                                   IRMapping &mapper,
+                                   TypeRange newResultTypes) {
+  OperationState state(op->getLoc(), op->getName());
+  state.addTypes(newResultTypes);
+
+  SmallVector<Value, 8> operands;
+  operands.reserve(op->getNumOperands());
+  for (auto opValue : op->getOperands())
+    operands.push_back(mapper.lookup(opValue));
+  state.addOperands(operands);
+
+  state.addAttributes(op->getAttrs());
+
+  for (Region &region : op->getRegions()) {
+    Region *newRegion = state.addRegion();
+    region.cloneInto(newRegion, mapper);
+  }
+
+  return builder.create(state);
+}
+
+static inline DenseI64ArrayAttr getBroadcastInDimsAttr(OpBuilder &builder,
+                                                       ArrayRef<int64_t> dims) {
+  return builder.getDenseI64ArrayAttr(dims);
+}
+
 namespace {
+
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 
 // From
@@ -123,7 +262,7 @@ static bool isEligibleForCompactPrint(ReduceOp op) {
     return false;
 
   auto elemType =
-      op.getInputs()[0].getType().cast<ShapedType>().getElementType();
+      cast<ShapedType>(op.getInputs()[0].getType()).getElementType();
   auto expectedInnerOpType = RankedTensorType::get(/*shape=*/{}, elemType);
   if (innerOp.getOperands()[0].getType() != expectedInnerOpType)
     return false;
@@ -205,7 +344,7 @@ public:
               dyn_cast<AutoDiffTypeInterface>(operand.get().getType())) {
         if (!iface.isMutable()) {
           Type retTy = iface.getShadowType();
-          auto toret = retTy.cast<AutoDiffTypeInterface>().createNullValue(
+          auto toret = cast<AutoDiffTypeInterface>(retTy).createNullValue(
               builder, operand.get().getLoc());
           map.map(operand.get(), toret);
           continue;
@@ -217,7 +356,30 @@ public:
                         << ", op=" << operand.get() << ")\n";
       return failure();
     }
-    Operation *shadow = builder.clone(*orig, map);
+
+    Operation *shadow;
+    SmallVector<Type> newResultTypes;
+    if (gutils->width > 1) { // batched forward mode
+      SmallVector<Type> newResultTypes;
+      for (auto result : orig->getResults()) {
+        auto oldType = dyn_cast<RankedTensorType>(result.getType());
+        if (!oldType || !oldType.hasStaticShape()) {
+          orig->emitError("Unsupported result type for batched reduce\n");
+          return failure();
+        }
+
+        SmallVector<int64_t> newShape;
+        newShape.push_back(gutils->width); // prepend batch dim
+        newShape.append(oldType.getShape().begin(), oldType.getShape().end());
+
+        newResultTypes.push_back(
+            RankedTensorType::get(newShape, oldType.getElementType()));
+      }
+
+      shadow = cloneWithNewResultTypes(orig, builder, map, newResultTypes);
+    } else {
+      shadow = builder.clone(*orig, map);
+    }
 
     auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
     gutils->invertedPointers.erase(innerOp.getResult(0));
@@ -229,6 +391,22 @@ public:
       baToErase.set(invBA.getArgNumber());
     }
     cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+
+    if (gutils->width > 1) { // batched forward mode
+      auto dimsAttr =
+          dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
+      if (!dimsAttr) {
+        shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
+        return failure();
+      }
+
+      SmallVector<int64_t> dims;
+      for (int64_t d : dimsAttr.asArrayRef())
+        dims.push_back(d + 1);
+
+      shadow->setAttr("dimensions",
+                      DenseI64ArrayAttr::get(builder.getContext(), dims));
+    }
 
     size_t shadowCnt = 0;
     for (auto origRes : orig->getResults()) {
@@ -403,17 +581,27 @@ public:
 
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
-    Value numIters = gutils->popCache(caches[0], builder);
+    Value numIters;
+    if (caches.empty()) {
+      WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
+      bool res = info.computeInfo().succeeded();
+      assert(res && info.isValid() && info.isConstant());
+      (void)res;
+
+      auto iterType = orig->getOperand(0).getType();
+      numIters = builder.create<stablehlo::ConstantOp>(
+          orig->getLoc(), iterType,
+          cast<ElementsAttr>(makeAttr(iterType, info.getConstantNumIters())));
+    } else
+      numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
-    auto iterVar =
-        builder
-            .create<ConstantOp>(
-                orig->getLoc(), unrankedTensorType,
-                SplatElementsAttr::get(unrankedTensorType,
-                                       ArrayRef<Attribute>(IntegerAttr::get(
-                                           builder.getI64Type(), 0))))
-            .getResult();
+    auto iterVarOp = builder.create<ConstantOp>(
+        orig->getLoc(), unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
+    auto iterVar = iterVarOp.getResult();
 
     SmallVector<Value> operands;
     operands.reserve(orig->getNumResults() + 1);
@@ -445,6 +633,26 @@ public:
       auto condIterVar = cond->getArgument(0);
 
       OpBuilder condBuilder(cond, cond->end());
+
+      auto condIterVarElemType =
+          cast<RankedTensorType>(condIterVar.getType()).getElementType();
+      auto numItersElemType =
+          cast<RankedTensorType>(numIters.getType()).getElementType();
+      if (numItersElemType != condIterVarElemType) {
+        builder.setInsertionPointAfter(iterVarOp);
+        DenseIntElementsAttr numAttr;
+        if (matchPattern(numIters, m_Constant(&numAttr))) {
+          numIters = builder.create<ConstantOp>(
+              orig->getLoc(), condIterVar.getType(),
+              cast<ElementsAttr>(makeAttr(condIterVar.getType(),
+                                          (*numAttr.begin()).getSExtValue())));
+        } else {
+          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
+                                               condIterVarElemType);
+        }
+        builder.setInsertionPointAfter(revWhile);
+      }
+
       condBuilder.create<ReturnOp>(
           orig->getLoc(),
           ValueRange(condBuilder
@@ -544,10 +752,16 @@ public:
     auto newWhile = cast<WhileOp>(gutils->getNewFromOriginal(orig));
     OpBuilder revBuilder(newWhile);
 
+    Type elementType = loopConditionVariableElementType(newWhile, revBuilder);
+
     Value numIters;
 
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
+      // no need to cache number of iterations if it is a known constant.
+      if (info.isValid() && info.isConstant())
+        return {};
+
       numIters = info.getNumIters(revBuilder);
     }
 
@@ -555,15 +769,14 @@ public:
       auto cond = &newWhile.getCond().front();
       auto body = &newWhile.getBody().front();
 
-      auto unrankedTensorType =
-          RankedTensorType::get({}, revBuilder.getI64Type());
+      auto unrankedTensorType = RankedTensorType::get({}, elementType);
       auto numItersInit =
           revBuilder
               .create<ConstantOp>(
                   orig->getLoc(), unrankedTensorType,
-                  SplatElementsAttr::get(unrankedTensorType,
-                                         ArrayRef<Attribute>(IntegerAttr::get(
-                                             revBuilder.getI64Type(), 0))))
+                  SplatElementsAttr::get(
+                      unrankedTensorType,
+                      ArrayRef<Attribute>(IntegerAttr::get(elementType, 0))))
               .getResult();
 
       newWhile->insertOperands(newWhile->getNumOperands(),
@@ -575,9 +788,9 @@ public:
       OpBuilder inBodyBuilder(body, body->begin());
       auto one = inBodyBuilder.create<ConstantOp>(
           orig->getLoc(), unrankedTensorType,
-          SplatElementsAttr::get(unrankedTensorType,
-                                 ArrayRef<Attribute>(IntegerAttr::get(
-                                     revBuilder.getI64Type(), 1))));
+          SplatElementsAttr::get(
+              unrankedTensorType,
+              ArrayRef<Attribute>(IntegerAttr::get(elementType, 1))));
       numItersInBlock = inBodyBuilder.create<AddOp>(
           orig->getLoc(), numItersInBlock, one.getResult());
       auto term = body->getTerminator();
@@ -613,6 +826,30 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
+
+private:
+  Type loopConditionVariableElementType(WhileOp whileOp,
+                                        OpBuilder &builder) const {
+    auto *condBlock = &whileOp.getCond().front();
+
+    auto condReturnOp =
+        llvm::dyn_cast<stablehlo::ReturnOp>(condBlock->getTerminator());
+    if (!condReturnOp || condReturnOp->getNumOperands() == 0)
+      return builder.getI64Type();
+
+    auto condVal = condReturnOp->getOperand(0);
+    auto *defOp = condVal.getDefiningOp();
+
+    auto cond = llvm::dyn_cast_or_null<stablehlo::CompareOp>(defOp);
+    if (!cond)
+      return builder.getI64Type();
+
+    auto lhsType = cast<RankedTensorType>(cond.getOperand(0).getType());
+    if (!lhsType)
+      return builder.getI64Type();
+
+    return lhsType.getElementType();
+  }
 };
 
 class AutoDiffBroadcastInDimRev
@@ -653,11 +890,36 @@ public:
       reducedDims.push_back(en.index());
     }
 
+    SmallVector<int64_t> reshapedShape(outTy.getRank(), -1);
+    for (auto [i, sz] : llvm::enumerate(outTy.getShape())) {
+      if (llvm::is_contained(reducedDims, i)) {
+        reshapedShape[i] = 1;
+      } else {
+        reshapedShape[i] = sz;
+      }
+    }
+
+    SmallVector<int64_t> perm(outTy.getRank(), -1);
+    SmallVector<int64_t> mapping(outTy.getRank(), -1);
+    for (auto [i, dim] : llvm::enumerate(bcastDims)) {
+      mapping[dim] = i;
+    }
+
+    int next = bcastDims.size();
+    for (int i = 0; i < outTy.getRank(); i++) {
+      if (mapping[i] == -1) {
+        mapping[i] = next++;
+      }
+    }
+
+    for (int i = 0; i < outTy.getRank(); i++) {
+      perm[mapping[i]] = i;
+    }
+
     auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
     auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
 
-    Value zero = gutils->getShadowType(bodyTy)
-                     .cast<AutoDiffTypeInterface>()
+    Value zero = cast<AutoDiffTypeInterface>(gutils->getShadowType(bodyTy))
                      .createNullValue(builder, op.getLoc());
 
     auto red = builder.create<ReduceOp>(
@@ -674,10 +936,18 @@ public:
                                          body.getArgument(1));
     bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
 
-    Value res = red->getResult(0);
-    Type resTy = gutils->getShadowType(op.getOperand().getType());
-    if (res.getType() != resTy)
-      res = builder.create<ReshapeOp>(op.getLoc(), resTy, res);
+    // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
+    // transpose -> reshape
+    // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
+    auto reshapedRed = builder.create<ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(reshapedShape, inTy.getElementType()),
+        red->getResult(0));
+    auto transposedVal =
+        builder.create<TransposeOp>(op.getLoc(), reshapedRed, perm);
+    auto res = builder.create<ReshapeOp>(
+        op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
+        transposedVal);
 
     gutils->addToDiffe(op.getOperand(), res, builder);
     return success();
@@ -798,8 +1068,8 @@ public:
       interior_padding.push_back(stride - 1);
     }
 
-    auto zeroPad = RankedTensorType::get({}, inTy.getElementType())
-                       .cast<AutoDiffTypeInterface>()
+    auto zeroPad = cast<AutoDiffTypeInterface>(
+                       RankedTensorType::get({}, inTy.getElementType()))
                        .createNullValue(builder, op.getLoc());
     auto red = builder.create<stablehlo::PadOp>(
         op.getLoc(), inDiffe, zeroPad, builder.getDenseI64ArrayAttr(starts),
@@ -880,18 +1150,17 @@ public:
     }
 
     auto unrankedTensorType = RankedTensorType::get(
-        {},
-        op.getResult(0).getType().cast<RankedTensorType>().getElementType());
+        {}, cast<RankedTensorType>(op.getResult(0).getType()).getElementType());
 
     Value inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
     if (isadd) {
-      auto operandType = op->getOperand(0).getType().cast<RankedTensorType>();
-      auto outputType = op->getResult(0).getType().cast<RankedTensorType>();
+      auto operandType = cast<RankedTensorType>(op->getOperand(0).getType());
+      auto outputType = cast<RankedTensorType>(op->getResult(0).getType());
 
       // Compute padding similarly to conv lhs grad.
-      int64_t N = operandType.cast<RankedTensorType>().getShape().size();
+      int64_t N = cast<RankedTensorType>(operandType).getShape().size();
 
       SmallVector<int64_t> paddingValues(2 * N, 0);
 
@@ -919,7 +1188,6 @@ public:
 
       for (int i = 0; i < N; ++i) {
         auto padBefore = paddingValues[2 * i];
-        auto padAfter = paddingValues[2 * i + 1];
 
         auto lhsDilation =
             lhsDilations.has_value() ? getI64Value(lhsDilations.value(), i) : 1;
@@ -948,9 +1216,8 @@ public:
 
       SmallVector<int64_t> newBaseDilation(N, 1);
 
-      auto zero =
-          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
-              builder, op.getLoc());
+      auto zero = cast<AutoDiffTypeInterface>(unrankedTensorType)
+                      .createNullValue(builder, op.getLoc());
 
       auto paddedIndiffe =
           builder
@@ -988,8 +1255,8 @@ public:
       auto revOp = builder.create<SelectAndScatterOp>(
           op.getLoc(), op.getOperand(0).getType(),
           gutils->popCache(caches[0], builder), inDiffe,
-          unrankedTensorType.cast<AutoDiffTypeInterface>().createNullValue(
-              builder, op.getLoc()),
+          cast<AutoDiffTypeInterface>(unrankedTensorType)
+              .createNullValue(builder, op.getLoc()),
           op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
           op.getPaddingAttr());
 
@@ -1037,9 +1304,9 @@ public:
 
     Operation &innerOp = op.getBody().front().front();
 
-    auto inTy = op->getOperand(0).getType().cast<RankedTensorType>();
-    auto zero = inTy.cast<AutoDiffTypeInterface>().createNullValue(builder,
-                                                                   op.getLoc());
+    auto inTy = cast<RankedTensorType>(op->getOperand(0).getType());
+    auto zero =
+        cast<AutoDiffTypeInterface>(inTy).createNullValue(builder, op.getLoc());
     auto inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
@@ -1091,9 +1358,8 @@ public:
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
         auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
 
-        auto zeroI =
-            inDiffe.getType().cast<AutoDiffTypeInterface>().createNullValue(
-                builder, op.getLoc());
+        auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
+                         .createNullValue(builder, op.getLoc());
 
         auto cmp = builder.create<CompareOp>(op.getLoc(), ores, oprev,
                                              ComparisonDirection::EQ);
@@ -1139,7 +1405,7 @@ public:
       SmallVector<int64_t> limit;
       SmallVector<int64_t> strides;
       SmallVector<int64_t> tys;
-      auto RT = inTy.cast<RankedTensorType>();
+      auto RT = cast<RankedTensorType>(inTy);
       for (auto i = 0; i < RT.getShape().size(); i++) {
         tys.push_back(RT.getShape()[i]);
         if (i == dim) {
@@ -1407,6 +1673,8 @@ public:
         startIndices.push_back(idx);
       }
 
+      auto zeroIdx = makeI64Constant(src->getLoc(), bodyBuilder, 0);
+
       IRMapping origToUnbatch;
       for (auto operand : operands) {
         auto batched = mapper.lookup(operand);
@@ -1416,8 +1684,13 @@ public:
         shape.append(Ty.getShape().begin(), Ty.getShape().end());
         auto sliceTy = Ty.clone(shape);
 
+        SmallVector<Value> operandStartIndices;
+        operandStartIndices.append(startIndices.begin(), startIndices.end());
+        for (auto i = 0; i < Ty.getShape().size(); i++)
+          operandStartIndices.push_back(zeroIdx);
+
         auto sliceOp = bodyBuilder.create<DynamicSliceOp>(
-            src->getLoc(), sliceTy, batched, startIndices, shape);
+            src->getLoc(), sliceTy, batched, operandStartIndices, shape);
 
         auto reshapeOp = bodyBuilder.create<ReshapeOp>(
             src->getLoc(), operand.getType(), sliceOp->getResult(0));
@@ -1439,8 +1712,13 @@ public:
         auto reshapeOp =
             bodyBuilder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
 
+        SmallVector<Value> operandStartIndices;
+        operandStartIndices.append(startIndices.begin(), startIndices.end());
+        for (int i = 0; i < Ty.getShape().size(); ++i)
+          operandStartIndices.push_back(zeroIdx);
+
         auto update = bodyBuilder.create<DynamicUpdateSliceOp>(
-            src->getLoc(), batched, reshapeOp, startIndices);
+            src->getLoc(), batched, reshapeOp, operandStartIndices);
 
         whileBodyOutputs.push_back(update);
       }
@@ -1891,12 +2169,10 @@ public:
         if (!gutils->isConstantValue(operand.get())) {
           newOperands.push_back(gutils->invertPointerM(operand.get(), builder));
         } else {
-          Type retTy = operand.get()
-                           .getType()
-                           .cast<AutoDiffTypeInterface>()
+          Type retTy = cast<AutoDiffTypeInterface>(operand.get().getType())
                            .getShadowType();
           newOperands.push_back(
-              retTy.cast<AutoDiffTypeInterface>().createNullValue(
+              cast<AutoDiffTypeInterface>(retTy).createNullValue(
                   builder, origTerminator->getLoc()));
         }
       }
@@ -1944,6 +2220,7 @@ public:
     if (!gutils->isConstantValue(op->getResult(0)) ||
         !gutils->isConstantValue(op->getResult(1)) ||
         !gutils->isConstantValue(op->getResult(2))) {
+      auto inDiffe = gutils->diffe(op->getResult(0), builder);
       gutils->zeroDiffe(op->getResult(0), builder);
 
       auto opOperand0 = gutils->popCache(caches[0], builder);
@@ -1952,9 +2229,8 @@ public:
       auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
 
       auto gradOp = builder.create<BatchNormGradOp>(
-          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
-          gutils->diffe(op->getOperand(0), builder), op.getEpsilonAttr(),
-          op.getFeatureIndexAttr());
+          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2, inDiffe,
+          op.getEpsilonAttr(), op.getFeatureIndexAttr());
 
       if (!gutils->isConstantValue(op->getOperand(0))) {
         gutils->addToDiffe(op->getOperand(0), gradOp.getResult(0), builder);
@@ -2003,6 +2279,536 @@ public:
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
+private:
+#define DEBUG_TYPE "enzymexla-stablehlo-while-mincut"
+
+  // A node in the compute graph.
+  // Operation nodes have outgoing edges to value nodes that they produce and
+  // incoming nodes from values they take as operands.
+  struct Node {
+    Operation *O;
+    Value V;
+    enum Type {
+      NONE,
+      VAL,
+      OP,
+    } type;
+
+    Node(Operation *O) : O(O), type(OP){};
+    Node(Value V) : V(V), type(VAL){};
+    Node() : type(NONE){};
+
+    bool operator<(const Node N) const {
+      if (type != N.type)
+        return type < N.type;
+      else if (type == OP)
+        return O < N.O;
+      else if (type == VAL)
+        return V.getAsOpaquePointer() < N.V.getAsOpaquePointer();
+      else
+        return true;
+    }
+    void dump() const {
+      if (type == VAL)
+        llvm::errs() << "[" << V << ", "
+                     << "Value"
+                     << "]\n";
+      else if (type == OP)
+        llvm::errs() << "[" << *O << ", "
+                     << "Operation"
+                     << "]\n";
+      else
+        llvm::errs() << "["
+                     << "NULL"
+                     << ", "
+                     << "None"
+                     << "]\n";
+    }
+  };
+
+  typedef std::map<Node, std::set<Node>> Graph;
+
+  static void dump(Graph &G) {
+    for (auto &pair : G) {
+      pair.first.dump();
+      for (const auto &N : pair.second) {
+        llvm::errs() << "\t";
+        N.dump();
+      }
+    }
+  }
+
+  // parent is populated with a path from each connected leaf node of G to one
+  // of the Value in Source.
+  static inline void bfs(const Graph &G, const llvm::SetVector<Value> &Sources,
+                         std::map<Node, Node> &parent) {
+    std::deque<Node> q;
+    for (auto V : Sources) {
+      Node N(V);
+      parent.emplace(N, Node());
+      q.push_back(N);
+    }
+
+    // Standard BFS Loop
+    while (!q.empty()) {
+      auto u = q.front();
+      q.pop_front();
+      auto found = G.find(u);
+      if (found == G.end())
+        continue;
+      for (auto v : found->second) {
+        if (parent.find(v) == parent.end()) {
+          q.push_back(v);
+          parent.emplace(v, u);
+        }
+      }
+    }
+  }
+
+  // Whether or not an operation can be moved from the forward region to the
+  // reverse region or vice-versa.
+  static inline bool isMovable(Operation *op) {
+    return mlir::isPure(op) && op->getNumRegions() == 0;
+  }
+
+  static Graph reverseGraph(const Graph &Orig, const SetVector<Value> &sources,
+                            const SetVector<Value> &sinks) {
+    Graph inverted, revGraph;
+
+    // Compute the graph with inverted edges
+    for (auto &pair : Orig) {
+      for (auto N : pair.second) {
+        inverted[N].insert(pair.first);
+      }
+    }
+
+    SmallVector<Value> worklist(sinks.getArrayRef().begin(),
+                                sinks.getArrayRef().end());
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (sources.contains(todo))
+        continue;
+
+      Node N(todo);
+      auto pair = inverted.find(N);
+      for (auto NN : pair->second) {
+        assert(NN.type == Node::OP);
+
+        revGraph[NN].insert(N);
+
+        for (auto NNN : inverted.find(NN)->second) {
+          revGraph[NNN].insert(NN);
+          worklist.push_back(NNN.V);
+        }
+      }
+    }
+
+    return revGraph;
+  }
+
+  // Given the full forward/backward compute graph, the push/pop can be seen as
+  // a special cut of this graph. This function tries to modifies the boundary
+  // of the push/pop to minimize the amount of memory that is live across
+  // different loops.
+  static void minCutCache(Block *forward, Block *reverse,
+                          SmallVector<CacheInfo> &caches,
+                          PatternRewriter &rewriter) {
+    if (caches.empty())
+      return;
+
+    // where to build the new inits
+    Operation *entry = caches[0].initOp;
+
+    Graph G;
+
+    LLVM_DEBUG(llvm::dbgs() << "trying min/cut\n");
+    LLVM_DEBUG(forward->getParentOp()->getParentOp()->dump());
+
+    SmallVector<Value> worklist;
+    for (auto &cache : caches) {
+      worklist.push_back(cache.pushedValue());
+    }
+
+    // nodes that cannot be recomputed
+    SetVector<Value> roots;
+
+    // Walk Backward
+    //
+    // Roots (sources) are either block arguments or values which are defined
+    // outside of forward.
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (todo.getParentBlock() != forward) {
+        roots.insert(todo);
+        continue;
+      }
+
+      Operation *owner = todo.getDefiningOp();
+      if (!owner || !isMovable(owner)) {
+        roots.insert(todo);
+        continue;
+      }
+
+      auto &&[_, inserted] = G[Node(owner)].insert(Node(todo));
+      if (inserted) {
+        for (Value operand : owner->getOperands()) {
+          G[Node(operand)].insert(Node(owner));
+          worklist.push_back(operand);
+        }
+      }
+    }
+
+    worklist.clear();
+
+    for (auto &info : caches) {
+      // insert use of the push through the pop. These define the existing
+      // forward/reverse cut that the min cut is trying to improve.
+      //
+      // Given the following IR:
+      //
+      // %cache = "enzyme.init"() : () -> !enzyme.Cache<f32>
+      // ^forward:
+      //   %pushed = "operation.someop"(%somevalue) : (f32) -> f32
+      //   "enzyme.push"(%cache, %pushed) : (!enzyme.Cache<f32>, f32) -> ()
+      // ^backward:
+      //   %poped = "enzyme.pop"(%cache) : (!enzyme.Cache<f32>) -> f32
+      //   %use = "operation.use"(%poped) : (f32) -> f32
+      //
+      // will result in the following graph:
+      //
+      // [%somevalue, Value]
+      //   [%pushed, Operation]
+      //     [%pushed, Value]
+      //       [%poped, Operation]
+      //         [%poped, Value]
+      //           [%use, Operation]
+      //             [%use, Value]
+      //
+      Node popNode = Node(static_cast<Operation *>(info.popOp));
+      Value poped = info.popOp.getResult();
+      G[Node(info.pushedValue())].insert(popNode);
+      G[popNode].insert(Node(poped));
+      worklist.push_back(poped);
+    }
+
+    SetVector<Value> Required;
+
+    // Walk Forward
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      for (auto user : todo.getUsers()) {
+        if (user->getBlock() != reverse && !isMovable(user)) {
+          Required.insert(todo);
+          continue;
+        }
+
+        if (!llvm::all_of(user->getOperands(), [&G, &todo](Value operand) {
+              return operand == todo || G.count(Node(operand));
+            })) {
+          Required.insert(todo);
+          continue;
+        }
+
+        Node N(user);
+        auto &&[_, inserted] = G[Node(todo)].insert(N);
+        if (inserted) {
+          for (Value res : user->getResults()) {
+            G[N].insert(Node(res));
+            worklist.push_back(res);
+          }
+        }
+      }
+    }
+
+    if (G.empty())
+      return;
+
+    LLVM_DEBUG(dump(G));
+
+    Graph Orig = G;
+
+    // Augment the flow while there is a path from source to sink
+    while (1) {
+      std::map<Node, Node> parent;
+      bfs(G, roots, parent);
+      Node end;
+      for (auto req : Required) {
+        if (parent.find(Node(req)) != parent.end()) {
+          end = Node(req);
+          break;
+        }
+      }
+      if (end.type == Node::NONE)
+        break;
+      // update residual capacities of the edges and reverse edges
+      // along the path
+      Node v = end;
+      while (1) {
+        assert(parent.find(v) != parent.end());
+        Node u = parent.find(v)->second;
+        assert(u.type != Node::NONE);
+        assert(G[u].count(v) == 1);
+        assert(G[v].count(u) == 0);
+        G[u].erase(v);
+        G[v].insert(u);
+        if (u.type == Node::VAL && roots.contains(u.V))
+          break;
+        v = u;
+      }
+    }
+    // Flow is maximum now, find vertices reachable from s
+
+    std::map<Node, Node> parent;
+    bfs(G, roots, parent);
+
+    LLVM_DEBUG(llvm::dbgs() << "residual graph: \n";);
+    LLVM_DEBUG(dump(G));
+
+    // Those are the new values to cache
+    SetVector<Value> newCaches;
+
+    // All edges that are from a reachable vertex to non-reachable vertex in the
+    // original graph are edges for the minimum cut. The set of values to cache
+    // are the values transported along those edges (either. Value -> Operation
+    // or Operation -> Value).
+    //
+    // Note: we could use more heuristics here to select the actual cached value
+    //       based on sizes, existing caches, number of users in the fwd as to
+    //       not duplicate work, etc...
+    for (auto &pair : Orig) {
+      if (parent.find(pair.first) != parent.end()) {
+        for (auto N : pair.second) {
+          if (parent.find(N) == parent.end()) {
+            Value newCache;
+            if (pair.first.type == Node::VAL) {
+              assert(N.type == Node::OP);
+              newCache = pair.first.V;
+            } else {
+              assert(pair.first.type == Node::OP);
+              assert(N.type == Node::VAL);
+              newCache = N.V;
+            }
+            newCaches.insert(newCache);
+          }
+        }
+      }
+    }
+
+    // compute path from new caches to required
+    parent.clear();
+    bfs(Orig, newCaches, parent);
+
+    // The reverse graph is a sub graph of Orig with only pathes from Required
+    // to "dominating" caches.
+    Graph revGraph = reverseGraph(Orig, newCaches, Required);
+
+    LLVM_DEBUG(llvm::dbgs() << "revGraph:\n");
+    LLVM_DEBUG(dump(revGraph));
+
+    // Refine cached values based on some heuristics
+    auto newCacheVec = newCaches.takeVector();
+
+    // sort caches to provide determinism.
+    llvm::sort(newCacheVec.begin(), newCacheVec.end(), valueCmp);
+
+    for (Value newCache : newCacheVec) {
+      SetVector<Value> candidates;
+
+      worklist.clear();
+      worklist.push_back(newCache);
+
+      while (!worklist.empty()) {
+        Value candidate = worklist.pop_back_val();
+
+        auto C = revGraph.find(Node(candidate));
+        if (C == revGraph.end())
+          continue;
+
+        if (C->second.size() > 1)
+          continue;
+
+        if (candidate.getParentBlock() == reverse)
+          continue; // TODO: support this
+
+        candidates.insert(candidate);
+        for (auto &N : C->second) {
+          // not eligible
+          if (N.O->getNumResults() > 1)
+            continue;
+
+          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
+        }
+      }
+
+      auto computeSizeOfType = [](Value val) -> int64_t {
+        auto T = cast<RankedTensorType>(val.getType());
+        if (!T.getElementType().isIntOrFloat())
+          return INT64_MAX;
+        int64_t sz = T.getElementType().getIntOrFloatBitWidth();
+        for (auto sh : T.getShape())
+          sz *= sh;
+        return sz;
+      };
+
+      Value picked = newCache;
+      int64_t curSize = computeSizeOfType(picked),
+              curRank = cast<RankedTensorType>(picked.getType()).getRank();
+      for (Value candidate : candidates) {
+        int64_t newSize = computeSizeOfType(candidate),
+                newRank = cast<RankedTensorType>(candidate.getType()).getRank();
+        if (newSize < curSize || (newSize == curSize && newRank < curRank) ||
+            candidate.getDefiningOp<enzyme::PopOp>() != nullptr) {
+          curSize = newSize;
+          curRank = newRank;
+          picked = candidate;
+        }
+      }
+
+      auto p = parent.find(Node(picked));
+      while (p != parent.end()) {
+        revGraph.erase(p->second);
+        p = parent.find(p->second);
+      }
+
+      newCaches.insert(picked);
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "new caches: \n";
+      for (Value v : newCaches) {
+        v.dump();
+      }
+    });
+
+    SmallVector<CacheInfo> newCacheInfos;
+    IRMapping mapping;
+
+    // For all new caches, materialize the path either by moving ops from
+    // forward to reverse or reverse to forward.
+    for (Value newCache : newCaches) {
+      enzyme::InitOp initOp = ({
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(entry);
+        rewriter.create<enzyme::InitOp>(
+            newCache.getLoc(),
+            enzyme::CacheType::get(newCache.getContext(), newCache.getType()));
+      });
+      enzyme::PushOp pushOp;
+      enzyme::PopOp popOp;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfterValue(newCache);
+
+      // TODO: This newCache value might not be available here since it might be
+      //       a part of the reverse. The operations needed to create newCache
+      //       in the forward should be cloned from forward to reverse.
+      assert(newCache.getParentBlock() != reverse && "todo");
+
+      pushOp = rewriter.create<enzyme::PushOp>(newCache.getLoc(),
+                                               initOp.getResult(), newCache);
+
+      rewriter.setInsertionPointToStart(reverse);
+      popOp = rewriter.create<enzyme::PopOp>(
+          newCache.getLoc(), newCache.getType(), initOp.getResult());
+
+      mapping.map(newCache, popOp.getResult());
+
+      CacheInfo info;
+      info.initOp = initOp;
+      info.pushOp = pushOp;
+      info.popOp = popOp;
+      newCacheInfos.push_back(info);
+    }
+
+    worklist.clear();
+    worklist.assign(newCaches.begin(), newCaches.end());
+
+    // Clone ops in the reverse graph to make sure all edges have been mapped.
+    while (!worklist.empty()) {
+      Value todo = worklist.pop_back_val();
+
+      if (Required.count(todo)) {
+        rewriter.replaceAllUsesWith(todo, mapping.lookup(todo));
+        continue;
+      }
+
+      auto found = revGraph.find(Node(todo));
+      assert(found != revGraph.end());
+
+      for (auto N : found->second) {
+        assert(N.type == Node::OP);
+
+        // Special case for across forward/reverse boundary.
+        if (isa<enzyme::PopOp>(N.O)) {
+          rewriter.replaceAllOpUsesWith(N.O, mapping.lookup(todo));
+          continue;
+        }
+
+        if (!llvm::all_of(N.O->getOperands(), [&mapping](Value operand) {
+              return mapping.contains(operand);
+            })) {
+          continue;
+        }
+
+        OpBuilder::InsertionGuard guard(rewriter);
+
+        Value lastVal = mapping.lookup(todo);
+        Operation *lastValOp = lastVal.getDefiningOp();
+
+        for (Value operand : N.O->getOperands()) {
+          Value mapped = mapping.lookup(operand);
+          Operation *mappedOp = mapped.getDefiningOp();
+          if (!mappedOp)
+            continue;
+
+          if (!lastValOp) {
+            lastValOp = mappedOp;
+            lastVal = mapped;
+            continue;
+          }
+
+          if (lastValOp->isBeforeInBlock(mappedOp)) {
+            lastValOp = mappedOp;
+            lastVal = mapped;
+            continue;
+          }
+        }
+
+        rewriter.setInsertionPointAfterValue(lastVal);
+        Operation *newO = rewriter.clone(*N.O, mapping);
+
+        for (auto [oldRes, newRes] :
+             llvm::zip_equal(N.O->getResults(), newO->getResults()))
+          mapping.map(oldRes, newRes);
+
+        auto pair = revGraph.find(N);
+        if (pair == revGraph.end())
+          continue;
+
+        for (auto NN : pair->second) {
+          assert(NN.type == Node::VAL);
+          worklist.push_back(NN.V);
+        }
+      }
+    }
+
+    // Remove old caches
+    for (auto &info : caches) {
+      rewriter.eraseOp(info.popOp);
+      rewriter.eraseOp(info.pushOp);
+      rewriter.eraseOp(info.initOp);
+    }
+
+    // Set new caches
+    caches.assign(newCacheInfos.begin(), newCacheInfos.end());
+  }
+
+#undef DEBUG_TYPE
+
+public:
   LogicalResult removeEnzymeOps(Operation *op,
                                 PatternRewriter &rewriter) const {
     auto whileOp = cast<stablehlo::WhileOp>(op);
@@ -2050,6 +2856,15 @@ struct WhileOpEnzymeOpsRemover
     caches.reserve(cachesMap.size());
     for (auto &&[_, info] : cachesMap) {
       caches.push_back(info);
+    }
+
+    WhileLoopInfo info(whileOp);
+
+    // TODO: support non-constant loops by using a dynamic dimension
+    // ...   should we fail ? i.e. return failure();
+    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
+      return rewriter.notifyMatchFailure(
+          op, "WhileOp does not have static iteration count for cache removal");
     }
 
     // 1. Move enzyme.get outside the body if the variable is not used outside
@@ -2102,14 +2917,6 @@ struct WhileOpEnzymeOpsRemover
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    WhileLoopInfo info(whileOp);
-
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
-    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
-      return success();
-    }
-
     auto numIters = info.getConstantNumIters();
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
@@ -2120,6 +2927,13 @@ struct WhileOpEnzymeOpsRemover
     }
 
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
+
+    // Run min cut partitioning to limit the amount of values to be cached.
+    if (!caches.empty() && !whileOp->hasAttr("enzymexla.disable_min_cut")) {
+      Block *forward = &whileOp.getBody().front();
+      Block *reverse = &otherWhileOp.getBody().front();
+      minCutCache(forward, reverse, caches, rewriter);
+    }
 
     for (auto &info : caches) {
       Value cache = info.initOp.getResult();
@@ -2148,7 +2962,8 @@ struct WhileOpEnzymeOpsRemover
       }
 
       if (!inductionVariable) {
-        return success();
+        return rewriter.notifyMatchFailure(
+            op, "WhileOp does not have induction variable for cache removal");
 
         // TODO: support adding an induction variable if not present
 
@@ -2172,12 +2987,11 @@ struct WhileOpEnzymeOpsRemover
         // }
       }
 
-      auto newType = info.cachedType()
-                         .cast<AutoDiffTypeInterface>()
-                         .getShadowType(numIters)
-                         .cast<ShapedType>();
+      auto newType =
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+                               .getShadowType(numIters));
 
-      Value initValue = newType.cast<AutoDiffTypeInterface>().createNullValue(
+      Value initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
           rewriter, info.initOp->getLoc());
 
       newOperands.push_back(initValue);
@@ -2295,8 +3109,8 @@ struct WhileOpEnzymeOpsRemover
       Value cache = info.initOp.getResult();
 
       auto newType =
-          info.cachedType().cast<AutoDiffTypeInterface>().getShadowType(
-              numIters);
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+                               .getShadowType(numIters));
       enzyme::InitOp newInit = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(info.initOp);
@@ -2487,7 +3301,7 @@ struct IfOpEnzymeOpsRemover
       if (!trueValue) {
         trueValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
-            grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
+            cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       trueTerm->insertOperands(trueTerm->getNumOperands(),
                                ValueRange(trueValue));
@@ -2496,16 +3310,15 @@ struct IfOpEnzymeOpsRemover
       if (!falseValue) {
         falseValue = rewriter.create<enzyme::GetOp>(
             grad.getLoc(),
-            grad.getType().cast<enzyme::GradientType>().getBasetype(), grad);
+            cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       falseTerm->insertOperands(falseTerm->getNumOperands(),
                                 ValueRange(falseValue));
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      Value dummy =
-          pushedValue.getType().cast<AutoDiffTypeInterface>().createNullValue(
-              rewriter, pushedValue.getLoc());
+      Value dummy = cast<AutoDiffTypeInterface>(pushedValue.getType())
+                        .createNullValue(rewriter, pushedValue.getLoc());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;
@@ -2557,6 +3370,501 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
+struct SHLOReduceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
+                                             ReduceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+
+    stablehlo::ReduceOp reduceOp = cast<stablehlo::ReduceOp>(src);
+    if (!reduceOp)
+      return failure();
+
+    // Remap the operands
+    SmallVector<Value, 8> newReduceInputs;
+    newReduceInputs.reserve(reduceOp.getInputs().size());
+    for (auto opValue : reduceOp.getInputs())
+      newReduceInputs.push_back(mapper.lookup(opValue));
+
+    // The init value would have been batched already, we need to slice it.
+    // Constant Folding will fix it up later.
+    SmallVector<Value, 8> newReduceInits;
+    newReduceInits.reserve(reduceOp.getInitValues().size());
+    for (auto opValue : reduceOp.getInitValues()) {
+      auto batchedInit = mapper.lookup(opValue);
+
+      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
+      SmallVector<int64_t> sliceStarts(batchSizes.size());
+      SmallVector<int64_t> sliceLimits(batchSizes.size());
+      for (int i = 0; i < batchSizes.size(); i++) {
+        sliceStarts[i] = batchSizes[i] - 1;
+        sliceLimits[i] = batchSizes[i];
+      }
+
+      auto elemType =
+          cast<RankedTensorType>(batchedInit.getType()).getElementType();
+      auto slicedInit = builder.create<SliceOp>(
+          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
+          batchedInit, sliceStarts, sliceLimits, sliceStrides);
+      auto reshapedInit = builder.create<ReshapeOp>(
+          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
+          slicedInit);
+      newReduceInits.push_back(reshapedInit->getResult(0));
+    }
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduceOp.getDimensions());
+    for (int i = 0; i < reduceDims.size(); i++) {
+      reduceDims[i] += batchSizes.size();
+    }
+
+    auto newReduceOp = builder.create<stablehlo::ReduceOp>(
+        src->getLoc(), resultTypes, newReduceInputs, newReduceInits,
+        reduceDims);
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+
+      Block &oldBlock = reduceOp.getBody().front();
+      Block *newBlock = new Block();
+
+      for (BlockArgument arg : oldBlock.getArguments()) {
+        newBlock->addArgument(arg.getType(), arg.getLoc());
+      }
+
+      IRMapping regionMapper;
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        regionMapper.map(oldArg, newArg);
+      }
+
+      for (Operation &op : oldBlock) {
+        builder.setInsertionPointToEnd(newBlock);
+        builder.clone(op, regionMapper);
+      }
+
+      newReduceOp.getBody().push_back(newBlock);
+    }
+
+    for (int i = 0; i < reduceOp.getResults().size(); i++) {
+      mapper.map(src->getResult(i), newReduceOp.getResult(i));
+    }
+    return success();
+  }
+};
+
+struct SHLODotGeneralOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLODotGeneralOpBatchInterface,
+                                             DotGeneralOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<DotGeneralOp>(src);
+    auto dimensionNumbers = op.getDotDimensionNumbers();
+
+    SmallVector<int64_t> lhsBatchingDimensions, rhsBatchingDimensions,
+        lhsContractingDimensions, rhsContractingDimensions;
+
+    for (int i = 0; i < batchSizes.size(); i++) {
+      lhsBatchingDimensions.push_back(i);
+      rhsBatchingDimensions.push_back(i);
+    }
+    for (auto &dim : dimensionNumbers.getLhsBatchingDimensions()) {
+      lhsBatchingDimensions.push_back(dim + batchSizes.size());
+    }
+    for (auto &dim : dimensionNumbers.getRhsBatchingDimensions()) {
+      rhsBatchingDimensions.push_back(dim + batchSizes.size());
+    }
+
+    for (auto &dim : dimensionNumbers.getLhsContractingDimensions()) {
+      lhsContractingDimensions.push_back(dim + batchSizes.size());
+    }
+    for (auto &dim : dimensionNumbers.getRhsContractingDimensions()) {
+      rhsContractingDimensions.push_back(dim + batchSizes.size());
+    }
+
+    auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), lhsBatchingDimensions, rhsBatchingDimensions,
+        lhsContractingDimensions, rhsContractingDimensions);
+
+    SmallVector<int64_t> resultShape;
+    resultShape.reserve(op.getType().getShape().size() + batchSizes.size());
+    for (auto &dim : batchSizes) {
+      resultShape.push_back(dim);
+    }
+    for (auto &dim : op.getType().getShape()) {
+      resultShape.push_back(dim);
+    }
+
+    auto dotOp = builder.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, op.getType().getElementType()),
+        mapper.lookup(op.getLhs()), mapper.lookup(op.getRhs()), dotDimsAttr,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    mapper.map(src->getResult(0), dotOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOBroadcastInDimOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOBroadcastInDimOpBatchInterface,
+                                             BroadcastInDimOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<BroadcastInDimOp>(src);
+    auto resultType = op.getType();
+
+    SmallVector<int64_t> bcastDims;
+    for (int i = 0; i < batchSizes.size(); i++) {
+      bcastDims.push_back(i);
+    }
+    for (auto &dim : op.getBroadcastDimensions()) {
+      bcastDims.push_back(dim + batchSizes.size());
+    }
+
+    SmallVector<int64_t> resultShape;
+    resultShape.reserve(resultType.getShape().size() + batchSizes.size());
+    for (auto &dim : batchSizes) {
+      resultShape.push_back(dim);
+    }
+    for (auto &dim : resultType.getShape()) {
+      resultShape.push_back(dim);
+    }
+
+    auto bcastOp = builder.create<stablehlo::BroadcastInDimOp>(
+        op.getLoc(),
+        RankedTensorType::get(resultShape, resultType.getElementType()),
+        mapper.lookup(op.getOperand()),
+        builder.getDenseI64ArrayAttr(bcastDims));
+
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOConcatenateOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConcatenateOpBatchInterface,
+                                             stablehlo::ConcatenateOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::ConcatenateOp>(src);
+
+    SmallVector<Value> newInputs;
+    for (auto input : op.getInputs()) {
+      newInputs.push_back(mapper.lookup(input));
+    }
+
+    auto newConcatOp = builder.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(newInputs),
+        op.getDimension() + batchSizes.size());
+
+    mapper.map(src->getResult(0), newConcatOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOGatherOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOGatherOpBatchInterface,
+                                             stablehlo::GatherOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::GatherOp>(src);
+
+    auto newOperand = mapper.lookup(op.getOperand());
+    auto newStartIndices = mapper.lookup(op.getStartIndices());
+
+    SmallVector<int64_t> newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, newStartIndicesBatchingDims, newStartIndexMap,
+        newSliceSizes;
+    int64_t nBatch = batchSizes.size();
+
+    auto oldGatherDimensionNumbers = op.getDimensionNumbers();
+
+    for (auto offsetDim : oldGatherDimensionNumbers.getOffsetDims())
+      newOffsetDims.push_back(offsetDim + nBatch);
+    for (auto collapsedSliceDim :
+         oldGatherDimensionNumbers.getCollapsedSliceDims())
+      newCollapsedSliceDims.push_back(collapsedSliceDim + nBatch);
+
+    for (int64_t i = 0; i < nBatch; i++) {
+      newOperandBatchingDims.push_back(i);
+      newStartIndicesBatchingDims.push_back(i);
+    }
+    for (auto operandBatchingDim :
+         oldGatherDimensionNumbers.getOperandBatchingDims())
+      newOperandBatchingDims.push_back(operandBatchingDim + nBatch);
+    for (auto startIndicesBatchingDim :
+         oldGatherDimensionNumbers.getStartIndicesBatchingDims())
+      newStartIndicesBatchingDims.push_back(startIndicesBatchingDim + nBatch);
+    for (auto startIndexMap : oldGatherDimensionNumbers.getStartIndexMap())
+      newStartIndexMap.push_back(startIndexMap + nBatch);
+
+    auto newIndexVectorDim =
+        oldGatherDimensionNumbers.getIndexVectorDim() + nBatch;
+
+    auto gatherDims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, newStartIndicesBatchingDims, newStartIndexMap,
+        newIndexVectorDim);
+
+    for (int64_t i = 0; i < nBatch; i++)
+      newSliceSizes.push_back(1);
+    for (auto sliceSize : op.getSliceSizes())
+      newSliceSizes.push_back(sliceSize);
+
+    auto newGatherOp = builder.create<stablehlo::GatherOp>(
+        op.getLoc(), newOperand, newStartIndices, gatherDims, newSliceSizes);
+
+    mapper.map(src->getResult(0), newGatherOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSliceOpBatchInterface,
+                                             stablehlo::SliceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::SliceOp>(src);
+
+    auto newOperand = mapper.lookup(op.getOperand());
+
+    SmallVector<int64_t> newStartIndices, newLimitIndices, newStrides;
+    for (int64_t i = 0; i < batchSizes.size(); i++) {
+      newStartIndices.push_back(0);
+      newLimitIndices.push_back(batchSizes[i]);
+      newStrides.push_back(1);
+    }
+    for (auto [sIndex, lIndex, stride] : llvm::zip(
+             op.getStartIndices(), op.getLimitIndices(), op.getStrides())) {
+      newStartIndices.push_back(sIndex);
+      newLimitIndices.push_back(lIndex);
+      newStrides.push_back(stride);
+    }
+
+    auto newSliceOp = builder.create<stablehlo::SliceOp>(
+        op.getLoc(), newOperand, newStartIndices, newLimitIndices, newStrides);
+
+    mapper.map(src->getResult(0), newSliceOp->getResult(0));
+    return success();
+  }
+};
+
+SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
+                                              SmallVector<Value> startIndices,
+                                              IRMapping &mapper,
+                                              ArrayRef<int64_t> batchSizes) {
+  auto startIndicesType = cast<RankedTensorType>(startIndices[0].getType());
+  auto startIndicesElemType = startIndicesType.getElementType();
+  auto zeroStart =
+      makeIntegerConstant(op->getLoc(), builder, startIndicesElemType, 0);
+
+  SmallVector<Value> newStartIndices;
+  for (int64_t i = 0; i < batchSizes.size(); i++)
+    newStartIndices.push_back(zeroStart);
+
+  SmallVector<int64_t> innerSliceStarts, innerSliceLimits, innerSliceStrides;
+  for (int64_t i = 0; i < batchSizes.size(); i++) {
+    innerSliceStarts.push_back(0);
+    innerSliceLimits.push_back(1);
+    innerSliceStrides.push_back(1);
+  }
+
+  for (auto sIndex : startIndices) {
+    // We need to slice and extract a single element
+    auto newStartIndex = builder.create<stablehlo::SliceOp>(
+        op->getLoc(), mapper.lookup(sIndex), innerSliceStarts, innerSliceLimits,
+        innerSliceStrides);
+    auto newStartIndexReshape = builder.create<stablehlo::ReshapeOp>(
+        op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
+        newStartIndex);
+    newStartIndices.push_back(newStartIndexReshape.getResult());
+  }
+
+  return newStartIndices;
+}
+
+struct SHLODynamicSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLODynamicSliceOpBatchInterface,
+                                             stablehlo::DynamicSliceOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::DynamicSliceOp>(src);
+
+    SmallVector<Value> startIndices = computeBatchedStartIndices(
+        op, builder, op.getStartIndices(), mapper, batchSizes);
+
+    SmallVector<int64_t> sliceSizes;
+    for (int64_t i = 0; i < batchSizes.size(); i++)
+      sliceSizes.push_back(batchSizes[i]);
+    for (auto sIndex : op.getSliceSizes())
+      sliceSizes.push_back(sIndex);
+
+    auto newSliceOp = builder.create<stablehlo::DynamicSliceOp>(
+        op.getLoc(), mapper.lookup(op.getOperand()), startIndices, sliceSizes);
+
+    mapper.map(src->getResult(0), newSliceOp.getResult());
+    return success();
+  }
+};
+
+struct SHLODynamicUpdateSliceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLODynamicUpdateSliceOpBatchInterface,
+          stablehlo::DynamicUpdateSliceOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::DynamicUpdateSliceOp>(src);
+
+    SmallVector<Value> startIndices = computeBatchedStartIndices(
+        op, builder, op.getStartIndices(), mapper, batchSizes);
+
+    auto newDUS = builder.create<stablehlo::DynamicUpdateSliceOp>(
+        op.getLoc(), mapper.lookup(op.getOperand()),
+        mapper.lookup(op.getUpdate()), startIndices);
+
+    mapper.map(src->getResult(0), newDUS.getResult());
+    return success();
+  }
+};
+
+struct SHLOIotaOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
+                                             stablehlo::IotaOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::IotaOp>(src);
+
+    auto origResult = cast<RankedTensorType>(op.getResult().getType());
+
+    SmallVector<int64_t> newShape;
+    newShape.append(batchSizes.begin(), batchSizes.end());
+    newShape.append(origResult.getShape().begin(), origResult.getShape().end());
+
+    auto newIotaOp = builder.create<stablehlo::IotaOp>(
+        op.getLoc(),
+        RankedTensorType::get(newShape, origResult.getElementType()),
+        op.getIotaDimension() + batchSizes.size());
+
+    mapper.map(src->getResult(0), newIotaOp.getResult());
+    return success();
+  }
+};
+
+struct SHLOSelectOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSelectOpBatchInterface,
+                                             stablehlo::SelectOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::SelectOp>(src);
+
+    auto opPredOld = op.getPred();
+    auto opPredType = cast<RankedTensorType>(opPredOld.getType());
+    auto opResultShape =
+        cast<RankedTensorType>(op.getResult().getType()).getShape();
+
+    stablehlo::SelectOp newSelectOp;
+
+    if (opPredType.getRank() == 0) {
+      // Need a broadcast_in_dim to make the predicate into proper shape
+      SmallVector<int64_t> newShape;
+      newShape.append(batchSizes.begin(), batchSizes.end());
+      newShape.append(opResultShape.begin(), opResultShape.end());
+
+      SmallVector<int64_t> broadcastDims;
+      for (int64_t i = 0; i < batchSizes.size(); i++)
+        broadcastDims.push_back(i);
+
+      auto newPred = builder.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(),
+          RankedTensorType::get(newShape, opPredType.getElementType()),
+          mapper.lookup(opPredOld),
+          builder.getDenseI64ArrayAttr(broadcastDims));
+
+      newSelectOp = builder.create<stablehlo::SelectOp>(
+          op.getLoc(), newPred, mapper.lookup(op.getOnTrue()),
+          mapper.lookup(op.getOnFalse()));
+    } else {
+      newSelectOp = builder.create<stablehlo::SelectOp>(
+          op.getLoc(), mapper.lookup(opPredOld), mapper.lookup(op.getOnTrue()),
+          mapper.lookup(op.getOnFalse()));
+    }
+
+    mapper.map(src->getResult(0), newSelectOp.getResult());
+    return success();
+  }
+};
+
+struct StablehloAddSimplifyMathInterface
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
+    auto op = cast<stablehlo::AddOp>(src);
+
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getRhs());
+      return success();
+    }
+
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct StablehloSubSimplifyMathInterface
+    : public MathSimplifyInterface::ExternalModel<
+          StablehloSubSimplifyMathInterface, stablehlo::SubtractOp> {
+  mlir::LogicalResult simplifyMath(Operation *src,
+                                   PatternRewriter &rewriter) const {
+    auto op = cast<stablehlo::SubtractOp>(src);
+
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -2605,6 +3913,20 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
+    ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
+    DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
+    BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
+        *context);
+    ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
+    GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
+    SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
+    DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
+    DynamicUpdateSliceOp::attachInterface<
+        SHLODynamicUpdateSliceOpBatchInterface>(*context);
+    CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
+    IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
+    SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
@@ -2612,5 +3934,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context); // TODO: simpler version with newly named dims
     ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
+
+    AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
+    SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
   });
 }

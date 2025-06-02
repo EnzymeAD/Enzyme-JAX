@@ -4,9 +4,29 @@ on:
   push:
     branches:
     - main
+    paths:
+      - '.github/workflows/build.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+      - 'builddeps/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'test/**'
+      - 'third_party/**'
   pull_request:
     branches:
     - main
+    paths:
+      - '.github/workflows/build.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+      - 'builddeps/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'test/**'
+      - 'third_party/**'
 
 concurrency:
   # Skip intermediate builds: always.
@@ -31,14 +51,14 @@ jobs:
           - '3.12'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
+      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
+      - name: Make space on disk
+        run: sudo rm -rf /opt/*
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: bazel-contrib/setup-bazel@0.13.0
+      - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -51,14 +71,39 @@ jobs:
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
-          bazel build --color=yes //:enzymexlamlir-opt --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+      - name: Upload enzymexlamlir-opt
+        uses: actions/upload-artifact@v4
+        with:
+          name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/enzymexlamlir-opt"
+          retention-days: 90
       - name: Build wheel
         timeout-minutes: 240
         run: |
-          bazel build --color=yes :wheel --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
+          retention-days: 90
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+      - name: Run tests
+        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
+      - name: Run lit tests
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }} 
+        with:
+          name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            bazel-out/**/test.log
           retention-days: 90

@@ -37,7 +37,9 @@
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
@@ -50,7 +52,11 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
 
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+
 #include "shardy/dialect/sdy/ir/dialect.h"
+#include "shardy/dialect/sdy/ir/utils.h"
+#include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
 
 #include "Dialect/Comm/CommDialect.h"
 namespace mlir {
@@ -60,7 +66,56 @@ void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
 } // namespace enzyme
 } // namespace mlir
 
+using namespace mlir;
+
+template <typename T>
+struct PermuteOperandOpInterface
+    : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
+          PermuteOperandOpInterface<T>, T> {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
+    bool conservativePropagation = false;
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwiseWithDiffTypeForMismatch(
+            sdy::getTensorShape(op->getOperands()[0]),
+            sdy::getTensorShape(op->getResult(0)),
+            sdy::FactorType::kPermutation,
+            /*mismatchFactorIsBlocked*/ conservativePropagation)
+        .build();
+  }
+};
+
+class MemRefInsider
+    : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
+
+template <typename T>
+struct PtrElementModel
+    : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
+          PtrElementModel<T>, T> {};
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
+  registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
+    LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMArrayType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMPointerType::attachInterface<MemRefInsider>(*ctx);
+    LLVM::LLVMStructType::attachInterface<MemRefInsider>(*ctx);
+    MemRefType::attachInterface<PtrElementModel<MemRefType>>(*ctx);
+    LLVM::LLVMStructType::attachInterface<
+        PtrElementModel<LLVM::LLVMStructType>>(*ctx);
+    LLVM::LLVMPointerType::attachInterface<
+        PtrElementModel<LLVM::LLVMPointerType>>(*ctx);
+    LLVM::LLVMArrayType::attachInterface<PtrElementModel<LLVM::LLVMArrayType>>(
+        *ctx);
+  });
+
+  registry.addExtension(
+      +[](mlir::MLIRContext *ctx, enzymexla::EnzymeXLADialect *) {
+        enzymexla::WrapOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::WrapOp>>(*ctx);
+        enzymexla::ExtendOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::ExtendOp>>(*ctx);
+        enzymexla::RotateOp::attachInterface<
+            PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
+      });
 
   // Register MLIR stuff
   registry.insert<mlir::affine::AffineDialect>();
@@ -85,11 +140,15 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
+  registry.insert<mlir::ub::UBDialect>();
+  registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
 
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
 
   registry.insert<mlir::sdy::SdyDialect>();
+
+  registry.insert<mlir::ub::UBDialect>();
 
   registry.insert<mlir::comm::CommDialect>();
 

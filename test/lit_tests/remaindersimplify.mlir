@@ -7,5 +7,6 @@ func.func @transpose(%4422: tensor<ui32>) -> tensor<ui32> {
 }
 
 // CHECK:  func.func @transpose(%arg0: tensor<ui32>) -> tensor<ui32> {
-// CHECK-NEXT:    return %arg0 : tensor<ui32>
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<ui32>
+// CHECK-NEXT:    return %c : tensor<ui32>
 // CHECK-NEXT:  }

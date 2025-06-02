@@ -103,6 +103,8 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
+def Conj : Inst<"ConjOp", "chlo", "", "">;
+
 /// StableHLO - WIP operations
 def ReturnOp : HLOInst<"ReturnOp">;
 
@@ -115,9 +117,26 @@ def Einsum : HLOInst<"EinsumOp">;
 def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
 def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
 
+/// Helpers - Max/Min
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
+def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
+def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
+def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+
 // Others
-def CheckedMul : HLOInst<"MulOp">;
-def CheckedDiv : HLOInst<"DivOp">;
+def CheckedMul : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Mul $diffret, $x)),
+                    (Mul $diffret, $x)
+                  )>;
+
+def CheckedDiv : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Div $diffret, $x)),
+                    (Div $diffret, $x)
+                  )>;
 
 // Helpers
 def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -144,206 +163,276 @@ def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDime
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
 def ResultDotAlg : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getAlgorithmAttr()">;
 
+// https://github.com/jax-ml/jax/blob/87a8051ed83a8abbfcbe7c884d68a8130a36929d/jax/_src/lax/lax.py#L5326-L5363
 def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  // first result index is batching, then lhs results (aka indices not batch/contracted)
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size() + (op.getLhs().getType().getShape().size() - existingattr.getLhsBatchingDimensions().size() - existingattr.getLhsContractingDimensions().size());
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> shadowBatchingDimensions;
-  for (auto en : llvm::enumerate(existingattr.getLhsBatchingDimensions()))
-    shadowBatchingDimensions.push_back(en.index());
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
-  SmallVector<int64_t> rhsContractingDimensions;
-  SmallVector<int64_t> shadowResultContractingDimensions;
-
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-     if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-     if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-     rhsContractingDimensions.push_back(en.index());
-     shadowResultContractingDimensions.push_back(resultidx++);
-     resultidx++;
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  DotDimensionNumbersAttr::get(existingattr.getContext(), shadowBatchingDimensions, existingattr.getRhsBatchingDimensions(), shadowResultContractingDimensions, rhsContractingDimensions);
+  SmallVector<int64_t> rhsKept;
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsBatching, i)) continue;
+    if (llvm::is_contained(rhsContracting, i)) continue;
+    rhsKept.push_back(i);
+  }
+
+  SmallVector<int64_t> resBatch;
+  for (int64_t i = 0; i < lhsBatching.size(); i++) {
+    resBatch.push_back(i);
+  }
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < rhsKept.size(); i++) {
+    resContractingDims.push_back(lhsBatching.size() + lhsKept.size() + i);
+  }
+
+  DotDimensionNumbersAttr::get(
+    existingattr.getContext(),
+    resBatch,
+    existingattr.getRhsBatchingDimensions(),
+    resContractingDims,
+    rhsKept
+  );
 }]>;
 
 def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = op->getResult(0).getType().cast<RankedTensorType>();
+  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
+
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
   SmallVector<int64_t> shapes;
-  // Result order is batches, lhs results, rhs results  [in this case contracting dims]
 
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    shapes.push_back(op.getLhs().getType().getShape()[en2.value()]);
+  for (auto B: lhsBatching)
+    shapes.push_back(lhsShape[B]);
+
+  int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
+  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < rhsKeptSize; i++) {
+    resContractingDims.push_back(lhsBatching.size() + lhsKeptSize + i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-    shapes.push_back(en.value());
+  for (int64_t i = lhsBatching.size(); i < resShape.size(); i++) {
+    if (llvm::is_contained(resContractingDims, i)) continue;
+    shapes.push_back(resShape[i]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    ssize_t contractidx = -1;
+  for (auto i: rhsContracting)
+    shapes.push_back(rhsShape[i]);
 
-    for (auto en2 : llvm::enumerate(existingattr.getRhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    shapes.push_back(op.getRhs().getType().getShape()[existingattr.getRhsContractingDimensions()[contractidx]]);
-  }
-
-  RankedTensorType::get(shapes, prev.getElementType());
+  RankedTensorType::get(shapes, elemType);
 }]>;
 
 def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> transposes;
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
 
-  // Result order is batches, lhs results, rhs results  [in this case contracting dims]
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    transposes.push_back(en2.value());
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-    transposes.push_back(en.index());
+  SmallVector<int64_t> rhsContractArgSorted(rhsContracting.size());
+  std::iota(rhsContractArgSorted.begin(), rhsContractArgSorted.end(), 0);
+  std::sort(rhsContractArgSorted.begin(), rhsContractArgSorted.end(),
+            [&](int64_t a, int64_t b) { return rhsContracting[a] < rhsContracting[b]; });
+  SmallVector<int64_t> lhsContractSortedByRhs;
+  for (auto idx : rhsContractArgSorted) {
+    lhsContractSortedByRhs.push_back(lhsContracting[idx]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
+  SmallVector<int64_t> unsortedAxes;
+  for (auto en : lhsBatching)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsKept)
+    unsortedAxes.push_back(en);
+  for (auto en : lhsContractSortedByRhs)
+    unsortedAxes.push_back(en);
 
-    ssize_t contractidx = -1;
+  SmallVector<int64_t> outAxes(unsortedAxes.size());
+  std::iota(outAxes.begin(), outAxes.end(), 0);
+  std::sort(outAxes.begin(), outAxes.end(),
+            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
 
-    for (auto en2 : llvm::enumerate(existingattr.getRhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    transposes.push_back(existingattr.getLhsContractingDimensions()[contractidx]);
-  }
-
-  builder.getNamedAttr(TransposeOp::getAttributeNames()[0], builder.getDenseI64ArrayAttr(transposes));
+  builder.getNamedAttr(
+    TransposeOp::getAttributeNames()[0],
+    builder.getDenseI64ArrayAttr(outAxes)
+  );
 }]>;
 
 def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  size_t resultidx = existingattr.getLhsBatchingDimensions().size();
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  SmallVector<int64_t> shadowBatchingDimensions;
-  for (auto en : llvm::enumerate(existingattr.getLhsBatchingDimensions()))
-    shadowBatchingDimensions.push_back(en.index());
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
-  SmallVector<int64_t> lhsContractingDimensions;
-  SmallVector<int64_t> shadowResultContractingDimensions;
-
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-     if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-     if (llvm::is_contained(existingattr.getLhsContractingDimensions(), en.index())) continue;
-     lhsContractingDimensions.push_back(en.index());
-     shadowResultContractingDimensions.push_back(resultidx++);
-     resultidx++;
+  SmallVector<int64_t> lhsKept;
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsBatching, i)) continue;
+    if (llvm::is_contained(lhsContracting, i)) continue;
+    lhsKept.push_back(i);
   }
 
-  DotDimensionNumbersAttr::get(existingattr.getContext(), existingattr.getLhsBatchingDimensions(), shadowBatchingDimensions, lhsContractingDimensions, shadowResultContractingDimensions);
+  SmallVector<int64_t> resBatch;
+  for (int64_t i = 0; i < rhsBatching.size(); i++) {
+    resBatch.push_back(i);
+  }
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < lhsKept.size(); i++) {
+    resContractingDims.push_back(rhsBatching.size() + i);
+  }
+
+  DotDimensionNumbersAttr::get(
+    existingattr.getContext(),
+    resBatch,
+    existingattr.getLhsBatchingDimensions(),
+    resContractingDims,
+    lhsKept
+  );
 }]>;
 
 def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
-  auto prev = op->getResult(0).getType().cast<RankedTensorType>();
+  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+
+  auto lhsBatching = existingattr.getLhsBatchingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
+  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
+
+  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
   SmallVector<int64_t> shapes;
-  // Result order is batches, lhs results [in this case contracting dims], rhs results
 
-  for (auto en2 : llvm::enumerate(existingattr.getLhsBatchingDimensions())) {
-    shapes.push_back(op.getLhs().getType().getShape()[en2.value()]);
+  for (auto B: lhsBatching)
+    shapes.push_back(lhsShape[B]);
+
+  int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
+  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
+
+  SmallVector<int64_t> resContractingDims;
+  for (int64_t i = 0; i < lhsKeptSize; i++) {
+    resContractingDims.push_back(lhsBatching.size() + i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    ssize_t contractidx = -1;
-
-    for (auto en2 : llvm::enumerate(existingattr.getLhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    shapes.push_back(op.getLhs().getType().getShape()[existingattr.getLhsContractingDimensions()[contractidx]]);
+  for (int64_t i = lhsBatching.size(); i < resShape.size(); i++) {
+    if (llvm::is_contained(resContractingDims, i)) continue;
+    shapes.push_back(resShape[i]);
   }
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-    shapes.push_back(en.value());
-  }
+  for (auto i: lhsContracting)
+    shapes.push_back(lhsShape[i]);
 
-  RankedTensorType::get(shapes, prev.getElementType());
+  RankedTensorType::get(shapes, elemType);
 }]>;
 
 def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-
   auto existingattr = op.getDotDimensionNumbersAttr();
 
-  SmallVector<int64_t> transposes;
+  auto rhsBatching = existingattr.getRhsBatchingDimensions();
+  auto rhsContracting = existingattr.getRhsContractingDimensions();
+  auto lhsContracting = existingattr.getLhsContractingDimensions();
 
-  // Result order is batches, lhs results [in this case contracting dims], rhs results
-  for (auto en2 : llvm::enumerate(existingattr.getRhsBatchingDimensions())) {
-    transposes.push_back(en2.value());
+  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+
+  SmallVector<int64_t> rhsKept;
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsBatching, i)) continue;
+    if (llvm::is_contained(rhsContracting, i)) continue;
+    rhsKept.push_back(i);
   }
 
-  for (auto en : llvm::enumerate(op.getLhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getLhsBatchingDimensions(), en.index())) continue;
-
-    ssize_t contractidx = -1;
-
-    for (auto en2 : llvm::enumerate(existingattr.getLhsContractingDimensions())) {
-      if (en2.value() == en.index()) {
-         contractidx = en2.index();
-         break;
-      }
-    }
-
-    if (contractidx == -1) continue;
-
-    transposes.push_back(existingattr.getRhsContractingDimensions()[contractidx]);
+  SmallVector<int64_t> lhsContractArgSorted(lhsContracting.size());
+  std::iota(lhsContractArgSorted.begin(), lhsContractArgSorted.end(), 0);
+  std::sort(lhsContractArgSorted.begin(), lhsContractArgSorted.end(),
+            [&](int64_t a, int64_t b) { return lhsContracting[a] < lhsContracting[b]; });
+  SmallVector<int64_t> rhsContractSortedByLhs;
+  for (auto idx : lhsContractArgSorted) {
+    rhsContractSortedByLhs.push_back(rhsContracting[idx]);
   }
 
+  SmallVector<int64_t> unsortedAxes;
+  for (auto en : rhsBatching)
+    unsortedAxes.push_back(en);
+  for (auto en : rhsKept)
+    unsortedAxes.push_back(en);
+  for (auto en : rhsContractSortedByLhs)
+    unsortedAxes.push_back(en);
 
-  for (auto en : llvm::enumerate(op.getRhs().getType().getShape())) {
-    if (llvm::is_contained(existingattr.getRhsBatchingDimensions(), en.index())) continue;
-    if (llvm::is_contained(existingattr.getRhsContractingDimensions(), en.index())) continue;
-    transposes.push_back(en.index());
-  }
+  SmallVector<int64_t> outAxes(unsortedAxes.size());
+  std::iota(outAxes.begin(), outAxes.end(), 0);
+  std::sort(outAxes.begin(), outAxes.end(),
+            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
 
-  builder.getNamedAttr(TransposeOp::getAttributeNames()[0], builder.getDenseI64ArrayAttr(transposes));
+  builder.getNamedAttr(
+    TransposeOp::getAttributeNames()[0],
+    builder.getDenseI64ArrayAttr(outAxes)
+  );
 }]>;
 
 def Permutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-op.getPermutation();
+  SmallVector<int64_t> res(op.getPermutation().size(), 0);
+  for (auto en : llvm::enumerate(op.getPermutation())) {
+    res[en.index()] = to_i64(en.value()) + (gutils->width > 1);
+  }
+  if (gutils->width > 1) {
+    res.insert(res.begin(), 0);
+  }
+  getI64Attr(builder, res);
 }]>;
 
 def InversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  SmallVector<int64_t> res(op.getPermutation().size(), 0);
+  auto sz = op.getPermutation().size() + (gutils->width > 1);
+  SmallVector<int64_t> res(sz, 0);
   for (auto en : llvm::enumerate(op.getPermutation())) {
-    res[to_i64(en.value())] = en.index();
+    auto idx = to_i64(en.value()) + (gutils->width > 1);
+    res[idx] = en.index() + (gutils->width > 1);
+  }
+  if (gutils->width > 1) {
+    res.insert(res.begin(), 0);
   }
   getI64Attr(builder, res);
 }]>;
@@ -528,8 +617,15 @@ def GradDataFilterReshape2 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def GradDataConvWindowStrides : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto lhsDilation = op.getLhsDilation();
   int64_t N = op.getType().getShape().size() - 2;
   llvm::SmallVector<int64_t> windowStrides(N, 1);
+
+  if (lhsDilation.has_value()) {
+    for (unsigned i = 0; i < N; ++i)
+      windowStrides[i] = getI64Value(*lhsDilation, i);
+  }
+
   auto windowStridesAttr = getI64Attr(builder, windowStrides);
   windowStridesAttr;
 }]>;
@@ -561,7 +657,6 @@ def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :
@@ -673,7 +768,6 @@ def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     auto outputDim = dimensionNumbers.getOutputSpatialDimensions()[i];
 
     auto padBefore = newPaddingValues[2 * i];
-    auto padAfter = newPaddingValues[2 * i + 1];
 
     auto lhsDilation = lhsDilations.has_value() ?
         getI64Value(lhsDilations.value(), i) :
@@ -842,11 +936,6 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     )
                   >;
 
-/// Helpers - Max/Min
-def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
-def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
-def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
-
 def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEinsumConfig();
 }]>;
@@ -871,35 +960,6 @@ def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   builder.getStringAttr(output + "," + lhs + "->" + rhs);
 }]>;
 
-def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFftType();
-}]>;
-
-def FftTypeInverse : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  FftType ret;
-  switch (op.getFftType()) {
-    case FftType::FFT: {ret = FftType::IFFT; break;}
-    case FftType::IFFT: {ret = FftType::FFT; break;}
-    case FftType::RFFT: {ret = FftType::IRFFT; break;}
-    case FftType::IRFFT: {ret = FftType::RFFT; break;}
-  }
-  ret;
-}]>;
-
-def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getFftLength();
-}]>;
-
-def FftMultiplier : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto op_type = op->getResult(0).getType().cast<RankedTensorType>();
-  auto lengths = op.getFftLength();
-  auto N = std::accumulate(lengths.begin(), lengths.end(), llvm::APInt(64, 1, true), std::multiplies{}).getSExtValue();
-
-  auto ret_constant = builder.create<ConstantOp>(op.getLoc(), builder.getDenseI64ArrayAttr(ArrayRef<int64_t>({N})));
-  auto ret_broadcast = builder.create<BroadcastInDimOp>(op.getLoc(), op_type.clone(op_type.getShape(), builder.getI64Type()), ret_constant, builder.getI64VectorAttr(op_type.getShape()));
-  builder.create<ConvertOp>(op.getLoc(), op->getResult(0).getType(), ret_broadcast);
-}]>;
-
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -914,7 +974,7 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
                       (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
                       (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
                     ],
-                    (Div (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
+                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
                   >;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
@@ -1050,15 +1110,15 @@ def : HLOInactiveOp<"CreateTokenOp">;
 def : HLODerivative<"DivOp", (Op $x, $y),
                     [
                       (CheckedDiv (DiffeRet), $y),
-                      (Neg (Mul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
-                    ]
-                    // (CheckedDiv (FSub (SelectIfActive $x, (FMul (Shadow $x), $y), (Zero $x)), (SelectIfActive $y, (FMul (Shadow $y), $x), (Zero $y))), (FMul $y, $y))
+                      (Neg (CheckedMul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
+                    ],
+                    (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
                   >;
 
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
                         (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), $lhs, (DiffeRet), (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
+                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
                       ],
                     (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)))
                   >;
@@ -1068,16 +1128,6 @@ def : HLOInactiveOp<"DynamicIotaOp">;
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
-
-// TODO fix `rfft` and `irfft` derivatives:
-// - `rfft` => divide `DiffeRet` elems by 2 except 1st elem, and last elem if `FftLength` is even
-// - `irfft` =>
-def : HLODerivative<"FftOp", (Op $x),
-                    [
-                      (Fft (DiffeRet), (FftType), (FftLength)) // TODO maybe we need to conjugate? or inverse fft + multiply by N?
-                    ],
-                    (Fft (Shadow $x), (FftType), (FftLength))
-                  >;
 
 def : HLOInactiveOp<"FloorOp">;
 
@@ -1179,7 +1229,7 @@ def : HLOInactiveOp<"RngBitGeneratorOp">;
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"-2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
-                      (Div (DiffeRet), (Mul (HLOConstantFP<"-2"> $x), (Mul $x, (Sqrt $x))))
+                      (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"-2"> $x), (Mul $x, (Sqrt $x))))
                     ]
                   >;
 
@@ -1215,8 +1265,7 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
 
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
-                      // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
-                      (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x)))
+                      (Select (Compare $x, (HLOConstantFP<"0">), (EQ)), (HLOConstantFP<"0">), (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x))))
                     ]
                   >;
 
@@ -1232,5 +1281,149 @@ def : HLODerivative<"TransposeOp", (Op $x),
                     [
                         (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
                     ],
-                    (SelectIfActive $x, (Transpose (ResultTypes), (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
+                    (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
+
+// FFT rules
+def SelectIfRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::RFFT">;
+def SelectIfIRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::IRFFT">;
+
+def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftType();
+}]>;
+
+def FftLength : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getFftLength();
+}]>;
+
+def RFFTType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  FftType::RFFT;
+}]>;
+def FFTType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  FftType::FFT;
+}]>;
+
+def RFFTPaddingZeros : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> paddingZeros(cast<RankedTensorType>(op.getType()).getRank(), 0);
+  getI64Attr(builder, paddingZeros);
+}]>;
+
+def RFFTPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto outShape = cast<RankedTensorType>(op.getType()).getShape();
+
+  auto fftlength = llvm::to_vector(op.getFftLength());
+  int64_t nHalf = to_i64(fftlength[fftlength.size() - 1]) / 2;
+
+  SmallVector<int64_t> paddingHigh(outShape.size(), 0);
+  paddingHigh[outShape.size() - 1] = outShape[outShape.size() - 1] - nHalf;
+
+  getI64Attr(builder, paddingHigh);
+}]>;
+
+def RFFTPaddingZero : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto diffeType = cast<RankedTensorType>(
+      gutils->diffe(op->getResult(0), builder).getType());
+  auto zeroType = RankedTensorType::get({}, diffeType.getElementType());
+  builder.create<ConstantOp>(
+      op->getLoc(), zeroType,
+      cast<ElementsAttr>(makeAttr(zeroType, 0)));
+}]>;
+
+def IRFFTMaskedScaling : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto diffeType = cast<RankedTensorType>(
+      gutils->diffe(op->getResult(0), builder).getType());
+  auto diffeShape = llvm::to_vector(diffeType.getShape());
+  auto rank = diffeShape.size();
+
+  auto fftLength = llvm::to_vector(op.getFftLength());
+
+  SmallVector<int64_t> fftOutShape;
+  for (auto l : diffeShape)
+    fftOutShape.push_back(l);
+  fftOutShape[rank - 1] = fftOutShape[rank - 1] == 0 ? 0 : fftOutShape[rank - 1] / 2 + 1;
+
+  int64_t n = fftOutShape[rank - 1];
+  bool isOdd = to_i64(fftLength[fftLength.size() - 1]) % 2 == 1;
+
+  float scaling = 1;
+  for (auto l : fftLength)
+    scaling *= to_i64(l);
+  scaling = 1.0 / scaling;
+
+  auto elemType = diffeType.getElementType();
+
+  auto maskBeginType = RankedTensorType::get({1}, elemType);
+  auto maskBegin = builder.create<ConstantOp>(
+      op->getLoc(), maskBeginType,
+      cast<ElementsAttr>(makeAttr(maskBeginType, scaling)));
+
+  auto maskMiddleType = RankedTensorType::get({n - 2 + isOdd}, elemType);
+  auto maskMiddle = builder.create<ConstantOp>(
+      op->getLoc(), maskMiddleType,
+      cast<ElementsAttr>(makeAttr(maskMiddleType, 2 * scaling)));
+
+  auto maskEndType = RankedTensorType::get({1 - isOdd}, elemType);
+  auto maskEnd = builder.create<ConstantOp>(
+      op->getLoc(), maskEndType,
+      cast<ElementsAttr>(makeAttr(maskEndType, scaling)));
+
+  auto mask = builder.create<ConcatenateOp>(
+      op->getLoc(), ValueRange{maskBegin, maskMiddle, maskEnd},
+      /*dimension=*/0);
+
+  auto zero = builder.create<ConstantOp>(
+      op->getLoc(), RankedTensorType::get({n}, elemType),
+      cast<ElementsAttr>(makeAttr(RankedTensorType::get({n}, elemType), 0)));
+
+  auto complex = builder.create<ComplexOp>(op->getLoc(), ValueRange{mask, zero});
+
+  builder.create<BroadcastInDimOp>(
+      op->getLoc(),
+      RankedTensorType::get(
+        fftOutShape, cast<RankedTensorType>(complex.getType()).getElementType()),
+      complex,
+      getBroadcastInDimsAttr(
+        builder, ArrayRef<int64_t>({static_cast<int64_t>(rank - 1)})));
+}]>;
+
+def : HLODerivative<"FftOp",
+    (Op $x),
+    [
+      (
+        SelectIfRFFT
+        (
+          Real
+          (
+            Fft
+            (
+              Pad
+              (DiffeRet),
+              (RFFTPaddingZero),
+              (RFFTPaddingZeros),
+              (RFFTPaddingHigh),
+              (RFFTPaddingZeros)
+            ),
+            (FFTType),
+            (FftLength)
+          )
+        ),
+        (
+          SelectIfIRFFT
+          (
+            Conj
+            (
+              Mul
+              (Fft (DiffeRet), (RFFTType), (FftLength)),
+              (IRFFTMaskedScaling)
+            )
+          ),
+          (
+            Fft (DiffeRet), (FftType), (FftLength)
+          )
+        )
+      )
+    ],
+    (
+      Fft (Shadow $x), (FftType), (FftLength)
+    )
+>;

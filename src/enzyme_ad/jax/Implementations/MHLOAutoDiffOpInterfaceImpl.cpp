@@ -21,9 +21,11 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -53,8 +55,7 @@ static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
-  auto elemType =
-      op->getResult(0).getType().cast<ShapedType>().getElementType();
+  auto elemType = cast<ShapedType>(op->getResult(0).getType()).getElementType();
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
@@ -67,6 +68,10 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+static inline DenseIntElementsAttr
+getBroadcastInDimsAttr(OpBuilder &builder, ArrayRef<int64_t> dims) {
+  return builder.getI64VectorAttr(dims);
+}
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace

@@ -47,12 +47,9 @@ func.func @kernel_nussinov(%arg0: i32, %arg2: memref<i32>) {
 }
 }
 
-// CHECK: #set = affine_set<(d0) : (d0 + 40 >= 0)>
 // CHECK:   func.func @kernel_nussinov(%[[arg0:.+]]: i32, %[[arg1:.+]]: memref<i32>) {
 // CHECK-NEXT:     affine.for %[[arg2:.+]] = 0 to 60 {
-// CHECK-NEXT:       affine.if #set(%[[arg2]]) {
-// CHECK-NEXT:         affine.store %[[arg0]], %[[arg1]][] : memref<i32>
-// CHECK-NEXT:       }
+// CHECK-NEXT:       affine.store %[[arg0]], %[[arg1]][] : memref<i32>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }
@@ -152,13 +149,10 @@ module {
   }
 }
 
-// CHECK: #set = affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>
 // CHECK:   func.func @c(%[[arg0:.+]]: memref<?xf32>, %[[arg1]]: i64) {
 // CHECK-NEXT:     %[[V0:.+]] = arith.index_cast %[[arg1]] : i64 to index
-// CHECK-NEXT:     affine.parallel (%[[arg2:.+]], %[[arg3:.+]]) = (0, 0) to (42, 512) {
-// CHECK-NEXT:       affine.if #set(%[[arg2]])[%[[V0]]] {
+// CHECK-NEXT:     affine.parallel (%[[arg2:.+]], %[[arg3:.+]]) = (0, 0) to (min(symbol(%[[V0]]), 42), 512) {
 // CHECK-NEXT:         "test.something"() : () -> ()
-// CHECK-NEXT:       }
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }

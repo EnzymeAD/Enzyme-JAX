@@ -3,3 +3,4 @@
 *.swo
 bazel-*
 compile_commands.json
+.vscode/

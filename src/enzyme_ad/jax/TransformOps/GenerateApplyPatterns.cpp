@@ -12,6 +12,8 @@
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformTypes.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
 using namespace mlir;
@@ -143,7 +145,16 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     if (benefit != 1)
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1) {
-      if (opName == "no_nan_add_sub_simplify")
+      if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" ||
+          opName == "sum_to_conv" || opName == "while_licm" ||
+          opName == "slice_licm" || opName == "dus_licm" ||
+          opName == "pad_licm" || opName == "elementwise_licm" ||
+          opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
+          opName == "reshape_licm" || opName == "transpose_licm" ||
+          opName == "transpose_elementwise" ||
+          opName == "reshape_elementwise" || opName == "reshape_slice" ||
+          opName == "extend_unary_elementwise" ||
+          opName == "wrap_unary_elementwise")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
@@ -167,6 +178,7 @@ public:
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<transform::TransformDialect>();
+    registry.insert<enzymexla::EnzymeXLADialect>();
   }
 
   void runOnOperation() override {

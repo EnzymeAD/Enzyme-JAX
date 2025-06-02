@@ -10,7 +10,6 @@
 #define ENZYME_JAX_CLANG_COMPILE_H
 
 #include "llvm/IR/Module.h"
-#include <Python.h>
 #include <string>
 
 std::unique_ptr<llvm::Module>
