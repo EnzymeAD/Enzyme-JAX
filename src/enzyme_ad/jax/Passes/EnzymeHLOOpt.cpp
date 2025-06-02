@@ -32,6 +32,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/reference/Types.h"
 #include "stablehlo/transforms/ChloDecompositionUtils.h"
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
@@ -614,6 +615,23 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
                            T *checkRemoved = nullptr) {
   return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
+}
+
+stablehlo::Element conj(const stablehlo::Element &orig) {
+  if (stablehlo::isSupportedComplexType(orig.getType())) {
+    std::complex<APFloat> val = orig.getComplexValue();
+    return stablehlo::Element(orig.getType(),
+                              std::complex<APFloat>(val.real(), -val.imag()));
+  }
+
+  llvm_unreachable("Unsupported type");
+}
+
+stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
+  stablehlo::Tensor result(resultType);
+  for (auto it = result.index_begin(); it != result.index_end(); ++it)
+    result.set(*it, conj(orig.get(*it)));
+  return result;
 }
 
 struct ReshapeDUS final
@@ -19960,12 +19978,12 @@ struct EnzymeHLOOptPass
         UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
         UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
         UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
-        ChloInfConstProp, GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
-        ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
-        BinBroadcastSplat<stablehlo::AddOp>,
+        UnaryConstProp<chlo::ConjOp, conjOp>, ChloInfConstProp, GammaConstProp,
+        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);

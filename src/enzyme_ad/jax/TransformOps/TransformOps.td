@@ -215,6 +215,14 @@ def AbsConstPropPatterns : EnzymeHLOPatternOp<
     "abs_const_prop"> {
   let patterns = ["UnaryConstProp<stablehlo::AbsOp,stablehlo::absOp>"];
 }
+def ApplyLogisticConstProp : EnzymeHLOPatternOp<
+    "logistic_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::LogisticOp,stablehlo::logisticOp>"];
+}
+def ApplyConjConstProp : EnzymeHLOPatternOp<
+    "conj_const_prop"> {
+  let patterns = ["UnaryConstProp<chlo::ConjOp,conjOp>"];
+}
 def ApplyChloInfConstProp : EnzymeHLOPatternOp<
     "chlo_inf_const_prop">{
   let patterns = ["ChloInfConstProp"];
