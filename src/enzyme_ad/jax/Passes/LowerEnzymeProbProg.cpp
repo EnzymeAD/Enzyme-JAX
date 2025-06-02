@@ -70,6 +70,34 @@ struct FuncOpConversion : public OpConversionPattern<func::FuncOp> {
   }
 };
 
+struct CallOpConversion : public OpConversionPattern<func::CallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  CallOpConversion(std::string backend, TypeConverter &typeConverter,
+                   MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(func::CallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+
+    // For now: only convert calls that return a single enzyme.Trace
+    if (op.getNumResults() != 1 ||
+        !isa<enzyme::TraceType>(op.getResult(0).getType()))
+      return failure();
+
+    auto newResultType = RankedTensorType::get(
+        {1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, newResultType, op.getCallee(),
+                                              adaptor.getOperands());
+    return success();
+  }
+};
+
 struct ReturnOpConversion : public OpConversionPattern<func::ReturnOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -252,6 +280,28 @@ struct addSampleToTraceOpConversion
   }
 };
 
+struct UnrealizedConversionCastOpConversion
+    : public OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getNumResults() == 1 && op.getNumOperands() == 1) {
+      auto sourceType = adaptor.getOperands()[0].getType();
+      auto targetType =
+          getTypeConverter()->convertType(op.getResult(0).getType());
+
+      if (sourceType == targetType) {
+        rewriter.replaceOp(op, adaptor.getOperands()[0]);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct LowerEnzymeProbProgPass
     : public enzyme::impl::LowerEnzymeProbProgPassBase<
           LowerEnzymeProbProgPass> {
@@ -273,11 +323,17 @@ struct LowerEnzymeProbProgPass
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<enzymexla::EnzymeXLADialect>();
-    target.addLegalOp<UnrealizedConversionCastOp>();
     target.addIllegalOp<enzyme::initTraceOp>();
-
+    target.addIllegalOp<enzyme::addSampleToTraceOp>();
+    target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
+        [&](UnrealizedConversionCastOp op) {
+          return typeConverter.isLegal(op.getOperation());
+        });
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp f) {
       return typeConverter.isSignatureLegal(f.getFunctionType());
+    });
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp c) {
+      return typeConverter.isSignatureLegal(c.getCalleeType());
     });
     target.addDynamicallyLegalOp<func::ReturnOp>(
         [&](func::ReturnOp r) { return typeConverter.isLegal(r); });
@@ -285,12 +341,16 @@ struct LowerEnzymeProbProgPass
     RewritePatternSet patterns(context);
     patterns.add<InitTraceOpConversion>(backend, typeConverter, context);
     patterns.add<FuncOpConversion>(backend, typeConverter, context);
+    patterns.add<CallOpConversion>(backend, typeConverter, context);
     patterns.add<ReturnOpConversion>(backend, typeConverter, context);
     patterns.add<addSampleToTraceOpConversion>(backend, typeConverter, context);
+    patterns.add<UnrealizedConversionCastOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       signalPassFailure();
     }
+
+    getOperation()->dump();
   }
 };
