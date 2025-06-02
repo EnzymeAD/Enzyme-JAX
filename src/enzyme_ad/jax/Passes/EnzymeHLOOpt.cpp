@@ -5677,13 +5677,15 @@ struct AddSimplify
                                     PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
+        matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getRhs());
       return success();
     }
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
+        matchPattern(op.getRhs(), m_Zero()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
@@ -6018,16 +6020,20 @@ struct MulSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
 
-    // 0 * x -> x
+    // 0 * x -> 0
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getLhs());
+        matchPattern(op.getLhs(), m_Zero()),
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
-    // x * 0 -> x
+    // x * 0 -> 0
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getRhs());
+        matchPattern(op.getRhs(), m_Zero()),
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
 
