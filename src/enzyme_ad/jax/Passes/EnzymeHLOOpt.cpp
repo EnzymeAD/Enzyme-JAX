@@ -6022,7 +6022,7 @@ struct MulSimplify
 
     // 0 * x -> 0
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero()),
+            matchPattern(op.getLhs(), m_Zero()),
         matchPattern(op.getLhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
@@ -6030,7 +6030,7 @@ struct MulSimplify
     }
     // x * 0 -> 0
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero()),
+            matchPattern(op.getRhs(), m_Zero()),
         matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
