@@ -450,6 +450,7 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
+        "Utils.h",
     ]),
     copts = [
         "-Werror=unused-variable",
