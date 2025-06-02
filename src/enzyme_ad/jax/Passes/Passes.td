@@ -11,39 +11,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CommExplodeSplits : Pass<"comm-explode-splits"> {
-  let summary = "Converts a (nested) split into a non-nested split with one branch per device";
-  let dependentDialects = [
-    "comm::CommDialect"
-  ];
-}
-
-def CommDeplex : Pass<"comm-deplex"> {
-  let summary = "Removes multiplex messages by replacing each use of the output token with one of the input tokens";
-  let dependentDialects = [
-    "comm::CommDialect"
-  ];
-}
-
-def CommRemoveDeadMessages : Pass<"comm-remove-dead-messages"> {
-  let summary ="Removes messages and senders with no receivers";
-  let description = [{This does NOT perform a full analog to DCE- this will leave in useless communications if they
-  have any dependent recieve operation, regardless of whether the result of the receive is a dead value.}];
-  let dependentDialects = [
-    "comm::CommDialect"
-  ];
-}
-
-def CommLower : Pass<"comm-lower"> {
-  let summary ="Lowers to the MPI dialect";
-  let dependentDialects = [
-    "comm::CommDialect",
-    "mpi::MPIDialect",
-    "enzymexla::EnzymeXLADialect",
-    "mlir::arith::ArithDialect"
-  ];
-}
-
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";

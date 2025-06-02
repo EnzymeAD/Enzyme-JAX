@@ -3,6 +3,7 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/Traits.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -24,9 +25,19 @@ class CommType<string name, string type_mnemonic, list<Trait> traits = []> : Typ
 /*
 * Dialect Types
 */
-def MessageTokenType : CommType<"MessageToken", "token"> {
-  let summary = "Represents a consumable message token";
+def TokenType : CommType<"Token", "token"> {
+  let summary = "Represents a consumable message token. No runtime counterpart";
   let mnemonic = "msg_token";
+}
+
+def DeviceType : CommType<"Device", "device"> {
+  let summary = "Represents a device declaration, with no runtime counterpart";
+  let mnemonic = "device";
+}
+
+def ChannelType : CommType<"Channel", "channel"> {
+  let summary = "Represents a communication channel, with no runtime counterpart";
+  let mnemonic = "channel";
 }
 
 /*
@@ -47,24 +58,6 @@ def CommSplitMemberOpTrait :  NativeOpTrait<"SplitMemberOp",
   let cppNamespace = "::mlir::comm";
 }
 
-def CommMessage : OpInterface<"CommMessage"> {
-  let cppNamespace = "::mlir::comm";
-  let methods = [
-    InterfaceMethod<[{
-      Returns what type this message takes as inputs
-    }], "mlir::Type", "getInputType">,
-    InterfaceMethod<[{
-      Returns what type will result from recieving this message
-    }], "mlir::Type", "getOutputType">,
-    InterfaceMethod<[{
-      Returns the token handle to this message
-    }], "mlir::TypedValue<mlir::comm::MessageTokenType>", "getToken">
-  ];
-}
-
-/*
-* Dialect Ops
-*/
 def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
   let summary = "The highest level split node in the communication dialect.";
   let description = [{
@@ -96,16 +89,13 @@ def CommSplit : CommOp<"split", traits = [SingleBlock, NoTerminator]> {
 
   // Add some convenience getters to hide the mess around having a declarations region
   let extraClassDeclaration = [{
-    auto getMessages() {
-      return getDeclarations().getOps<::mlir::comm::CommMessage>();
-    }
     auto getBranches() {
       return getDeclarations().getOps<::mlir::comm::CommBranch>();
     }
   }];
 }
 
-def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait, SingleBlock, HasParent<"CommSplit">]> {
+def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait, SingleBlock, HasParent<"CommSplit">, NoTerminator]> {
   let summary = "Represents one branch that can be taken by a split node";
   let description = [{
       Represents a device subset-specific execution path in a split node. A simple (non-loopy) branch
@@ -122,96 +112,92 @@ def CommBranch : CommOp<"branch", traits = [CommSplitMemberOpTrait, SingleBlock,
   }];
 
   let arguments = (ins DenseI32ArrayAttr:$device_ids);
-  let regions = (region SizedRegion<1>:$entry, MaxSizedRegion<1>:$loop, MaxSizedRegion<1>:$reentry, MaxSizedRegion<1>:$exit);
+  let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{
-    attr-dict $device_ids `enter` $entry custom<BranchLoopRegions>($loop, $reentry, $exit)
+    attr-dict $device_ids $body
   }];
 
-  // Extras: a function to quickly determine if the branch is loopy (has any instructions in loop or reentry other than continue)
-  let extraClassDeclaration = [{
-    /**
-      * Returns true if the branch loops. If false all code must be placed in the entry block.
-      */
-    bool isLoop();
-  }];
-
-  // Verifier to check exit block is used only if the branch is loopy
   let hasVerifier = 1;
 }
 
-def CommSend: CommOp<"send"> {
+// Token op
+def CommToken: CommOp<"token", traits = [CommSplitMemberOpTrait]> {
+  let summary = "A simple single-usage, one-way message token";
+  let arguments = (ins 
+    TypeAttr:$data_type // TODO make a dummy type for condition-matching tokens, which don't carry datas
+  );
+  let results = (outs
+    TokenType:$token
+  );
+  let assemblyFormat = [{
+    attr-dict $data_type
+  }];
+  let hasVerifier = 1;
+}
+
+// I would really like to have the TokenConsumer interface include a
+// utility method that returns the token op, but am running into issues
+// with referencing CommToken to troubleshoot later.
+def TokenConsumer : OpInterface<"TokenConsumer"> {
+  let cppNamespace = "::mlir::comm";
+  let methods = [
+    // InterfaceMethod<[{
+    //   Returns the token that this operation consumes
+    // }], "CommToken", "getTokenOp">
+    ];
+}
+// def DefaultTokenConsumer : NativeOpTrait<"DefaultTokenConsumer",
+//   /*traits =  */ [TokenConsumer],
+//   /*extraOpDeclaration = */[{
+//     mlir::comm::CommToken getTokenOp(){
+//       return getToken();
+//     }
+//   }]> {
+//   let cppNamespace = "::mlir::comm";
+// }
+
+
+// Primitives
+def CommSend: CommOp<"send", traits = [TokenConsumer]> {
   let summary = "An op to fulfill (part of) a messages input.";
   // TODO When we want to make send asynchronous remove the read from the token
-  let arguments = (ins Arg<MessageTokenType, "channel token", [MemWriteAt<1, FullEffect>, MemReadAt<2, FullEffect>]>:$token,
+  let arguments = (ins Arg<TokenType, "token", [MemWriteAt<1, FullEffect>, MemReadAt<2, FullEffect>]>:$token,
                     Arg<AnyType, "message data", [MemReadAt<0, FullEffect>]>:$data);
   let results = (outs );
   let assemblyFormat = [{
     attr-dict $token $data `:` type($data)
   }];
-  let extraClassDeclaration = [{
-    CommSimpleMessage getMessage();
-  }];
   let hasVerifier = 1;
 }
 
-def CommRecv: CommOp<"recv"> {
+def CommRecv: CommOp<"recv", traits = [TokenConsumer]> {
   let summary = "An op that blocks and returns the messages output";
   // Need to encode write back to the token because the sender may be waiting.
-  let arguments = (ins Arg<MessageTokenType, "channel token", [MemReadAt<0, FullEffect>, MemWriteAt<2>]>:$token);
+  let arguments = (ins Arg<TokenType, "token", [MemReadAt<0, FullEffect>, MemWriteAt<2>]>:$token);
   let results = (outs AnyType:$data);
   let assemblyFormat = [{
     attr-dict $token `:` type($data)
   }];
 }
 
-/*
-* Different types of message ops
-*/
-// Base class for messages
-class CommMessageBase<string name, list<Trait> extra_traits = []>: CommOp<name, traits = extra_traits # [DeclareOpInterfaceMethods<CommMessage>, CommSplitMemberOpTrait, HasParent<"CommSplit">]>;
-
-// Message types. In the future we will likely want to have a common base class
-def CommSimpleMessage: CommMessageBase<"simple_msg"> {
-  let summary = "A simple single-usage, one-way message token";
-  let arguments = (ins 
-    TypeAttr:$data_type
-  );
-  let results = (outs
-    MessageTokenType:$token
-  );
-  let assemblyFormat = [{
-    attr-dict $data_type
+// Conditional Communication Op- op that wraps a SCF control flow operation
+// and adds a communication token to it
+def CommControl : CommOp<"control", traits = [SingleBlock, NoTerminator, TokenConsumer]> {
+  let summary = "A wrapper operation to allow communication in control flow.";
+  let description = [{
+    This operation wraps a control flow operation (e.g. scf.if, scf.while) and adds a communication token to it.
+    This associates control flow accross branches, establishing a bisimulation between the branches. Passes and 
+    programmers MUST assure that the condition of each control flow on each branch is equivalent, otherwise
+    we lose communication consistency. This property is assumed by the compiler on its inputs, but can't
+    be checked in general.
   }];
-}
-
-def CommMultiplexMessage: CommMessageBase<"multiplex_msg"> {
-  let summary = "A phi node-like message that allows the compiler to choose from any of the input messages";
-  let arguments = (ins TypeAttr:$data_type, Variadic<MessageTokenType>:$in_tokens);
-  let results = (outs
-    MessageTokenType:$token
+  let arguments = (ins 
+    Arg<TokenType, "token", [MemReadAt<0, FullEffect>, MemWriteAt<1>]>:$token
   );
+  let results = (outs AnyType:$data); // pass through the values of the control flow operation
+  let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{
-    attr-dict $data_type $in_tokens
+    attr-dict $token $body `:` type($data)
   }];
   let hasVerifier = 1;
-}
-
-// Terminators, modeled almost identically after scf.yield and scf.condition
-// (we can't use scf.yield directly because it requires parent ops to be scf ops)
-def CommYield: CommOp<"yield", traits = [HasParent<"CommBranch">, Terminator, ReturnLike]> {
-  let summary = "Yields a value to the parent branch";
-  let arguments = (ins Variadic<AnyType>:$results);
-  let results = (outs );
-  let assemblyFormat = [{
-    attr-dict ($results^ `:` type($results))?
-  }];
-}
-
-def CommCondition: CommOp<"condition", traits = [HasParent<"CommBranch">, Terminator, ReturnLike]> {
-  let summary = "A condition that determines if the loop should continue";
-  let arguments = (ins I1:$condition, Variadic<AnyType>:$results);
-  let results = (outs );
-  let assemblyFormat = [{
-    `(` $condition `)` attr-dict ($results^ `:` type($results))?
-  }];
 }

@@ -1,13 +1,7 @@
 // Expect to get error: loop branches only allowed in loopy splits
 module {
 
-  func.func @commSendF(%rank : i32, %tag: i32, %msg :!llvm.ptr<1>, %size :i64) {
-    return
-  }
-
-  func.func @commRecvF(%rank : i32, %tag: i32, %size: i64) {
-    return
-  }
+  comm.device @dev "foo"
 
   func.func @main(%a : tensor<2x2xf32>) -> tensor<i32> {
 

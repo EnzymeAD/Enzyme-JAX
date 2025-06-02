@@ -368,6 +368,21 @@ gentbl_cc_library(
     deps = [":EnzymeXLAPassesTdFiles"],
 )
 
+gentbl_cc_library(
+    name = "CommPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=comm",
+            ],
+            "Passes/Comm/CommPasses.h.inc",
+        )
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Comm/CommPasses.td",
+    deps = [":EnzymeXLAPassesTdFiles"],
+)
 
 td_library(
     name = "EnzymeXLADialectTdFiles",
@@ -459,6 +474,7 @@ cc_library(
         ":CommDialect",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":CommPassesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
