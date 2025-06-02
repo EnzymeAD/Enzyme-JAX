@@ -1309,13 +1309,13 @@ def RFFTPaddingZeros : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def RFFTPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto outShape = cast<RankedTensorType>(op.getType()).getShape();
+  auto inShape = cast<RankedTensorType>(op.getOperand().getType()).getShape();
 
   auto fftlength = llvm::to_vector(op.getFftLength());
-  int64_t nHalf = to_i64(fftlength[fftlength.size() - 1]) / 2;
+  int64_t nResult = to_i64(fftlength[fftlength.size() - 1]) / 2 + 1;
 
-  SmallVector<int64_t> paddingHigh(outShape.size(), 0);
-  paddingHigh[outShape.size() - 1] = outShape[outShape.size() - 1] - nHalf;
+  SmallVector<int64_t> paddingHigh(inShape.size(), 0);
+  paddingHigh[inShape.size() - 1] = inShape[inShape.size() - 1] - nResult;
 
   getI64Attr(builder, paddingHigh);
 }]>;
