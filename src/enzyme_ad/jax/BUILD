@@ -384,6 +384,18 @@ gentbl_cc_library(
     deps = [":EnzymeXLAPassesTdFiles"],
 )
 
+cc_library(
+    name = "CommPasses",
+    srcs = glob(["Passes/Comm/*.cpp"]),
+    hdrs = glob(["Passes/Comm/*.h"]),
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        ":CommDialect",
+        ":CommPassesIncGen",
+    ],
+)
+
 td_library(
     name = "EnzymeXLADialectTdFiles",
     srcs = [
@@ -472,6 +484,7 @@ cc_library(
     ],
     deps = [
         ":CommDialect",
+        ":CommPasses",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":CommPassesIncGen",

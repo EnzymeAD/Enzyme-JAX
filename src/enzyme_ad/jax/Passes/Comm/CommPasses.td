@@ -3,14 +3,9 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CommDCE : Pass<"comm-dce"> {
-  let summary = "An implementation of the classic DCE pass that is aware of communication edges";
-  let dependentDialects = [
-    "comm::CommDialect"
-  ];
+def CommFlattenSplitsPass : Pass<"comm-flatten-splits"> {
+  let summary = "Splits branches and specializes subsplits of a top-level CommSplit until it contains no subsplits.";
+  let dependentDialects = ["comm"];
 }
-
-
-
 
 #endif // ENZYMEXLA_COMM_PASSES
