@@ -167,6 +167,91 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::initTraceOp> {
   }
 };
 
+struct addSampleToTraceOpConversion
+    : public OpConversionPattern<enzyme::addSampleToTraceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  addSampleToTraceOpConversion(std::string backend,
+                               TypeConverter &typeConverter,
+                               MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::addSampleToTraceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+
+    if (backend == "cpu") {
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+      static int64_t fnNum = 0;
+
+      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
+      auto loweredTraceType = RankedTensorType::get(
+          {1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+
+      std::string addSampleToTraceFn = "enzyme_probprog_add_sample_to_trace";
+
+      // Generate the LLVM function body
+      std::string fnName =
+          addSampleToTraceFn + "_wrapper_" + std::to_string(fnNum);
+      fnNum++;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
+
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        auto callResult = rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{},
+            SymbolRefAttr::get(ctx, addSampleToTraceFn),
+            ValueRange{
+                func.getArgument(0),
+                func.getArgument(1),
+                func.getArgument(2),
+            });
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      // Insert function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(addSampleToTraceFn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
+
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), addSampleToTraceFn,
+                                          funcType, LLVM::Linkage::External);
+      }
+
+      // Call the LLVM function with enzymexla.jit_call
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), TypeRange{}, mlir::FlatSymbolRefAttr::get(ctx, fnName),
+          ValueRange{}, rewriter.getStringAttr(""),
+          /*operand_layouts=*/rewriter.getArrayAttr({}),
+          /*result_layouts=*/rewriter.getArrayAttr({}),
+          /*output_operand_aliases=*/rewriter.getArrayAttr({}),
+          /*xla_side_effect_free=*/nullptr);
+
+      // Replace the addSampleToTraceOp with the result of the JIT call
+      rewriter.replaceOp(op, jitCall.getResults());
+
+      return success();
+    } else {
+      return rewriter.notifyMatchFailure(op, "Unknown backend " + backend);
+    }
+  }
+};
+
 struct LowerEnzymeProbProgPass
     : public enzyme::impl::LowerEnzymeProbProgPassBase<
           LowerEnzymeProbProgPass> {
@@ -201,6 +286,7 @@ struct LowerEnzymeProbProgPass
     patterns.add<InitTraceOpConversion>(backend, typeConverter, context);
     patterns.add<FuncOpConversion>(backend, typeConverter, context);
     patterns.add<ReturnOpConversion>(backend, typeConverter, context);
+    patterns.add<addSampleToTraceOpConversion>(backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
