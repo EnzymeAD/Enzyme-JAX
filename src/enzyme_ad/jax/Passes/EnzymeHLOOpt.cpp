@@ -19738,6 +19738,43 @@ struct InvolutionSimplify
   }
 };
 
+struct RealConjSimplify final
+    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConjSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<chlo::ConjOp>();
+    if (!operandOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::RealOp>(op, operandOp.getOperand());
+    return success();
+  }
+};
+
+struct ConjComplexSimplify final
+    : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
+    if (!operandOp)
+      return failure();
+
+    auto rhs = operandOp.getRhs();
+    auto rhsConstantOp = rhs.getDefiningOp<stablehlo::ConstantOp>();
+    if (!rhsConstantOp)
+      return failure();
+
+    auto negateRhs = rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs);
+    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
+                                                      negateRhs);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20203,7 +20240,9 @@ struct EnzymeHLOOptPass
         IfOpLiftCommonOps,
         InvolutionSimplify<stablehlo::NegOp>,
         InvolutionSimplify<stablehlo::NotOp>,
-        InvolutionSimplify<chlo::ConjOp>
+        InvolutionSimplify<chlo::ConjOp>,
+        RealConjSimplify,
+        ConjComplexSimplify
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
