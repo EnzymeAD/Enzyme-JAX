@@ -5757,13 +5757,15 @@ struct SubSimplify
                                     PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
+        matchPattern(op.getRhs(), m_Zero()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
+        matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
       return success();
     }
@@ -7153,7 +7155,9 @@ struct DotGeneralSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_AnyZeroFloat())) {
+        matchPattern(op.getLhs(), m_AnyZeroComplex()) ||
+        matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, rewriter.getZeroAttr(op.getType()));
       return success();
