@@ -165,19 +165,63 @@ def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
 }
 def ApplyNotConstProp : EnzymeHLOPatternOp<
     "not_const_prop"> {
-  let patterns = ["NotConstProp"];
+  let patterns = ["UnaryConstProp<stablehlo::NotOp,stablehlo::notOp>"];
 }
 def ApplyIsFiniteConstProp : EnzymeHLOPatternOp<
     "is_finite_const_prop"> {
-  let patterns = ["IsFiniteConstProp"];
+  let patterns = ["UnaryConstProp<stablehlo::IsFiniteOp,stablehlo::isFiniteOp>"];
 }
 def ApplyLogConstProp : EnzymeHLOPatternOp<
     "log_const_prop">{
-  let patterns = ["LogConstProp"];
+  let patterns = ["UnaryConstProp<stablehlo::LogOp,stablehlo::logOp>"];
 }
 def ApplyLogPlusConstProp : EnzymeHLOPatternOp<
     "log_plus_one_const_prop">{
-  let patterns = ["LogPlusConstProp"];
+  let patterns = ["UnaryConstProp<stablehlo::Log1pOp,stablehlo::log1pOp>"];
+}
+def ApplyNegConstProp : EnzymeHLOPatternOp<
+    "neg_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::NegOp,stablehlo::negOp>"];
+}
+def ApplySqrtConstProp : EnzymeHLOPatternOp<
+    "sqrt_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::SqrtOp,stablehlo::sqrtOp>"];
+}
+def ApplyRsqrtConstProp : EnzymeHLOPatternOp<
+    "rsqrt_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::RsqrtOp,stablehlo::rsqrtOp>"];
+}
+def ApplyCosConstProp : EnzymeHLOPatternOp<
+    "cos_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::CosineOp,stablehlo::cosineOp>"];
+}
+def ApplySinConstProp : EnzymeHLOPatternOp<
+    "sin_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::SineOp,stablehlo::sineOp>"];
+}
+def ApplyExpConstProp : EnzymeHLOPatternOp<
+    "exp_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::ExpOp,stablehlo::exponentialOp>"];
+}
+def ApplyExpm1ConstProp : EnzymeHLOPatternOp<
+    "expm1_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::Expm1Op,stablehlo::expm1Op>"];
+}
+def ApplyTanhConstProp : EnzymeHLOPatternOp<
+    "tanh_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::TanhOp,stablehlo::tanhOp>"];
+}
+def AbsConstPropPatterns : EnzymeHLOPatternOp<
+    "abs_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::AbsOp,stablehlo::absOp>"];
+}
+def ApplyLogisticConstProp : EnzymeHLOPatternOp<
+    "logistic_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::LogisticOp,stablehlo::logisticOp>"];
+}
+def ApplyConjConstProp : EnzymeHLOPatternOp<
+    "conj_const_prop"> {
+  let patterns = ["UnaryConstProp<chlo::ConjOp,conjOp>"];
 }
 def ApplyChloInfConstProp : EnzymeHLOPatternOp<
     "chlo_inf_const_prop">{
@@ -194,10 +238,6 @@ def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
 def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
     "abs_positive_simplify"> {
   let patterns = ["AbsPositiveSimplify"];
-}
-def AbsConstPropPatterns : EnzymeHLOPatternOp<
-    "abs_const_prop"> {
-  let patterns = ["AbsConstProp"];
 }
 
 def ApplySquareAbsSimplifyPatterns : EnzymeHLOPatternOp<
