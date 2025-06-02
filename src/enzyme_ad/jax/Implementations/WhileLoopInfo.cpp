@@ -1,6 +1,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -84,16 +85,6 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
 int64_t WhileLoopInfo::getConstantNumIters() {
   return (getConstantLimit().value() - getConstantStart().value()) /
          getConstantStep().value();
-}
-
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType))
-    return FloatAttr::get(elemType, val);
-  else
-    return IntegerAttr::get(elemType, val);
 }
 
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {

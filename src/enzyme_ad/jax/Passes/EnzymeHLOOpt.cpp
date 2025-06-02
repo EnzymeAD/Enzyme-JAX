@@ -26,6 +26,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -50,23 +51,6 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
-
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType))
-    return FloatAttr::get(elemType, val);
-  else
-    return IntegerAttr::get(elemType, val);
-}
-
-template <> Attribute makeAttr(mlir::Type elemType, APFloat val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<APFloat>(TT.getElementType(), val)));
-  return FloatAttr::get(elemType, val);
-}
 
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {

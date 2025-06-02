@@ -22,10 +22,12 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include <cstdint>
 
 using namespace mlir;
@@ -211,17 +213,12 @@ Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
   return builder.create(state);
 }
 
-namespace {
-
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType))
-    return FloatAttr::get(elemType, val);
-  else
-    return IntegerAttr::get(elemType, val);
+static inline DenseI64ArrayAttr getBroadcastInDimsAttr(OpBuilder &builder,
+                                                       ArrayRef<int64_t> dims) {
+  return builder.getDenseI64ArrayAttr(dims);
 }
+
+namespace {
 
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
 

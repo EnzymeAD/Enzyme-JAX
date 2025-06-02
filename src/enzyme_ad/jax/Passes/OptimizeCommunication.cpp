@@ -5,6 +5,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -75,16 +76,6 @@ RankedTensorType getLocalType(RankedTensorType globalType,
 using Index = SmallVector<int64_t, 6>;
 using Pair = std::pair<int64_t, int64_t>;
 using PairVec = SmallVector<Pair, 64>;
-
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType))
-    return FloatAttr::get(elemType, val);
-  else
-    return IntegerAttr::get(elemType, val);
-}
 
 SmallVector<int64_t, 6>
 computeMeshStrides(const SmallVector<int64_t, 6> &shape) {
