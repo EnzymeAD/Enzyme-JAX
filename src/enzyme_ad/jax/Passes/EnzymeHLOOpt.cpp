@@ -5082,53 +5082,14 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
   return success();
 }
 
-struct NotConstProp final
-    : CheckedOpRewritePattern<stablehlo::NotOp, NotConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+template <typename OpTy, auto constPropFn>
+struct UnaryConstProp final
+    : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>> {
+  using CheckedOpRewritePattern<
+      OpTy, UnaryConstProp<OpTy, constPropFn>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
-                                    PatternRewriter &rewriter) const {
-    return unaryConstProp<stablehlo::notOp>(op, rewriter);
-  }
-};
-
-struct IsFiniteConstProp final
-    : CheckedOpRewritePattern<stablehlo::IsFiniteOp, IsFiniteConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
-                                    PatternRewriter &rewriter) const {
-    return unaryConstProp<stablehlo::isFiniteOp>(op, rewriter);
-  }
-};
-
-struct LogConstProp final
-    : CheckedOpRewritePattern<stablehlo::LogOp, LogConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
-                                    PatternRewriter &rewriter) const {
-    return unaryConstProp<stablehlo::logOp>(op, rewriter);
-  }
-};
-
-struct LogPlusConstProp final
-    : CheckedOpRewritePattern<stablehlo::Log1pOp, LogPlusConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::Log1pOp op,
-                                    PatternRewriter &rewriter) const {
-    return unaryConstProp<stablehlo::log1pOp>(op, rewriter);
-  }
-};
-
-struct AbsConstProp final
-    : CheckedOpRewritePattern<stablehlo::AbsOp, AbsConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
-                                    PatternRewriter &rewriter) const {
-    return unaryConstProp<stablehlo::absOp>(op, rewriter);
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    return unaryConstProp<constPropFn>(op, rewriter);
   }
 };
 
@@ -19985,13 +19946,26 @@ struct EnzymeHLOOptPass
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
-        DotReshapeDot, NotConstProp, IsFiniteConstProp, LogConstProp,
-        LogPlusConstProp, ChloInfConstProp, GammaConstProp, AbsConstProp,
-        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        DotReshapeDot, UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
+        UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
+        UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
+        UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+        UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
+        UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
+        UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
+        UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
+        UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
+        UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
+        UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
+        UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+        UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
+        UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
+        ChloInfConstProp, GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
+        ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
+        BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
