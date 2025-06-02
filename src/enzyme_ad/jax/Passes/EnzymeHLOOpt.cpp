@@ -19638,6 +19638,7 @@ struct TransposeIf final
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifOp.getResultTypes());
     ifResultTypes[opIdx] = op.getType();
 
+    rewriter.setInsertionPoint(ifOp);
     auto newIfOp = rewriter.create<stablehlo::IfOp>(op.getLoc(), ifResultTypes,
                                                     ifOp.getPred());
 
@@ -19683,6 +19684,7 @@ struct IfOpLiftCommonOps final
     mlir::Region &falseRegion = op.getFalseBranch();
 
     SmallVector<std::pair<Operation *, Operation *>> opsToLift;
+    llvm::SmallPtrSet<Operation *, 8> falseOpsMatched;
 
     auto &trueBlock = trueRegion.front();
     auto &falseBlock = falseRegion.front();
@@ -19695,9 +19697,13 @@ struct IfOpLiftCommonOps final
            !falseIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++falseIt) {
         Operation *falseOp = &*falseIt;
 
+        if (falseOpsMatched.contains(falseOp))
+          continue;
+
         if (OperationEquivalence::isEquivalentTo(
                 trueOp, falseOp, OperationEquivalence::IgnoreLocations)) {
           opsToLift.emplace_back(trueOp, falseOp);
+          falseOpsMatched.insert(falseOp);
           break;
         }
       }
