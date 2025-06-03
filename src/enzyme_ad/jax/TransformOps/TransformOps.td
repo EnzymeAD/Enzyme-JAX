@@ -1955,3 +1955,56 @@ def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_complex_simplify"> {
   let patterns = ["ConjComplexSimplify"];
 }
+
+def ApplyAddConstPropPatterns : EnzymeHLOPatternOp<
+    "add_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>"];
+}
+def ApplyAndConstPropPatterns : EnzymeHLOPatternOp<
+    "and_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>"];
+}
+def ApplyAtan2ConstPropPatterns : EnzymeHLOPatternOp<
+    "atan2_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>"];
+}
+def ApplyComplexConstPropPatterns : EnzymeHLOPatternOp<
+    "complex_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>"];
+}
+def ApplyDivConstPropPatterns : EnzymeHLOPatternOp<
+    "div_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>"];
+}
+def ApplyMaxConstPropPatterns : EnzymeHLOPatternOp<
+    "max_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>"];
+}
+def ApplyMinConstPropPatterns : EnzymeHLOPatternOp<
+    "min_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>"];
+}
+def ApplyMulConstPropPatterns : EnzymeHLOPatternOp<
+    "mul_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>"];
+}
+def ApplyOrConstPropPatterns : EnzymeHLOPatternOp<
+    "or_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>"];
+}
+def ApplyPowConstPropPatterns : EnzymeHLOPatternOp<
+    "pow_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>"];
+}
+def ApplyRemConstPropPatterns : EnzymeHLOPatternOp<
+    "rem_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>"];
+}
+def ApplySubConstPropPatterns : EnzymeHLOPatternOp<
+    "sub_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>"];
+}
+def ApplyXorConstPropPatterns : EnzymeHLOPatternOp<
+    "xor_const_prop"> {
+  let patterns = ["BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>"];
+}
