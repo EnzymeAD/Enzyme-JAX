@@ -18,15 +18,12 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
 }
 
 // CHECK: func.func @main(%arg0: tensor<5x2x4xcomplex<f32>> {tf.aliasing_output = 1 : i32}) -> (tensor<5x2x4xcomplex<f32>>, tensor<5x2x4xcomplex<f32>>) {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<[0.0666666701, 0.13333334]> : tensor<2xf32>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
+// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)]], [[(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)]], [[(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)]], [[(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)], [(0.0666666701,0.000000e+00), (0.13333334,0.000000e+00)]]]> : tensor<4x5x2xcomplex<f32>>
 // CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<5x2x4xcomplex<f32>>) -> tensor<4x5x2xcomplex<f32>>
 // CHECK-NEXT:     %1 = stablehlo.fft %0, type =  IRFFT, length = [5, 3] : (tensor<4x5x2xcomplex<f32>>) -> tensor<4x5x3xf32>
 // CHECK-NEXT:     %2 = stablehlo.add %1, %1 : tensor<4x5x3xf32>
 // CHECK-NEXT:     %3 = stablehlo.fft %2, type =  RFFT, length = [5, 3] : (tensor<4x5x3xf32>) -> tensor<4x5x2xcomplex<f32>>
-// CHECK-NEXT:     %4 = stablehlo.complex %cst, %cst_0 : tensor<2xcomplex<f32>>
-// CHECK-NEXT:     %5 = stablehlo.broadcast_in_dim %4, dims = [2] : (tensor<2xcomplex<f32>>) -> tensor<4x5x2xcomplex<f32>>
-// CHECK-NEXT:     %6 = stablehlo.multiply %3, %5 : tensor<4x5x2xcomplex<f32>>
-// CHECK-NEXT:     %7 = stablehlo.transpose %6, dims = [1, 2, 0] : (tensor<4x5x2xcomplex<f32>>) -> tensor<5x2x4xcomplex<f32>>
-// CHECK-NEXT:     return %7, %arg0 : tensor<5x2x4xcomplex<f32>>, tensor<5x2x4xcomplex<f32>>
-// CHECK-NEXT: }
+// CHECK-NEXT:     %4 = stablehlo.multiply %3, %cst : tensor<4x5x2xcomplex<f32>>
+// CHECK-NEXT:     %5 = stablehlo.transpose %4, dims = [1, 2, 0] : (tensor<4x5x2xcomplex<f32>>) -> tensor<5x2x4xcomplex<f32>>
+// CHECK-NEXT:     return %5, %arg0 : tensor<5x2x4xcomplex<f32>>, tensor<5x2x4xcomplex<f32>>
+// CHECK-NEXT:   }

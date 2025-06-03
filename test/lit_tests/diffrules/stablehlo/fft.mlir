@@ -88,21 +88,19 @@ module {
 }
 
 // REVERSE-RFFT: func.func @main(%arg0: tensor<4xf64> {tf.aliasing_output = 1 : i32}) -> (tensor<4xf64>, tensor<4xf64>) {
-// REVERSE-RFFT-NEXT:      %cst = stablehlo.constant dense<1.000000e+00> : tensor<3xf64>
+// REVERSE-RFFT-NEXT:      %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<3xcomplex<f64>>
 // REVERSE-RFFT-NEXT:      %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f64>>
-// REVERSE-RFFT-NEXT:      %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
 // REVERSE-RFFT-NEXT:      %0 = stablehlo.fft %arg0, type =  RFFT, length = [4] : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
 // REVERSE-RFFT-NEXT:      %1 = chlo.conj %0 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %2 = stablehlo.complex %cst, %cst_1 : tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %3 = stablehlo.multiply %2, %1 : tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %4 = chlo.conj %3 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %5 = stablehlo.multiply %2, %0 : tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %6 = stablehlo.add %4, %5 : tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %7 = chlo.conj %6 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %8 = stablehlo.pad %7, %cst_0, low = [0], high = [1], interior = [0] : (tensor<3xcomplex<f64>>, tensor<complex<f64>>) -> tensor<4xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %9 = stablehlo.fft %8, type =  FFT, length = [4] : (tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>>
-// REVERSE-RFFT-NEXT:      %10 = stablehlo.real %9 : (tensor<4xcomplex<f64>>) -> tensor<4xf64>
-// REVERSE-RFFT-NEXT:      return %10, %arg0 : tensor<4xf64>, tensor<4xf64>
+// REVERSE-RFFT-NEXT:      %2 = stablehlo.multiply %cst, %1 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %3 = chlo.conj %2 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %4 = stablehlo.multiply %cst, %0 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %5 = stablehlo.add %3, %4 : tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %6 = chlo.conj %5 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %7 = stablehlo.pad %6, %cst_0, low = [0], high = [1], interior = [0] : (tensor<3xcomplex<f64>>, tensor<complex<f64>>) -> tensor<4xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %8 = stablehlo.fft %7, type =  FFT, length = [4] : (tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>>
+// REVERSE-RFFT-NEXT:      %9 = stablehlo.real %8 : (tensor<4xcomplex<f64>>) -> tensor<4xf64>
+// REVERSE-RFFT-NEXT:      return %9, %arg0 : tensor<4xf64>, tensor<4xf64>
 // REVERSE-RFFT-NEXT:    }
 
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=irfft outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-IRFFT
@@ -140,12 +138,10 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
 }
 
 // REVERSE-IRFFT: func.func @main(%arg0: tensor<3xcomplex<f64>> {tf.aliasing_output = 1 : i32}) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) {
-// REVERSE-IRFFT-NEXT:      %cst = stablehlo.constant dense<[2.500000e-01, 5.000000e-01, 2.500000e-01]> : tensor<3xf64>
-// REVERSE-IRFFT-NEXT:      %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
+// REVERSE-IRFFT-NEXT:      %cst = stablehlo.constant dense<[(2.500000e-01,0.000000e+00), (5.000000e-01,0.000000e+00), (2.500000e-01,0.000000e+00)]> : tensor<3xcomplex<f64>>
 // REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg0, type =  IRFFT, length = [4] : (tensor<3xcomplex<f64>>) -> tensor<4xf64>
 // REVERSE-IRFFT-NEXT:      %1 = stablehlo.add %0, %0 : tensor<4xf64>
 // REVERSE-IRFFT-NEXT:      %2 = stablehlo.fft %1, type =  RFFT, length = [4] : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      %3 = stablehlo.complex %cst, %cst_0 : tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      %4 = stablehlo.multiply %2, %3 : tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      return %4, %arg0 : tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %3 = stablehlo.multiply %2, %cst : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      return %3, %arg0 : tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>
 // REVERSE-IRFFT-NEXT:    }
