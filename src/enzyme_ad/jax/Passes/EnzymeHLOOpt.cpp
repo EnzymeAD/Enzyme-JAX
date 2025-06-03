@@ -7769,19 +7769,22 @@ struct TransposeConvolution
       return failure();
 
     auto permutation = transpose.getPermutation();
+    SmallVector<int64_t> mapping(permutation.size(), -1);
+    for (int64_t i = 0; i < permutation.size(); i++)
+      mapping[permutation[i]] = i;
 
     auto dimensionNumbers = conv.getDimensionNumbers();
+
     int64_t outputBatchDimension =
-        permutation[dimensionNumbers.getOutputBatchDimension()];
+        mapping[dimensionNumbers.getOutputBatchDimension()];
     int64_t outputFeatureDimension =
-        permutation[dimensionNumbers.getOutputFeatureDimension()];
+        mapping[dimensionNumbers.getOutputFeatureDimension()];
+
     SmallVector<int64_t> outputSpatialDimensions(
         dimensionNumbers.getOutputSpatialDimensions().begin(),
         dimensionNumbers.getOutputSpatialDimensions().end());
-
-    for (auto &dim : outputSpatialDimensions) {
-      dim = permutation[dim];
-    }
+    for (auto &dim : outputSpatialDimensions)
+      dim = mapping[dim];
 
     auto newDimensionNumbers = stablehlo::ConvDimensionNumbersAttr::get(
         dimensionNumbers.getContext(),
