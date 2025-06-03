@@ -650,8 +650,13 @@ class AutoDiffWhileRev
 
     builder.setInsertionPoint(revOuter);
 
-    for (int i = nrets - 1; i < nargs - 1; ++i)
-      cacheVals[i] = gutils->popCache(caches[i], builder);
+    IRMapping mapping;
+
+    for (int i = nrets - 1, refIdx = 0; i < nargs - 1; ++i) {
+      Value cached = cacheVals[i] = gutils->popCache(caches[i], builder);
+      mapping.map(outsideRefs[refIdx], cached);
+      refIdx++;
+    }
 
     if (lastCache)
       builder.setInsertionPointAfterValue(lastCache);
@@ -664,7 +669,12 @@ class AutoDiffWhileRev
     auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
     Block *revInnerBody = &revInner.getBody().front();
 
-    IRMapping mapping;
+    SmallVector<Value> revGradients(
+        revOuterBody->getArguments().slice(1).begin(),
+        revOuterBody->getArguments().slice(1).end());
+    auto revLoop =
+        makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revGradients);
+    Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
 
@@ -689,116 +699,79 @@ class AutoDiffWhileRev
                             revInfo.info.getConstantStep().value()),
             currentStep));
 
-    auto rematLoop = makeForLoop(
-        builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, 0),
-        innerIV, makeI64Constant(orig.getLoc(), builder, 1), carried);
+    Block *origBody = &orig.getBody().front();
+    mapping.map(origBody->getArgument(0), currentIV);
 
-    Block *rematLoopBody = &rematLoop.getBody().front();
-    for (int i = 1; i < nrets; ++i) {
-      cacheVals[i - 1] = rematLoopBody->getArgument(i);
+    for (auto [arg, newArg] :
+         llvm::zip_equal(origBody->getArguments().slice(1),
+                         revInnerBody->getArguments().slice(1)))
+      mapping.map(arg, newArg);
+
+    for (Operation &op : origBody->without_terminator()) {
+      auto newOp = builder.clone(op, mapping);
+      gutils->originalToNewFnOps[&op] = newOp;
+      for (auto [oldRes, newRes] :
+           llvm::zip_equal(op.getResults(), newOp->getResults())) {
+        mapping.map(oldRes, newRes);
+        gutils->originalToNewFn.map(oldRes, newRes);
+      }
     }
+    gutils->originalToNewFnOps[orig] = revInner;
 
-    builder.setInsertionPointToStart(rematLoopBody);
+    auto rstart = origBody->rbegin(), rend = origBody->rend();
+    rstart++;
 
-    Value rematStep = builder.create<stablehlo::AddOp>(
-        orig.getLoc(), outerStart, rematLoopBody->getArgument(0));
-    Value rematIV = builder.create<stablehlo::AddOp>(
-        orig.getLoc(),
-        makeI64Constant(orig.getLoc(), builder,
-                        revInfo.info.getConstantStart().value()),
-        builder.create<stablehlo::MulOp>(
-            orig.getLoc(),
-            makeI64Constant(orig.getLoc(), builder,
-                            revInfo.info.getConstantStep().value()),
-            currentStep));
+    builder.setInsertionPointToStart(revLoopBody);
 
-    SmallVector<Value> callOperands{rematIV};
-    callOperands.append(cacheVals.begin(), cacheVals.end());
-    auto call = builder.create<func::CallOp>(orig.getLoc(), func, callOperands);
-    Operation *term = rematLoopBody->getTerminator();
-    term->setOperands(1, term->getNumOperands() - 1,
-                      call.getResults().slice(1, call.getNumResults() - 1));
-
-    builder.setInsertionPointAfter(rematLoop);
-    for (int i = 1; i < nrets; ++i) {
-      cacheVals[i - 1] = rematLoop->getResult(i);
-    }
-
-    // Create autodiff call
-    DerivativeMode mode = DerivativeMode::ReverseModeGradient;
-
-    SmallVector<Value> revArgs;
-
-    std::vector<DIFFE_TYPE> RetActivity, ArgActivity;
-    int nactive = 0;
-    for (int i = 0; i < nrets; ++i) {
-      bool act = operandsActive[i];
-
-      Value arg = i == 0 ? currentIV : cacheVals[i - 1];
-      revArgs.push_back(arg);
-
-      if (act) {
-        RetActivity.push_back(DIFFE_TYPE::OUT_DIFF);
-        ArgActivity.push_back(DIFFE_TYPE::OUT_DIFF);
-      } else {
-        RetActivity.push_back(DIFFE_TYPE::CONSTANT);
-        ArgActivity.push_back(DIFFE_TYPE::CONSTANT);
+    int revIdx = 1;
+    for (auto &&[active, operand] :
+         llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
+      if (active) {
+        // Set diffe here, not add because it should not accumulate across
+        // iterations. Instead the new gradient for this operand is passed in
+        // the return of the reverse while body.
+        gutils->setDiffe(operand, revLoopBody->getArgument(revIdx), builder);
+        revIdx++;
       }
     }
 
-    for (auto refEn : llvm::enumerate(outsideRefs)) {
-      revArgs.push_back(cacheVals[nrets - 1 + refEn.index()]);
-      auto ref = refEn.value();
-      if (gutils->isConstantValue(ref)) {
-        ArgActivity.push_back(DIFFE_TYPE::CONSTANT);
-      } else {
-        ArgActivity.push_back(DIFFE_TYPE::OUT_DIFF);
+    bool anyFailed = false;
+
+    for (auto it = rstart; it != rend; it++) {
+      Operation *op = &*it;
+      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    }
+
+    SmallVector<Value> newResults;
+    for (auto &&[active, arg] :
+         llvm::zip(operandsActive, origBody->getArguments())) {
+      if (active) {
+        newResults.push_back(gutils->diffe(arg, builder));
+        if (!gutils->isConstantValue(arg))
+          gutils->zeroDiffe(arg, builder);
       }
     }
 
-    for (auto dif : revInnerBody->getArguments().slice(1)) {
-      revArgs.push_back(dif);
+    Operation *term = revInnerBody->getTerminator();
+    SmallVector<Value> revInnerResults;
+    for (auto res : origBody->getTerminator()->getOperands().slice(
+             1, term->getNumOperands() - 1)) {
+      revInnerResults.push_back(mapping.lookup(res));
     }
 
-    std::vector<bool> volatile_args(nargs, false);
-    std::vector<bool> returnShadow(nrets, false);
-    std::vector<bool> returnPrimal(nrets, false);
+    term->setOperands(1, revOuter->getNumOperands() - 1, revInnerResults);
 
-    auto type_args = gutils->TA.getAnalyzedTypeInfo(func);
-    bool freeMemory = true;
-    size_t width = gutils->width;
-
-    auto revFn = gutils->Logic.CreateReverseDiff(
-        func, RetActivity, ArgActivity, gutils->TA, returnPrimal, returnShadow,
-        mode, freeMemory, width, /*addedType*/ nullptr, type_args,
-        volatile_args, /*augmented*/ nullptr, gutils->omp, gutils->postpasses,
-        gutils->verifyPostPasses);
-
-    auto revCall = builder.create<func::CallOp>(
-        orig.getLoc(), cast<func::FuncOp>(revFn), revArgs);
-
-    int resIdx = revOuter.getNumOperands() - 1;
-    for (auto ref : outsideRefs) {
-      if (!gutils->isConstantValue(ref)) {
-        auto diffe = revCall.getResult(resIdx);
-        resIdx++;
-        gutils->addToDiffe(ref, diffe, builder);
-      }
-    }
-
-    term = revInnerBody->getTerminator();
-    term->setOperands(
-        1, revOuter->getNumOperands() - 1,
-        revCall.getResults().slice(0, revOuter->getNumOperands() - 1));
+    term = revLoopBody->getTerminator();
+    term->setOperands(1, revLoopBody->getNumArguments() - 1, newResults);
 
     term = revOuterBody->getTerminator();
     term->setOperands(
         1, revInner.getNumResults() - 1,
-        revInner.getResults().slice(1, revInner.getNumResults() - 1));
+        revLoop.getResults().slice(1, revInner.getNumResults() - 1));
 
     builder.setInsertionPointAfter(revOuter);
 
-    int revIdx = 1;
+    revIdx = 1;
     for (auto &&[active, arg] :
          llvm::zip(operandsActive, orig->getOperands())) {
       if (active) {
@@ -808,7 +781,7 @@ class AutoDiffWhileRev
       }
     }
 
-    return success();
+    return success(!anyFailed);
   }
 
 public:
@@ -2637,9 +2610,9 @@ private:
       OP,
     } type;
 
-    Node(Operation *O) : O(O), type(OP){};
-    Node(Value V) : V(V), type(VAL){};
-    Node() : type(NONE){};
+    Node(Operation *O) : O(O), type(OP) {};
+    Node(Value V) : V(V), type(VAL) {};
+    Node() : type(NONE) {};
 
     bool operator<(const Node N) const {
       if (type != N.type)
