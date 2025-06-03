@@ -677,6 +677,10 @@ class AutoDiffWhileRev
       }
     }
 
+    for (auto [oldVal, newVal] : mapping.getValueMap()) {
+      gutils->originalToNewFn.map(oldVal, newVal);
+    }
+
     bool anyFailed = false;
 
     for (auto it = rstart; it != rend; it++) {
