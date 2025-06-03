@@ -212,9 +212,9 @@ struct addSampleToTraceOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
 
-    auto trace = op.getTrace();
-    auto symbol = op.getSymbol();
-    auto sample = op.getSample();
+    auto trace = adaptor.getTrace();
+    auto symbol = adaptor.getSymbol();
+    auto sample = adaptor.getSample();
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
@@ -273,18 +273,14 @@ struct addSampleToTraceOpConversion
       for (int64_t i = sampleRank - 1; i >= 0; i--) {
         sampleLayout.push_back(i);
       }
-      auto castedTrace = rewriter.create<UnrealizedConversionCastOp>(
-          op.getLoc(), loweredTraceType, trace);
 
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), TypeRange{}, mlir::FlatSymbolRefAttr::get(ctx, fnName),
-          ValueRange{castedTrace.getResult(0), symbol, sample},
-          rewriter.getStringAttr(""),
+          ValueRange{trace, symbol, sample}, rewriter.getStringAttr(""),
           /*operand_layouts=*/
-          rewriter.getArrayAttr(
-              {rewriter.getIndexTensorAttr({0}),
-               rewriter.getIndexTensorAttr({0}),
-               rewriter.getIndexTensorAttr(sampleLayout)}),
+          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0}),
+                                 rewriter.getIndexTensorAttr({0}),
+                                 rewriter.getIndexTensorAttr(sampleLayout)}),
           /*result_layouts=*/rewriter.getArrayAttr({}),
           /*output_operand_aliases=*/rewriter.getArrayAttr({}),
           /*xla_side_effect_free=*/nullptr);
