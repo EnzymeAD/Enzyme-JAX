@@ -154,7 +154,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "transpose_elementwise" ||
           opName == "reshape_elementwise" || opName == "reshape_slice" ||
           opName == "extend_unary_elementwise" ||
-          opName == "wrap_unary_elementwise")
+          opName == "wrap_unary_elementwise" || opName == "no_nan_mul_simplify")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
