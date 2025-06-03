@@ -5677,13 +5677,15 @@ struct AddSimplify
                                     PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
+        matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getRhs());
       return success();
     }
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
+        matchPattern(op.getRhs(), m_Zero()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
@@ -5755,13 +5757,15 @@ struct SubSimplify
                                     PatternRewriter &rewriter) const {
 
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
+        matchPattern(op.getRhs(), m_Zero()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
+        matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
       return success();
     }
@@ -6017,20 +6021,6 @@ struct MulSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
-
-    // 0 * x -> x
-    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-    // x * 0 -> x
-    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getRhs());
-      return success();
-    }
-
     // 1 * x -> x
     if (matchPattern(op.getLhs(), m_One()) ||
         matchPattern(op.getLhs(), m_OneFloat())) {
@@ -7165,7 +7155,9 @@ struct DotGeneralSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getRhs(), m_AnyZeroFloat())) {
+        matchPattern(op.getLhs(), m_AnyZeroComplex()) ||
+        matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, rewriter.getZeroAttr(op.getType()));
       return success();
@@ -15387,6 +15379,58 @@ struct ReorderElementwiseAndShapeOp final
   }
 };
 
+struct NoNanMulSimplify final
+    : public CheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                NoNanMulSimplify>::CheckedOpRewritePattern;
+
+  NoNanMulSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
+  // Apply the pattern only if the output types are integers or if the pattern
+  // is allowed on floating point math.
+  bool canApplyPattern(bool allowOnFloatingPointMath, Type mulOutTy,
+                       Type mulInTy) const {
+    mulOutTy = getElementTypeOrSelf(mulOutTy);
+    mulInTy = getElementTypeOrSelf(mulInTy);
+    if (mulOutTy.isInteger() && mulInTy.isInteger())
+      return true;
+    return allowOnFloatingPointMath;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!canApplyPattern(allowOnFloatingPointMath, op.getResult().getType(),
+                         op.getOperand(0).getType())) {
+      return failure();
+    }
+
+    // 0 * x -> 0
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroComplex())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+    // x * 0 -> 0
+    if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getRhs(), m_Zero()) ||
+        matchPattern(op.getRhs(), m_AnyZeroComplex())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+
+    return failure();
+  }
+
+private:
+  bool allowOnFloatingPointMath;
+};
+
 // c = a + b; d = c - b => d = a
 // c = a + b; d = b - c => d = -a
 struct NoNanAddSubSimplify final
@@ -19862,6 +19906,14 @@ void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                        benefit);
 }
 
+void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<NoNanMulSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
+}
+
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                                 int64_t maxConstantExpansion,
                                                 MLIRContext &context,
@@ -20150,7 +20202,8 @@ struct EnzymeHLOOptPass
     if (no_nan || all_finite) {
       patterns.add<NoNan, NoNanSelfSubSimplify>(context);
     }
-    patterns.add<NoNanAddSubSimplify>((no_nan || all_finite), context);
+    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify>((no_nan || all_finite),
+                                                        context);
 
     // clang-format off
     patterns.add<

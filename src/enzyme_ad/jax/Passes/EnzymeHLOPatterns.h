@@ -24,6 +24,9 @@ void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
 void addNoNanAddSubSimplify(RewritePatternSet &patterns,
                             bool allowOnFloatingPointMath, MLIRContext &context,
                             PatternBenefit benefit);
+void addNoNanMulSimplify(RewritePatternSet &patterns,
+                         bool allowOnFloatingPointMath, MLIRContext &context,
+                         PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addConcatConstProp(RewritePatternSet &patterns,
