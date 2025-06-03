@@ -540,53 +540,6 @@ class AutoDiffWhileRev
     });
   }
 
-  // Create a function from the body of the loop
-  // The function returns the same number of results as the loop but takes more
-  // argument for values defined outside.
-  static func::FuncOp outlineFunction(stablehlo::WhileOp op,
-                                      SetVector<Value> &outsideRefs) {
-    computeOutsideRefs(op, outsideRefs);
-    SymbolTable symbolTable = SymbolTable::getNearestSymbolTable(op);
-
-    IRMapping mapping;
-
-    Block *funcBody = new Block();
-    Block *body = &op.getBody().front();
-
-    for (Value arg : body->getArguments())
-      mapping.map(arg, funcBody->addArgument(arg.getType(), arg.getLoc()));
-
-    for (Value ref : outsideRefs)
-      mapping.map(ref, funcBody->addArgument(ref.getType(), ref.getLoc()));
-
-    FunctionType funcType = FunctionType::get(
-        op.getContext(), funcBody->getArgumentTypes(), op.getResultTypes());
-    func::FuncOp func =
-        func::FuncOp::create(op.getLoc(), "while_checkpoint", funcType);
-
-    func.getBody().push_back(funcBody);
-    func.setPrivate();
-
-    OpBuilder builder(funcBody, funcBody->end());
-
-    for (auto &innerOp : body->without_terminator()) {
-      auto newOp = builder.clone(innerOp, mapping);
-      for (auto [oldRes, newRes] :
-           llvm::zip_equal(innerOp.getResults(), newOp->getResults()))
-        mapping.map(oldRes, newRes);
-    }
-
-    Operation *terminator = body->getTerminator();
-    SmallVector<Value> returns;
-    for (auto ret : terminator->getOperands())
-      returns.push_back(mapping.lookup(ret));
-    builder.create<func::ReturnOp>(terminator->getLoc(), returns);
-
-    symbolTable.insert(func);
-
-    return func;
-  }
-
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -600,23 +553,12 @@ class AutoDiffWhileRev
 
     auto outer = gutils->getNewFromOriginal(orig);
 
-    func::FuncOp func;
-
-    SymbolTable symTable = SymbolTable::getNearestSymbolTable(orig);
-    auto res = outer->walk([&](func::CallOp call) {
-      func = cast<func::FuncOp>(symTable.lookup(call.getCallee()));
-      return WalkResult::interrupt();
-    });
-    assert(res.wasInterrupted());
-
     SetVector<Value> outsideRefs;
     computeOutsideRefs(orig, outsideRefs);
 
-    int nargs = func.getNumArguments();
-    int nrets = func.getNumResults();
-    int numOutsideRefs = nargs - nrets;
-
-    assert(outsideRefs.size() == numOutsideRefs);
+    int numOutsideRefs = outsideRefs.size();
+    int nargs = caches.size() + 1;
+    int nrets = nargs - numOutsideRefs;
 
     SmallVector<Value> operands;
     for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
@@ -989,8 +931,7 @@ public:
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
-          auto func =
-              outlineFunction(cast<stablehlo::WhileOp>(orig), outsideRefs);
+          computeOutsideRefs(cast<stablehlo::WhileOp>(orig), outsideRefs);
 
           SmallVector<Value> caches;
 
@@ -1037,41 +978,34 @@ public:
           Block *oldInnerBody = &newWhile.getBody().front();
           builder.setInsertionPointToStart(innerBody);
 
-          // IRMapping mapping;
+          IRMapping mapping;
 
-          // for (auto [oldArg, newArg] : llvm::zip_equal(
-          //          oldInnerBody->getArguments(), innerBody->getArguments()))
-          //          {
-          //   mapping.map(oldArg, newArg);
-          // }
+          for (auto [oldArg, newArg] : llvm::zip_equal(
+                   oldInnerBody->getArguments(), innerBody->getArguments())) {
+            mapping.map(oldArg, newArg);
+          }
 
           Value oldIV = oldInnerBody->getArgument(0);
           Value newIV = builder.create<stablehlo::AddOp>(
               oldIV.getLoc(), innerBody->getArgument(0), outerIV);
 
-          SmallVector<Value> callOperands{newIV};
-          callOperands.append(innerBody->getArguments().slice(1).begin(),
-                              innerBody->getArguments().slice(1).end());
-          for (auto ref : outsideRefs)
-            callOperands.push_back(gutils->getNewFromOriginal(ref));
-          auto call =
-              builder.create<func::CallOp>(orig->getLoc(), func, callOperands);
+          mapping.map(oldIV, newIV);
 
+          for (Operation &innerOp : oldInnerBody->without_terminator()) {
+            auto newOp = builder.clone(innerOp, mapping);
+            for (auto [oldRes, newRes] :
+                 llvm::zip_equal(innerOp.getResults(), newOp->getResults())) {
+              mapping.map(oldRes, newRes);
+            }
+          }
+
+          SmallVector<Value> newReturns;
+          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
+                   1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+            newReturns.push_back(mapping.lookup(oldRes));
+          }
           Operation *term = innerBody->getTerminator();
-          term->setOperands(
-              1, call.getNumResults() - 1,
-              call.getResults().slice(1, call.getNumResults() - 1));
-
-          //  mapping.map(oldIV, newIV);
-
-          //  for (Operation &innerOp : oldInnerBody->without_terminator()) {
-          //    auto newOp = builder.clone(innerOp, mapping);
-          //    for (auto [oldRes, newRes] :
-          //         llvm::zip_equal(innerOp.getResults(), newOp->getResults()))
-          //         {
-          //      mapping.map(oldRes, newRes);
-          //    }
-          //  }
+          term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
           SmallVector<Value> newResults{makeI64Constant(
