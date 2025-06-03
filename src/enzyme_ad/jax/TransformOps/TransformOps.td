@@ -69,10 +69,6 @@ def ApplyOrSimplifyPatterns : EnzymeHLOPatternOp<
     "or_simplify"> {
   let patterns = ["OrSimplify"];
 }
-def ApplyNegateSimplifyPatterns : EnzymeHLOPatternOp<
-    "negate_simplify"> {
-  let patterns = ["NegateSimplify"];
-}
 def ApplyMulSimplifyPatterns : EnzymeHLOPatternOp<
     "mul_simplify"> {
   let patterns = ["MulSimplify"];
@@ -84,18 +80,6 @@ def ApplyDivSimplifyPatterns : EnzymeHLOPatternOp<
 def ApplyPowSimplifyPatterns : EnzymeHLOPatternOp<
     "pow_simplify"> {
   let patterns = ["PowSimplify"];
-}
-def ApplySqrtSimplifyPatterns : EnzymeHLOPatternOp<
-    "sqrt_simplify"> {
-  let patterns = ["SqrtSimplify"];
-}
-def ApplyCosSimplifyPatterns : EnzymeHLOPatternOp<
-    "cos_simplify"> {
-  let patterns = ["CosSimplify"];
-}
-def ApplySinSimplifyPatterns : EnzymeHLOPatternOp<
-    "sin_simplify"> {
-  let patterns = ["SinSimplify"];
 }
 def ApplyNoopSlicePatterns : EnzymeHLOPatternOp<
     "noop_slice"> {
@@ -126,14 +110,6 @@ def ApplyPadSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyNegativePadToSlicePatterns : EnzymeHLOPatternOp<
     "negative_pad_to_slice"> {
   let patterns = ["NegativePadToSlice"];
-}
-def ApplyTanhSimplifyPatterns : EnzymeHLOPatternOp<
-    "tanh_simplify"> {
-  let patterns = ["TanhSimplify"];
-}
-def ApplyExpSimplifyPatterns : EnzymeHLOPatternOp<
-    "exp_simplify"> {
-  let patterns = ["ExpSimplify"];
 }
 def ApplySliceSimplifyPatterns : EnzymeHLOPatternOp<
     "slice_simplify"> {
