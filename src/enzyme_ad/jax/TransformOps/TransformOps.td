@@ -231,6 +231,44 @@ def ApplyGammaConstProp : EnzymeHLOPatternOp<
     "gamma_const_prop">{
   let patterns = ["GammaConstProp"];
 }
+def ApplyCeilConstProp : EnzymeHLOPatternOp<
+    "ceil_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::CeilOp,stablehlo::ceilOp>"];
+}
+def ApplyCbrtConstProp : EnzymeHLOPatternOp<
+    "cbrt_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::CbrtOp,stablehlo::cbrtOp>"];
+}
+def ApplyRealConstProp : EnzymeHLOPatternOp<
+    "real_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::RealOp,stablehlo::realOp>"];
+}
+def ApplyImagConstProp : EnzymeHLOPatternOp<
+    "imag_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::ImagOp,stablehlo::imagOp>"];
+}
+def ApplyRoundConstProp : EnzymeHLOPatternOp<
+    "round_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::RoundOp,stablehlo::roundOp>"];
+}
+def ApplyRoundNearestEvenConstProp : EnzymeHLOPatternOp<
+    "round_nearest_even_const_prop">{
+  let patterns = [
+    "UnaryConstProp<stablehlo::RoundNearestEvenOp,stablehlo::roundNearestEvenOp>"
+  ];
+}
+def ApplySignConstProp : EnzymeHLOPatternOp<
+    "sign_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::SignOp,stablehlo::signOp>"];
+}
+def ApplyFloorConstProp : EnzymeHLOPatternOp<
+    "floor_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::FloorOp,stablehlo::floorOp>"];
+}
+def ApplyTanConstProp : EnzymeHLOPatternOp<
+    "tan_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::TanOp,stablehlo::tanOp>"];
+}
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
   let patterns = ["SignAbsSimplify"];
