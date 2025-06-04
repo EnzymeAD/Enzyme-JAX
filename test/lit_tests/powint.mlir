@@ -38,8 +38,6 @@ module {
 }
 
 // CHECK:  func.func @main() -> tensor<i64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<6> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.power %c, %c_0 : tensor<i64>
-// CHECK-NEXT:    return %0 : tensor<i64>
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    return %c : tensor<i64>
 // CHECK-NEXT:  }
