@@ -13,7 +13,7 @@ hedron_compile_commands_setup_transitive_transitive()
 hedron_compile_commands_setup_transitive_transitive_transitive()
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# LLVM_COMMIT = "dfa13d320fa3e316c88971980c6793a6a4618b08"
+# LLVM_COMMIT = "1340ecf0ba4b38bae9de9781da72b9a72abd3fbe"
 # LLVM_SHA256 = ""
 # http_archive(
 #     name = "llvm-raw",
@@ -22,8 +22,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #     strip_prefix = "llvm-project-" + LLVM_COMMIT,
 #     urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
 # )
-# 
-# 
+
 # load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 # maybe(
 #     http_archive,
@@ -35,7 +34,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #         "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.0.7.zip",
 #     ],
 # )
-# 
+
 # maybe(
 #     http_archive,
 #     name = "llvm_zstd",
