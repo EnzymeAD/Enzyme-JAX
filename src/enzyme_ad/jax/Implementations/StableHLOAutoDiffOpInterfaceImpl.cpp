@@ -653,15 +653,10 @@ class AutoDiffWhileRev
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
       for (auto [oldRes, newRes] :
-           llvm::zip_equal(op.getResults(), newOp->getResults())) {
+           llvm::zip_equal(op.getResults(), newOp->getResults()))
         mapping.map(oldRes, newRes);
-        gutils->originalToNewFn.map(oldRes, newRes);
-      }
     }
     gutils->originalToNewFnOps[orig] = revInner;
-
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
 
     builder.setInsertionPointToStart(revLoopBody);
 
@@ -677,12 +672,13 @@ class AutoDiffWhileRev
       }
     }
 
-    for (auto [oldVal, newVal] : mapping.getValueMap()) {
+    for (auto [oldVal, newVal] : mapping.getValueMap())
       gutils->originalToNewFn.map(oldVal, newVal);
-    }
 
     bool anyFailed = false;
 
+    auto rstart = origBody->rbegin(), rend = origBody->rend();
+    rstart++;
     for (auto it = rstart; it != rend; it++) {
       Operation *op = &*it;
       anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
