@@ -611,6 +611,10 @@ class AutoDiffWhileRev
     auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
     Block *revInnerBody = &revInner.getBody().front();
 
+    if (orig->hasAttr("enzymexla.disable_min_cut"))
+      revInner->setAttr("enzymexla.disable_min_cut",
+                       orig->getAttr("enzymexla.disable_min_cut"));
+
     SmallVector<Value> revGradients(
         revOuterBody->getArguments().slice(1).begin(),
         revOuterBody->getArguments().slice(1).end());
