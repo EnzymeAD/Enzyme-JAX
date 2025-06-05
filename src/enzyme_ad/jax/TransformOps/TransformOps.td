@@ -2008,3 +2008,10 @@ def ApplyXorConstPropPatterns : EnzymeHLOPatternOp<
     "xor_const_prop"> {
   let patterns = ["BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>"];
 }
+
+def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
+  "split_convolution_into_reverse_convolution"> {
+  let patterns = [
+    "SplitConvolutionIntoReverseConvolution"
+  ];
+}
