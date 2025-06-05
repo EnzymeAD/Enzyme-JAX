@@ -130,6 +130,56 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "CommDialectFiles",
+    srcs = [
+        "Dialect/Comm/CommDialect.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:OpBaseTdFiles"
+    ]
+)
+
+
+gentbl_cc_library(
+    name = "CommDialectIncGen",
+    tbl_outs = [(
+            ["-gen-dialect-decls", "-dialect=comm"],
+            "Dialect/Comm/CommDialect.h.inc",
+        ), (
+            ["-gen-dialect-defs", "-dialect=comm"],
+            "Dialect/Comm/CommDialect.cpp.inc",
+        ),(
+            ["-gen-op-decls", "-dialect=comm"],
+            "Dialect/Comm/CommOps.h.inc",
+        ), (
+            ["-gen-op-defs", "-dialect=comm"],
+            "Dialect/Comm/CommOps.cpp.inc",
+        ),(
+            ["-gen-typedef-decls", "-typedefs-dialect=comm"],
+            "Dialect/Comm/CommTypes.h.inc",
+        ), (
+            ["-gen-typedef-defs", "-typedefs-dialect=comm"],
+            "Dialect/Comm/CommTypes.cpp.inc",
+        ),(
+            ["-gen-op-interface-decls"],
+            "Dialect/Comm/CommInterfaces.h.inc",
+        ), (
+            ["-gen-op-interface-defs"],
+            "Dialect/Comm/CommInterfaces.cpp.inc",
+        ),
+    ],
+    td_file = "Dialect/Comm/CommDialect.td",
+    deps = [
+        ":CommDialectFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:AttrTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+)
+
 gentbl_cc_library(
     name = "TransformOpsImplIncGen",
     tbl_outs = [(
@@ -253,6 +303,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "CommDialect",
+    srcs = glob(["Dialect/Comm/*.cpp"]),
+    hdrs = glob(["Dialect/Comm/*.h"]),
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        ":CommDialectIncGen",
+    ],
+)
+
 td_library(
     name = "ImplementationsCommonTdFiles",
     srcs = [
@@ -336,6 +398,34 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Passes/Passes.td",
     deps = [":EnzymeXLAPassesTdFiles"],
+)
+
+gentbl_cc_library(
+    name = "CommPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=comm",
+            ],
+            "Passes/Comm/CommPasses.h.inc",
+        )
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Comm/CommPasses.td",
+    deps = [":EnzymeXLAPassesTdFiles"],
+)
+
+cc_library(
+    name = "CommPasses",
+    srcs = glob(["Passes/Comm/*.cpp"]),
+    hdrs = glob(["Passes/Comm/*.h"]),
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        ":CommDialect",
+        ":CommPassesIncGen",
+    ],
 )
 
 td_library(
@@ -462,9 +552,12 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":CommDialect",
+        ":CommPasses",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":CommPassesIncGen",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",

@@ -61,6 +61,10 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
+#include "Dialect/Comm/CommDialect.h"
+
+
+
 using namespace mlir;
 
 namespace mlir {
