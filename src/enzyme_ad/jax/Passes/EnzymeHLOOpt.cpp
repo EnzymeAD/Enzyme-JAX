@@ -19332,6 +19332,44 @@ struct ConjComplexSimplify final
   }
 };
 
+// workaround for https://github.com/openxla/xla/issues/27446
+struct SplitConvolutionIntoReverseConvolution final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     SplitConvolutionIntoReverseConvolution> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto windowReversal = op.getWindowReversal();
+    if (!windowReversal)
+      return rewriter.notifyMatchFailure(op, "no window reversal");
+
+    if (!llvm::any_of(windowReversal.value(), [](bool b) { return b; }))
+      return rewriter.notifyMatchFailure(op, "all window reversals are false");
+
+    auto convDims = op.getDimensionNumbers();
+
+    SmallVector<int64_t> reversalDims;
+    for (auto [dim, reversal] : llvm::zip(convDims.getKernelSpatialDimensions(),
+                                          windowReversal.value())) {
+      if (reversal) {
+        reversalDims.push_back(dim);
+      }
+    }
+
+    auto reverseOp = rewriter.create<stablehlo::ReverseOp>(
+        op.getLoc(), op.getRhs(), reversalDims);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
+        op, op.getType(), op.getLhs(), reverseOp.getResult(),
+        op.getWindowStridesAttr(), op.getPaddingAttr(), op.getLhsDilationAttr(),
+        op.getRhsDilationAttr(), nullptr, op.getDimensionNumbersAttr(),
+        op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+        op.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19849,7 +19887,8 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
-        ConjComplexSimplify
+        ConjComplexSimplify,
+        SplitConvolutionIntoReverseConvolution
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,

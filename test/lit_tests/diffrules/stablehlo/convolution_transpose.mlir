@@ -29,7 +29,8 @@ module {
 // CHECK-NEXT:    %[[v4:.+]] = stablehlo.divide %[[v3]], %[[cst242]] : tensor<f32>
 // CHECK-NEXT:    %[[v5:.+]] = stablehlo.divide %arg3, %[[cst242]] : tensor<f32>
 // CHECK-NEXT:    %[[v6:.+]] = stablehlo.broadcast_in_dim %[[v5]], dims = [] : (tensor<f32>) -> tensor<11x11x2x1xf32>
-// CHECK-NEXT:    %[[v7:.+]] = stablehlo.convolution(%[[v6]], %arg0) dim_numbers = [0, 1, f, b]x[o, i, 1, 0]->[b, f, 1, 0], window = {stride = [2, 2], pad = {{\[\[}}0, 0], [0, 0]], rhs_dilate = [1, 1], reverse = [true, true]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<11x11x2x1xf32>, tensor<3x2x3x3xf32>) -> tensor<1x3x5x5xf32>
+// CHECK-NEXT:    %[[rev:.+]] = stablehlo.reverse %arg0, dims = [3, 2] : tensor<3x2x3x3xf32>
+// CHECK-NEXT:    %[[v7:.+]] = stablehlo.convolution(%[[v6]], %[[rev]]) dim_numbers = [0, 1, f, b]x[o, i, 1, 0]->[b, f, 1, 0], window = {stride = [2, 2], pad = {{\[\[}}0, 0], [0, 0]], rhs_dilate = [1, 1]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<11x11x2x1xf32>, tensor<3x2x3x3xf32>) -> tensor<1x3x5x5xf32>
 // CHECK-NEXT:    %[[v8:.+]] = arith.addf %arg4, %[[v7]] : tensor<1x3x5x5xf32>
 // CHECK-NEXT:    return %[[v4]], %arg0, %arg1, %arg2, %[[v8]] : tensor<f32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<1x3x5x5xf32>
 // CHECK-NEXT:  }
