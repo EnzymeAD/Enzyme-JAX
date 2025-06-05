@@ -138,9 +138,14 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::initTraceOp> {
       auto moduleOp = op->getParentOfType<ModuleOp>();
       static int64_t fnNum = 0;
 
+      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto loweredTraceType = RankedTensorType::get(
           {1}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+
+      auto tracePtr = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), loweredTraceType,
+          cast<ElementsAttr>(makeAttr(loweredTraceType, 42)));
 
       std::string initTraceFn = "enzyme_probprog_init_trace";
 
@@ -151,17 +156,18 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::initTraceOp> {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(llvmPtrType, {}, false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
 
         auto func =
             rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-        auto callResult = rewriter.create<LLVM::CallOp>(
-            op.getLoc(), TypeRange{llvmPtrType},
-            SymbolRefAttr::get(ctx, initTraceFn), ValueRange{});
+        rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{},
+                                      SymbolRefAttr::get(ctx, initTraceFn),
+                                      ValueRange{func.getArgument(0)});
 
-        rewriter.create<LLVM::ReturnOp>(op.getLoc(), callResult.getResults());
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
 
       // Insert function declaration if not already present
@@ -169,22 +175,28 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::initTraceOp> {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(llvmPtrType, {}, false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
 
         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), initTraceFn, funcType,
                                           LLVM::Linkage::External);
       }
 
       // Call the LLVM function with enzymexla.jit_call
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{}, 0, std::vector<int64_t>{}));
+
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), TypeRange{loweredTraceType},
-          mlir::FlatSymbolRefAttr::get(ctx, fnName), ValueRange{},
+          mlir::FlatSymbolRefAttr::get(ctx, fnName), ValueRange{tracePtr},
           rewriter.getStringAttr(""),
-          /*operand_layouts=*/rewriter.getArrayAttr({}),
+          /*operand_layouts=*/
+          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0})}),
           /*result_layouts=*/
           rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0})}),
-          /*output_operand_aliases=*/rewriter.getArrayAttr({}),
-          /*xla_side_effect_free=*/nullptr);
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
       // Replace the initTraceOp with the result of the JIT call
       rewriter.replaceOp(op, jitCall.getResults());
@@ -338,6 +350,7 @@ struct LowerEnzymeProbProgPass
     target.addLegalDialect<LLVM::LLVMDialect>();
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<enzymexla::EnzymeXLADialect>();
+    target.addLegalDialect<stablehlo::StablehloDialect>();
     target.addIllegalOp<enzyme::initTraceOp>();
     target.addIllegalOp<enzyme::addSampleToTraceOp>();
     target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
