@@ -994,7 +994,7 @@ struct LowerJITPass
       if (op.getXlaSideEffectFreeAttr()) {
         hasSideEffectAttr = rewriter.getBoolAttr(false);
       } else { // use our analysis if no attribute is provided
-        rewriter.getBoolAttr(!isMemoryEffectFree(op));
+        hasSideEffectAttr = rewriter.getBoolAttr(!isMemoryEffectFree(op));
       }
 
       Operation *replacement;
