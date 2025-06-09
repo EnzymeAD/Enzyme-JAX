@@ -1,9 +1,3 @@
-// #include "third_party/gpus/cuda/include/cuda.h"
-// #include "third_party/gpus/cuda/include/driver_types.h"
-// #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
-
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
