@@ -10,6 +10,11 @@ struct CallInfo {
   void *(*init)();
 };
 
+struct CallInfoWithError {
+  char *(*run)(void **, void *, void *);
+  void *(*init)();
+};
+
 XLA_FFI_Error *instantiate(XLA_FFI_CallFrame *call_frame) { return nullptr; }
 
 XLA_FFI_Error *prepare(XLA_FFI_CallFrame *call_frame) { return nullptr; }
@@ -18,7 +23,7 @@ struct CuFuncWrapper {
   void *func;
 };
 
-void noop(void *){};
+void noop(void *) {};
 
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
@@ -106,10 +111,64 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
   return nullptr;
 }
 
+XLA_FFI_Error *execute_with_error(XLA_FFI_CallFrame *call_frame) {
+  // If passed a call frame with the metadata extension, just return the
+  // metadata.
+  if (call_frame->extension_start != nullptr &&
+      call_frame->extension_start->type == XLA_FFI_Extension_Metadata) {
+    auto extension = reinterpret_cast<XLA_FFI_Metadata_Extension *>(
+        call_frame->extension_start);
+    extension->metadata->api_version = XLA_FFI_Api_Version{
+        XLA_FFI_Api_Version_STRUCT_SIZE,
+        /*extension_start=*/nullptr,
+        XLA_FFI_API_MAJOR,
+        XLA_FFI_API_MINOR,
+    };
+    return nullptr;
+  }
+
+  auto *bspan =
+      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
+  auto cinfo = (CallInfoWithError *)bspan->ptr;
+
+  auto internal_api = call_frame->api->internal_api;
+  auto ctx = call_frame->ctx;
+  void *stream =
+      ((stream_executor::Stream *)internal_api->XLA_FFI_INTERNAL_Stream_Get(
+           ctx))
+          ->platform_specific_handle()
+          .stream;
+
+  size_t numargs = call_frame->args.size;
+  void *ptrs[numargs];
+  for (size_t i = 0; i < numargs; i++) {
+    ptrs[i] =
+        &reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
+  }
+
+  auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
+      internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(ctx));
+  auto cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
+
+  char *err = cinfo->run(ptrs, stream, cufunc);
+  if (err) {
+    return XLA_FFI_ERROR(absl::Status(absl::Status::kInternal, std::string(err)));
+  }
+
+  return nullptr;
+}
+
 extern "C" void RegisterEnzymeXLAGPUHandler() {
   XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize, execute};
 
   xla::ffi::Ffi::RegisterStaticHandler(xla::ffi::GetXlaFfiApi(),
                                        "enzymexla_compile_gpu", "CUDA", bundle,
                                        /*XLA_FFI_Handler_Traits traits = */ 0);
+
+  XLA_FFI_Handler_Bundle bundle_with_error = {instantiate, prepare, initialize,
+                                              execute_with_error};
+
+  xla::ffi::Ffi::RegisterStaticHandler(
+      xla::ffi::GetXlaFfiApi(), "enzymexla_compile_gpu_with_error", "CUDA",
+      bundle_with_error, /*XLA_FFI_Handler_Traits traits = */ 0);
 }

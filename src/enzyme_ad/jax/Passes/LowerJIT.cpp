@@ -969,6 +969,10 @@ struct LowerJITPass
         return;
       }
 
+      bool hasReturn = fn.getNumResults() != 0 &&
+                       (fn.getNumResults() == 1 &&
+                        isa<LLVM::LLVMVoidType>(fn->getResult(0).getType()));
+
       CallInfo cdata =
           CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp,
                       cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth,
@@ -1001,7 +1005,9 @@ struct LowerJITPass
       if (backend == "cuda")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_gpu"),
+            hasReturn
+                ? rewriter.getStringAttr("enzymexla_compile_gpu_with_error")
+                : rewriter.getStringAttr("enzymexla_compile_gpu"),
             /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ dattr,
             /* api_version*/
@@ -1013,7 +1019,9 @@ struct LowerJITPass
       else if (backend == "cpu")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_cpu"),
+            hasReturn
+                ? rewriter.getStringAttr("enzymexla_compile_cpu_with_error")
+                : rewriter.getStringAttr("enzymexla_compile_cpu"),
             /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ backendstr,
             /* api_version*/
