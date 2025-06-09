@@ -23,7 +23,7 @@ struct CuFuncWrapper {
   void *func;
 };
 
-void noop(void *) {};
+void noop(void *){};
 
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
@@ -152,7 +152,8 @@ XLA_FFI_Error *execute_with_error(XLA_FFI_CallFrame *call_frame) {
 
   char *err = cinfo->run(ptrs, stream, cufunc);
   if (err) {
-    return XLA_FFI_ERROR(absl::Status(absl::Status::kInternal, std::string(err)));
+    return XLA_FFI_ERROR(
+        absl::Status(absl::Status::kInternal, std::string(err)));
   }
 
   return nullptr;
