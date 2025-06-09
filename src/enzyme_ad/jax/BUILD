@@ -28,6 +28,8 @@ cc_library(
     deps = [
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:ffi",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/status:status",
     ],
 )
 
@@ -36,6 +38,7 @@ cc_library(
     srcs = ["cpu.cc"],
     deps = [
         "@xla//xla/service:custom_call_target_registry",
+        "@xla//xla/service:custom_call_status",
     ],
 )
 
