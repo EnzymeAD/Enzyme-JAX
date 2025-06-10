@@ -568,6 +568,13 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
   ];
 }
 
+def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
+  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let dependentDialects = [
+    "gpu::GPUDialect",
+  ];
+}
+
 def OptimizeCommunication : Pass<"optimize-communication"> {
   let summary = "Optimize communication";
   let dependentDialects = [

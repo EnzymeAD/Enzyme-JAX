@@ -5,6 +5,7 @@ load("@rules_python//python:py_library.bzl", "py_library")
 
 exports_files([
     "enzymexlamlir-opt.cpp",
+    "raise.cpp",
     "RegistryUtils.cpp",
 ])
 

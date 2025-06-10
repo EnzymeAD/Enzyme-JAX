@@ -66,6 +66,82 @@ cc_binary(
     ],
 )
 
+cc_library(
+    name = "RaiseLib",
+    srcs = [
+        "//src/enzyme_ad/jax:raise.cpp",
+        "//src/enzyme_ad/jax:RegistryUtils.cpp",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AllPassesAndDialects",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:ComplexDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:ConversionPasses",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:SparseTensorDialect",
+        "//src/enzyme_ad/jax:RaisingTransformOps",
+        "//src/enzyme_ad/jax:TransformOps",
+        "//src/enzyme_ad/jax:XLADerivatives",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
+        "@llvm-project//mlir:ComplexToLLVM",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+    ] + if_llvm_aarch32_available([
+        "@llvm-project//llvm:ARMAsmParser",
+        "@llvm-project//llvm:ARMCodeGen",
+    ]) + if_llvm_aarch64_available([
+        "@llvm-project//llvm:AArch64AsmParser",
+        "@llvm-project//llvm:AArch64CodeGen",
+    ]) + if_llvm_powerpc_available([
+        "@llvm-project//llvm:PowerPCAsmParser",
+        "@llvm-project//llvm:PowerPCCodeGen",
+    ]) + if_llvm_system_z_available([
+        "@llvm-project//llvm:SystemZAsmParser",
+        "@llvm-project//llvm:SystemZCodeGen",
+    ]) + if_llvm_x86_available([
+        "@llvm-project//llvm:X86AsmParser",
+        "@llvm-project//llvm:X86CodeGen",
+    ]),
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+)
+
+# cc_shared_library(
+cc_binary(
+    name = "libRaise.so",
+    linkshared = 1,     ## important
+    linkstatic = 1,     ## important
+    deps = [":RaiseLib"],
+)
+
 cc_binary(
     name = "enzymexlamlir-tblgen",
     srcs = ["//src/enzyme_ad/tools:enzymexlamlir-tblgen.cpp"],
