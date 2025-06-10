@@ -572,6 +572,8 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
   let dependentDialects = [
     "gpu::GPUDialect",
+    "mlir::NVVM::NVVMDialect",
+    "mlir::DLTIDialect"
   ];
 }
 

@@ -1,16 +1,15 @@
 
 #include "AffineUtils.h"
 #include "Passes.h"
-#include "mlir/Analysis/Presburger/PresburgerRelation.h"
-#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
-#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
-#include "mlir/Dialect/Affine/Analysis/Utils.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/IntegerSet.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "mlir/IR/IRMapping.h"
+#include "llvm/ADT/SmallSet.h"
 
 #define DEBUG_TYPE "gpu-launch-recognition"
 
@@ -22,20 +21,14 @@ namespace enzyme {
 } // namespace mlir
 
 using namespace mlir;
-using namespace affine;
 
 constexpr char gpuModuleName[] = "__mlir_gpu_module";
 constexpr char kernelPrefix[] = "__mlir_launch_kernel_";
 
-LogicalResult mergeDeviceIntoHost(mlir::ModuleOp hostModule,
-                                  mlir::ModuleOp deviceModule) {
-}
-
-
 struct GPULaunchRecognitionPass
-    : public enzyme::impl::GPULaunchRecognitionPassBase<
+    : public enzyme::impl::GPULaunchRecognitionBase<
           GPULaunchRecognitionPass> {
-  using GPULaunchRecognitionPassBase::GPULaunchRecognitionPassBase;
+  using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
   void runOnOperation() override {
   
   llvm::SmallVector<LLVM::LLVMFuncOp> launchFuncs;
@@ -45,11 +38,10 @@ struct GPULaunchRecognitionPass
       launchFuncs.push_back(funcOp);
   });
 
-  auto ctx = getOperation().getContext();
+  auto ctx = getOperation()->getContext();
 
   auto moduleBuilder = OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
-  auto gpuModule = moduleBuilder.create<gpu::GPUModuleOp>(
-      deviceModule->getLoc(), gpuModuleName);
+  auto gpuModule = moduleBuilder.create<gpu::GPUModuleOp>(getOperation()->getLoc(), gpuModuleName);
   // TODO get these target attrs from somewhere
   auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
       /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", "sm_80", "+ptx60",
@@ -72,24 +64,76 @@ struct GPULaunchRecognitionPass
       entries.push_back(it.second);
     dataLayout = DataLayoutSpecAttr::get(ctx, entries);
   }
-  gpuModule->setAttr(
-      LLVM::LLVMDialect::getDataLayoutAttrName(),
-      deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
+  //gpuModule->setAttr(
+  //    LLVM::LLVMDialect::getDataLayoutAttrName(),
+  //    deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
   gpuModule->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
-  OpBuilder builder(getOperation().getContext());
+  OpBuilder builder(getOperation()->getContext());
 
-  builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+
+    SymbolTableCollection symbolTable;
+    symbolTable.getSymbolTable(getOperation());
 
   SmallVector<Operation*> tocopy;
   for (auto launchFunc : launchFuncs) {
-    auto launchFuncUses = launchFunc.getSymbolUses(hostModule);
+    auto launchFuncUses = launchFunc.getSymbolUses(getOperation());
     for (auto use : *launchFuncUses) {
-      if (auto cop = dyn_cast<CallOpInterface>(use)) {
+      if (auto cop = dyn_cast<CallOpInterface>(use.getUser())) {
         
-      if (auto cur = cop.resolveCallable()) {
-	 cur->moveBefore(&gpuModule.getBodyRegion().front(), gpuModule.getBodyRegion().front().begin());
-      done.insert(cur);
-      builder.clone(*cur);
+      if (auto cur = dyn_cast_if_present<FunctionOpInterface>(cop.resolveCallable())) {
+
+
+  FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
+  if (!gpuTy0) {
+    if (auto lty = dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType())) {
+      SmallVector<Type> restys;
+      if (!isa<LLVM::LLVMVoidType>(lty.getReturnType()))
+	   restys.push_back(lty.getReturnType());
+
+      gpuTy0 = builder.getFunctionType(lty.getParams(), restys);
+    } else {
+      cur.emitError(
+          "Require target operand to have functiontype or llvmfunctiontype");
+      continue;
+    }
+  }
+
+    builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+    auto gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(), gpuTy0);
+    {
+      auto entry = &gpufunc.getBody().front();
+      builder.setInsertionPointToEnd(entry);
+      IRMapping map;
+      for (auto &&[oldarg, newarg] :
+           zip(cur.getArguments(), gpufunc.getArguments())) {
+        Value newval = newarg;
+
+        map.map(oldarg, newval);
+      }
+
+      cur.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
+  
+  	  gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+
+      gpufunc->walk([](LLVM::ReturnOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
+
+      gpufunc->walk([](LLVM::UnreachableOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
+
+      gpufunc->walk([](func::ReturnOp op) {
+        OpBuilder rewriter(op);
+        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        op.erase();
+      });
+
+
       cur->walk([&](CallOpInterface cop) {
         if (auto op2 = cop.resolveCallable())
           tocopy.push_back(op2);
@@ -100,44 +144,38 @@ struct GPULaunchRecognitionPass
         else if (auto op2 = cop.getFunction(symbolTable))
           tocopy.push_back(op2);
       });
-      CallInterfaceCallable callable = call.getCallableForCallee();
+       
+     auto loc = launchFunc->getLoc();
+	builder.setInsertionPointAfter(cop);
 
-  	auto symbolRef = cast<SymbolRefAttr>(callable);
-
-        SymbolRefAttr gpuFuncSymbol = SymbolRefAttr::get(
-            StringAttr::get(ctx, gpuModuleName),
-            {symbolRef});
-        
 	auto shMemSize = builder.create<LLVM::TruncOp>(
-            loc, builder.getI32Type(), callOp.getArgOperands()[7]);
-        auto stream = callOp.getArgOperands()[8];
+            loc, builder.getI32Type(), cop.getArgOperands()[7]);
+        auto stream = cop.getArgOperands()[8];
         // TODO stream is arg 8
         llvm::SmallVector<mlir::Value> args;
-        for (unsigned i = 9; i < callOp.getArgOperands().size(); i++)
-          args.push_back(callOp.getArgOperands()[i]);
+        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
+          args.push_back(cop.getArgOperands()[i]);
         builder.create<gpu::LaunchFuncOp>(
-            loc, gpuFuncSymbol,
+            loc, gpufunc,
             gpu::KernelDim3(
                 {builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[1]),
+                                              cop.getArgOperands()[1]),
                  builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[2]),
+                                              cop.getArgOperands()[2]),
                  builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[3])}),
+                                              cop.getArgOperands()[3])}),
             gpu::KernelDim3(
                 {builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[4]),
+                                              cop.getArgOperands()[4]),
                  builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[5]),
+                                              cop.getArgOperands()[5]),
                  builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                              callOp.getArgOperands()[6])}),
-            shMemSize, ValueRange(args), stream);
-        callOp->erase();
+                                              cop.getArgOperands()[6])}),
+            shMemSize, ValueRange(args), stream.getType(), ValueRange(stream));
+        cop->erase();
       }
-    }
-    }
-  }
-  SmallSet<Operation*, 1> done;
+  builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+  llvm::SmallSet<Operation*, 1> done;
   while (tocopy.size()) {
       auto cur = tocopy.pop_back_val();
       if (done.count(cur))
@@ -155,33 +193,13 @@ struct GPULaunchRecognitionPass
           tocopy.push_back(op2);
       });
     }
+      }
+    }
+    }
+  }
 
   if (launchFuncs.size())
     getOperation()->setAttr("gpu.container_module", OpBuilder(ctx).getUnitAttr());
-  return success();
   }
 };
 
-template <class T>
-struct SimplifyAccessAffineExprs : public OpRewritePattern<T> {
-  using OpRewritePattern<T>::OpRewritePattern;
-  IslAnalysis &islAnalysis;
-  SimplifyAccessAffineExprs(MLIRContext &context, IslAnalysis &islAnalysis)
-      : OpRewritePattern<T>(&context), islAnalysis(islAnalysis) {}
-  LogicalResult matchAndRewrite(T access,
-                                PatternRewriter &rewriter) const override {
-    return handleAffineOp(islAnalysis, access);
-  }
-};
-
-void mlir::populateAffineExprSimplificationPatterns(
-    IslAnalysis &islAnalysis, RewritePatternSet &patterns) {
-  // clang-format off
-  patterns.insert<
-    SimplifyAccessAffineExprs<affine::AffineLoadOp>,
-    SimplifyAccessAffineExprs<affine::AffineStoreOp>,
-    SimplifyAccessAffineExprs<affine::AffineVectorLoadOp>,
-    SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>
-  >(*patterns.getContext(), islAnalysis);
-  // clang-format on
-}

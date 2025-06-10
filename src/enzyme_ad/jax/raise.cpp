@@ -17,6 +17,7 @@
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 #include "Implementations/XLADerivatives.h"
+#include "llvm/IRReader/IRReader.h"
 #include "Passes/Passes.h"
 #include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
@@ -47,6 +48,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Target/LLVMIR/Import.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include "mlir/Target/LLVM/NVVM/Target.h"
@@ -92,7 +94,6 @@ std::string runLLVMToMLIRRoundTrip(std::string input) {
                                            /*emitExpensiveWarnings*/ false,
                                            /*dropDICompositeElements*/ false);
   if (!mod) {
-    llvm::errs() << lmod << "\n";
     exit(1);
   }
 
@@ -105,7 +106,7 @@ std::string runLLVMToMLIRRoundTrip(std::string input) {
   mlir::LogicalResult result =
       mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
   if (mlir::failed(result)) {
-    throw nanobind::value_error(error_message.c_str());
+    exit(2);
   }
 
   DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
