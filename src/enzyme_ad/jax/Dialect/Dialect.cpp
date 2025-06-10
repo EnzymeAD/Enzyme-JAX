@@ -41,7 +41,7 @@ struct EnzymeXLADialectInlinerInterface : public DialectInlinerInterface {
   // Allow all call operations to be inlined.
   bool isLegalToInline(Operation *call, Operation *callable,
                        bool wouldBeCloned) const final {
-    return true;
+    return !isa<KernelCallOp, JITCallOp>(call);
   }
   // We don't have any special restrictions on what can be inlined into
   // destination regions (e.g. while/conditional bodies). Always allow it.

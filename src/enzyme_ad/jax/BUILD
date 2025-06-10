@@ -36,6 +36,7 @@ cc_library(
     srcs = ["cpu.cc"],
     deps = [
         "@xla//xla/service:custom_call_target_registry",
+        "@xla//xla/service:custom_call_status",
     ],
 )
 
