@@ -91,7 +91,7 @@ int64_t WhileLoopInfo::getConstantNumIters() {
   if (step < 0 && limit > start)
     return 0;
 
-  return (limit - start) / getConstantStep().value();
+  return (limit - start) / step;
 }
 
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
