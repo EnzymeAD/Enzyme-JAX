@@ -632,7 +632,8 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
             const std::string &cubinTriple, const std::string &cubinChip,
             const std::string &cubinFeatures, const std::string &cubinFormat,
             int cuOptLevel, const std::string &toolkitPath,
-            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug) {
+            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
+            bool returnPtr) {
 
   OpBuilder builder(op);
 
@@ -720,7 +721,11 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
-  FunctionType calleeType = builder.getFunctionType(intys, {});
+  SmallVector<mlir::Type> rettys;
+  if (returnPtr) {
+    rettys.push_back(ptrty);
+  }
+  FunctionType calleeType = builder.getFunctionType(intys, rettys);
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -969,15 +974,18 @@ struct LowerJITPass
         return;
       }
 
-      bool hasReturn = fn.getNumResults() != 0 &&
-                       (fn.getNumResults() == 1 &&
-                        isa<LLVM::LLVMVoidType>(fn->getResult(0).getType()));
+      bool hasReturn = false;
+      if (auto llvmfnty = dyn_cast<LLVM::LLVMFunctionType>(fn.getFunctionType())) {
+        hasReturn = llvmfnty.getReturnType() != LLVM::LLVMVoidType::get(op.getContext());
+      } else if (auto fnty = dyn_cast<FunctionType>(fn.getFunctionType())) {
+        hasReturn = !fnty.getResults().empty();
+      }
 
       CallInfo cdata =
           CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp,
                       cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth,
                       cubinTriple, cubinChip, cubinFeatures, cubinFormat,
-                      cuOptLevel, toolkitPath, linkFilesArray, debug);
+                      cuOptLevel, toolkitPath, linkFilesArray, debug, hasReturn);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
