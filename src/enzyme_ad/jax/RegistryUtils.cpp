@@ -1,15 +1,17 @@
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
-
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
-#include "Implementations/XLADerivatives.h"
 
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
+#include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
+
 #include "Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
+#include "Enzyme/MLIR/Passes/Passes.h"
+
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ComplexToLLVM/ComplexToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -20,43 +22,83 @@
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Passes.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
+
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
+
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
+
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Transform/Transforms/Passes.h"
+
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
+
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
+
+#include "mlir/Transforms/Passes.h"
+
+#include "stablehlo/conversions/linalg/transforms/Passes.h"
+#include "stablehlo/conversions/tosa/transforms/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/tests/CheckOps.h"
+#include "stablehlo/transforms/Passes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "shardy/dialect/sdy/transforms/export/passes.h"
+#include "shardy/dialect/sdy/transforms/import/passes.h"
+#include "shardy/dialect/sdy/transforms/passes.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
+#include "shardy/dialect/sdy/transforms/propagation/passes.h"
+#include "shardy/dialect/sdy/transforms/propagation/user_priority_propagation.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/pipelines.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/export_shardings.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
+
+#include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
 namespace mlir {
 namespace enzyme {
@@ -91,6 +133,9 @@ struct PtrElementModel
     : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
           PtrElementModel<T>, T> {};
 
+namespace mlir {
+namespace enzyme {
+
 void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, LLVM::LLVMDialect *dialect) {
     LLVM::LLVMFunctionType::attachInterface<MemRefInsider>(*ctx);
@@ -115,8 +160,9 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
         enzymexla::RotateOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
       });
+}
 
-  // Register MLIR stuff
+void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::affine::AffineDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
@@ -135,6 +181,7 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::DLTIDialect>();
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
+  registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
@@ -146,9 +193,10 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
 
   registry.insert<mlir::sdy::SdyDialect>();
-
   registry.insert<mlir::ub::UBDialect>();
+}
 
+void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 
   mlir::func::registerInlinerExtension(registry);
@@ -156,13 +204,6 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::NVVM::registerInlinerInterface(registry);
 
   mlir::registerConvertNVVMToLLVMInterface(registry);
-
-  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::vector::VectorDialect,
-                  mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
-                  mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect,
-                  mlir::omp::OpenMPDialect>();
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertComplexToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
@@ -195,3 +236,66 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   mlir::registerLLVMDialectImport(registry);
   mlir::registerNVVMDialectImport(registry);
 }
+
+void initializePasses(mlir::DialectRegistry &registry) {
+  mlir::registerenzymePasses();
+  enzyme::registerenzymexlaPasses();
+
+  // Register the standard passes we want.
+  mlir::registerCSEPass();
+  mlir::registerLowerAffinePass();
+  mlir::registerSCCPPass();
+  mlir::registerInlinerPass();
+  mlir::registerCanonicalizerPass();
+  mlir::registerSymbolDCEPass();
+  mlir::registerLoopInvariantCodeMotionPass();
+  mlir::registerConvertSCFToOpenMPPass();
+  mlir::affine::registerAffinePasses();
+  mlir::registerReconcileUnrealizedCastsPass();
+  mlir::enzyme::registerConvertLLVMToControlFlowPass();
+  mlir::enzyme::registerEnzymeLiftControlFlowToSCFPass();
+  mlir::arith::registerArithPasses();
+
+  // Transform dialect and extensions.
+  mlir::transform::registerInterpreterPass();
+  mlir::enzyme::registerGenerateApplyPatternsPass();
+  mlir::enzyme::registerRemoveTransformPass();
+
+  // shardy passes
+  xla::sdy::registerSdyRoundTripExportPipeline();
+  xla::sdy::registerSdyRoundTripImportPipeline();
+  mlir::sdy::registerAllSdyPassesAndPipelines();
+  xla::sdy::registerStablehloExportPipeline();
+  xla::sdy::registerStablehloImportPipeline();
+  xla::sdy::registerStablehloImportShardingsPass();
+
+  // SHLO passes
+  stablehlo::registerStablehloAggressiveSimplificationPass();
+  stablehlo::registerStablehloAggressiveFolderPass();
+  stablehlo::registerStablehloTargetIndependentOptimizationPass();
+  stablehlo::registerChloLegalizeToStablehloPass();
+  stablehlo::registerShapeLegalizeToStablehloPass();
+  stablehlo::registerStablehloCanonicalizeDynamismPass();
+  stablehlo::registerStablehloCompatibilityExpanderPass();
+  stablehlo::registerStablehloComplexMathExpanderPass();
+  stablehlo::registerStablehloConvertToSignlessPass();
+  stablehlo::registerStablehloLegalizeCompositeToCallPass();
+  stablehlo::registerStablehloLegalizeDeprecatedOpsPass();
+  stablehlo::registerStablehloLegalizeQDQToQuantizedOpPass();
+  stablehlo::registerStablehloLegalizeQuantizedOpToQDQPass();
+  stablehlo::registerStablehloLegalizeQuantToMathPass();
+  stablehlo::registerStablehloLegalizeToVhloPass();
+  stablehlo::registerStablehloRefineArgumentsPass();
+  stablehlo::registerStablehloRefineShapesPass();
+  stablehlo::registerVhloLegalizeToStablehloPass();
+  stablehlo::registerVhloToVersionPass();
+  stablehlo::registerStablehloWrapInCompositePass();
+  stablehlo::registerStablehloLegalizeToLinalgPass();
+  mlir::tosa::registerStablehloLegalizeToTosaPass();
+  mlir::tosa::registerStablehloPrepareForTosaPass();
+  mlir::tosa::registerStablehloQuantLegalizeToTosaRescalePass();
+  mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
+}
+
+} // namespace enzyme
+} // namespace mlir
