@@ -324,11 +324,11 @@ void initializePasses() {
   stablehlo::registerVhloLegalizeToStablehloPass();
   stablehlo::registerVhloToVersionPass();
   stablehlo::registerStablehloWrapInCompositePass();
-  stablehlo::registerStablehloLegalizeToLinalgPass();
-  mlir::tosa::registerStablehloLegalizeToTosaPass();
-  mlir::tosa::registerStablehloPrepareForTosaPass();
-  mlir::tosa::registerStablehloQuantLegalizeToTosaRescalePass();
-  mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
+  // stablehlo::registerStablehloLegalizeToLinalgPass();
+  // mlir::tosa::registerStablehloLegalizeToTosaPass();
+  // mlir::tosa::registerStablehloPrepareForTosaPass();
+  // mlir::tosa::registerStablehloQuantLegalizeToTosaRescalePass();
+  // mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
 }
 
 } // namespace enzyme
