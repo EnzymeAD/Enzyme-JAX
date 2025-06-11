@@ -64,33 +64,32 @@ mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
   return rewriter.getArrayAttr(attrs);
 }
 
-std::string lapack_precision_prefix(Type elementType) {
+std::optional<std::string> lapack_precision_prefix(Type elementType) {
+
     // single-precision float
     if (elementType.isF32()) {
-        lapackFn = "s" + lapackFn;
+        return "s";
 
     // double-precision float
     } else if (elementType.isF64()) {
-        lapackFn = "d" + lapackFn;
+        return "d";
     
     } else if (auto complexType = dyn_cast<ComplexType>(elementType)) {
         auto elem = complexType.getElementType();
 
         // single-precision complex
         if (elem.isF32()) {
-            lapackFn = "c" + lapackFn;
+            return "c";
         
         // double-precision complex
         } else if (elem.isF64()) {
-            lapackFn = "z" + lapackFn;
+            return "z";
 
         } else {
-            op->emitOpError() << "Unsupported complex element type: " << elem;
-            return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+            return std::nullopt;
         }
     } else {
-        op->emitOpError() << "Unsupported input element type: " << elementType;
-        return rewriter.notifyMatchFailure(op, "unsupported input element type");
+        return std::nullopt;
     }
 }
 
@@ -758,27 +757,21 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
   QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth, MLIRContext *context, PatternBenefit benefit = 1) : OpRewritePattern(context, benefit), backend(backend), blasIntWidth(blasIntWidth) {}
 
   LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
-    switch (backend)
-    {
-    case "cpu":
+    if (backend == "cpu")
         return this->matchAndRewrite_cpu(op, rewriter);
-        break;
 
-    case "cuda":
+    else if (backend == "cuda")
         return this->matchAndRewrite_cuda(op, rewriter);
-        break;
 
-    case "tpu":
+    else if (backend == "tpu")
         return this->matchAndRewrite_tpu(op, rewriter);
     
-    default:
+    else
         return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend + "\"");
-        break;
-    }
   }
 
   // TODO get matrix sizes dynamically so that we don't need to create a function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -803,7 +796,14 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     // TODO change QR method with attributes
-    std::string fn = lapack_precision_prefix(inputElementType) + "geqrf_";
+    std::string fn = "geqrf_";
+    if (auto prefix = lapack_precision_prefix(inputElementType)) {
+        fn = *prefix + fn;
+    } else {
+        op->emitOpError() << "Unsupported complex element type: " << inputElementType;
+        return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+    }
+
     std::string bind_fn = "enzymexla_lapacke_" + fn;
     std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
 
@@ -816,7 +816,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
         auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
             type_lapack_int, // matrix_layout
             type_lapack_int, // m
-            type_lapack_int // n
+            type_lapack_int, // n
             type_llvm_ptr, // A
             type_lapack_int, // lda
             type_llvm_ptr // tau
@@ -844,34 +844,34 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
         // `101` for row-major, `102` for col-major
-        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, 101))
-        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, inputShape[0]));
-        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, inputShape[1]));
+        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, 101));
+        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, inputShape[0]));
+        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, inputShape[1]));
         auto lda = m;
 
         // call to `lapacke_*geqrf*`
         auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
                                         SymbolRefAttr::get(ctx, bind_fn),
                                         ValueRange{
-                                            layout,
-                                            m,
-                                            n,
+                                            layout.getResult(),
+                                            m.getResult(),
+                                            n.getResult(),
                                             func.getArgument(0),
-                                            lda,
+                                            lda.getResult(),
                                             func.getArgument(1),
                                         });
 
-        rewriter.create<LLVM::StoreOp>(op.getLoc(), res, func.getArgument(2));
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(), func.getArgument(2));
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
     // emit the `enzymexla.jit_call` op to `geqrf` wrapper
     auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
     
-    auto tsize = std::min(inputShape);
+    auto tsize = std::min(inputShape.front(), inputShape.back());
     auto type_tau = RankedTensorType::get({tsize}, rewriter.getIntegerType(blasIntWidth));
-    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(blasInfoType, 0)));
+    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(type_tau, 0)));
 
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 1, 0};
@@ -888,7 +888,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
             op.getLoc(),
             TypeRange{inputType, type_tau, type_info},
             mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-            ValueRange{input, tau, info},
+            ValueRange{input, tau.getResult(), info.getResult()},
             rewriter.getStringAttr(""),
             /*operand_layouts=*/operandLayouts, // TODO
             /*result_layouts=*/resultLayouts, // TODO
@@ -905,12 +905,12 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     return success();
   }
 
-  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
     // TODO
     return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"cuda\"");
   }
 
-  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
     // TODO
     return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"tpu\"");
   }
