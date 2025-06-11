@@ -98,6 +98,8 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
 namespace mlir {
@@ -188,12 +190,44 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::transform::TransformDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
-
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
-
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
+  registry.insert<mlir::triton::TritonDialect>();
+}
+
+void loadAllRegisteredDialects(mlir::MLIRContext &context) {
+  context.loadDialect<mlir::affine::AffineDialect>();
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
+  context.loadDialect<mlir::memref::MemRefDialect>();
+  context.loadDialect<mlir::async::AsyncDialect>();
+  context.loadDialect<mlir::tensor::TensorDialect>();
+  context.loadDialect<mlir::func::FuncDialect>();
+  context.loadDialect<mlir::arith::ArithDialect>();
+  context.loadDialect<mlir::cf::ControlFlowDialect>();
+  context.loadDialect<mlir::complex::ComplexDialect>();
+  context.loadDialect<mlir::scf::SCFDialect>();
+  context.loadDialect<mlir::gpu::GPUDialect>();
+  context.loadDialect<mlir::NVVM::NVVMDialect>();
+  context.loadDialect<mlir::omp::OpenMPDialect>();
+  context.loadDialect<mlir::math::MathDialect>();
+  context.loadDialect<mlir::linalg::LinalgDialect>();
+  context.loadDialect<mlir::DLTIDialect>();
+  context.loadDialect<mlir::mhlo::MhloDialect>();
+  context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  context.loadDialect<mlir::stablehlo::check::CheckDialect>();
+  context.loadDialect<mlir::chlo::ChloDialect>();
+  context.loadDialect<mlir::vector::VectorDialect>();
+  context.loadDialect<mlir::nvgpu::NVGPUDialect>();
+  context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::ub::UBDialect>();
+  context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
+  context.loadDialect<mlir::enzyme::EnzymeDialect>();
+  context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+  context.loadDialect<mlir::sdy::SdyDialect>();
+  context.loadDialect<mlir::ub::UBDialect>();
+  context.loadDialect<mlir::triton::TritonDialect>();
 }
 
 void registerInterfaces(mlir::DialectRegistry &registry) {
