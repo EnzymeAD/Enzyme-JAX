@@ -104,7 +104,6 @@ void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
   mlir::enzyme::prepareRegistry(registry);
   mlir::enzyme::registerDialects(registry);
   mlir::enzyme::registerInterfaces(registry);
-  mlir::enzyme::initializePasses(registry);
   mod->getContext()->appendDialectRegistry(registry);
 
   mlir::PassManager pm(mod->getContext());

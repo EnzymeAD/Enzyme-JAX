@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
   mlir::enzyme::prepareRegistry(registry);
   mlir::enzyme::registerDialects(registry);
   mlir::enzyme::registerInterfaces(registry);
-  mlir::enzyme::initializePasses(registry);
+  mlir::enzyme::initializePasses();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Enzyme modular optimizer driver", registry));
