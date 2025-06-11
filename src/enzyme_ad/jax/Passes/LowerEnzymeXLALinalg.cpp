@@ -64,6 +64,36 @@ mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
   return rewriter.getArrayAttr(attrs);
 }
 
+std::string lapack_precision_prefix(Type elementType) {
+    // single-precision float
+    if (elementType.isF32()) {
+        lapackFn = "s" + lapackFn;
+
+    // double-precision float
+    } else if (elementType.isF64()) {
+        lapackFn = "d" + lapackFn;
+    
+    } else if (auto complexType = dyn_cast<ComplexType>(elementType)) {
+        auto elem = complexType.getElementType();
+
+        // single-precision complex
+        if (elem.isF32()) {
+            lapackFn = "c" + lapackFn;
+        
+        // double-precision complex
+        } else if (elem.isF64()) {
+            lapackFn = "z" + lapackFn;
+
+        } else {
+            op->emitOpError() << "Unsupported complex element type: " << elem;
+            return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+        }
+    } else {
+        op->emitOpError() << "Unsupported input element type: " << elementType;
+        return rewriter.notifyMatchFailure(op, "unsupported input element type");
+    }
+}
+
 struct LUFactorizationOpLowering
     : public OpRewritePattern<enzymexla::LUFactorizationOp> {
 
@@ -721,18 +751,34 @@ struct LUFactorizationOpLowering
   }
 };
 
-struct QRFactorizationOpLowering
-    : public OpRewritePattern<enzymexla::QRFactorizationOp> {
-
+struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactorizationOp> {
   std::string backend;
   int64_t blasIntWidth;
-  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
-                                PatternRewriter &rewriter) const override {
+  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth, MLIRContext *context, PatternBenefit benefit = 1) : OpRewritePattern(context, benefit), backend(backend), blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+    switch (backend)
+    {
+    case "cpu":
+        return this->matchAndRewrite_cpu(op, rewriter);
+        break;
+
+    case "cuda":
+        return this->matchAndRewrite_cuda(op, rewriter);
+        break;
+
+    case "tpu":
+        return this->matchAndRewrite_tpu(op, rewriter);
+    
+    default:
+        return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend + "\"");
+        break;
+    }
+  }
+
+  // TODO get matrix sizes dynamically so that we don't need to create a function wrapper for each op instance
+  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -746,636 +792,196 @@ struct QRFactorizationOpLowering
     const int64_t n = inputShape[inputRank - 1];
     const int64_t numBatchDims = inputRank - 2;
 
-    // auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
-    // auto pivotRank = pivotType.getRank();
-    // auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
-    // auto permutationRank = permutationType.getRank();
-    auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
-    auto infoRank = infoType.getRank();
+    if (numBatchDims > 0) {
+      return rewriter.notifyMatchFailure(
+          op, "QR factorization with batch dimensions is not yet supported");
+    }
 
-    if (backend == "cpu") {
-        auto moduleOp = op->getParentOfType<ModuleOp>();
-        static int64_t fnNum = 0;
+    auto blasIntType = rewriter.getIntegerType(blasIntWidth);
+    auto type_lapack_int = typeConverter.convertType(blasIntType);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-        auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-        auto llvmBlasIntType = typeConverter.convertType(blasIntType);
-        auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-        auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
+    std::string geqrf_fn = lapack_precision_prefix(inputElementType) + "geqrf_";
+    std::string bind_geqrf_fn = "enzymexla_lapacke_" + geqrf_fn;
+    std::string wrapper_geqrf_fn = "enzymexla_wrapper_lapacke_" + geqrf_fn;
 
-        std::string lapackFn;
-        if (inputElementType.isF32()) {
-            lapackFn = "sgeqrf_"; // single-precision float
-        } else if (inputElementType.isF64()) {
-            lapackFn = "dgeqrf_"; // double-precision float
-        } else if (auto complexType = dyn_cast<ComplexType>(inputElementType)) {
-            auto elem = complexType.getElementType();
-            if (elem.isF32()) {
-            lapackFn = "cgeqrf_"; // single-precision complex
-            } else if (elem.isF64()) {
-            lapackFn = "zgeqrf_"; // double-precision complex
-            } else {
-            op->emitOpError() << "Unsupported complex element type: " << elem;
-            return rewriter.notifyMatchFailure(
-                op, "unsupported complex element type");
-            }
-        } else {
-            op->emitOpError() << "Unsupported input element type: "
-                              << inputElementType;
-            return rewriter.notifyMatchFailure(op, "unsupported input element type");
-        }
-        lapackFn = "enzymexla_lapack_" + lapackFn;
+    std::string orgungqr_fn = lapack_precision_prefix(inputElementType);
+    if (orgungqr_fn == "c" || orgungqr_fn == "z") {
+        // array is complex so use `ungqr_`
+        orgungqr_fn = orgungqr_fn + "ungqr_";
+    } else {
+        // array is real so use `orgqr_`
+        orgungqr_fn = orgungqr_fn + "orgqr_";
+    }
+    std::string bind_orgungqr_fn = "enzymexla_lapacke_" + orgungqr_fn;
+    std::string wrapper_orgungqr_fn = "enzymexla_wrapper_lapacke_" + orgungqr_fn;
 
-        // Generate the LLVM function body
-        std::string fnName = lapackFn + "wrapper_" + std::to_string(fnNum);
-        fnNum++;
-        {
-            OpBuilder::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointToStart(moduleOp.getBody());
+    // declare LAPACKE function declarations if not present
+    auto moduleOp = op->getParentOfType<ModuleOp>();
 
-            auto funcType = LLVM::LLVMFunctionType::get(
-                llvmVoidPtrType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_geqrf_fn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+        auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
+            type_lapack_int, // matrix_layout
+            type_lapack_int, // m
+            type_lapack_int // n
+            type_llvm_ptr, // A
+            type_lapack_int, // lda
+            type_llvm_ptr // tau
+        }, false);
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_geqrf_fn, func_type, LLVM::Linkage::External);
+    }
 
-            auto func =
-                rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
-            rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_orgungqr_fn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+        auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
+            type_lapack_int, // matrix_layout
+            type_lapack_int, // m
+            type_lapack_int, // n
+            type_lapack_int, // k
+            type_llvm_ptr, // A
+            type_lapack_int, // lda
+            type_llvm_ptr // tau
+        }, false);
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_orgungqr_fn, func_type, LLVM::Linkage::External);
+    }
 
-            auto ptrSize = rewriter.create<LLVM::ConstantOp>(
-                op.getLoc(), llvmBlasIntType,
-                rewriter.getIntegerAttr(blasIntType, 1));
-            auto mPtr = rewriter.create<LLVM::AllocaOp>(
-                op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
-            auto nPtr = rewriter.create<LLVM::AllocaOp>(
-                op.getLoc(), llvmPtrType, llvmBlasIntType, ptrSize, 0);
+    // WARN probably will need another function name encoding if we call to `geqrf`, `orgqr` or `ungqr` in other op
+    // insert wrapper function for `geqrf`
+    static int64_t fn_counter = 0;
+    fn_counter++;
 
-            auto mVal = rewriter.create<LLVM::ConstantOp>(
-                op.getLoc(), llvmBlasIntType,
-                rewriter.getIntegerAttr(blasIntType, m));
-            auto nVal = rewriter.create<LLVM::ConstantOp>(
-                op.getLoc(), llvmBlasIntType,
-                rewriter.getIntegerAttr(blasIntType, n));
+    wrapper_geqrf_fn += std::to_string(fn_counter);
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-            auto mStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
-            auto nStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
+        auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void, {
+            type_llvm_ptr, // A
+            type_llvm_ptr, // tau
+            type_llvm_ptr, // info
+        }, false);
 
-            rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{},
-                                        SymbolRefAttr::get(ctx, lapackFn),
+        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_geqrf_fn, func_type);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        // `101` for row-major, `102` for col-major
+        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, 101))
+        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto lda = rewrite.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+
+        // call to `lapacke_*geqrf*`
+        auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
+                                        SymbolRefAttr::get(ctx, bind_geqrf_fn),
                                         ValueRange{
-                                            mPtr,
-                                            nPtr,
+                                            layout,
+                                            m,
+                                            n,
                                             func.getArgument(0),
-                                            mPtr,
+                                            lda,
                                             func.getArgument(1),
-                                            func.getArgument(2),
                                         });
 
-            rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
-        }
-
-        // Insert function declaration if not already present
-        if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(lapackFn)) {
-            OpBuilder::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-            auto funcType =
-                LLVM::LLVMFunctionType::get(llvmVoidPtrType,
-                                            {llvmPtrType, llvmPtrType, llvmPtrType,
-                                            llvmPtrType, llvmPtrType, llvmPtrType},
-                                            false);
-
-            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), lapackFn, funcType,
-                                            LLVM::Linkage::External);
-        }
-
-        // Call the LLVM function with enzymexla.jit_call
-        SmallVector<Attribute> aliases;
-        for (int i = 0; i < 3; ++i) {
-            aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-                ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
-        }
-
-        auto blasPivotType = RankedTensorType::get(
-            pivotType.getShape(), rewriter.getIntegerType(blasIntWidth));
-        auto blasInfoType = RankedTensorType::get(
-            infoType.getShape(), rewriter.getIntegerType(blasIntWidth));
-
-        SmallVector<bool> isColMajorArr = {true, true, true};
-        SmallVector<int64_t> operandRanks = {2, 1, 0};
-        SmallVector<int64_t> outputRanks = {2, 1, 0};
-        auto operandLayouts =
-            getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-        auto resultLayouts =
-            getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
-
-        auto iterType = RankedTensorType::get({}, rewriter.getI32Type());
-        auto iter = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
-        auto zeroConst = rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), iterType, cast<ElementsAttr>(makeAttr(iterType, 0)));
-
-        Value factorizedResult, pivotResult, infoResult;
-
-        if (numBatchDims > 0) {
-            // TODO: Implement batched QR factorizations by directly calling MKL
-            //       https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-dpcpp/2023-1/geqrf-batch-buffer-strided-version.html
-            //       https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-dpcpp/2023-1/geqrf-batch-group-version.html
-            //       https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-dpcpp/2023-1/geqrf-batch-usm-strided-version.html
-
-            int64_t batchSize = 1;
-            for (int i = 0; i < numBatchDims; i++) {
-            batchSize *= inputShape[i];
-            }
-            SmallVector<int64_t> flattenedInput = {batchSize, m, n};
-
-            auto flatInputType =
-                RankedTensorType::get(flattenedInput, inputElementType);
-            auto flatInput = rewriter.create<stablehlo::ReshapeOp>(
-                op.getLoc(), flatInputType, input);
-
-            auto flatPivotType = RankedTensorType::get(
-                {batchSize, pivotType.getShape()[pivotRank - 1]}, blasIntType);
-            auto flatPivot = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), flatPivotType,
-                cast<ElementsAttr>(makeAttr(flatPivotType, -1)));
-
-            auto flatInfoType = RankedTensorType::get({batchSize}, blasIntType);
-            auto flatInfo = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), flatInfoType,
-                cast<ElementsAttr>(makeAttr(flatInfoType, -1)));
-
-            auto whileReturnTypes = {iterType, flatInputType, flatPivotType,
-                                    flatInfoType};
-            auto whileOp = rewriter.create<stablehlo::WhileOp>(
-                op.getLoc(),
-                TypeRange{iterType, flatInputType, flatPivotType, flatInfoType},
-                ValueRange{iter, flatInput, flatPivot, flatInfo});
-
-            {
-            OpBuilder::InsertionGuard guard(rewriter);
-
-            Block *block = rewriter.createBlock(&whileOp.getCond());
-            rewriter.setInsertionPointToStart(block);
-
-            for (auto type : whileReturnTypes) {
-                block->addArgument(type, whileOp.getLoc());
-            }
-
-            auto batchSizeConst = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), iterType,
-                cast<ElementsAttr>(makeAttr(iterType, batchSize)));
-
-            auto comparison = rewriter.create<stablehlo::CompareOp>(
-                op.getLoc(), block->getArgument(0), batchSizeConst,
-                stablehlo::ComparisonDirection::LT);
-
-            rewriter.create<stablehlo::ReturnOp>(
-                op.getLoc(), ValueRange{comparison.getResult()});
-            }
-
-            {
-            OpBuilder::InsertionGuard guard(rewriter);
-
-            Block *block = rewriter.createBlock(&whileOp.getBody());
-            rewriter.setInsertionPointToStart(block);
-
-            for (auto type : whileReturnTypes) {
-                block->addArgument(type, whileOp.getLoc());
-            }
-
-            auto iterArg = block->getArgument(0);
-
-            auto inputSliceType = RankedTensorType::get({m, n}, inputElementType);
-            auto inputSlice = rewriter.create<stablehlo::ReshapeOp>(
-                op.getLoc(), inputSliceType,
-                rewriter.create<stablehlo::DynamicSliceOp>(
-                    op.getLoc(), block->getArgument(1),
-                    ValueRange{iterArg, zeroConst, zeroConst},
-                    rewriter.getDenseI64ArrayAttr({1, m, n})));
-
-            auto pivotSliceType =
-                RankedTensorType::get({std::min(m, n)}, blasIntType);
-            auto pivotSlice = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), pivotSliceType,
-                cast<ElementsAttr>(makeAttr(pivotSliceType, -1)));
-
-            auto infoSliceType = RankedTensorType::get({}, blasIntType);
-            auto infoSlice = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), infoSliceType,
-                cast<ElementsAttr>(makeAttr(infoSliceType, -1)));
-
-            auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-                op.getLoc(),
-                TypeRange{inputSliceType, pivotSliceType, infoSliceType},
-                mlir::FlatSymbolRefAttr::get(ctx, fnName),
-                ValueRange{inputSlice, pivotSlice, infoSlice},
-                rewriter.getStringAttr(""),
-                /*operand_layouts=*/operandLayouts,
-                /*result_layouts=*/resultLayouts,
-                /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-                /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-            auto inputUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                op.getLoc(), block->getArgument(1),
-                rewriter.create<stablehlo::ReshapeOp>(
-                    op.getLoc(),
-                    RankedTensorType::get({1, m, n}, inputElementType),
-                    jitCall.getResult(0)),
-                ValueRange{iterArg, zeroConst, zeroConst});
-            auto pivotUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                op.getLoc(), block->getArgument(2),
-                rewriter.create<stablehlo::ReshapeOp>(
-                    op.getLoc(),
-                    RankedTensorType::get({1, std::min(m, n)}, blasIntType),
-                    jitCall.getResult(1)),
-                ValueRange{iterArg, zeroConst});
-            auto infoUpdated = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                op.getLoc(), block->getArgument(3),
-                rewriter.create<stablehlo::ReshapeOp>(
-                    op.getLoc(), RankedTensorType::get({1}, blasIntType),
-                    jitCall.getResult(2)),
-                ValueRange{iterArg});
-
-            auto updatedIter = rewriter.create<stablehlo::AddOp>(
-                op.getLoc(), block->getArgument(0),
-                rewriter.create<stablehlo::ConstantOp>(
-                    op.getLoc(), iterType,
-                    cast<ElementsAttr>(makeAttr(iterType, 1))));
-
-            rewriter.create<stablehlo::ReturnOp>(
-                op.getLoc(),
-                ValueRange{updatedIter, inputUpdated, pivotUpdated, infoUpdated});
-            }
-
-            factorizedResult = rewriter.create<stablehlo::ReshapeOp>(
-                op.getLoc(), inputType, whileOp.getResult(1));
-            pivotResult = rewriter.create<stablehlo::ReshapeOp>(
-                op.getLoc(), blasPivotType, whileOp.getResult(2));
-            infoResult = rewriter.create<stablehlo::ReshapeOp>(
-                op.getLoc(), blasInfoType, whileOp.getResult(3));
-        } else {
-            auto pivot = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), blasPivotType,
-                cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
-            auto info = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), blasInfoType,
-                cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
-
-            auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-                op.getLoc(), TypeRange{inputType, blasPivotType, blasInfoType},
-                mlir::FlatSymbolRefAttr::get(ctx, fnName),
-                ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
-                /*operand_layouts=*/operandLayouts,
-                /*result_layouts=*/resultLayouts,
-                /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-                /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-            factorizedResult = jitCall.getResult(0);
-            pivotResult = jitCall.getResult(1);
-            infoResult = jitCall.getResult(2);
-        }
-
-        auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
-            op.getLoc(), pivotResult,
-            rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), blasPivotType,
-                cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
-
-        auto permutation = rewriter.create<stablehlo::IotaOp>(
-            op.getLoc(), blasPivotType,
-            rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
-
-        auto pivotToPermReturnTypes = {iterType, blasPivotType};
-        auto pivotToPermWhileOp = rewriter.create<stablehlo::WhileOp>(
-            op.getLoc(), TypeRange{iterType, blasPivotType},
-            ValueRange{iter, permutation});
-
-        {
-            OpBuilder::InsertionGuard guard(rewriter);
-
-            Block *block = rewriter.createBlock(&pivotToPermWhileOp.getCond());
-            rewriter.setInsertionPointToStart(block);
-
-            for (auto type : pivotToPermReturnTypes)
-            block->addArgument(type, pivotToPermWhileOp.getLoc());
-
-            auto pivotShapeConst = rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), iterType,
-                cast<ElementsAttr>(makeAttr(
-                    iterType, pivotType.getShape()[pivotType.getRank() - 1])));
-
-            auto comparison = rewriter.create<stablehlo::CompareOp>(
-                op.getLoc(), block->getArgument(0), pivotShapeConst,
-                stablehlo::ComparisonDirection::LT);
-
-            rewriter.create<stablehlo::ReturnOp>(
-                op.getLoc(), ValueRange{comparison.getResult()});
-        }
-
-        {
-            OpBuilder::InsertionGuard guard(rewriter);
-
-            Block *block = rewriter.createBlock(&pivotToPermWhileOp.getBody());
-            rewriter.setInsertionPointToStart(block);
-
-            for (auto type : pivotToPermReturnTypes)
-            block->addArgument(type, pivotToPermWhileOp.getLoc());
-
-            auto iterArg = block->getArgument(0);
-
-            auto updatedIter = rewriter.create<stablehlo::AddOp>(
-                op.getLoc(), iterArg,
-                rewriter.create<stablehlo::ConstantOp>(
-                    op.getLoc(), iterType,
-                    cast<ElementsAttr>(makeAttr(iterType, 1))));
-
-            /*
-            for i in range(pivot.shape[-1]):
-            j = pivot[..., i]        # dynamic slice
-            x = permutation[..., i]  # dynamic slice
-            y = permutation[j]       # gather
-            permutation[..., i] = y  # dynamic update slice
-            permutation[j] = x       # scatter
-            */
-
-            SmallVector<Value> indices;
-            SmallVector<int64_t> sliceShape, batchDims;
-            for (int i = 0; i < numBatchDims; i++) {
-            indices.push_back(zeroConst);
-            sliceShape.push_back(pivotType.getShape()[i]);
-            batchDims.push_back(i);
-            }
-            indices.push_back(iterArg);
-            sliceShape.push_back(1);
-            SmallVector<int64_t> gatherSliceSizes(numBatchDims + 1, 1);
-
-            auto pivotJ = rewriter.create<stablehlo::DynamicSliceOp>(
-                op.getLoc(), pivots0indexed, indices, sliceShape);
-            auto permutationX = rewriter.create<stablehlo::DynamicSliceOp>(
-                op.getLoc(), block->getArgument(1), indices, sliceShape);
-
-            auto gatherDims = stablehlo::GatherDimensionNumbersAttr::get(
-                op.getContext(),
-                /*offsetDims=*/{numBatchDims},
-                /*collapsedSliceDims=*/{},
-                /*operandBatchingDims=*/batchDims,
-                /*startIndicesBatchingDims=*/batchDims,
-                /*startIndexMap=*/{numBatchDims},
-                /*indexVectorDim=*/numBatchDims);
-            auto permutationY = rewriter.create<stablehlo::GatherOp>(
-                op.getLoc(),
-                RankedTensorType::get(
-                    sliceShape,
-                    cast<RankedTensorType>(block->getArgument(1).getType())
-                        .getElementType()),
-                block->getArgument(1), pivotJ.getResult(), gatherDims,
-                gatherSliceSizes);
-
-            auto permutationUpdate1 =
-                rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-                    op.getLoc(), block->getArgument(1), permutationY->getResult(0),
-                    indices);
-
-            auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
-                op.getContext(),
-                /*updateWindowDims=*/{},
-                /*insertedWindowDims=*/{numBatchDims},
-                /*inputBatchingDims=*/batchDims,
-                /*scatterIndicesBatchingDims=*/batchDims,
-                /*scatterDimsToOperandDims=*/{numBatchDims},
-                /*indexVectorDim=*/numBatchDims);
-            SmallVector<int64_t> scatterShape(sliceShape.begin(),
-                                            sliceShape.end() - 1);
-            auto permutationUpdate2 = rewriter.create<stablehlo::ScatterOp>(
-                op.getLoc(), TypeRange{permutationUpdate1->getResult(0).getType()},
-                ValueRange(permutationUpdate1->getResult(0)), pivotJ,
-                ValueRange(rewriter.create<stablehlo::ReshapeOp>(
-                    op.getLoc(),
-                    RankedTensorType::get(scatterShape,
-                                        permutationX.getType().getElementType()),
-                    permutationX)),
-                scatterDims);
-
-            {
-            OpBuilder::InsertionGuard guard(rewriter);
-            auto *block =
-                rewriter.createBlock(&permutationUpdate2.getUpdateComputation());
-            block->addArgument(RankedTensorType::get({}, blasIntType),
-                                op.getLoc());
-            block->addArgument(RankedTensorType::get({}, blasIntType),
-                                op.getLoc());
-            rewriter.setInsertionPointToStart(block);
-
-            rewriter.create<stablehlo::ReturnOp>(
-                op.getLoc(), ValueRange{block->getArgument(1)});
-            }
-
-            rewriter.create<stablehlo::ReturnOp>(
-                op.getLoc(),
-                ValueRange{updatedIter, permutationUpdate2->getResult(0)});
-        }
-
-        auto finalPermutation = rewriter.create<stablehlo::AddOp>(
-            op.getLoc(), pivotToPermWhileOp.getResult(1),
-            rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), blasPivotType,
-                cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
-
-        rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
-        rewriter.replaceAllUsesWith(op.getResult(1),
-                                    rewriter.create<stablehlo::ConvertOp>(
-                                        op.getLoc(), pivotType, pivotResult));
-        rewriter.replaceAllUsesWith(
-            op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
-                                op.getLoc(), pivotType, finalPermutation));
-        rewriter.replaceAllUsesWith(op.getResult(3),
-                                    rewriter.create<stablehlo::ConvertOp>(
-                                        op.getLoc(), infoType, infoResult));
-
-        return success();
-    } else if (backend == "cuda") {
-      SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-          ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
-
-      SmallVector<bool> isColMajorArrOperands = {true};
-      SmallVector<int64_t> operandRanks = {inputRank};
-      SmallVector<bool> isColMajorArrOutputs = {true, true, true};
-      SmallVector<int64_t> outputRanks = {inputRank, pivotRank, infoRank};
-
-      auto pivotCuSolverType =
-          RankedTensorType::get(pivotType.getShape(), rewriter.getI32Type());
-      auto infoCuSolverType =
-          RankedTensorType::get(infoType.getShape(), rewriter.getI32Type());
-
-      auto cusolverffi = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(),
-          TypeRange{inputType, pivotCuSolverType, infoCuSolverType},
-          ValueRange{input}, rewriter.getStringAttr("cusolver_geqrf_ffi"),
-          /*has_side_effect*/ nullptr,
-          /*backend_config*/ nullptr,
-          /*api_version*/
-          stablehlo::CustomCallApiVersionAttr::get(
-              rewriter.getContext(),
-              mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-          /*calledcomputations*/ nullptr,
-          /*operand_layouts*/
-          getSHLOLayout(rewriter, operandRanks, isColMajorArrOperands,
-                        inputRank),
-          /*result_layouts*/
-          getSHLOLayout(rewriter, outputRanks, isColMajorArrOutputs, inputRank),
-          /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
-
-      // unused custom call not getting optimized away. so adding a manual check
-      if (!op.getResult(2).getUses().empty()) {
-        auto pivots0indexed = rewriter.create<stablehlo::SubtractOp>(
-            op.getLoc(), cusolverffi.getResult(1),
-            rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), pivotCuSolverType,
-                cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))));
-
-        SmallVector<bool> isColMajorArrOperandsPermutation = {true};
-        SmallVector<int64_t> operandRanksPermutation = {pivotRank};
-        SmallVector<bool> isColMajorArrOutputsPermutation = {true};
-        SmallVector<int64_t> outputRanksPermutation = {pivotRank};
-
-        auto permutation = rewriter.create<stablehlo::CustomCallOp>(
-            op.getLoc(), TypeRange{pivotCuSolverType},
-            ValueRange{pivots0indexed.getResult()},
-            rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
-            /*has_side_effect*/ nullptr,
-            /*backend_config*/ nullptr,
-            /*api_version*/
-            stablehlo::CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            /*calledcomputations*/ nullptr,
-            /*operand_layouts*/
-            getSHLOLayout(rewriter, operandRanksPermutation,
-                          isColMajorArrOperandsPermutation, inputRank),
-            /*result_layouts*/
-            getSHLOLayout(rewriter, outputRanksPermutation,
-                          isColMajorArrOutputsPermutation, inputRank),
-            /*output_operand_aliases*/ nullptr);
-        auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
-            op.getLoc(),
-            rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), pivotCuSolverType,
-                cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1))),
-            permutation.getResult(0));
-
-        rewriter.replaceAllUsesWith(
-            op.getResult(2), rewriter.create<stablehlo::ConvertOp>(
-                                 op.getLoc(), pivotType, permutation1Indexed));
-      }
-
-      rewriter.replaceAllUsesWith(op.getResult(0), cusolverffi.getResult(0));
-      rewriter.replaceAllUsesWith(
-          op.getResult(1),
-          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
-                                                cusolverffi.getResult(1)));
-      rewriter.replaceAllUsesWith(
-          op.getResult(3),
-          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), infoType,
-                                                cusolverffi.getResult(2)));
-
-      return success();
-    } else if (backend == "tpu") {
-      SmallVector<int64_t> permutationShape;
-      for (int i = 0; i < numBatchDims; i++) {
-        permutationShape.push_back(inputShape[i]);
-      }
-      permutationShape.push_back(m);
-      auto permutationType =
-          RankedTensorType::get(permutationShape, rewriter.getI32Type());
-
-      auto pivotTPUType =
-          RankedTensorType::get(pivotType.getShape(), rewriter.getI32Type());
-
-      // TPU returns (LU, pivots, permutation). info isn't returned. based on
-      // how JAX operates, I am assuming info != 0 when there is a nan in the
-      // output.
-      auto customCall = rewriter.create<stablehlo::CustomCallOp>(
-          op.getLoc(), TypeRange{inputType, pivotTPUType, permutationType},
-          ValueRange{input}, rewriter.getStringAttr("QrFactorization"),
-          /*has_side_effect*/ nullptr,
-          /*backend_config*/ nullptr,
-          /*api_version*/ nullptr,
-          /*calledcomputations*/ nullptr,
-          /*operand_layouts*/ nullptr,
-          /*result_layouts*/ nullptr,
-          /*output_operand_aliases*/ nullptr);
-
-      // LAPACK returns 1-indexed pivots, while XLA returns 0-indexed pivots. We
-      // make it consistent with LAPACK by adding 1 to the pivots.
-      auto pivots1Indexed = rewriter.create<stablehlo::AddOp>(
-          op.getLoc(),
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), pivotType,
-              cast<ElementsAttr>(makeAttr(pivotType, 1))),
-          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), pivotType,
-                                                customCall.getResult(1)));
-
-      auto permutation1Indexed = rewriter.create<stablehlo::AddOp>(
-          op.getLoc(),
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), permutationType,
-              cast<ElementsAttr>(makeAttr(permutationType, 1))),
-          rewriter.create<stablehlo::ConvertOp>(op.getLoc(), permutationType,
-                                                customCall.getResult(2)));
-
-      auto isFinite = rewriter.create<stablehlo::AndOp>(
-          op.getLoc(),
-          rewriter.create<stablehlo::IsFiniteOp>(
-              op.getLoc(), rewriter.create<stablehlo::RealOp>(
-                               op.getLoc(), customCall.getResult(0))),
-          rewriter.create<stablehlo::IsFiniteOp>(
-              op.getLoc(), rewriter.create<stablehlo::ImagOp>(
-                               op.getLoc(), customCall.getResult(0))));
-
-      SmallVector<int64_t> reductionDims;
-      for (int i = numBatchDims; i < inputRank; i++)
-        reductionDims.push_back(i);
-      auto initValType = RankedTensorType::get({}, rewriter.getI1Type());
-      auto initVal = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), initValType,
-          cast<ElementsAttr>(makeAttr(initValType, 1)));
-
-      auto allFinite = rewriter.create<stablehlo::ReduceOp>(
-          op.getLoc(),
-          RankedTensorType::get(infoType.getShape(), rewriter.getI1Type()),
-          ValueRange{isFinite.getResult()}, ValueRange{initVal},
-          rewriter.getDenseI64ArrayAttr(reductionDims));
-
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        auto &region = allFinite.getBody();
-        auto *block =
-            rewriter.createBlock(&region, {}, {initValType, initValType},
-                                 {op.getLoc(), op.getLoc()});
-
-        rewriter.setInsertionPointToStart(block);
-        auto lhs = block->getArgument(0);
-        auto rhs = block->getArgument(1);
-        auto andOp = rewriter.create<stablehlo::AndOp>(op.getLoc(), lhs, rhs);
-
-        rewriter.create<stablehlo::ReturnOp>(op.getLoc(),
-                                             ValueRange{andOp.getResult()});
-      }
-
-      // info == 0 if all finite (success)
-      auto info = rewriter.create<stablehlo::ConvertOp>(
-          op.getLoc(), infoType,
-          rewriter.create<stablehlo::NotOp>(op.getLoc(),
-                                            allFinite.getResult(0)));
-
-      rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
-      rewriter.replaceAllUsesWith(op.getResult(1), pivots1Indexed);
-      rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
-      rewriter.replaceAllUsesWith(op.getResult(3), info);
-      rewriter.eraseOp(op);
-
-      return success();
-    } else {
-      return rewriter.notifyMatchFailure(op, "Unknown backend " + backend);
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), res, func.getArgument(2));
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
+
+    // insert wrapper function for `orgqr`/`ungqr`
+    wrapper_orgungqr_fn += std::to_string(fn_counter);
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void, {
+            type_llvm_ptr, // A
+            type_llvm_ptr, // tau
+            type_llvm_ptr, // info
+        }, false);
+
+        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_orgungqr_fn, func_type);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        // `101` for row-major, `102` for col-major
+        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, 101))
+        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto k = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto lda = rewrite.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+
+        // call to `lapacke_*orgungqr*`
+        auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
+                                        SymbolRefAttr::get(ctx, bind_orgungqr_fn),
+                                        ValueRange{
+                                            layout,
+                                            m,
+                                            n,
+                                            k,
+                                            func.getArgument(0),
+                                            lda,
+                                            func.getArgument(1),
+                                        });
+
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), res, func.getArgument(2));
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+    }
+
+    // TODO set lower triangular values of R to zero
+
+    // TODO emit the `enzymexla.jit_call` op to `geqrf` wrapper
+    SmallVector<Attribute> aliases_geqrf;
+    for (int i = 0; i < 3; ++i) {
+        aliases_geqrf.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+    }
+
+    auto jit_call_geqrf = rewriter.create<enzymexla::JITCallOp>(
+            op.getLoc(),
+            TypeRange{...},
+            mlir::FlatSymbolRefAttr::get(ctx, wrapper_geqrf_fn),
+            ValueRange{...},
+            rewriter.getStringAttr(""),
+            /*operand_layouts=*/operandLayouts,
+            /*result_layouts=*/resultLayouts,
+            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases_geqrf),
+            /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    // TODO emit the `enzymexla.jit_call` op to `geqrf` wrapper
+    SmallVector<Attribute> aliases_orgungqr;
+    for (int i = 0; i < 3; ++i) {
+        aliases_orgungqr.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+    }
+
+    auto jit_call_orgungqr = rewriter.create<enzymexla::JITCallOp>(
+            op.getLoc(),
+            TypeRange{...},
+            mlir::FlatSymbolRefAttr::get(ctx, wrapper_orgungqr_fn),
+            ValueRange{...},
+            rewriter.getStringAttr(""),
+            /*operand_layouts=*/operandLayouts,
+            /*result_layouts=*/resultLayouts,
+            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases_orgungqr),
+            /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    // TODO replace enzymexla.linalg.qr with the jit_call
+    rewriter.replaceAllUsesWith(op.getResult(0), ...);
+    rewriter.replaceAllUsesWith(op.getResult(1), ...);
+    rewriter.replaceAllUsesWith(op.getResult(2), ...);
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+    // TODO
+    return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"cuda\"");
+  }
+
+  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+    // TODO
+    return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"tpu\"");
   }
 };
 
