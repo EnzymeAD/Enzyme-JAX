@@ -220,6 +220,12 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
         /*default=*/"true",
         /*description=*/"Whether to run instsimplify">,
     Option<
+        /*C++ variable name=*/"set_private",
+        /*CLI argument=*/"set_private",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to run instsimplify">,
+    Option<
         /*C++ variable name=*/"attributor",
         /*CLI argument=*/"attributor",
         /*type=*/"bool",
@@ -571,6 +577,7 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
 def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
     "arith::ArithDialect", 
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",

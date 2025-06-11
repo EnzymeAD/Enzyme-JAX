@@ -127,7 +127,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
 
   using namespace llvm;
   using namespace mlir;
-  auto pass_pipeline = "inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{},gpu-launch-recognition,canonicalize,llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true}";
+  std::string pass_pipeline = "inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-recognition,canonicalize,llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},symbol-dce";
+  if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
+    pass_pipeline = pipe2;
+  }
   mlir::PassManager pm(mod->getContext());
   std::string error_message;
   llvm::raw_string_ostream error_stream(error_message);

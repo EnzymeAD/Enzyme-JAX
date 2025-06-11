@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -252,16 +253,15 @@ enum __device_builtin__ cudaMemcpyKind
     cudaMemcpyDefault             =   4       /**< Direction of the transfer is inferred from the pointer values. Requires unified virtual addressing */
 };
 #endif
-	  if (matchPattern(call->getOperand(2), m_ConstantInt(&directionA))) {
-		auto direction = directionA.getSExtValue();
+	  if (matchPattern(call->getOperand(3), m_ConstantInt(&directionA))) {
 		auto dst = call->getOperand(0);
-		if (direction == 0 || direction == 2)
+		if (directionA == 0 || directionA == 2)
 		       dst = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}), dst);
 		else
 		       dst = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}, builder.getI64IntegerAttr(1)), dst);	
 		
 		auto src = call->getOperand(1);
-		if (direction == 0 || direction == 1)
+		if (directionA == 0 || directionA == 1)
 		       src = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}), src);
 		else
 		       src = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}, builder.getI64IntegerAttr(1)), src);	
