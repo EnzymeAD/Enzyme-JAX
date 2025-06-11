@@ -58,6 +58,7 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
 
+#include "Dialect/Comm/CommDialect.h"
 namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
@@ -148,6 +149,8 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
   registry.insert<mlir::sdy::SdyDialect>();
 
   registry.insert<mlir::ub::UBDialect>();
+
+  registry.insert<mlir::comm::CommDialect>();
 
   mlir::enzyme::registerXLAAutoDiffInterfaces(registry);
 
