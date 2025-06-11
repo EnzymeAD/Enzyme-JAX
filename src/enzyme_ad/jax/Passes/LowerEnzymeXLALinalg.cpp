@@ -845,9 +845,9 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
 
         // `101` for row-major, `102` for col-major
         auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, 101))
-        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-        auto lda = rewrite.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
+        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, inputShape[0]));
+        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, inputShape[1]));
+        auto lda = m;
 
         // call to `lapacke_*geqrf*`
         auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
@@ -865,9 +865,19 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
-    // TODO emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth)), cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
-    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), RankedTensorType::get({...}, rewriter.getIntegerType(blasIntWidth)), cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+    // emit the `enzymexla.jit_call` op to `geqrf` wrapper
+    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+    
+    auto tsize = std::min(inputShape);
+    auto type_tau = RankedTensorType::get({tsize}, rewriter.getIntegerType(blasIntWidth));
+    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(blasInfoType, 0)));
+
+    SmallVector<bool> isColMajorArr = {true, true, true};
+    SmallVector<int64_t> operandRanks = {2, 1, 0};
+    SmallVector<int64_t> outputRanks = {2, 1, 0};
+    auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
@@ -876,14 +886,15 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
             op.getLoc(),
-            TypeRange{...},
+            TypeRange{inputType, type_tau, type_info},
             mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-            ValueRange{...},
+            ValueRange{input, tau, info},
             rewriter.getStringAttr(""),
-            /*operand_layouts=*/operandLayouts,
-            /*result_layouts=*/resultLayouts,
+            /*operand_layouts=*/operandLayouts, // TODO
+            /*result_layouts=*/resultLayouts, // TODO
             /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-            /*xla_side_effect_free=*/rewriter.getUnitAttr());
+            /*xla_side_effect_free=*/rewriter.getUnitAttr()
+    );
 
     // replace enzymexla.linalg.qr with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
