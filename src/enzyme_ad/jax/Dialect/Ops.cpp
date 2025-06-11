@@ -19,6 +19,9 @@
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+
+#include "mlir/Analysis/DataLayoutAnalysis.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1109,11 +1112,81 @@ struct EraseTrivialCopyOp : public OpRewritePattern<enzymexla::MemcpyOp> {
   }
 };
 
+struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
+  using OpRewritePattern<enzymexla::MemcpyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MemcpyOp op,
+                                PatternRewriter &rewriter) const override {
+    Value vals[2];
+    MemRefType tys[2];
+    for (int i=0; i<2; i++) {
+      auto v = op->getOperand(i);
+      if (auto p2m = v.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
+        if (auto m2p = p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>()) {
+	  if (p2m.getType().getMemorySpace() == m2p.getSource().getType().getMemorySpace())
+	    v = m2p.getSource();
+        }
+      }
+      vals[i] = v;
+      tys[i] = cast<MemRefType>(v.getType());
+    }
+
+
+    MemRefType finalType = tys[0];
+
+    if (tys[0].getElementType() !=
+        tys[1].getElementType()) {
+      if (tys[0].getElementType().isInteger(8)) {
+        finalType = tys[1];
+      } else if (tys[1].getElementType().isInteger(8)) {
+        finalType = tys[0];
+      } else {
+	return failure();
+      }
+   }
+
+   if (finalType.getElementType() == op.getTarget().getType().getElementType()) return failure();
+ 
+  
+   APInt copySize;
+   if (!matchPattern(op.getSize(), m_ConstantInt(&copySize))) {
+     return failure();
+   }
+
+   DataLayoutAnalysis dataLayoutAnalysis(op);
+   auto &dataLayout = dataLayoutAnalysis.getAtOrAbove(op);
+   int64_t elNum = dataLayout.getTypeSize(op.getTarget().getType().getElementType()) * (copySize.getSExtValue());
+
+  auto newElSize =
+      dataLayout.getTypeSize(finalType.getElementType());
+  
+  int64_t newElnum = elNum / newElSize;
+  if (newElSize * newElnum != elNum)
+    return failure();
+
+  SmallVector<int64_t, 1> sizes = {newElnum};
+  for (int i=0; i<2; i++) {
+    auto MT = cast<MemRefType>(vals[i].getType());
+    if (MT.getElementType() == finalType.getElementType()) continue;
+    vals[i] = rewriter.create<enzymexla::Memref2PointerOp>(op.getLoc(), LLVM::LLVMPointerType::get(vals[i].getContext(), MT.getMemorySpaceAsInt()), vals[i]);
+    auto shape2 = llvm::to_vector(MT.getShape());
+    if (shape2.size() > 0) shape2[shape2.size() - 1] = ShapedType::kDynamic;
+    vals[i] = rewriter.create<enzymexla::Pointer2MemrefOp>(op.getLoc(), MemRefType::get(shape2, finalType.getElementType(), MT.getLayout(), MT.getMemorySpace()), vals[i]);
+  }
+
+  rewriter.modifyOpInPlace(op, [&]() {
+    op.getTargetMutable().set(vals[0]);
+    op.getSourceMutable().set(vals[1]);
+		  });
+  return success();
+  }
+};
+
 } // end anonymous namespace
 
 void enzymexla::MemcpyOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                            MLIRContext *context) {
-  results.add<EraseTrivialCopyOp>(context);
+  results.add<EraseTrivialCopyOp, CopyWithTypes>(context);
 }
 
 
