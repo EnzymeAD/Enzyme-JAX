@@ -1128,9 +1128,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       */
       // If at the same index, the "hole" property applies
       // and we can go through.
-      //if (isa<BarrierOp>(user)) {
-      //  continue;
-      //}
+      if (isa<BarrierOp>(user)) {
+        continue;
+      }
       if (auto co = dyn_cast<mlir::LLVM::GEPOp>(user)) {
         list.emplace_back((Value)co, true);
         continue;

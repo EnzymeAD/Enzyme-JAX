@@ -583,6 +583,12 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
     "mlir::NVVM::NVVMDialect",
     "mlir::DLTIDialect"
   ];
+  let options = [Option<
+       /*C++ variable name=*/"use_launch_func",
+       /*CLI argument=*/"use_launch_func",
+       /*type=*/"bool",
+       /*default=*/"false",
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
 }
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
@@ -714,6 +720,26 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"true",
            /*description=*/
            "Whether to prefer raising to while instead of unrolling">,
+  ];
+}
+
+def ParallelLower : Pass<"parallel-lower"> {
+  let summary = "Lower gpu launch op to parallel ops";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "enzymexla::EnzymeXLADialect",
+    "cf::ControlFlowDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options =
+      [Option<
+           /*C++ variable name=*/"wrapParallelOps",
+           /*CLI argument=*/"wrapParallelOps",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to throw a pass error if not fully raised">,
   ];
 }
 

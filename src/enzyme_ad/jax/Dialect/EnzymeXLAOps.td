@@ -132,6 +132,63 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let results = (outs AnyType:$result);
 }
 
+
+def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
+  RecursiveMemoryEffects,
+  AutomaticAllocationScope,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Variadic<Index>:$blockDims);
+  let summary = "Indicates the region contained must be executed on the GPU";
+  let description = [{
+    The optional arguments to this operation are suggestions about what block
+    dimensions this gpu kernel should have - usually taken from kernel launch
+    params
+  }];
+  let results = (outs Index : $result);
+  let regions = (region SizedRegion<1>:$region);
+  let skipDefaultBuilders = 1;
+  let builders = [
+      OpBuilder<(ins "ValueRange":$blockSizes)>,
+      OpBuilder<(ins)>];
+}
+
+def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
+  RecursiveMemoryEffects,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
+  Arguments<(ins)> {
+  let summary = "Gets the error returned by the gpu operation inside";
+  // TODO should be i32, not index
+  let results = (outs Index : $result);
+  let regions = (region SizedRegion<1>:$region);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins)>];
+
+}
+
+def BarrierOp
+    : EnzymeXLA_Op<"barrier",
+                   [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+
+  let arguments = (ins Variadic<Index>:$indices);
+  let summary = "barrier for parallel loops";
+  let description = [{}];
+  let hasCanonicalizer = true;
+}
+
+def PolygeistYieldOp : EnzymeXLA_Op<"polygeist_yield", [Pure, ReturnLike, Terminator]> {
+    //ParentOneOf<["AlternativesOp", "GPUWrapperOp", "GPUErrorOp", "GPUBlockOp", "GPUThreadOp"]>]> {
+  let summary = "Polygeist ops terminator";
+}
+
+def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
+  Pure
+]> {
+  let summary = "Extract an async stream from a cuda stream";
+
+  let arguments = (ins AnyType : $source);
+  let results = (outs AnyType : $result);
+}
+
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
   ViewLikeOpInterface, Pure
 ]> {

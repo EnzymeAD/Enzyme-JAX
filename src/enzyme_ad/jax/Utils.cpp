@@ -46,8 +46,8 @@ bool collectEffects(Operation *op,
                     bool ignoreBarriers) {
   // Skip over barriers to avoid infinite recursion (those barriers would ask
   // this barrier again).
-  //if (ignoreBarriers && isa<BarrierOp>(op))
-  //  return true;
+  if (ignoreBarriers && isa<enzymexla::BarrierOp>(op))
+    return true;
 
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
@@ -158,13 +158,12 @@ bool getEffectsBefore(Operation *op,
   if (op != &op->getBlock()->front())
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
-      /*if (isa<BarrierOp>(it)) {
+      if (isa<enzymexla::BarrierOp>(it)) {
         if (stopAtBarrier)
           return true;
         else
           continue;
       }
-      */
       if (!collectEffects(it, effects, /* ignoreBarriers */ true))
         return false;
     }
@@ -201,12 +200,11 @@ bool getEffectsAfter(Operation *op,
   if (op != &op->getBlock()->back())
     for (Operation *it = op->getNextNode(); it != nullptr;
          it = it->getNextNode()) {
-      /*if (isa<BarrierOp>(it)) {
+      if (isa<enzymexla::BarrierOp>(it)) {
         if (stopAtBarrier)
           return true;
         continue;
       }
-      */
       if (!collectEffects(it, effects, /* ignoreBarriers */ true))
         return false;
     }
