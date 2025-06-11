@@ -271,7 +271,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::registerNVVMDialectImport(registry);
 }
 
-void initializePasses(mlir::DialectRegistry &registry) {
+void initializePasses() {
   mlir::registerenzymePasses();
   enzyme::registerenzymexlaPasses();
 

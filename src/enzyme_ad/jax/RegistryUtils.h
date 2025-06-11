@@ -13,6 +13,6 @@ void registerInterfaces(mlir::DialectRegistry &registry);
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context);
 
-void initializePasses(mlir::DialectRegistry &registry);
+void initializePasses();
 } // namespace enzyme
 } // namespace mlir
