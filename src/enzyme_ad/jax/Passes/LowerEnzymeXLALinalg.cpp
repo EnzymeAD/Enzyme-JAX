@@ -802,25 +802,15 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-    std::string geqrf_fn = lapack_precision_prefix(inputElementType) + "geqrf_";
-    std::string bind_geqrf_fn = "enzymexla_lapacke_" + geqrf_fn;
-    std::string wrapper_geqrf_fn = "enzymexla_wrapper_lapacke_" + geqrf_fn;
-
-    std::string orgungqr_fn = lapack_precision_prefix(inputElementType);
-    if (orgungqr_fn == "c" || orgungqr_fn == "z") {
-        // array is complex so use `ungqr_`
-        orgungqr_fn = orgungqr_fn + "ungqr_";
-    } else {
-        // array is real so use `orgqr_`
-        orgungqr_fn = orgungqr_fn + "orgqr_";
-    }
-    std::string bind_orgungqr_fn = "enzymexla_lapacke_" + orgungqr_fn;
-    std::string wrapper_orgungqr_fn = "enzymexla_wrapper_lapacke_" + orgungqr_fn;
+    // TODO change QR method with attributes
+    std::string fn = lapack_precision_prefix(inputElementType) + "geqrf_";
+    std::string bind_fn = "enzymexla_lapacke_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
 
     // declare LAPACKE function declarations if not present
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_geqrf_fn)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
         auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
@@ -831,22 +821,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
             type_lapack_int, // lda
             type_llvm_ptr // tau
         }, false);
-        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_geqrf_fn, func_type, LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_orgungqr_fn)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
-        auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
-            type_lapack_int, // matrix_layout
-            type_lapack_int, // m
-            type_lapack_int, // n
-            type_lapack_int, // k
-            type_llvm_ptr, // A
-            type_lapack_int, // lda
-            type_llvm_ptr // tau
-        }, false);
-        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_orgungqr_fn, func_type, LLVM::Linkage::External);
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type, LLVM::Linkage::External);
     }
 
     // WARN probably will need another function name encoding if we call to `geqrf`, `orgqr` or `ungqr` in other op
@@ -854,7 +829,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     static int64_t fn_counter = 0;
     fn_counter++;
 
-    wrapper_geqrf_fn += std::to_string(fn_counter);
+    wrapper_fn += std::to_string(fn_counter);
     {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -865,7 +840,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
             type_llvm_ptr, // info
         }, false);
 
-        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_geqrf_fn, func_type);
+        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
         // `101` for row-major, `102` for col-major
@@ -876,7 +851,7 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
 
         // call to `lapacke_*geqrf*`
         auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
-                                        SymbolRefAttr::get(ctx, bind_geqrf_fn),
+                                        SymbolRefAttr::get(ctx, bind_fn),
                                         ValueRange{
                                             layout,
                                             m,
@@ -890,85 +865,30 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
-    // insert wrapper function for `orgqr`/`ungqr`
-    wrapper_orgungqr_fn += std::to_string(fn_counter);
-    {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-        auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void, {
-            type_llvm_ptr, // A
-            type_llvm_ptr, // tau
-            type_llvm_ptr, // info
-        }, false);
-
-        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_orgungqr_fn, func_type);
-        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
-
-        // `101` for row-major, `102` for col-major
-        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, 101))
-        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-        auto k = rewriter.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-        auto lda = rewrite.create<LLVM::ConstantOp>(op.getLoc(), llvmBlasIntType, rewriter.getIntegerAttr(blasIntType, ...));
-
-        // call to `lapacke_*orgungqr*`
-        auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
-                                        SymbolRefAttr::get(ctx, bind_orgungqr_fn),
-                                        ValueRange{
-                                            layout,
-                                            m,
-                                            n,
-                                            k,
-                                            func.getArgument(0),
-                                            lda,
-                                            func.getArgument(1),
-                                        });
-
-        rewriter.create<LLVM::StoreOp>(op.getLoc(), res, func.getArgument(2));
-        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
-    }
-
-    // TODO set lower triangular values of R to zero
-
     // TODO emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    SmallVector<Attribute> aliases_geqrf;
+    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth)), cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), RankedTensorType::get({...}, rewriter.getIntegerType(blasIntWidth)), cast<ElementsAttr>(makeAttr(blasInfoType, -1)));
+
+    SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-        aliases_geqrf.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+        aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
     }
 
-    auto jit_call_geqrf = rewriter.create<enzymexla::JITCallOp>(
+    auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
             op.getLoc(),
             TypeRange{...},
-            mlir::FlatSymbolRefAttr::get(ctx, wrapper_geqrf_fn),
+            mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
             ValueRange{...},
             rewriter.getStringAttr(""),
             /*operand_layouts=*/operandLayouts,
             /*result_layouts=*/resultLayouts,
-            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases_geqrf),
+            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
             /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-    // TODO emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    SmallVector<Attribute> aliases_orgungqr;
-    for (int i = 0; i < 3; ++i) {
-        aliases_orgungqr.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
-    }
-
-    auto jit_call_orgungqr = rewriter.create<enzymexla::JITCallOp>(
-            op.getLoc(),
-            TypeRange{...},
-            mlir::FlatSymbolRefAttr::get(ctx, wrapper_orgungqr_fn),
-            ValueRange{...},
-            rewriter.getStringAttr(""),
-            /*operand_layouts=*/operandLayouts,
-            /*result_layouts=*/resultLayouts,
-            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases_orgungqr),
-            /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-    // TODO replace enzymexla.linalg.qr with the jit_call
-    rewriter.replaceAllUsesWith(op.getResult(0), ...);
-    rewriter.replaceAllUsesWith(op.getResult(1), ...);
-    rewriter.replaceAllUsesWith(op.getResult(2), ...);
+    // replace enzymexla.linalg.qr with the jit_call
+    rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
     rewriter.eraseOp(op);
 
     return success();
