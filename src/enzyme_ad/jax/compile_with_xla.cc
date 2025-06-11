@@ -137,7 +137,9 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
 
   // Parse MLIR.
   mlir::DialectRegistry registry;
-  prepareRegistry(registry);
+  mlir::enzyme::prepareRegistry(registry);
+  mlir::enzyme::registerDialects(registry);
+  mlir::enzyme::registerInterfaces(registry);
   MLIRContext context(registry);
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
@@ -284,7 +286,9 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                               const std::string &pass_pipeline) {
   // Parse MLIR.
   mlir::DialectRegistry registry;
-  prepareRegistry(registry);
+  mlir::enzyme::prepareRegistry(registry);
+  mlir::enzyme::registerDialects(registry);
+  mlir::enzyme::registerInterfaces(registry);
   mlir::MLIRContext context(registry);
   mlir::ParserConfig parser_config(&context);
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
