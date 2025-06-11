@@ -11,11 +11,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "llvm/Support/TargetSelect.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
+#include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "src/enzyme_ad/jax/RegistryUtils.h"
+#include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
 
