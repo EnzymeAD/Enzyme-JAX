@@ -79,9 +79,11 @@ struct GPULaunchRecognitionPass
     auto launchFuncUses = launchFunc.getSymbolUses(getOperation());
     for (auto use : *launchFuncUses) {
       if (auto cop = dyn_cast<CallOpInterface>(use.getUser())) {
-        
-      if (auto cur = dyn_cast_if_present<FunctionOpInterface>(cop.resolveCallable())) {
-
+      if (cop.getArgOperands().size() == 0) continue; 
+	  auto argop = cop.getArgOperands()[0].getDefiningOp<LLVM::AddressOfOp>();
+	  if (!argop) continue;
+	  llvm::errs() << "argop: " << argop << "\n";
+      if (auto cur = argop.getFunction(symbolTable)) {
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
   if (!gpuTy0) {
@@ -104,15 +106,10 @@ struct GPULaunchRecognitionPass
       auto entry = &gpufunc.getBody().front();
       builder.setInsertionPointToEnd(entry);
       IRMapping map;
-      for (auto &&[oldarg, newarg] :
-           zip(cur.getArguments(), gpufunc.getArguments())) {
-        Value newval = newarg;
-
-        map.map(oldarg, newval);
-      }
-
+      gpufunc.getBody().getBlocks().clear();
       cur.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
-  
+
+        
   	  gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
 
       gpufunc->walk([](LLVM::ReturnOp op) {
@@ -151,10 +148,31 @@ struct GPULaunchRecognitionPass
 	auto shMemSize = builder.create<LLVM::TruncOp>(
             loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
+	llvm::errs() << " stream: " << stream << "\n";
         // TODO stream is arg 8
         llvm::SmallVector<mlir::Value> args;
         for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
           args.push_back(cop.getArgOperands()[i]);
+
+	if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+        builder.create<gpu::LaunchFuncOp>(
+            loc, gpufunc,
+            gpu::KernelDim3(
+                {builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[1]),
+                 builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[2]),
+                 builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[3])}),
+            gpu::KernelDim3(
+                {builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[4]),
+                 builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[5]),
+                 builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                              cop.getArgOperands()[6])}),
+            shMemSize, ValueRange(args));
+	} else {
         builder.create<gpu::LaunchFuncOp>(
             loc, gpufunc,
             gpu::KernelDim3(
@@ -172,6 +190,7 @@ struct GPULaunchRecognitionPass
                  builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
                                               cop.getArgOperands()[6])}),
             shMemSize, ValueRange(args), stream.getType(), ValueRange(stream));
+	}
         cop->erase();
       }
   builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
@@ -200,6 +219,68 @@ struct GPULaunchRecognitionPass
 
   if (launchFuncs.size())
     getOperation()->setAttr("gpu.container_module", OpBuilder(ctx).getUnitAttr());
+
+  getOperation()->walk([](LLVM::CallOp call) {
+	auto callee = call.getCallee();
+	OpBuilder builder(call);
+	auto i8 = builder.getIntegerType(8);
+	if (callee == "cudaMalloc") {
+
+          Value arg = call->getOperand(1);
+          if (!isa<IndexType>(arg.getType()))
+            arg =
+                builder.create<arith::IndexCastOp>(call->getLoc(), builder.getIndexType(), arg);
+
+	  auto res = builder.create<gpu::AllocOp>(call.getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}, builder.getI64IntegerAttr(1)), (mlir::Type)nullptr, ValueRange(), ValueRange(arg), ValueRange());
+	  auto ptr = builder.create<enzymexla::Memref2PointerOp>(call.getLoc(), LLVM::LLVMPointerType::get(call.getContext()), res.getResult(0));
+	  builder.create<LLVM::StoreOp>(call.getLoc(), ptr, call->getOperand(0));
+	  auto replace = builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+	  call->replaceAllUsesWith(replace);
+	  call->erase();
+	  return;
+	}
+	if (callee == "cudaMemcpy") {
+	  APInt directionA;
+
+#if 0 
+enum __device_builtin__ cudaMemcpyKind
+{
+    cudaMemcpyHostToHost          =   0,      /**< Host   -> Host */
+    cudaMemcpyHostToDevice        =   1,      /**< Host   -> Device */
+    cudaMemcpyDeviceToHost        =   2,      /**< Device -> Host */
+    cudaMemcpyDeviceToDevice      =   3,      /**< Device -> Device */
+    cudaMemcpyDefault             =   4       /**< Direction of the transfer is inferred from the pointer values. Requires unified virtual addressing */
+};
+#endif
+	  if (matchPattern(call->getOperand(2), m_ConstantInt(&directionA))) {
+		auto direction = directionA.getSExtValue();
+		auto dst = call->getOperand(0);
+		if (direction == 0 || direction == 2)
+		       dst = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}), dst);
+		else
+		       dst = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}, builder.getI64IntegerAttr(1)), dst);	
+		
+		auto src = call->getOperand(1);
+		if (direction == 0 || direction == 1)
+		       src = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}), src);
+		else
+		       src = builder.create<enzymexla::Pointer2MemrefOp>(call->getLoc(), MemRefType::get({ShapedType::kDynamic}, i8, MemRefLayoutAttrInterface{}, builder.getI64IntegerAttr(1)), src);	
+
+          Value arg = call->getOperand(2);
+          if (!isa<IndexType>(arg.getType()))
+            arg =
+                builder.create<arith::IndexCastOp>(call->getLoc(), builder.getIndexType(), arg);
+
+	  auto res = builder.create<enzymexla::MemcpyOp>(call.getLoc(), (mlir::Type)nullptr, ValueRange(), dst, src, arg);
+	  auto replace = builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+	  call->replaceAllUsesWith(replace);
+	  call->erase();
+	  return;
+	  }
+	}
+  });
+
   }
+
 };
 

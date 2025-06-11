@@ -74,7 +74,7 @@ void registerRemoveTransformPass();
 
 void prepareRegistry(mlir::DialectRegistry &registry);
 
-std::string runLLVMToMLIRRoundTrip(std::string input) {
+extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext Context;
   llvm::SMDiagnostic Err;
   auto llvmModule =
@@ -86,53 +86,10 @@ std::string runLLVMToMLIRRoundTrip(std::string input) {
     err_stream.flush();
     exit(1);
   }
-
-  mlir::DialectRegistry registry;
-  prepareRegistry(registry);
-  mlir::MLIRContext context(registry);
-  auto mod = mlir::translateLLVMIRToModule(std::move(llvmModule), &context,
-                                           /*emitExpensiveWarnings*/ false,
-                                           /*dropDICompositeElements*/ false);
-  if (!mod) {
-    exit(1);
-  }
-
-  using namespace llvm;
-  using namespace mlir;
-  auto pass_pipeline = "canonicalize,llvm-to-memref-access,canonicalize,convert-llvm-to-cf,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true}";
-  mlir::PassManager pm(mod->getContext());
-  std::string error_message;
-  llvm::raw_string_ostream error_stream(error_message);
-  mlir::LogicalResult result =
-      mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
-  if (mlir::failed(result)) {
-    exit(2);
-  }
-
-  DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
-  error_stream << "Pipeline failed:\n";
-  DiagnosticEngine::HandlerID id =
-      engine.registerHandler([&](Diagnostic &diag) -> LogicalResult {
-        error_stream << diag << "\n";
-        return failure();
-      });
-  if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
-	  llvm::errs() << error_stream.str() << "\n";
-  }
-
-  std::string res;
-  llvm::raw_string_ostream ss(res);
-  ss << *mod;
-
-  return res;
-}
-
-int main(int argc, char **argv) {
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
   mlir::DialectRegistry registry;
-  registry.insert<mlir::stablehlo::check::CheckDialect>();
   prepareRegistry(registry);
 
   mlir::registerenzymePasses();
@@ -158,7 +115,43 @@ int main(int argc, char **argv) {
   mlir::transform::registerInterpreterPass();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
+  mlir::MLIRContext context(registry);
+  auto mod = mlir::translateLLVMIRToModule(std::move(llvmModule), &context,
+                                           /*emitExpensiveWarnings*/ false,
+                                           /*dropDICompositeElements*/ false);
+  if (!mod) {
+    exit(1);
+  }
+  
+  llvm::errs() << " mod: " << *mod << "\n";
 
-  return mlir::asMainReturnCode(mlir::MlirOptMain(
-      argc, argv, "Enzyme modular optimizer driver", registry));
+  using namespace llvm;
+  using namespace mlir;
+  auto pass_pipeline = "inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{},gpu-launch-recognition,canonicalize,llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true}";
+  mlir::PassManager pm(mod->getContext());
+  std::string error_message;
+  llvm::raw_string_ostream error_stream(error_message);
+  mlir::LogicalResult result =
+      mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
+  if (mlir::failed(result)) {
+	  llvm::errs() << " failed to parse pass pipeline: " << error_message << "\n";
+    exit(2);
+  }
+
+  DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
+  error_stream << "Pipeline failed:\n";
+  DiagnosticEngine::HandlerID id =
+      engine.registerHandler([&](Diagnostic &diag) -> LogicalResult {
+        error_stream << diag << "\n";
+        return failure();
+      });
+  if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
+	  llvm::errs() << error_stream.str() << "\n";
+  }
+
+  std::string res;
+  llvm::raw_string_ostream ss(res);
+  ss << *mod;
+
+  return res;
 }

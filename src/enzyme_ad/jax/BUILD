@@ -388,8 +388,10 @@ gentbl_cc_library(
     td_file = "Dialect/EnzymeXLAOps.td",
     deps = [
         ":EnzymeXLADialectTdFiles",
+        "@llvm-project//mlir:CopyOpInterfaceTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
+	"@llvm-project//mlir:GPUOpsTdFiles",
     ],
 )
 
@@ -444,6 +446,7 @@ cc_library(
     srcs = glob(
         [
             "Implementations/*.cpp",
+	    "Utils.cpp",
             "Passes/*.cpp",
             "Dialect/*.cpp",
         ],
@@ -496,6 +499,7 @@ cc_library(
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CopyOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",

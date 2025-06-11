@@ -128,6 +128,8 @@ cc_library(
         "@llvm-project//llvm:X86AsmParser",
         "@llvm-project//llvm:X86CodeGen",
     ]),
+    alwayslink = True,
+    linkstatic = True,
     copts = [
         "-Wno-unused-variable",
         "-Wno-return-type",

@@ -571,10 +571,15 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
 def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
   let dependentDialects = [
+    "arith::ArithDialect", 
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
     "mlir::DLTIDialect"
   ];
+}
+
+def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
+  let summary = "Replace scf.if and similar with affine.if";
 }
 
 def OptimizeCommunication : Pass<"optimize-communication"> {

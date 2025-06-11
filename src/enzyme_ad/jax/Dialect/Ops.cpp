@@ -1061,3 +1061,65 @@ void CommRegionOp::getSuccessorRegions(
   // Otherwise, the region branches back to the parent operation.
   regions.push_back(RegionSuccessor(getResults()));
 }
+
+
+
+LogicalResult enzymexla::MemcpyOp::verify() {
+  auto srcType = getSource().getType();
+  auto dstType = getTarget().getType();
+
+  if (getElementTypeOrSelf(srcType) != getElementTypeOrSelf(dstType))
+    return emitOpError("arguments have incompatible element type");
+
+  return success();
+}
+
+namespace {
+
+/// Erases a common case of copy ops where a destination value is used only by
+/// the copy op, alloc and dealloc ops.
+struct EraseTrivialCopyOp : public OpRewritePattern<enzymexla::MemcpyOp> {
+  using OpRewritePattern<enzymexla::MemcpyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MemcpyOp op,
+                                PatternRewriter &rewriter) const override {
+    Value dest = op.getTarget();
+    Operation *destDefOp = dest.getDefiningOp();
+    // `dest` must be defined by an op having Allocate memory effect in order to
+    // perform the folding.
+    if (!destDefOp ||
+        !hasSingleEffect<MemoryEffects::Allocate>(destDefOp, dest))
+      return failure();
+    // We can erase `op` iff `dest` has no other use apart from its
+    // use by `op` and dealloc ops.
+    if (llvm::any_of(dest.getUsers(), [op, dest](Operation *user) {
+          return user != op &&
+                 !hasSingleEffect<MemoryEffects::Free>(user, dest);
+        }))
+      return failure();
+    // We can perform the folding if and only if op has a single async
+    // dependency and produces an async token as result, or if it does not have
+    // any async dependency and does not produce any async token result.
+    if (op.getAsyncDependencies().size() > 1 ||
+        ((op.getAsyncDependencies().empty() && op.getAsyncToken()) ||
+         (!op.getAsyncDependencies().empty() && !op.getAsyncToken())))
+      return failure();
+    rewriter.replaceOp(op, op.getAsyncDependencies());
+    return success();
+  }
+};
+
+} // end anonymous namespace
+
+void enzymexla::MemcpyOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                           MLIRContext *context) {
+  results.add<EraseTrivialCopyOp>(context);
+}
+
+
+LogicalResult enzymexla::MemcpyOp::fold(FoldAdaptor adaptor,
+                             SmallVectorImpl<::mlir::OpFoldResult> &results) {
+  return memref::foldMemRefCast(*this);
+}
+
+
