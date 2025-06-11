@@ -66,31 +66,31 @@ mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
 
 std::optional<std::string> lapack_precision_prefix(Type elementType) {
 
-    // single-precision float
-    if (elementType.isF32()) {
-        return "s";
+  // single-precision float
+  if (elementType.isF32()) {
+    return "s";
 
     // double-precision float
-    } else if (elementType.isF64()) {
-        return "d";
-    
-    } else if (auto complexType = dyn_cast<ComplexType>(elementType)) {
-        auto elem = complexType.getElementType();
+  } else if (elementType.isF64()) {
+    return "d";
 
-        // single-precision complex
-        if (elem.isF32()) {
-            return "c";
-        
-        // double-precision complex
-        } else if (elem.isF64()) {
-            return "z";
+  } else if (auto complexType = dyn_cast<ComplexType>(elementType)) {
+    auto elem = complexType.getElementType();
 
-        } else {
-            return std::nullopt;
-        }
+    // single-precision complex
+    if (elem.isF32()) {
+      return "c";
+
+      // double-precision complex
+    } else if (elem.isF64()) {
+      return "z";
+
     } else {
-        return std::nullopt;
+      return std::nullopt;
     }
+  } else {
+    return std::nullopt;
+  }
 }
 
 struct LUFactorizationOpLowering
@@ -750,28 +750,36 @@ struct LUFactorizationOpLowering
   }
 };
 
-struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactorizationOp> {
+struct QRFactorizationOpLowering
+    : public OpRewritePattern<enzymexla::QRFactorizationOp> {
   std::string backend;
   int64_t blasIntWidth;
 
-  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth, MLIRContext *context, PatternBenefit benefit = 1) : OpRewritePattern(context, benefit), backend(backend), blasIntWidth(blasIntWidth) {}
+  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth,
+                            MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-        return this->matchAndRewrite_cpu(op, rewriter);
+      return this->matchAndRewrite_cpu(op, rewriter);
 
     else if (backend == "cuda")
-        return this->matchAndRewrite_cuda(op, rewriter);
+      return this->matchAndRewrite_cuda(op, rewriter);
 
     else if (backend == "tpu")
-        return this->matchAndRewrite_tpu(op, rewriter);
-    
+      return this->matchAndRewrite_tpu(op, rewriter);
+
     else
-        return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend + "\"");
+      return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
+                                                 "\"");
   }
 
-  // TODO get matrix sizes dynamically so that we don't need to create a function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
+  // TODO get matrix sizes dynamically so that we don't need to create a
+  // function wrapper for each op instance
+  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op,
+                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -798,10 +806,12 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     // TODO change QR method with attributes
     std::string fn = "geqrf_";
     if (auto prefix = lapack_precision_prefix(inputElementType)) {
-        fn = *prefix + fn;
+      fn = *prefix + fn;
     } else {
-        op->emitOpError() << "Unsupported complex element type: " << inputElementType;
-        return rewriter.notifyMatchFailure(op, "unsupported complex element type");
+      op->emitOpError() << "Unsupported complex element type: "
+                        << inputElementType;
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported complex element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -811,46 +821,61 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
-        auto func_type = LLVM::LLVMFunctionType::get(type_lapack_int, {
-            type_lapack_int, // matrix_layout
-            type_lapack_int, // m
-            type_lapack_int, // n
-            type_llvm_ptr, // A
-            type_lapack_int, // lda
-            type_llvm_ptr // tau
-        }, false);
-        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type, LLVM::Linkage::External);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto func_type =
+          LLVM::LLVMFunctionType::get(type_lapack_int,
+                                      {
+                                          type_lapack_int, // matrix_layout
+                                          type_lapack_int, // m
+                                          type_lapack_int, // n
+                                          type_llvm_ptr,   // A
+                                          type_lapack_int, // lda
+                                          type_llvm_ptr    // tau
+                                      },
+                                      false);
+      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
+                                        LLVM::Linkage::External);
     }
 
-    // WARN probably will need another function name encoding if we call to `geqrf`, `orgqr` or `ungqr` in other op
-    // insert wrapper function for `geqrf`
+    // WARN probably will need another function name encoding if we call to
+    // `geqrf`, `orgqr` or `ungqr` in other op insert wrapper function for
+    // `geqrf`
     static int64_t fn_counter = 0;
     fn_counter++;
 
     wrapper_fn += std::to_string(fn_counter);
     {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void, {
-            type_llvm_ptr, // A
-            type_llvm_ptr, // tau
-            type_llvm_ptr, // info
-        }, false);
+      auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void,
+                                                   {
+                                                       type_llvm_ptr, // A
+                                                       type_llvm_ptr, // tau
+                                                       type_llvm_ptr, // info
+                                                   },
+                                                   false);
 
-        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
-        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+      auto func =
+          rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
+      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-        // `101` for row-major, `102` for col-major
-        auto layout = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, 101));
-        auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, inputShape[0]));
-        auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int, rewriter.getIntegerAttr(blasIntType, inputShape[1]));
-        auto lda = m;
+      // `101` for row-major, `102` for col-major
+      auto layout = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_lapack_int,
+          rewriter.getIntegerAttr(blasIntType, 101));
+      auto m = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_lapack_int,
+          rewriter.getIntegerAttr(blasIntType, inputShape[0]));
+      auto n = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_lapack_int,
+          rewriter.getIntegerAttr(blasIntType, inputShape[1]));
+      auto lda = m;
 
-        // call to `lapacke_*geqrf*`
-        auto res = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
+      // call to `lapacke_*geqrf*`
+      auto res =
+          rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
                                         SymbolRefAttr::get(ctx, bind_fn),
                                         ValueRange{
                                             layout.getResult(),
@@ -861,40 +886,45 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
                                             func.getArgument(1),
                                         });
 
-        rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(), func.getArgument(2));
-        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(),
+                                     func.getArgument(2));
+      rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
     // emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
-    
+    auto type_info =
+        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto info = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
+
     auto tsize = std::min(inputShape.front(), inputShape.back());
-    auto type_tau = RankedTensorType::get({tsize}, rewriter.getIntegerType(blasIntWidth));
-    auto tau = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(type_tau, 0)));
+    auto type_tau =
+        RankedTensorType::get({tsize}, rewriter.getIntegerType(blasIntWidth));
+    auto tau = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(type_tau, 0)));
 
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 1, 0};
     SmallVector<int64_t> outputRanks = {2, 1, 0};
-    auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto operandLayouts =
+        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-        aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
-            op.getLoc(),
-            TypeRange{inputType, type_tau, type_info},
-            mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-            ValueRange{input, tau.getResult(), info.getResult()},
-            rewriter.getStringAttr(""),
-            /*operand_layouts=*/operandLayouts, // TODO
-            /*result_layouts=*/resultLayouts, // TODO
-            /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-            /*xla_side_effect_free=*/rewriter.getUnitAttr()
-    );
+        op.getLoc(), TypeRange{inputType, type_tau, type_info},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+        ValueRange{input, tau.getResult(), info.getResult()},
+        rewriter.getStringAttr(""),
+        /*operand_layouts=*/operandLayouts, // TODO
+        /*result_layouts=*/resultLayouts,   // TODO
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
     // replace enzymexla.linalg.qr with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
@@ -905,12 +935,14 @@ struct QRFactorizationOpLowering : public OpRewritePattern<enzymexla::QRFactoriz
     return success();
   }
 
-  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op,
+                                     PatternRewriter &rewriter) const {
     // TODO
     return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"cuda\"");
   }
 
-  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op, PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op,
+                                    PatternRewriter &rewriter) const {
     // TODO
     return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"tpu\"");
   }
