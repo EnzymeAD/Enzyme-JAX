@@ -19452,8 +19452,7 @@ bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
   return stablehloReturn.getOperand(0) == updateValue;
 }
 
-SmallVector<int64_t>
-computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
+SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
   auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
   auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
   auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
