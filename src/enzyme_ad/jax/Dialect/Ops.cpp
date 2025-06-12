@@ -1390,3 +1390,34 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
   return success();
 #endif
 }
+
+
+struct NoopResource : public SideEffects::Resource::Base<NoopResource> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NoopResource)
+
+  StringRef getName() final { return "<NoopResource>"; }
+};
+
+void NoopOp::build(OpBuilder &builder, OperationState &result,
+                   ValueRange indices) {
+  result.addOperands(indices);
+}
+
+void NoopOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  // TODO CHECK is it okay to ::get() a new resource every time?
+  SideEffects::Resource *resource = NoopResource::get();
+  MemoryEffects::Effect *effect =
+      MemoryEffects::Effect::get<MemoryEffects::Write>();
+  effects.emplace_back(effect, resource);
+}
+
+
+void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
+  result.addTypes(builder.getIndexType());
+  OpBuilder::InsertionGuard g(builder);
+  Region *bodyRegion = result.addRegion();
+  builder.createBlock(bodyRegion);
+  GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+

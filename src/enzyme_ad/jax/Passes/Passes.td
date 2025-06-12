@@ -591,6 +591,30 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
        /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
 }
 
+def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
+  let summary = "Merge all gpu modules into one";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
+}
+
+def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
+  let summary = "Convert parallel loops to gpu";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect"];
+  let options = [
+  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+  ];
+}
+
+def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
+  let summary = "Convert parallel loops to gpu";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect"];
+  let options = [Option<
+       /*C++ variable name=*/"emitGPUKernelLaunchBounds",
+       /*CLI argument=*/"emitGPUKernelLaunchBounds",
+       /*type=*/"bool",
+       /*default=*/"false",
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+}
+
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
   let summary = "Replace scf.if and similar with affine.if";
 }
@@ -743,5 +767,19 @@ def ParallelLower : Pass<"parallel-lower"> {
   ];
 }
 
+def SCFParallelLoopUnroll : Pass<"scf-parallel-loop-unroll"> {
+  let summary = "Unroll and interleave scf parallel loops";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+  Option<"unrollFactor", "unrollFactor", "int", /*default=*/"2", "Unroll factor">
+  ];
+}
+
+def ParallelLICM : Pass<"parallel-licm"> {
+  let summary = "Perform LICM on known parallel (and serial) loops";
+}
 
 #endif
