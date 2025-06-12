@@ -157,7 +157,4 @@ bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
 
 bool valueCmp(Cmp cmp, llvm::APInt bval, ValueOrInt val);
 
-bool isReadOnly(mlir::Operation *);
-bool isReadNone(mlir::Operation *);
-
 #endif // ENZYMEXLA_PASSES_H

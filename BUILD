@@ -44,6 +44,8 @@ cc_binary(
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:env_impl",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",
@@ -64,6 +66,53 @@ cc_binary(
         "-Wno-unused-variable",
         "-Wno-return-type",
     ],
+)
+
+cc_library(
+    name = "RaiseLib",
+    srcs = [
+        "//src/enzyme_ad/jax:raise.cpp",
+        "//src/enzyme_ad/jax:RegistryUtils.cpp",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@llvm-project//mlir:MlirOptLib",
+        "//src/enzyme_ad/jax:RegistryUtils",
+        "@llvm-project//mlir:GPUToLLVMIRTranslation",
+        "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:env_impl",
+    ] + if_llvm_aarch32_available([
+        "@llvm-project//llvm:ARMAsmParser",
+        "@llvm-project//llvm:ARMCodeGen",
+    ]) + if_llvm_aarch64_available([
+        "@llvm-project//llvm:AArch64AsmParser",
+        "@llvm-project//llvm:AArch64CodeGen",
+    ]) + if_llvm_powerpc_available([
+        "@llvm-project//llvm:PowerPCAsmParser",
+        "@llvm-project//llvm:PowerPCCodeGen",
+    ]) + if_llvm_system_z_available([
+        "@llvm-project//llvm:SystemZAsmParser",
+        "@llvm-project//llvm:SystemZCodeGen",
+    ]) + if_llvm_x86_available([
+        "@llvm-project//llvm:X86AsmParser",
+        "@llvm-project//llvm:X86CodeGen",
+    ]),
+    alwayslink = True,
+    linkstatic = True,
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+)
+
+# cc_shared_library(
+cc_binary(
+    name = "libRaise.so",
+    linkshared = 1,     ## important
+    linkstatic = 1,     ## important
+    deps = [":RaiseLib"],
 )
 
 cc_binary(
