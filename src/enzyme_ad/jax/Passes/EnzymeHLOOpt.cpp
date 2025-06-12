@@ -19411,6 +19411,148 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+stablehlo::GatherDimensionNumbersAttr
+getGatherDims(mlir::MLIRContext *ctx,
+              stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {
+  return stablehlo::GatherDimensionNumbersAttr::get(
+      ctx, scatterDimNumbers.getUpdateWindowDims(),
+      scatterDimNumbers.getInsertedWindowDims(),
+      scatterDimNumbers.getInputBatchingDims(),
+      scatterDimNumbers.getScatterIndicesBatchingDims(),
+      scatterDimNumbers.getScatterDimsToOperandDims(),
+      scatterDimNumbers.getIndexVectorDim());
+}
+
+bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
+  auto &updateComputation = scatterOp.getUpdateComputation();
+
+  if (!updateComputation.hasOneBlock())
+    return false;
+
+  auto &block = updateComputation.front();
+  if (block.getNumArguments() != 2)
+    return false;
+
+  auto originalValue = block.getArgument(0);
+  auto updateValue = block.getArgument(1);
+
+  // The block should have exactly one operation (the return)
+  if (block.getOperations().size() != 1)
+    return false;
+
+  auto &returnOp = block.front();
+  auto stablehloReturn = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturn)
+    return false;
+
+  if (stablehloReturn.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the update value (second argument)
+  return stablehloReturn.getOperand(0) == updateValue;
+}
+
+SmallVector<int64_t>
+computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
+  auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
+  auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
+  auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+
+  auto inputShape = inputType.getShape();
+  auto updateShape = updateType.getShape();
+
+  SmallVector<int64_t> sliceSizes(inputShape.size(), 1);
+
+  auto updateWindowDims = scatterDimNumbers.getUpdateWindowDims();
+  auto scatterIndicesBatchingDims =
+      scatterDimNumbers.getScatterIndicesBatchingDims();
+
+  // Map update window dimensions to their corresponding input dimensions
+  for (int64_t i = 0; i < updateWindowDims.size(); ++i) {
+    int64_t inputDim = updateWindowDims[i];
+
+    // Calculate the corresponding dimension in the update tensor
+    // Update tensor layout: [scatter_indices_batching_dims...,
+    // update_window_dims...]
+    int64_t updateDimIndex = scatterIndicesBatchingDims.size() + i;
+
+    if (updateDimIndex < updateShape.size()) {
+      sliceSizes[inputDim] = updateShape[updateDimIndex];
+    }
+  }
+
+  return sliceSizes;
+}
+
+struct ScatterMultiplySimplify final
+    : public CheckedOpRewritePattern<stablehlo::MulOp,
+                                     ScatterMultiplySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ScatterMultiplySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    stablehlo::ScatterOp scatterOp;
+    mlir::Value otherValue;
+
+    auto lhsScatterOp = lhs.getDefiningOp<stablehlo::ScatterOp>();
+    auto rhsScatterOp = rhs.getDefiningOp<stablehlo::ScatterOp>();
+    if (!lhsScatterOp && !rhsScatterOp) {
+      return failure();
+    } else {
+      if (lhsScatterOp) {
+        scatterOp = lhsScatterOp;
+        otherValue = rhs;
+      } else {
+        scatterOp = rhsScatterOp;
+        otherValue = lhs;
+      }
+    }
+
+    if (scatterOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "ScatterOp with more than one input not supported");
+
+    auto input = scatterOp.getInputs()[0];
+    if (!matchPattern(input, m_AnyZeroFloat()) &&
+        !matchPattern(input, m_Zero()))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-zero input");
+
+    if (!scatterOp.getResult(0).hasOneUse())
+      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
+
+    if (!isScatterSetindexOp(scatterOp))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+
+    auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+
+    SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
+
+    auto gatheredValues = rewriter.create<stablehlo::GatherOp>(
+        op.getLoc(), otherValue, scatterOp.getScatterIndices(),
+        getGatherDims(rewriter.getContext(), scatterDimNumbers),
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        scatterOp.getIndicesAreSortedAttr());
+
+    auto newUpdates = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), gatheredValues, scatterOp.getUpdates()[0]);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op.getLoc(), scatterOp.getResultTypes(), scatterOp.getInputs(),
+        scatterOp.getScatterIndices(), ValueRange(newUpdates),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp);
+
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19929,7 +20071,8 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
         ConjComplexSimplify,
-        SplitConvolutionIntoReverseConvolution
+        SplitConvolutionIntoReverseConvolution,
+        ScatterMultiplySimplify
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,

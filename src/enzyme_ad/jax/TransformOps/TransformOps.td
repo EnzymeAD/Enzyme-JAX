@@ -2015,3 +2015,9 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
     "SplitConvolutionIntoReverseConvolution"
   ];
 }
+
+def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
+  let patterns = [
+    "ScatterMultiplySimplify"
+  ];
+}
