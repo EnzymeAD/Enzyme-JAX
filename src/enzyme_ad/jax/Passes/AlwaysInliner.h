@@ -78,20 +78,20 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
 };
 
 InlinerInterface::CloneCallbackTy cloneCallback =
-      [](OpBuilder &builder, Region *src, Block *inlineBlock,
-         Block *postInsertBlock, IRMapping &mapper,
-         bool shouldCloneInlinedRegion) {
-        // Check to see if the region is being cloned, or moved inline. In
-        // either case, move the new blocks after the 'insertBlock' to improve
-        // IR readability.
-        Region *insertRegion = inlineBlock->getParent();
-        if (shouldCloneInlinedRegion)
-          src->cloneInto(insertRegion, postInsertBlock->getIterator(), mapper);
-        else
-          insertRegion->getBlocks().splice(postInsertBlock->getIterator(),
-                                           src->getBlocks(), src->begin(),
-                                           src->end());
-      };
+    [](OpBuilder &builder, Region *src, Block *inlineBlock,
+       Block *postInsertBlock, IRMapping &mapper,
+       bool shouldCloneInlinedRegion) {
+      // Check to see if the region is being cloned, or moved inline. In
+      // either case, move the new blocks after the 'insertBlock' to improve
+      // IR readability.
+      Region *insertRegion = inlineBlock->getParent();
+      if (shouldCloneInlinedRegion)
+        src->cloneInto(insertRegion, postInsertBlock->getIterator(), mapper);
+      else
+        insertRegion->getBlocks().splice(postInsertBlock->getIterator(),
+                                         src->getBlocks(), src->begin(),
+                                         src->end());
+    };
 
 [[maybe_unused]] static void alwaysInlineCall(mlir::func::CallOp caller) {
   // Build the inliner interface.

@@ -849,7 +849,6 @@ convertFunctionType(FuncOpType funcOp, const TypeConverter &typeConverter) {
   return std::make_pair(convertedType, signatureConversion);
 }
 
-
 static constexpr const char *kGpuBinaryStorageSuffix = "_gpubin_cst";
 static constexpr const char *kGpuModuleCtorSuffix = "_gpubin_ctor";
 static constexpr const char *kGpuModuleDtorSuffix = "_gpubin_dtor";
@@ -1647,7 +1646,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
               LLVM::LLVMFunctionType::get(llvmVoidType, {}));
           {
             OpBuilder::InsertionGuard guard(rewriter);
-	    stub.addEntryBlock(rewriter);
+            stub.addEntryBlock(rewriter);
             rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
           }
           auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
@@ -1712,19 +1711,24 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
       moduleBuilder.create<LLVM::GlobalCtorsOp>(
           loc, moduleBuilder.getArrayAttr({std::move(ctorSymbol)}),
-          moduleBuilder.getI32ArrayAttr({65535}), moduleBuilder.getArrayAttr({LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
+          moduleBuilder.getI32ArrayAttr({65535}),
+          moduleBuilder.getArrayAttr(
+              {LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
       {
         OpBuilder dtorBuilder(moduleOp->getContext());
-	dtor.addEntryBlock(dtorBuilder);
+        dtor.addEntryBlock(dtorBuilder);
         auto aoo = dtorBuilder.create<LLVM::AddressOfOp>(loc, moduleGlobal);
-        auto module = dtorBuilder.create<LLVM::LoadOp>(loc, llvmPointerPointerType, aoo->getResult(0));
+        auto module = dtorBuilder.create<LLVM::LoadOp>(
+            loc, llvmPointerPointerType, aoo->getResult(0));
         rtUnregisterFatBinaryCallBuilder.create(loc, dtorBuilder,
                                                 module.getResult());
         dtorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
         auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
         moduleBuilder.create<LLVM::GlobalDtorsOp>(
             loc, moduleBuilder.getArrayAttr({std::move(dtorSymbol)}),
-            moduleBuilder.getI32ArrayAttr({65535}),  moduleBuilder.getArrayAttr({LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
+            moduleBuilder.getI32ArrayAttr({65535}),
+            moduleBuilder.getArrayAttr(
+                {LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
       }
     }
   }
@@ -1893,8 +1897,7 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
   return success();
 }
 
-struct ReplaceErrOpWithSuccess
-    : public OpRewritePattern<GPUErrorOp> {
+struct ReplaceErrOpWithSuccess : public OpRewritePattern<GPUErrorOp> {
   using OpRewritePattern<GPUErrorOp>::OpRewritePattern;
   const char *PATTERN = "lower-gpu-alternatives";
 
@@ -2025,12 +2028,13 @@ public:
         // Explicitly drop memory space when lowering private memory
         // attributions since NVVM models it as `alloca`s in the default
         // memory space and does not support `alloca`s with addrspace(5).
-        auto ptrType = LLVM::LLVMPointerType::get(type.getContext(),
-            allocaAddrSpace);
+        auto ptrType =
+            LLVM::LLVMPointerType::get(type.getContext(), allocaAddrSpace);
         Value numElements = rewriter.create<LLVM::ConstantOp>(
             gpuFuncOp.getLoc(), int64Ty, type.getNumElements());
         Value allocated = rewriter.create<LLVM::AllocaOp>(
-            gpuFuncOp.getLoc(), ptrType, type.getElementType(), numElements, /*alignment=*/0);
+            gpuFuncOp.getLoc(), ptrType, type.getElementType(), numElements,
+            /*alignment=*/0);
         Value descr = MemRefDescriptor::fromStaticShape(
             rewriter, loc, *getTypeConverter(), type, allocated);
         signatureConversion.remapInput(
@@ -2406,12 +2410,13 @@ struct ConvertPolygeistToLLVMPass
 
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
-	/*
-      patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
-          converter, gpu::getDefaultGpuBinaryAnnotation(), gpuTarget);
-	*/
-      patterns.add<LegalizeLaunchFuncOpPattern>(converter, /*kernelBarePtrCallConv*/true,
-                                            /*kernelIntersperseSizeCallConv*/false);
+      /*
+    patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
+        converter, gpu::getDefaultGpuBinaryAnnotation(), gpuTarget);
+      */
+      patterns.add<LegalizeLaunchFuncOpPattern>(
+          converter, /*kernelBarePtrCallConv*/ true,
+          /*kernelIntersperseSizeCallConv*/ false);
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern>(converter);
     }
 

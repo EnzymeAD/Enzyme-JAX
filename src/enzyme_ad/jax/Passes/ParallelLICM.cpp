@@ -42,7 +42,7 @@ namespace enzyme {
 
 namespace {
 struct ParallelLICM : public enzyme::impl::ParallelLICMBase<ParallelLICM> {
-	using ParallelLICMBase::ParallelLICMBase;
+  using ParallelLICMBase::ParallelLICMBase;
   void runOnOperation() override;
 };
 } // namespace

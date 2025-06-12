@@ -161,20 +161,21 @@ struct SROAWrappersPass
           // Working around bug in upstream llvm which was fixed in 800593a0
           if (llvm::isa<mlir::LLVM::ModuleFlagsOp>(op))
             continue;
-	  if (llvm::isa<mlir::LLVM::ComdatOp>(op)) {
-	    b.clone(op);
-	    continue;
-	  }
+          if (llvm::isa<mlir::LLVM::ComdatOp>(op)) {
+            b.clone(op);
+            continue;
+          }
           assert(op.hasTrait<mlir::OpTrait::IsIsolatedFromAbove>() ||
                  op.getNumRegions() == 0);
           assert(llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect()));
-            if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
-	       if (set_private || func.getBody().empty() || func.getLinkage() == mlir::LLVM::Linkage::Internal) {
-                func.setVisibility(mlir::SymbolTable::Visibility::Private);
-	       }
-            } else if (auto glob = llvm::dyn_cast<mlir::LLVM::GlobalOp>(op)) {
-              glob.setVisibility(mlir::SymbolTable::Visibility::Private);
+          if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
+            if (set_private || func.getBody().empty() ||
+                func.getLinkage() == mlir::LLVM::Linkage::Internal) {
+              func.setVisibility(mlir::SymbolTable::Visibility::Private);
             }
+          } else if (auto glob = llvm::dyn_cast<mlir::LLVM::GlobalOp>(op)) {
+            glob.setVisibility(mlir::SymbolTable::Visibility::Private);
+          }
           // There should be no need for mapping because all top level
           // operations in the module should be isolated from above
           b.clone(op);

@@ -52,7 +52,7 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  //if (isa<CacheLoad>(op))
+  // if (isa<CacheLoad>(op))
   //  return true;
 
   // Collect effect instances the operation. Note that the implementation of
@@ -318,7 +318,7 @@ bool isCaptured(Value v, Operation *potentialUser = nullptr,
         *seenuse = true;
       if (isa<memref::LoadOp, LLVM::LoadOp, affine::AffineLoadOp>(u))
         continue;
-      //if (isa<polygeist::CacheLoad>(u)) continue
+      // if (isa<polygeist::CacheLoad>(u)) continue
       if (auto s = dyn_cast<memref::StoreOp>(u)) {
         if (s.getValue() == v)
           return true;
@@ -361,9 +361,9 @@ bool isCaptured(Value v, Operation *potentialUser = nullptr,
       if (auto sub = dyn_cast<memref::DeallocOp>(u)) {
         continue;
       }
-      //if (auto sub = dyn_cast<polygeist::SubIndexOp>(u)) {
-      //  todo.push_back(sub);
-      //}
+      // if (auto sub = dyn_cast<polygeist::SubIndexOp>(u)) {
+      //   todo.push_back(sub);
+      // }
       if (auto sub = dyn_cast<enzymexla::Memref2PointerOp>(u)) {
         todo.push_back(sub);
       }
@@ -389,10 +389,10 @@ bool isCaptured(Value v, Operation *potentialUser = nullptr,
 
 Value getBase(Value v) {
   while (true) {
-    //if (auto s = v.getDefiningOp<SubIndexOp>()) {
-    //  v = s.getSource();
-    //  continue;
-    //}
+    // if (auto s = v.getDefiningOp<SubIndexOp>()) {
+    //   v = s.getSource();
+    //   continue;
+    // }
     if (auto s = v.getDefiningOp<enzymexla::Memref2PointerOp>()) {
       v = s.getSource();
       continue;
@@ -548,5 +548,5 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   return true;
 }
 
-}
-}
+} // namespace enzyme
+} // namespace mlir

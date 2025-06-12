@@ -17,7 +17,6 @@
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 #include "Implementations/XLADerivatives.h"
-#include "llvm/IRReader/IRReader.h"
 #include "Passes/Passes.h"
 #include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
@@ -47,6 +46,7 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/IRReader/IRReader.h"
 
 #include "mlir/Target/LLVMIR/Import.h"
 #include "llvm/Support/TargetSelect.h"
@@ -94,7 +94,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   mlir::enzyme::registerDialects(registry);
   mlir::enzyme::registerInterfaces(registry);
   mlir::enzyme::initializePasses();
-  
+
   mlir::MLIRContext context(registry);
   auto mod = mlir::translateLLVMIRToModule(std::move(llvmModule), &context,
                                            /*emitExpensiveWarnings*/ false,
@@ -102,12 +102,26 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   if (!mod) {
     exit(1);
   }
-  
+
   llvm::errs() << " mod: " << *mod << "\n";
 
   using namespace llvm;
   using namespace mlir;
-  std::string pass_pipeline = "inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},symbol-dce";
+  std::string pass_pipeline =
+      "inline{default-pipeline=canonicalize "
+      "max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-"
+      "recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-"
+      "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
+      "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
+      "canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,"
+      "canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,"
+      "func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,"
+      "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
+      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func("
+      "affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-"
+      "affine-to-stablehlo{prefer_while_raising=false "
+      "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
+      "symbol-dce";
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
   }
@@ -117,7 +131,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   mlir::LogicalResult result =
       mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
   if (mlir::failed(result)) {
-	  llvm::errs() << " failed to parse pass pipeline: " << error_message << "\n";
+    llvm::errs() << " failed to parse pass pipeline: " << error_message << "\n";
     exit(2);
   }
 
@@ -129,7 +143,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
-	  llvm::errs() << error_stream.str() << "\n";
+    llvm::errs() << error_stream.str() << "\n";
   }
 
   std::string res;

@@ -24,15 +24,15 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <algorithm>
 #include <deque>
 #include <iostream>
 #include <set>
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Utils.h"
 
 #define DEBUG_TYPE "mem2reg"
 
@@ -208,7 +208,8 @@ namespace {
 // than dealloc) remain.
 //
 
-struct PolygeistMem2Reg : public enzyme::impl::PolygeistMem2RegBase<PolygeistMem2Reg> {
+struct PolygeistMem2Reg
+    : public enzyme::impl::PolygeistMem2RegBase<PolygeistMem2Reg> {
   using PolygeistMem2RegBase::PolygeistMem2RegBase;
   void runOnOperation() override;
 
@@ -1090,10 +1091,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
 
-  LLVM_DEBUG(
-      llvm::dbgs() << "Begin forwarding store of " << AI << " to load\n"
-                   << *AI.getDefiningOp()->getParentOfType<FunctionOpInterface>()
-                   << "\n");
+  LLVM_DEBUG(llvm::dbgs()
+             << "Begin forwarding store of " << AI << " to load\n"
+             << *AI.getDefiningOp()->getParentOfType<FunctionOpInterface>()
+             << "\n");
   bool captured = AI.getDefiningOp<memref::GetGlobalOp>();
   bool SharedMemAddr = false;
   while (list.size()) {
@@ -1151,7 +1152,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             matchesIndices(loadOp.getIndices(), idx) == Match::Exact) {
           subType = loadOp.getType();
           if (subType == elType || elType == nullptr) {
-	    elType = subType;
+            elType = subType;
             loadOps.insert(loadOp);
             LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
           }
@@ -1162,7 +1163,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         if (!modified) {
           subType = loadOp.getType();
           if (subType == elType || elType == nullptr) {
-	    elType = subType;
+            elType = subType;
             loadOps.insert(loadOp);
             LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
           }
@@ -1175,7 +1176,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                            loadOp.getMapOperands(), idx) == Match::Exact) {
           subType = loadOp.getType();
           if (subType == elType || elType == nullptr) {
-	    elType = subType;
+            elType = subType;
             loadOps.insert(loadOp);
             LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
           }
@@ -2023,9 +2024,9 @@ void PolygeistMem2Reg::runOnOperation() {
           } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
             toErase.push_back(U);
             list.push_back(CO);
-          //} else if (auto CO = dyn_cast<SubIndexOp>(U)) {
-          //  toErase.push_back(U);
-          //  list.push_back(CO);
+            //} else if (auto CO = dyn_cast<SubIndexOp>(U)) {
+            //  toErase.push_back(U);
+            //  list.push_back(CO);
           } else {
             error = true;
             break;
@@ -2048,4 +2049,3 @@ void PolygeistMem2Reg::runOnOperation() {
     }
   } while (changed);
 }
-

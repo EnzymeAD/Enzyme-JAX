@@ -24,10 +24,10 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
-//#include "enzymexla/BarrierUtils.h"
-//#include "enzymexla/Ops.h"
-//#include "enzymexla/Passes/Passes.h"
-//#include "enzymexla/Passes/Utils.h"
+// #include "enzymexla/BarrierUtils.h"
+// #include "enzymexla/Ops.h"
+// #include "enzymexla/Passes/Passes.h"
+// #include "enzymexla/Passes/Utils.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
@@ -38,8 +38,8 @@
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SetVector.h"
 
 namespace mlir {
@@ -50,7 +50,6 @@ namespace enzyme {
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
-
 
 #include "ParallelLoopUnroll.h"
 #include "RuntimeWrapperUtils.h"
@@ -306,8 +305,8 @@ struct SharedLLVMAllocaToGlobal : public OpRewritePattern<LLVM::AllocaOp> {
     rewriter.setInsertionPointToStart(module.getBody());
 
     auto globalOp = rewriter.create<LLVM::GlobalOp>(
-        loc, ao.getElemType(), /* isConstant */ false, LLVM::Linkage::Internal, name,
-        mlir::Attribute(),
+        loc, ao.getElemType(), /* isConstant */ false, LLVM::Linkage::Internal,
+        name, mlir::Attribute(),
         /* alignment */ 0, /* addrSpace */ 3);
     rewriter.setInsertionPoint(ao);
     auto aoo = rewriter.create<LLVM::AddressOfOp>(loc, globalOp);
@@ -1696,7 +1695,8 @@ uint64_t getSharedMemUsage(scf::ParallelOp pop) {
 
 // TODO parallel wrapper LICM
 struct ConvertParallelToGPU1Pass
-    : public enzyme::impl::ConvertParallelToGPU1Base<ConvertParallelToGPU1Pass> {
+    : public enzyme::impl::ConvertParallelToGPU1Base<
+          ConvertParallelToGPU1Pass> {
   using ConvertParallelToGPU1Base::ConvertParallelToGPU1Base;
   void runOnOperation() override {
     auto m = getOperation();
@@ -1953,10 +1953,11 @@ struct ConvertParallelToGPU1Pass
           // If we have already varied the block size in SplitParallelOp, avoid
           // doing that here too.
           bool altBlockSize = false;
-          //if (auto aop = wrapper->getParentOfType<enzymexla::AlternativesOp>())
-          //  if (aop->getAttrOfType<StringAttr>("alternatives.type")
-          //          .getValue() == "gpu_kernel")
-          //    altBlockSize = true;
+          // if (auto aop =
+          // wrapper->getParentOfType<enzymexla::AlternativesOp>())
+          //   if (aop->getAttrOfType<StringAttr>("alternatives.type")
+          //           .getValue() == "gpu_kernel")
+          //     altBlockSize = true;
 
           auto loc = wrapper->getLoc();
 
@@ -2125,7 +2126,7 @@ struct ConvertParallelToGPU1Pass
                                   builder.getArrayAttr(descs));
 
           shrinkAlternativesOp(alternativesOp, curRegion, builder);
-	#endif
+#endif
         }
         // Make sure LICM doesnt change the structure
         m->walk([&](scf::ParallelOp pop) {
@@ -2206,22 +2207,23 @@ struct ConvertParallelToGPU1Pass
 };
 
 struct ConvertParallelToGPU2Pass
-    : public enzyme::impl::ConvertParallelToGPU2Base<ConvertParallelToGPU2Pass> {
-    using ConvertParallelToGPU2Base::ConvertParallelToGPU2Base;
-   void runOnOperation() override {
+    : public enzyme::impl::ConvertParallelToGPU2Base<
+          ConvertParallelToGPU2Pass> {
+  using ConvertParallelToGPU2Base::ConvertParallelToGPU2Base;
+  void runOnOperation() override {
 
-	   /*
-    std::vector<enzymexla::GetDeviceGlobalOp> gdgops;
-    getOperation()->walk(
-        [&](enzymexla::GetDeviceGlobalOp gdgo) { gdgops.push_back(gdgo); });
-    for (auto gdgo : gdgops) {
-      auto builder = OpBuilder(gdgo);
-      auto ggo = builder.create<memref::GetGlobalOp>(
-          gdgo->getLoc(), gdgo.getType(), gdgo.getNameAttr());
-      gdgo->replaceAllUsesWith(ggo);
-      gdgo->erase();
-    }
-    */
+    /*
+std::vector<enzymexla::GetDeviceGlobalOp> gdgops;
+getOperation()->walk(
+ [&](enzymexla::GetDeviceGlobalOp gdgo) { gdgops.push_back(gdgo); });
+for (auto gdgo : gdgops) {
+auto builder = OpBuilder(gdgo);
+auto ggo = builder.create<memref::GetGlobalOp>(
+   gdgo->getLoc(), gdgo.getType(), gdgo.getNameAttr());
+gdgo->replaceAllUsesWith(ggo);
+gdgo->erase();
+}
+*/
 
     RewritePatternSet patterns(&getContext());
     if (emitGPUKernelLaunchBounds)
@@ -2310,4 +2312,3 @@ struct MergeGPUModulesPass
 };
 
 } // namespace
-

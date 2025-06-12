@@ -11,11 +11,11 @@
 #include "Ops.h"
 #include "mlir/IR/DialectImplementation.h"
 
-#include "mlir/IR/Builders.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/IR/Builders.h"
 #include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/InterleavedRange.h"
+#include "llvm/Support/LogicalResult.h"
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -25,9 +25,10 @@
 
 static llvm::ParseResult parseAsyncDependencies(
     mlir::OpAsmParser &parser, mlir::Type &asyncTokenType,
-    llvm::SmallVectorImpl<mlir::OpAsmParser::UnresolvedOperand> &asyncDependencies) {
-	using namespace mlir;
-	using namespace mlir::gpu;
+    llvm::SmallVectorImpl<mlir::OpAsmParser::UnresolvedOperand>
+        &asyncDependencies) {
+  using namespace mlir;
+  using namespace mlir::gpu;
   auto loc = parser.getCurrentLocation();
   if (succeeded(parser.parseOptionalKeyword("async"))) {
     if (parser.getNumResults() == 0)
@@ -38,11 +39,11 @@ static llvm::ParseResult parseAsyncDependencies(
                                  OpAsmParser::Delimiter::OptionalSquare);
 }
 
-
 /// Prints optional async dependencies with its leading keyword.
 ///   (`async`)? (`[` ssa-id-list `]`)?
 // Used by the tablegen assembly format for several async ops.
-static void printAsyncDependencies(mlir::OpAsmPrinter &printer, mlir::Operation *op,
+static void printAsyncDependencies(mlir::OpAsmPrinter &printer,
+                                   mlir::Operation *op,
                                    mlir::Type asyncTokenType,
                                    mlir::OperandRange asyncDependencies) {
   if (asyncTokenType)
@@ -53,7 +54,6 @@ static void printAsyncDependencies(mlir::OpAsmPrinter &printer, mlir::Operation 
     printer << ' ';
   printer << llvm::interleaved_array(asyncDependencies);
 }
-
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"

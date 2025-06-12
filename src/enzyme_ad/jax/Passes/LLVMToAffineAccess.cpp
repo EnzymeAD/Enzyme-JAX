@@ -101,7 +101,7 @@ static std::optional<int64_t> getConstant(Value v) {
   return {};
 }
 
-template<typename FromAlloc, bool inPlace = false>
+template <typename FromAlloc, bool inPlace = false>
 static LogicalResult
 convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
                                 const DataLayout &dataLayout) {
@@ -109,28 +109,29 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
   SmallVector<Operation *> others;
   for (auto op : alloc->getResult(0).getUsers()) {
     if (inPlace) {
-    if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(op)) {
-     for (auto op2 : m2p.getResult().getUsers()) {
-    if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op2)) {
-      p2ms.push_back(p2m);
-      continue;
-    }
-    LLVM_DEBUG(llvm::dbgs() << "unknown user: " << *op << "\n");
-    LLVM_DEBUG(llvm::dbgs() << " - sub user : " << *op2 << "\n");
-    	return rewriter.notifyMatchFailure(alloc, "unknown user of allocation");
-     }
-     others.push_back(m2p);
-     continue;
-    }
+      if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(op)) {
+        for (auto op2 : m2p.getResult().getUsers()) {
+          if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op2)) {
+            p2ms.push_back(p2m);
+            continue;
+          }
+          LLVM_DEBUG(llvm::dbgs() << "unknown user: " << *op << "\n");
+          LLVM_DEBUG(llvm::dbgs() << " - sub user : " << *op2 << "\n");
+          return rewriter.notifyMatchFailure(alloc,
+                                             "unknown user of allocation");
+        }
+        others.push_back(m2p);
+        continue;
+      }
     } else {
-    if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
-      p2ms.push_back(p2m);
-      continue;
-    }
-    if (isa<LLVM::LifetimeStartOp>(op) || isa<LLVM::LifetimeEndOp>(op)) {
-      others.push_back(op);
-      continue;
-    }
+      if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+        p2ms.push_back(p2m);
+        continue;
+      }
+      if (isa<LLVM::LifetimeStartOp>(op) || isa<LLVM::LifetimeEndOp>(op)) {
+        others.push_back(op);
+        continue;
+      }
     }
 
     LLVM_DEBUG(llvm::dbgs() << "unknown user: " << *op << "\n");
@@ -163,18 +164,20 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
 
     elNum = dataLayout.getTypeSize(alloc.getElemType()) * (*sizeVal);
   } else {
-    if (ptr2memref.getResult().getType().getElementType() == alloc.getType().getElementType())
-	 return failure();
+    if (ptr2memref.getResult().getType().getElementType() ==
+        alloc.getType().getElementType())
+      return failure();
     if (alloc.getType().getShape().size() != 1)
-	  return failure();
+      return failure();
     elNum = alloc.getType().getShape()[0];
     if (elNum == ShapedType::kDynamic) {
-          auto sizeVal = getConstant(alloc.getDynamicSizes()[0]);
-    if (!sizeVal)
-      return failure();
-    	elNum = *sizeVal;
+      auto sizeVal = getConstant(alloc.getDynamicSizes()[0]);
+      if (!sizeVal)
+        return failure();
+      elNum = *sizeVal;
     }
-    elNum *= dataLayout.getTypeSize(cast<MemRefType>(alloc->getResult(0).getType()).getElementType());
+    elNum *= dataLayout.getTypeSize(
+        cast<MemRefType>(alloc->getResult(0).getType()).getElementType());
   }
 
   auto newElSize =
@@ -185,45 +188,58 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
 
   MemRefType memrefType;
   if constexpr (!inPlace) {
-  	SmallVector<int64_t, 1> sizes = {newElnum};
-	memrefType = MemRefType::get(sizes, ptr2memref.getResult().getType().getElementType(),
-                      MemRefLayoutAttrInterface{},
-                      ptr2memref.getResult().getType().getMemorySpace());
+    SmallVector<int64_t, 1> sizes = {newElnum};
+    memrefType = MemRefType::get(
+        sizes, ptr2memref.getResult().getType().getElementType(),
+        MemRefLayoutAttrInterface{},
+        ptr2memref.getResult().getType().getMemorySpace());
   } else {
-  	SmallVector<int64_t, 1> sizes = {newElnum};
-	if (alloc.getDynamicSizes().size()) {
-	   sizes[0] = ShapedType::kDynamic;
-	}
-	memrefType = MemRefType::get(sizes, ptr2memref.getResult().getType().getElementType(),
-                      MemRefLayoutAttrInterface{},
-                      alloc.getType().getMemorySpace());
+    SmallVector<int64_t, 1> sizes = {newElnum};
+    if (alloc.getDynamicSizes().size()) {
+      sizes[0] = ShapedType::kDynamic;
+    }
+    memrefType = MemRefType::get(
+        sizes, ptr2memref.getResult().getType().getElementType(),
+        MemRefLayoutAttrInterface{}, alloc.getType().getMemorySpace());
   }
   Value newAlloc;
   if constexpr (!inPlace)
-	newAlloc =
-      rewriter.create<memref::AllocaOp>(alloc->getLoc(), memrefType);
+    newAlloc = rewriter.create<memref::AllocaOp>(alloc->getLoc(), memrefType);
   else {
 
-	  auto tys = llvm::to_vector(alloc->getResultTypes());
-	  tys[0] = memrefType;
-        auto newOp = cast<FromAlloc>(rewriter.create(alloc->getLoc(), alloc->getName().getIdentifier(),
-                                      alloc->getOperands(), tys,
-                                      alloc->getAttrs(), alloc->getSuccessors()));
+    auto tys = llvm::to_vector(alloc->getResultTypes());
+    tys[0] = memrefType;
+    auto newOp = cast<FromAlloc>(rewriter.create(
+        alloc->getLoc(), alloc->getName().getIdentifier(), alloc->getOperands(),
+        tys, alloc->getAttrs(), alloc->getSuccessors()));
 
-	if (newOp.getDynamicSizes().size()) {
-	  auto dyn = llvm::to_vector(newOp.getDynamicSizes());
-	  dyn[dyn.size() - 1] = rewriter.create<arith::MulIOp>(alloc->getLoc(), dyn[dyn.size()-1], rewriter.create<arith::ConstantIndexOp>(alloc->getLoc(), dataLayout.getTypeSize(cast<MemRefType>(alloc->getResult(0).getType()).getElementType())));
-	  dyn[dyn.size() - 1] = rewriter.create<arith::DivUIOp>(alloc->getLoc(), dyn[dyn.size()-1], rewriter.create<arith::ConstantIndexOp>(alloc->getLoc(), dataLayout.getTypeSize(ptr2memref.getResult().getType().getElementType())));
-	  newOp.getDynamicSizesMutable().assign(dyn);
-	}
+    if (newOp.getDynamicSizes().size()) {
+      auto dyn = llvm::to_vector(newOp.getDynamicSizes());
+      dyn[dyn.size() - 1] = rewriter.create<arith::MulIOp>(
+          alloc->getLoc(), dyn[dyn.size() - 1],
+          rewriter.create<arith::ConstantIndexOp>(
+              alloc->getLoc(),
+              dataLayout.getTypeSize(
+                  cast<MemRefType>(alloc->getResult(0).getType())
+                      .getElementType())));
+      dyn[dyn.size() - 1] = rewriter.create<arith::DivUIOp>(
+          alloc->getLoc(), dyn[dyn.size() - 1],
+          rewriter.create<arith::ConstantIndexOp>(
+              alloc->getLoc(),
+              dataLayout.getTypeSize(
+                  ptr2memref.getResult().getType().getElementType())));
+      newOp.getDynamicSizesMutable().assign(dyn);
+    }
     newAlloc = newOp->getResult(0);
   }
 
   for (auto p2m : p2ms) {
     Value replacement = newAlloc;
     if (memrefType.getElementType() != p2m.getType().getElementType()) {
-      replacement = rewriter.create<enzymexla::Memref2PointerOp>(alloc->getLoc(), p2m.getType(), replacement);
-      rewriter.modifyOpInPlace(p2m, [&](){ p2m.getSourceMutable().set(replacement); });
+      replacement = rewriter.create<enzymexla::Memref2PointerOp>(
+          alloc->getLoc(), p2m.getType(), replacement);
+      rewriter.modifyOpInPlace(
+          p2m, [&]() { p2m.getSourceMutable().set(replacement); });
       continue;
     }
     if (replacement.getType() != p2m.getType())
@@ -376,19 +392,17 @@ struct ConvertLLVMAllocaToMemrefAlloca
   }
 };
 
-template<typename T>
-struct SimplifyInPlaceAlloc
-    : public OpRewritePattern<T> {
+template <typename T> struct SimplifyInPlaceAlloc : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
   const DataLayoutAnalysis &dl;
-  SimplifyInPlaceAlloc(MLIRContext *context,
-                                  const DataLayoutAnalysis &dl)
+  SimplifyInPlaceAlloc(MLIRContext *context, const DataLayoutAnalysis &dl)
       : OpRewritePattern<T>(context), dl(dl) {}
 
   LogicalResult matchAndRewrite(T alloc,
                                 PatternRewriter &rewriter) const override {
     auto dataLayout = dl.getAtOrAbove(alloc);
-    return convertLLVMAllocaToMemrefAlloca<T, true>(alloc, rewriter, dataLayout);
+    return convertLLVMAllocaToMemrefAlloca<T, true>(alloc, rewriter,
+                                                    dataLayout);
   }
 };
 
@@ -1421,7 +1435,7 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
 }
 
 /// Fold constant dimensions into an alloc like operation.
-template <typename AllocLikeOp, bool gpu=false>
+template <typename AllocLikeOp, bool gpu = false>
 struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
   using OpRewritePattern<AllocLikeOp>::OpRewritePattern;
 
@@ -1474,22 +1488,28 @@ struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
 
     // Create and insert the alloc op for the new memref.
     if constexpr (gpu) {
-    auto newAlloc = rewriter.create<AllocLikeOp>(
-        alloc.getLoc(), newMemRefType, alloc->getNumResults() == 1 ? nullptr : alloc->getResultTypes()[1], alloc.getAsyncDependencies(), dynamicSizes, alloc.getSymbolOperands(), alloc.getHostShared());
-    // Insert a cast so we have the same type as the old alloc.
-    rewriter.replaceOpWithNewOp<memref::CastOp>(alloc, alloc.getType(), newAlloc->getResult(0));
+      auto newAlloc = rewriter.create<AllocLikeOp>(
+          alloc.getLoc(), newMemRefType,
+          alloc->getNumResults() == 1 ? nullptr : alloc->getResultTypes()[1],
+          alloc.getAsyncDependencies(), dynamicSizes, alloc.getSymbolOperands(),
+          alloc.getHostShared());
+      // Insert a cast so we have the same type as the old alloc.
+      rewriter.replaceOpWithNewOp<memref::CastOp>(alloc, alloc.getType(),
+                                                  newAlloc->getResult(0));
     } else {
-    auto newAlloc = rewriter.create<AllocLikeOp>(
-        alloc.getLoc(), newMemRefType, dynamicSizes, alloc.getSymbolOperands(),
-        alloc.getAlignmentAttr());
-    // Insert a cast so we have the same type as the old alloc.
-    rewriter.replaceOpWithNewOp<memref::CastOp>(alloc, alloc.getType(), newAlloc);
+      auto newAlloc = rewriter.create<AllocLikeOp>(
+          alloc.getLoc(), newMemRefType, dynamicSizes,
+          alloc.getSymbolOperands(), alloc.getAlignmentAttr());
+      // Insert a cast so we have the same type as the old alloc.
+      rewriter.replaceOpWithNewOp<memref::CastOp>(alloc, alloc.getType(),
+                                                  newAlloc);
     }
     return success();
   }
 };
 
-template <typename T, bool gpu=false> struct SimplifyDeadAlloc : public OpRewritePattern<T> {
+template <typename T, bool gpu = false>
+struct SimplifyDeadAlloc : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(T alloc,
@@ -1513,8 +1533,8 @@ template <typename T, bool gpu=false> struct SimplifyDeadAlloc : public OpRewrit
 
       if (auto cpy = dyn_cast<enzymexla::MemcpyOp>(op)) {
         if (cpy.getTarget() == alloc->getResult(0))
-	  return failure();
-	continue;
+          return failure();
+        continue;
       }
 
       if (isa<memref::DeallocOp>(op))
@@ -1533,7 +1553,7 @@ template <typename T, bool gpu=false> struct SimplifyDeadAlloc : public OpRewrit
     }
 
     if constexpr (gpu) {
-       alloc->getResult(1).replaceAllUsesWith(alloc.getAsyncToken());
+      alloc->getResult(1).replaceAllUsesWith(alloc.getAsyncToken());
     }
 
     for (Operation *user : llvm::make_early_inc_range(alloc->getUsers()))
@@ -1830,13 +1850,20 @@ convertLLVMToAffineAccess(Operation *op,
 
   {
     RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad, SimplifyInPlaceAlloc<memref::AllocOp>, SimplifyInPlaceAlloc<memref::AllocaOp>, SimplifyInPlaceAlloc<gpu::AllocOp> >(
-        context, dataLayoutAnalysis);
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad,
+                    SimplifyInPlaceAlloc<memref::AllocOp>,
+                    SimplifyInPlaceAlloc<memref::AllocaOp>,
+                    SimplifyInPlaceAlloc<gpu::AllocOp>>(context,
+                                                        dataLayoutAnalysis);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
-    patterns.insert<SimplifyAllocConst<memref::AllocOp>, SimplifyAllocConst<memref::AllocaOp>, SimplifyAllocConst<gpu::AllocOp, true>>(context);
-    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
-                    SimplifyDeadAlloc<LLVM::AllocaOp>, SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
+    patterns.insert<SimplifyAllocConst<memref::AllocOp>,
+                    SimplifyAllocConst<memref::AllocaOp>,
+                    SimplifyAllocConst<gpu::AllocOp, true>>(context);
+    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
+                    SimplifyDeadAlloc<memref::AllocOp>,
+                    SimplifyDeadAlloc<LLVM::AllocaOp>,
+                    SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
                     LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())

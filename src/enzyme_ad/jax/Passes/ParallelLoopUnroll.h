@@ -22,4 +22,4 @@ static LogicalResult scfParallelUnrollByFactors(
   }
   return success(succeeded);
 }
-} // namespace mlir::polygeist
+} // namespace mlir::enzymexla

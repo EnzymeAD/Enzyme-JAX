@@ -31,9 +31,9 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir {
@@ -43,7 +43,6 @@ namespace enzyme {
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
-
 
 #include <algorithm>
 #include <mutex>
@@ -139,8 +138,7 @@ mlir::Value callMalloc(mlir::OpBuilder &ibuilder, mlir::ModuleOp module,
     auto *ctx = module->getContext();
     mlir::Type types[] = {mlir::IntegerType::get(ctx, 64)};
     auto llvmFnType = LLVM::LLVMFunctionType::get(
-        LLVM::LLVMPointerType::get(ctx), types,
-        false);
+        LLVM::LLVMPointerType::get(ctx), types, false);
 
     LLVM::Linkage lnk = LLVM::Linkage::External;
     builder.setInsertionPointToStart(module.getBody());
@@ -189,8 +187,10 @@ void ParallelLower::runOnOperation() {
     AlwaysInlinerInterface interface(&getContext());
 
     auto callable = caller.getCallableForCallee();
-    CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(caller.resolveCallableInTable(&symbolTable));
-    if (!callableOp) return;
+    CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
+        caller.resolveCallableInTable(&symbolTable));
+    if (!callableOp)
+      return;
     Region *targetRegion = callableOp.getCallableRegion();
     if (!targetRegion)
       return;
@@ -235,8 +235,10 @@ void ParallelLower::runOnOperation() {
     AlwaysInlinerInterface interface(&getContext());
 
     auto callable = caller.getCallableForCallee();
-    CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(caller.resolveCallableInTable(&symbolTable));
-    if (!callableOp) return;
+    CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
+        caller.resolveCallableInTable(&symbolTable));
+    if (!callableOp)
+      return;
     Region *targetRegion = callableOp.getCallableRegion();
     if (!targetRegion)
       return;
@@ -312,9 +314,9 @@ void ParallelLower::runOnOperation() {
         for (Operation *m : symbolUserMap.getUsers(fop)) {
           if (isa<LLVM::CallOp, func::CallOp>(m))
             inlineOps.push_back(m);
-          //else if (isa<enzymexla::GetFuncOp>(m)) {
-          //  toFollowOps.push_back(m->getResult(0));
-          //}
+          // else if (isa<enzymexla::GetFuncOp>(m)) {
+          //   toFollowOps.push_back(m->getResult(0));
+          // }
         }
       }
     }
@@ -377,35 +379,29 @@ void ParallelLower::runOnOperation() {
 
   // Only supports single block functions at the moment.
 
-  getOperation()->walk(
-      [&](gpu::LaunchFuncOp launchOp) {
+  getOperation()->walk([&](gpu::LaunchFuncOp launchOp) {
     OpBuilder builder(launchOp);
     auto op = builder.create<mlir::gpu::LaunchOp>(
-        launchOp.getLoc(),
-	launchOp.getGridSizeX(),	
-	launchOp.getGridSizeY(),	
-	launchOp.getGridSizeZ(),
-	launchOp.getBlockSizeX(),	
-	launchOp.getBlockSizeY(),	
-	launchOp.getBlockSizeZ(),
-	launchOp.getDynamicSharedMemorySize(),
-	launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
-	launchOp.getAsyncDependencies(),
-	/*workgroup*/TypeRange(),
-	/*private*/TypeRange(),
-	launchOp.getClusterSizeX(),
-	launchOp.getClusterSizeY(),
-	launchOp.getClusterSizeZ()
-	);
+        launchOp.getLoc(), launchOp.getGridSizeX(), launchOp.getGridSizeY(),
+        launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
+        launchOp.getBlockSizeY(), launchOp.getBlockSizeZ(),
+        launchOp.getDynamicSharedMemorySize(),
+        launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
+        launchOp.getAsyncDependencies(),
+        /*workgroup*/ TypeRange(),
+        /*private*/ TypeRange(), launchOp.getClusterSizeX(),
+        launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
     builder.setInsertionPointToStart(&op.getRegion().front());
-    builder.create<func::CallOp>(launchOp.getLoc(), launchOp.getKernel(), TypeRange(), launchOp.getKernelOperands());
+    builder.create<func::CallOp>(launchOp.getLoc(), launchOp.getKernel(),
+                                 TypeRange(), launchOp.getKernelOperands());
     builder.create<gpu::TerminatorOp>(launchOp.getLoc());
-    for (auto &&[lhs, rhs] : llvm::zip_equal(launchOp->getResults(), op->getResults())) {
+    for (auto &&[lhs, rhs] :
+         llvm::zip_equal(launchOp->getResults(), op->getResults())) {
       lhs.replaceAllUsesWith(rhs);
     }
     launchOp->erase();
   });
-  
+
   SmallVector<gpu::LaunchOp> toHandle;
   getOperation()->walk(
       [&](gpu::LaunchOp launchOp) { toHandle.push_back(launchOp); });
