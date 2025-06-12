@@ -19605,6 +19605,84 @@ struct GatherConstProp final
   }
 };
 
+struct UnaryElementwiseScatterSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          UnaryElementwiseScatterSimplify> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      UnaryElementwiseScatterSimplify>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 1)
+      return rewriter.notifyMatchFailure(op, "not a unary elementwise op");
+
+    auto input = op->getOperand(0);
+    auto scatterOp = input.getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatterOp)
+      return rewriter.notifyMatchFailure(op, "not a scatter op");
+
+    if (scatterOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "ScatterOp with more than one input not supported");
+
+    if (!scatterOp.getResult(0).hasOneUse())
+      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
+
+    if (!isScatterSetindexOp(scatterOp))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+
+    auto scatterInput = scatterOp.getInputs()[0];
+    DenseElementsAttr scatterInputAttr;
+    // In this case, we are will definitely increase the compute cost
+    if (!matchPattern(scatterInput, m_Constant(&scatterInputAttr)))
+      return rewriter.notifyMatchFailure(op,
+                                         "ScatterOp with non-constant input");
+
+    auto elemType =
+        cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+
+    // TODO: support convert op. we need to rewrite the update computation to
+    // take the converted element type
+    if (isa<stablehlo::ConvertOp>(op))
+      return rewriter.notifyMatchFailure(op,
+                                         "ConvertOp not supported for now.");
+
+    // should get constant propagated
+    auto scatterInputElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(scatterInput),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterInput.getType()).getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto scatterUpdatesElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(),
+        ValueRange(scatterOp.getUpdates()),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterOp.getUpdates()[0].getType())
+                .getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto resultType = RankedTensorType::get(
+        cast<RankedTensorType>(scatterOp.getResultTypes()[0]).getShape(),
+        elemType);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op->getLoc(), TypeRange(resultType),
+        ValueRange(scatterInputElem->getResult(0)),
+        scatterOp.getScatterIndices(),
+        ValueRange(scatterUpdatesElem->getResult(0)),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp->getResult(0));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20126,7 +20204,8 @@ struct EnzymeHLOOptPass
         RealConjSimplify,
         ConjComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
-        ScatterMultiplySimplify
+        ScatterMultiplySimplify,
+        UnaryElementwiseScatterSimplify
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,

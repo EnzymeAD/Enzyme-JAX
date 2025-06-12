@@ -2027,3 +2027,9 @@ def ApplyGatherConstProp : EnzymeHLOPatternOp<"gather_const_prop"> {
     "GatherConstProp"
   ];
 }
+
+def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise_scatter_simplify"> {
+  let patterns = [
+    "UnaryElementwiseScatterSimplify"
+  ];
+}
