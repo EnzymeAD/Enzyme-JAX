@@ -2015,3 +2015,21 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
     "SplitConvolutionIntoReverseConvolution"
   ];
 }
+
+def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
+  let patterns = [
+    "ScatterMultiplySimplify"
+  ];
+}
+
+def ApplyGatherConstProp : EnzymeHLOPatternOp<"gather_const_prop"> {
+  let patterns = [
+    "GatherConstProp"
+  ];
+}
+
+def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise_scatter_simplify"> {
+  let patterns = [
+    "UnaryElementwiseScatterSimplify"
+  ];
+}
