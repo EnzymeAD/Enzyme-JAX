@@ -23,6 +23,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/MapVector.h"
 
 namespace mlir {

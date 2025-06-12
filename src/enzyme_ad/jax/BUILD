@@ -5,6 +5,7 @@ load("@rules_python//python:py_library.bzl", "py_library")
 
 exports_files([
     "enzymexlamlir-opt.cpp",
+    "raise.cpp",
     "RegistryUtils.cpp",
 ])
 
@@ -387,8 +388,10 @@ gentbl_cc_library(
     td_file = "Dialect/EnzymeXLAOps.td",
     deps = [
         ":EnzymeXLADialectTdFiles",
+        "@llvm-project//mlir:CopyOpInterfaceTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
+	"@llvm-project//mlir:GPUOpsTdFiles",
     ],
 )
 
@@ -443,6 +446,7 @@ cc_library(
     srcs = glob(
         [
             "Implementations/*.cpp",
+	    "Utils.cpp",
             "Passes/*.cpp",
             "Dialect/*.cpp",
         ],
@@ -487,6 +491,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:AffineDialect",
+	"@llvm-project//mlir:AsyncDialect",
         "@llvm-project//mlir:AffineToStandard",
         "@llvm-project//mlir:AffineTransforms",
         "@llvm-project//mlir:AffineUtils",
@@ -495,6 +500,7 @@ cc_library(
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CopyOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
@@ -531,6 +537,7 @@ cc_library(
         "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:NVGPUToNVVM",
         "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:ROCDLDialect",
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
