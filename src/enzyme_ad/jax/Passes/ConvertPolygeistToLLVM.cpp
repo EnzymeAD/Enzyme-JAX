@@ -1898,34 +1898,31 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     x = rewriter.create<LLVM::ZExtOp>(x.getLoc(), i64, x);
     y = rewriter.create<LLVM::ZExtOp>(y.getLoc(), i64, y);
 
-    x = rewriter.create<LLVM::ShlOp>(x.getLoc(), x, rewriter.create<LLVM::ConstantOp>(x.getLoc(), i64, 32));
+    x = rewriter.create<LLVM::ShlOp>(
+        x.getLoc(), x, rewriter.create<LLVM::ConstantOp>(x.getLoc(), i64, 32));
     args.push_back(rewriter.create<LLVM::OrOp>(x.getLoc(), x, y));
     args.push_back(z);
   };
-  dim3(adaptor.getGridSizeX(), adaptor.getGridSizeY(),
-       adaptor.getGridSizeZ());
+  dim3(adaptor.getGridSizeX(), adaptor.getGridSizeY(), adaptor.getGridSizeZ());
   dim3(adaptor.getBlockSizeX(), adaptor.getBlockSizeY(),
        adaptor.getBlockSizeZ());
-      
-  args.push_back(kernelParams);
-  args.push_back(rewriter.create<LLVM::ZExtOp>(loc, i64, dynamicSharedMemorySize));
-  args.push_back(stream);
-      
-  auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-  Type tys[] = {
-      ptrty, 
-      i64, i32,
-      i64, i32,
-      ptrty, i64, ptrty
-  };
-      auto cudaLaunchFn =
-          LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaLaunchKernel", tys, i32);
-      if (failed(cudaLaunchFn)) {
-        llvm::errs() << " cudamalloc already exists with different types\n";
-        return failure();
-      }
 
-      auto launchCall = rewriter.create<LLVM::CallOp>(loc, cudaLaunchFn.value(), args);
+  args.push_back(kernelParams);
+  args.push_back(
+      rewriter.create<LLVM::ZExtOp>(loc, i64, dynamicSharedMemorySize));
+  args.push_back(stream);
+
+  auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+  Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
+  auto cudaLaunchFn =
+      LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaLaunchKernel", tys, i32);
+  if (failed(cudaLaunchFn)) {
+    llvm::errs() << " cudamalloc already exists with different types\n";
+    return failure();
+  }
+
+  auto launchCall =
+      rewriter.create<LLVM::CallOp>(loc, cudaLaunchFn.value(), args);
   if (launchOp.getAsyncToken()) {
     // Async launch: make dependent ops use the same stream.
     rewriter.replaceOp(launchOp, {stream});
