@@ -1719,14 +1719,17 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             ctorBuilder.create<LLVM::AddressOfOp>(loc, fatBinWrapper);
         auto bitcastOfWrapper = ctorBuilder.create<LLVM::BitcastOp>(
             loc, llvmPointerType, addressOfWrapper);
-  
-  	auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFatBinary", llvmPointerType, llvmPointerType);
-	  if (failed(cudaRegisterFatbinFn)) {
-	    llvm::errs() << " cudamalloc already exists with different types\n";
-	    return failure();
-	  }
 
-	  auto module = rewriter.create<LLVM::CallOp>(loc, cudaRegisterFatbinFn.value(), ValueRange(bitcastOfWrapper));
+        auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(
+            rewriter, moduleOp, "__cudaRegisterFatBinary", llvmPointerType,
+            llvmPointerType);
+        if (failed(cudaRegisterFatbinFn)) {
+          llvm::errs() << " cudamalloc already exists with different types\n";
+          return failure();
+        }
+
+        auto module = rewriter.create<LLVM::CallOp>(
+            loc, cudaRegisterFatbinFn.value(), ValueRange(bitcastOfWrapper));
 
         auto moduleGlobalName =
             std::string(llvm::formatv("polygeist_{0}_module_ptr", moduleName));
@@ -1779,23 +1782,32 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
             auto bitcast =
                 ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
-  		
-	    Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType, llvmPointerType, llvmInt32Type, llvmPointerType, llvmPointerType, llvmPointerType, llvmPointerType, llvmPointerType};
-	    auto cudaRegisterFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFunction", tys, llvmInt32Type);
-	  if (failed(cudaRegisterFn)) {
-	    llvm::errs() << " cudamalloc already exists with different types\n";
-	    return failure();
-	  }
-	  Value args[] = {
-		  module.getResult(),
-	     bitcast,
-	     kernelName,
-	     kernelName,
-	     ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, -1),
-	     nullPtr, nullPtr, nullPtr, nullPtr, nullPtr
-	  };
 
-		  rewriter.create<LLVM::CallOp>(loc, cudaRegisterFn.value(), args);
+            Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
+                          llvmPointerType, llvmInt32Type,   llvmPointerType,
+                          llvmPointerType, llvmPointerType, llvmPointerType,
+                          llvmPointerType};
+            auto cudaRegisterFn = LLVM::lookupOrCreateFn(
+                rewriter, moduleOp, "__cudaRegisterFunction", tys,
+                llvmInt32Type);
+            if (failed(cudaRegisterFn)) {
+              llvm::errs()
+                  << " cudamalloc already exists with different types\n";
+              return failure();
+            }
+            Value args[] = {
+                module.getResult(),
+                bitcast,
+                kernelName,
+                kernelName,
+                ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, -1),
+                nullPtr,
+                nullPtr,
+                nullPtr,
+                nullPtr,
+                nullPtr};
+
+            rewriter.create<LLVM::CallOp>(loc, cudaRegisterFn.value(), args);
           } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
             int addrSpace = g.getAddrSpace();
             if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
@@ -1845,14 +1857,17 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
         }
         // TODO this has to happen only for some CUDA versions
         if (gpuTarget == "cuda") {
-  	  auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFatBinaryEnd", llvmPointerType, llvmVoidType);
-	    if (failed(cudaRegisterFatbinFn)) {
-	      llvm::errs() << " cudamalloc already exists with different types\n";
-	      return failure();
-	    }
+          auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(
+              rewriter, moduleOp, "__cudaRegisterFatBinaryEnd", llvmPointerType,
+              llvmVoidType);
+          if (failed(cudaRegisterFatbinFn)) {
+            llvm::errs() << " cudamalloc already exists with different types\n";
+            return failure();
+          }
 
-	   rewriter.create<LLVM::CallOp>(loc, cudaRegisterFatbinFn.value(), ValueRange(bitcastOfWrapper));
-	}
+          rewriter.create<LLVM::CallOp>(loc, cudaRegisterFatbinFn.value(),
+                                        ValueRange(bitcastOfWrapper));
+        }
         ctorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
       }
       auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
@@ -1872,14 +1887,17 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
         auto aoo = dtorBuilder.create<LLVM::AddressOfOp>(loc, moduleGlobal);
         auto module = dtorBuilder.create<LLVM::LoadOp>(
             loc, llvmPointerPointerType, aoo->getResult(0));
-  	  
-	auto cudaUnRegisterFatbinFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaUnregisterFatBinary", llvmPointerType, llvmVoidType);
-	    if (failed(cudaUnRegisterFatbinFn)) {
-	      llvm::errs() << " cudamalloc already exists with different types\n";
-	      return failure();
-	    }
 
-	   rewriter.create<LLVM::CallOp>(loc, cudaUnRegisterFatbinFn.value(), ValueRange(module));
+        auto cudaUnRegisterFatbinFn = LLVM::lookupOrCreateFn(
+            rewriter, moduleOp, "__cudaUnregisterFatBinary", llvmPointerType,
+            llvmVoidType);
+        if (failed(cudaUnRegisterFatbinFn)) {
+          llvm::errs() << " cudamalloc already exists with different types\n";
+          return failure();
+        }
+
+        rewriter.create<LLVM::CallOp>(loc, cudaUnRegisterFatbinFn.value(),
+                                      ValueRange(module));
         dtorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
         auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
         {
@@ -2624,8 +2642,7 @@ static void
 populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                                       LLVMTypeConverter &typeConverter,
                                       std::string gpuTarget) {
-  patterns.add<GPUReturnOpLowering>(
-      typeConverter);
+  patterns.add<GPUReturnOpLowering>(typeConverter);
   patterns.add<GPUFuncOpLowering>(
       typeConverter,
       /*allocaAddrSpace=*/0,
@@ -2634,7 +2651,6 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                           ? NVVM::NVVMDialect::getKernelFuncAttrName()
                           : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
 }
-
 
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
@@ -2695,13 +2711,13 @@ struct ConvertPolygeistToLLVMPass
     }
 
     RewritePatternSet patterns(&getContext());
-      
+
     auto gpuTarget = "cuda";
 
-        // Insert our custom version of GPUFuncLowering
-        if (useCStyleMemRef) {
-          populateCStyleGPUFuncLoweringPatterns(patterns, converter, gpuTarget);
-        }
+    // Insert our custom version of GPUFuncLowering
+    if (useCStyleMemRef) {
+      populateCStyleGPUFuncLoweringPatterns(patterns, converter, gpuTarget);
+    }
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
@@ -2735,7 +2751,6 @@ struct ConvertPolygeistToLLVMPass
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter);
     } else
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<false>>(converter);
-
 
     patterns
         .add<LLVMOpLowering, GlobalOpTypeConversion, ReturnOpTypeConversion>(

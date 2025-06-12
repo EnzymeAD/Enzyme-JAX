@@ -417,8 +417,9 @@ void ParallelLower::runOnOperation() {
       SmallVector<LLVM::CallOp> lops;
       launchOp.walk([&](LLVM::CallOp caller) { lops.push_back(caller); });
       for (auto op : lops) {
-    	if (!lfn)
-	  lfn = dyn_cast_or_null<LLVM::LLVMFuncOp>(op.resolveCallableInTable(&symbolTable));
+        if (!lfn)
+          lfn = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+              op.resolveCallableInTable(&symbolTable));
         LLVMcallInliner(op);
       }
     }
@@ -454,12 +455,12 @@ void ParallelLower::runOnOperation() {
                       launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
                       launchOp.getBlockSizeY(), launchOp.getBlockSizeZ()}));
       if (lfn) {
-	    if (auto passthrough = lfn.getPassthrough()) {
-	      pw->setAttr("passthrough", *passthrough);
-	    }
-	    if (auto passthrough = lfn.getTargetFeatures()) {
-	      pw->setAttr("target_features", *passthrough);
-	    }
+        if (auto passthrough = lfn.getPassthrough()) {
+          pw->setAttr("passthrough", *passthrough);
+        }
+        if (auto passthrough = lfn.getTargetFeatures()) {
+          pw->setAttr("target_features", *passthrough);
+        }
       }
       builder.setInsertionPointToStart(pw.getBody());
     }
