@@ -898,8 +898,7 @@ struct QRFactorizationOpLowering
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
     auto tsize = std::min(inputShape.front(), inputShape.back());
-    auto type_tau =
-        RankedTensorType::get({tsize}, rewriter.getIntegerType(blasIntWidth));
+    auto type_tau = RankedTensorType::get({tsize}, inputElementType);
     auto tau = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(type_tau, 0)));
 
