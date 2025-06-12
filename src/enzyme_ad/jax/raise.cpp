@@ -90,31 +90,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::InitializeNativeTargetAsmPrinter();
 
   mlir::DialectRegistry registry;
-  prepareRegistry(registry);
-
-  mlir::registerenzymePasses();
-  mlir::enzyme::registerenzymexlaPasses();
-
-  // Register the standard passes we want.
-  mlir::registerCSEPass();
-  mlir::registerLowerAffinePass();
-  mlir::registerSCCPPass();
-  mlir::registerInlinerPass();
-  mlir::registerCanonicalizerPass();
-  mlir::registerSymbolDCEPass();
-  mlir::registerLoopInvariantCodeMotionPass();
-  mlir::registerConvertSCFToOpenMPPass();
-  mlir::affine::registerAffinePasses();
-  mlir::registerReconcileUnrealizedCastsPass();
-  mlir::enzyme::registerConvertLLVMToControlFlowPass();
-  mlir::enzyme::registerEnzymeLiftControlFlowToSCFPass();
-
-  mlir::arith::registerArithPasses();
-
-  // Transform dialect and extensions.
-  mlir::transform::registerInterpreterPass();
-  mlir::enzyme::registerGenerateApplyPatternsPass();
-  mlir::enzyme::registerRemoveTransformPass();
+  mlir::enzyme::prepareRegistry(registry);
+  mlir::enzyme::registerDialects(registry);
+  mlir::enzyme::registerInterfaces(registry);
+  mlir::enzyme::initializePasses();
+  
   mlir::MLIRContext context(registry);
   auto mod = mlir::translateLLVMIRToModule(std::move(llvmModule), &context,
                                            /*emitExpensiveWarnings*/ false,
