@@ -782,4 +782,9 @@ def ParallelLICM : Pass<"parallel-licm"> {
   let summary = "Perform LICM on known parallel (and serial) loops";
 }
 
+def FixGPUFunc : Pass<"fix-gpu-func", "mlir::gpu::GPUModuleOp"> {
+  let summary = "Fix nested calls to gpu functions we generate in the frontend";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
+}
+
 #endif

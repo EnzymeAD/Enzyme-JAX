@@ -39,6 +39,7 @@
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_PARALLELLOWER
+#define GEN_PASS_DEF_FIXGPUFUNC
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -108,10 +109,11 @@ struct ConvertCudaRTtoHipRT
     : public ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
   void runOnOperation() override;
 };
-struct FixGPUFunc : public FixGPUFuncBase<FixGPUFunc> {
+*/
+struct FixGPUFunc : public enzyme::impl::FixGPUFuncBase<FixGPUFunc> {
+  using FixGPUFuncBase::FixGPUFuncBase;
   void runOnOperation() override;
 };
-*/
 } // end anonymous namespace
 
 /// Creates a pass to perform optimizations relying on memref dataflow such as
@@ -668,7 +670,6 @@ void ParallelLower::runOnOperation() {
   }
 }
 
-#if 0
 void FixGPUFunc::runOnOperation() {
 
   SymbolTableCollection symbolTable;
@@ -692,7 +693,7 @@ void FixGPUFunc::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
-    if (inlineCall(interface, caller, callableOp, targetRegion,
+    if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
       caller.erase();
@@ -736,7 +737,6 @@ void FixGPUFunc::runOnOperation() {
     callInliner(callOp);
   });
 }
-#endif
 
 static void replaceCallWithSuccess(Operation *call, OpBuilder &bz) {
   call->replaceAllUsesWith(bz.create<ConstantIntOp>(
