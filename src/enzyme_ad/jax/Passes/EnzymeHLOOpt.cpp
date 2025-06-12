@@ -19552,6 +19552,59 @@ struct ScatterMultiplySimplify final
   }
 };
 
+struct GatherConstProp final
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherConstProp> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherConstProp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr operandAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&operandAttr)))
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-constant input");
+
+    if (operandAttr.isSplat()) {
+      // In this case the indices don't matter and we can construct a new
+      // splatted result
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), operandAttr.resizeSplat(op.getType()));
+      return success();
+    }
+
+    DenseElementsAttr startIndicesAttr;
+    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesAttr))) {
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp with non-constant start indices and unsplatted input");
+    }
+
+    stablehlo::Tensor operandTensor = stablehlo::constantOp(operandAttr);
+    stablehlo::Tensor startIndicesTensor =
+        stablehlo::constantOp(startIndicesAttr);
+    auto gatherDims = op.getDimensionNumbers();
+
+    auto sliceSizes = op.getSliceSizes();
+    auto elementType = rewriter.getIntegerType(64);
+    auto attrType =
+        RankedTensorType::get({(int64_t)sliceSizes.size()}, elementType);
+    auto sliceSizesAttr = DenseElementsAttr::get(attrType, sliceSizes);
+
+    auto result = stablehlo::gatherOp(
+        operandTensor, startIndicesTensor,
+        stablehlo::Axes(gatherDims.getOffsetDims()),
+        stablehlo::Axes(gatherDims.getCollapsedSliceDims()),
+        stablehlo::Axes(gatherDims.getOperandBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndicesBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndexMap()),
+        stablehlo::Axis(gatherDims.getIndexVectorDim()),
+        stablehlo::makeSizes(stablehlo::constantOp(sliceSizesAttr)),
+        op.getIndicesAreSorted(), op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(result));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19837,6 +19890,8 @@ struct EnzymeHLOOptPass
                  BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
                  BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
                  BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
+
+    patterns.add<GatherConstProp>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,

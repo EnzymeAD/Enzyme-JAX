@@ -2021,3 +2021,9 @@ def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify
     "ScatterMultiplySimplify"
   ];
 }
+
+def ApplyGatherConstProp : EnzymeHLOPatternOp<"gather_const_prop"> {
+  let patterns = [
+    "GatherConstProp"
+  ];
+}
