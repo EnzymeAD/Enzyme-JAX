@@ -703,6 +703,96 @@ public:
     return success();
   }
 };
+
+struct CMemcpyOpLowering : public CLoadStoreOpLowering<enzymexla::MemcpyOp> {
+public:
+  using CLoadStoreOpLowering::CLoadStoreOpLowering;
+
+  LogicalResult
+  matchAndRewrite(enzymexla::MemcpyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    MemRefType dstType = op.getTarget().getType();
+    auto convertedDstType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(dstType));
+    if (!convertedDstType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    MemRefType srcType = op.getSource().getType();
+    auto convertedSrcType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(srcType));
+    if (!convertedSrcType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+    auto elTyDst = convertMemrefElementTypeForLLVMPointer(
+        dstType, *this->getTypeConverter());
+    auto elTySrc = convertMemrefElementTypeForLLVMPointer(
+        srcType, *this->getTypeConverter());
+    if (!elTyDst) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+    if (!elTySrc) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    Value dst = adaptor.getTarget();
+    Value src = adaptor.getSource();
+
+    Value size = adaptor.getSize();
+
+    if (dstType.getMemorySpaceAsInt() == 0 &&
+        srcType.getMemorySpaceAsInt() == 0) {
+      rewriter.create<LLVM::MemcpyOp>(op.getLoc(), dst, src, size, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    int direction = 0;
+    if (dstType.getMemorySpaceAsInt() == 0 &&
+        srcType.getMemorySpaceAsInt() == 0) {
+      direction = 0;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 0) {
+      direction = 1;
+    } else if (dstType.getMemorySpaceAsInt() == 0 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 2;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 3;
+    } else {
+      return failure();
+    }
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    Type tys[4] = {LLVM::LLVMPointerType::get(op.getContext()),
+                   LLVM::LLVMPointerType::get(op.getContext()), size.getType(),
+                   rewriter.getIntegerType(32)};
+    auto i32 = rewriter.getIntegerType(32);
+    auto cudaMemcpyFn =
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMemcpy", tys, i32);
+    if (failed(cudaMemcpyFn))
+      return failure();
+
+    Value args[4] = {
+        dst, src, size,
+        rewriter.create<LLVM::ConstantOp>(op.getLoc(), tys[3], direction)};
+    for (int i = 0; i < 2; i++)
+      if (args[i].getType() != tys[i])
+        args[i] = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), tys[i],
+                                                         args[i]);
+    rewriter.create<LLVM::CallOp>(op.getLoc(), cudaMemcpyFn.value(), args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 } // namespace
 
 /// Only retain those attributes that are not constructed by
@@ -1492,7 +1582,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   {
     auto loc = moduleOp.getLoc();
     // TODO is it okay to be using OpBuilder's in op rewriter?
-    OpBuilder moduleBuilder(moduleOp.getBodyRegion());
+    // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
     SmallString<128> ctorNameBuffer(kernelModule.getName());
     ctorNameBuffer.append(kGpuModuleCtorSuffix);
     LLVM::LLVMFuncOp ctor = dyn_cast_or_null<LLVM::LLVMFuncOp>(
@@ -1504,219 +1594,256 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     if (!ctor) {
       assert(!dtor &&
              "gpu module constructor does not exist but destructor does");
-      ctor = moduleBuilder.create<LLVM::LLVMFuncOp>(
-          loc, ctorNameBuffer,
-          LLVM::LLVMFunctionType::get(
-              LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-          LLVM::Linkage::Private);
-      dtor = moduleBuilder.create<LLVM::LLVMFuncOp>(
-          loc, dtorNameBuffer,
-          LLVM::LLVMFunctionType::get(
-              LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-          LLVM::Linkage::Private);
-
-      auto binaryAttr =
-          kernelModule->getAttrOfType<StringAttr>(gpuBinaryAnnotation);
-      if (!binaryAttr) {
-        kernelModule.emitOpError()
-            << "missing " << gpuBinaryAnnotation << " attribute";
-        return failure();
+      {
+        PatternRewriter::InsertionGuard B(rewriter);
+        rewriter.setInsertionPointToEnd(moduleOp.getBody());
+        ctor = rewriter.create<LLVM::LLVMFuncOp>(
+            loc, ctorNameBuffer,
+            LLVM::LLVMFunctionType::get(
+                LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
+            LLVM::Linkage::Private);
+        dtor = rewriter.create<LLVM::LLVMFuncOp>(
+            loc, dtorNameBuffer,
+            LLVM::LLVMFunctionType::get(
+                LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
+            LLVM::Linkage::Private);
       }
+      /*
+    auto binaryAttr =
+        kernelModule->getAttrOfType<StringAttr>(gpuBinaryAnnotation);
+    if (!binaryAttr) {
+      kernelModule.emitOpError()
+          << "missing " << gpuBinaryAnnotation << " attribute";
+      return failure();
+    }
+*/
 
       auto moduleName = launchOp.getKernelModuleName().getValue();
+      LLVM::GlobalOp moduleGlobal = nullptr;
 
-      OpBuilder ctorBuilder(moduleOp->getContext());
-      ctor.addEntryBlock(ctorBuilder);
-      SmallString<128> nameBuffer(kernelModule.getName());
-      nameBuffer.append(kGpuBinaryStorageSuffix);
-
-      const char *fatbinConstantName;
-      const char *fatbinSectionName;
-      const char *moduleIDSectionName;
-      StringRef moduleIDPrefix;
-      unsigned fatMagic;
-      constexpr unsigned CudaFatMagic = 0x466243b1;
-      constexpr unsigned HIPFatMagic = 0x48495046; // "HIPF"
-      if (gpuTarget == "cuda") {
-        fatbinConstantName = // CGM.getTriple().isMacOSX() ?
-                             // "__NV_CUDA,__nv_fatbin" :
-            ".nv_fatbin";
-        // NVIDIA's cuobjdump looks for fatbins in this section.
-        fatbinSectionName = // CGM.getTriple().isMacOSX() ? "__NV_CUDA,__fatbin"
-                            // :
-            ".nvFatBinSegment";
-        moduleIDSectionName = // CGM.getTriple().isMacOSX() ?
-                              // "__NV_CUDA,__nv_module_id" :
-            "__nv_module_id";
-        moduleIDPrefix = "__nv_";
-        fatMagic = CudaFatMagic;
-      } else {
-        fatbinConstantName = ".hip_fatbin";
-        fatbinSectionName = ".hipFatBinSegment";
-        moduleIDSectionName = "__hip_module_id";
-        moduleIDPrefix = "__hip_";
-        fatMagic = HIPFatMagic;
-      }
-
-      // Register modules and functions like clang (clang/CodeGen/CGCUDANV.cpp)
-
-      // Create and initialize the fatbin wrapper struct
-      auto fatBinWrapperType = mlir::LLVM::LLVMStructType::getLiteral(
-          moduleOp->getContext(),
-          {llvmInt32Type, llvmInt32Type, llvmPointerType, llvmPointerType});
-      auto fatBinWrapper = moduleBuilder.create<LLVM::GlobalOp>(
-          loc, fatBinWrapperType, /*constant*/ true, LLVM::Linkage::Internal,
-          std::string(
-              llvm::formatv("__polygeist_{0}_fatbin_wrapper", moduleName)),
-          /* initValue */ mlir::Attribute(),
-          /* alignment */ 8, /* addrSpace */ 0);
-      fatBinWrapper.setSectionAttr(
-          moduleBuilder.getStringAttr(fatbinSectionName));
-
-      OpBuilder globalBuilder(moduleOp->getContext());
-      fatBinWrapper.getRegion().push_back(new Block);
-      globalBuilder.setInsertionPointToStart(fatBinWrapper.getBody());
-      auto fatbinMagicVal =
-          globalBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, fatMagic);
-      auto fatbinVersionVal =
-          globalBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
-      auto nullPtr = globalBuilder.create<LLVM::ZeroOp>(loc, llvmPointerType);
-      Value constructedStruct =
-          globalBuilder.create<LLVM::UndefOp>(loc, fatBinWrapperType);
       {
-        int i = 0;
-        constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
-            loc, fatBinWrapperType, constructedStruct, fatbinMagicVal,
-            globalBuilder.getDenseI64ArrayAttr(i++));
-        constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
-            loc, fatBinWrapperType, constructedStruct, fatbinVersionVal,
-            globalBuilder.getDenseI64ArrayAttr(i++));
-        // TODO do we need to specify the section name here...?
-        // data.setSectionAttr(moduleBuilder.getStringAttr(fatbinSectionName));
-        Value data = LLVM::createGlobalString(
-            loc, globalBuilder, nameBuffer.str(), binaryAttr.getValue(),
-            LLVM::Linkage::Internal);
-        constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
-            loc, fatBinWrapperType, constructedStruct, data,
-            globalBuilder.getDenseI64ArrayAttr(i++));
-        constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
-            loc, fatBinWrapperType, constructedStruct, nullPtr,
-            globalBuilder.getDenseI64ArrayAttr(i++));
-      }
-      globalBuilder.create<LLVM::ReturnOp>(loc, constructedStruct);
+        PatternRewriter::InsertionGuard B(rewriter);
+        OpBuilder &ctorBuilder = rewriter;
+        ctorBuilder.setInsertionPointToEnd(ctor.addEntryBlock(ctorBuilder));
 
-      auto addressOfWrapper =
-          ctorBuilder.create<LLVM::AddressOfOp>(loc, fatBinWrapper);
-      auto bitcastOfWrapper = ctorBuilder.create<LLVM::BitcastOp>(
-          loc, llvmPointerType, addressOfWrapper);
-      auto module = rtRegisterFatBinaryCallBuilder.create(loc, ctorBuilder,
-                                                          {bitcastOfWrapper});
-      auto moduleGlobalName =
-          std::string(llvm::formatv("polygeist_{0}_module_ptr", moduleName));
-      auto moduleGlobal = moduleBuilder.create<LLVM::GlobalOp>(
-          loc, llvmPointerPointerType, /* isConstant */ false,
-          LLVM::Linkage::Internal, moduleGlobalName,
-          /* initValue */ mlir::Attribute(),
-          /* alignment */ 8, /* addrSpace */ 0);
-      auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, moduleGlobal);
-      ctorBuilder.create<LLVM::StoreOp>(loc, module->getResult(0),
-                                        aoo->getResult(0));
-      for (Operation &op : kernelModule->getRegion(0).front()) {
-        if (LLVM::LLVMFuncOp f = dyn_cast<LLVM::LLVMFuncOp>(op)) {
-          if (!f->getAttr("gpu.kernel"))
-            continue;
-          auto symbolUses = SymbolTable::getSymbolUses(&op, moduleOp);
-          if (symbolUses && symbolUses->empty())
-            continue;
-          auto kernelName = generateKernelNameConstant(
-              launchOp.getKernelModuleName().getValue(), f.getName(), loc,
-              ctorBuilder);
+        SmallString<128> nameBuffer(kernelModule.getName());
+        nameBuffer.append(kGpuBinaryStorageSuffix);
 
-          auto nullPtr = ctorBuilder.create<LLVM::ZeroOp>(loc, llvmPointerType);
-          // TODO second param should be ptr to the the original function stub
-          // here like clang does it: e.g. kernel_name_device_stub
-          //
-          // TODO We should probably always generate the original kernel as well
-          // and register it too (in addition to the lowered to parallel and
-          // re-outlined version that we generate) in case the pointer to the
-          // stub is captured somewhere and it is called through
-          // cudaLaunchKernel
-          auto stub = moduleBuilder.create<LLVM::LLVMFuncOp>(
-              loc, getFuncStubName(moduleName, f.getName()),
-              LLVM::LLVMFunctionType::get(llvmVoidType, {}));
-          {
-            OpBuilder::InsertionGuard guard(rewriter);
-            stub.addEntryBlock(rewriter);
-            rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
-          }
-          auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-          auto bitcast =
-              ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
-          auto ret = rtRegisterFunctionCallBuilder.create(
-              loc, ctorBuilder,
-              {module.getResult(), bitcast, kernelName, kernelName,
-               /* TODO I have no idea what the following params are */
-               ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, -1),
-               nullPtr, nullPtr, nullPtr, nullPtr, nullPtr});
-        } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
-          int addrSpace = g.getAddrSpace();
-          if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
-            continue;
-          auto symbolName = [&]() {
-            auto name = g.getName();
-            std::vector<char> sname(name.begin(), name.end());
-            sname.push_back('\0');
-
-            std::string globalName = std::string(llvm::formatv(
-                "__polygeist_{0}_{1}_global_name", moduleName, name));
-
-            return LLVM::createGlobalString(
-                loc, ctorBuilder, globalName,
-                StringRef(sname.data(), sname.size()), LLVM::Linkage::Internal);
-          }();
-          // TODO could this be a memref global op?
-          auto stub = moduleOp.lookupSymbol<LLVM::GlobalOp>(g.getName());
-          assert(stub);
-          auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-          auto bitcast =
-              ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
-          auto globalTy = stub.getGlobalType();
-          // TODO This should actually be the GPUModuleOp's data layout I
-          // believe, there were problems with assigning the data layout to the
-          // gpumodule because MLIR didnt like the nested data layout, and
-          // that's why it doesnt have its own, try to fix that or find a way to
-          // pass the GPU DL in here
-          DataLayout DLI(moduleOp);
-          auto size = DLI.getTypeSize(globalTy);
-          auto ret = rtRegisterVarCallBuilder.create(
-              loc, ctorBuilder,
-              {module.getResult(), bitcast, symbolName, symbolName,
-               /*isExtern*/
-               ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type,
-                                                    /* TODO */ 0),
-               /*varSize*/
-               ctorBuilder.create<LLVM::ConstantOp>(loc, llvmIntPtrType, size),
-               /*isConstant*/
-               ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type,
-                                                    /* TODO */ 0),
-               /* just a 0? */
-               ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 0)});
+        const char *fatbinConstantName;
+        const char *fatbinSectionName;
+        const char *moduleIDSectionName;
+        StringRef moduleIDPrefix;
+        unsigned fatMagic;
+        constexpr unsigned CudaFatMagic = 0x466243b1;
+        constexpr unsigned HIPFatMagic = 0x48495046; // "HIPF"
+        if (gpuTarget == "cuda") {
+          fatbinConstantName = // CGM.getTriple().isMacOSX() ?
+                               // "__NV_CUDA,__nv_fatbin" :
+              ".nv_fatbin";
+          // NVIDIA's cuobjdump looks for fatbins in this section.
+          fatbinSectionName = // CGM.getTriple().isMacOSX() ?
+                              // "__NV_CUDA,__fatbin"
+                              // :
+              ".nvFatBinSegment";
+          moduleIDSectionName = // CGM.getTriple().isMacOSX() ?
+                                // "__NV_CUDA,__nv_module_id" :
+              "__nv_module_id";
+          moduleIDPrefix = "__nv_";
+          fatMagic = CudaFatMagic;
+        } else {
+          fatbinConstantName = ".hip_fatbin";
+          fatbinSectionName = ".hipFatBinSegment";
+          moduleIDSectionName = "__hip_module_id";
+          moduleIDPrefix = "__hip_";
+          fatMagic = HIPFatMagic;
         }
+
+        // Register modules and functions like clang
+        // (clang/CodeGen/CGCUDANV.cpp)
+
+        // Create and initialize the fatbin wrapper struct
+        auto fatBinWrapperType = mlir::LLVM::LLVMStructType::getLiteral(
+            moduleOp->getContext(),
+            {llvmInt32Type, llvmInt32Type, llvmPointerType, llvmPointerType});
+        LLVM::GlobalOp fatBinWrapper;
+
+        {
+          PatternRewriter::InsertionGuard B(rewriter);
+          rewriter.setInsertionPointToEnd(moduleOp.getBody());
+          fatBinWrapper = rewriter.create<LLVM::GlobalOp>(
+              loc, fatBinWrapperType, /*constant*/ true,
+              LLVM::Linkage::Internal,
+              std::string(
+                  llvm::formatv("__polygeist_{0}_fatbin_wrapper", moduleName)),
+              /* initValue */ mlir::Attribute(),
+              /* alignment */ 8, /* addrSpace */ 0);
+          fatBinWrapper.setSectionAttr(
+              rewriter.getStringAttr(fatbinSectionName));
+        }
+
+        OpBuilder globalBuilder(moduleOp->getContext());
+        fatBinWrapper.getRegion().push_back(new Block);
+        globalBuilder.setInsertionPointToStart(fatBinWrapper.getBody());
+        auto fatbinMagicVal = globalBuilder.create<LLVM::ConstantOp>(
+            loc, llvmInt32Type, fatMagic);
+        auto fatbinVersionVal =
+            globalBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
+        auto nullPtr = globalBuilder.create<LLVM::ZeroOp>(loc, llvmPointerType);
+        Value constructedStruct =
+            globalBuilder.create<LLVM::UndefOp>(loc, fatBinWrapperType);
+        {
+          int i = 0;
+          constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
+              loc, fatBinWrapperType, constructedStruct, fatbinMagicVal,
+              globalBuilder.getDenseI64ArrayAttr(i++));
+          constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
+              loc, fatBinWrapperType, constructedStruct, fatbinVersionVal,
+              globalBuilder.getDenseI64ArrayAttr(i++));
+          // TODO do we need to specify the section name here...?
+          // data.setSectionAttr(moduleBuilder.getStringAttr(fatbinSectionName));
+          Value data = LLVM::createGlobalString(
+              loc, globalBuilder, nameBuffer.str(), "binaryAttr",
+              // loc, globalBuilder, nameBuffer.str(), binaryAttr.getValue(),
+              LLVM::Linkage::Internal);
+          constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
+              loc, fatBinWrapperType, constructedStruct, data,
+              globalBuilder.getDenseI64ArrayAttr(i++));
+          constructedStruct = globalBuilder.create<LLVM::InsertValueOp>(
+              loc, fatBinWrapperType, constructedStruct, nullPtr,
+              globalBuilder.getDenseI64ArrayAttr(i++));
+        }
+        globalBuilder.create<LLVM::ReturnOp>(loc, constructedStruct);
+
+        auto addressOfWrapper =
+            ctorBuilder.create<LLVM::AddressOfOp>(loc, fatBinWrapper);
+        auto bitcastOfWrapper = ctorBuilder.create<LLVM::BitcastOp>(
+            loc, llvmPointerType, addressOfWrapper);
+        auto module = rtRegisterFatBinaryCallBuilder.create(loc, ctorBuilder,
+                                                            {bitcastOfWrapper});
+        auto moduleGlobalName =
+            std::string(llvm::formatv("polygeist_{0}_module_ptr", moduleName));
+        {
+          PatternRewriter::InsertionGuard B(rewriter);
+          rewriter.setInsertionPointToEnd(moduleOp.getBody());
+          moduleGlobal = rewriter.create<LLVM::GlobalOp>(
+              loc, llvmPointerPointerType, /* isConstant */ false,
+              LLVM::Linkage::Internal, moduleGlobalName,
+              /* initValue */ mlir::Attribute(),
+              /* alignment */ 8, /* addrSpace */ 0);
+        }
+        auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, moduleGlobal);
+        ctorBuilder.create<LLVM::StoreOp>(loc, module->getResult(0),
+                                          aoo->getResult(0));
+        for (Operation &op : kernelModule->getRegion(0).front()) {
+          if (auto f = dyn_cast<FunctionOpInterface>(op)) {
+            if (!f->getAttr("gpu.kernel"))
+              continue;
+            auto symbolUses = SymbolTable::getSymbolUses(&op, moduleOp);
+            if (symbolUses && symbolUses->empty())
+              continue;
+            auto kernelName = generateKernelNameConstant(
+                launchOp.getKernelModuleName().getValue(), f.getName(), loc,
+                ctorBuilder);
+
+            auto nullPtr =
+                ctorBuilder.create<LLVM::ZeroOp>(loc, llvmPointerType);
+            // TODO second param should be ptr to the the original function stub
+            // here like clang does it: e.g. kernel_name_device_stub
+            //
+            // TODO We should probably always generate the original kernel as
+            // well and register it too (in addition to the lowered to parallel
+            // and re-outlined version that we generate) in case the pointer to
+            // the stub is captured somewhere and it is called through
+            // cudaLaunchKernel
+            LLVM::LLVMFuncOp stub;
+            {
+              PatternRewriter::InsertionGuard B(rewriter);
+              rewriter.setInsertionPointToEnd(moduleOp.getBody());
+              stub = rewriter.create<LLVM::LLVMFuncOp>(
+                  loc, getFuncStubName(moduleName, f.getName()),
+                  LLVM::LLVMFunctionType::get(llvmVoidType, {}));
+            }
+            {
+              OpBuilder::InsertionGuard guard(rewriter);
+              rewriter.setInsertionPointToEnd(stub.addEntryBlock(rewriter));
+              rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
+            }
+            auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
+            auto bitcast =
+                ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
+            auto ret = rtRegisterFunctionCallBuilder.create(
+                loc, ctorBuilder,
+                {module.getResult(), bitcast, kernelName, kernelName,
+                 /* TODO I have no idea what the following params are */
+                 ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, -1),
+                 nullPtr, nullPtr, nullPtr, nullPtr, nullPtr});
+          } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
+            int addrSpace = g.getAddrSpace();
+            if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
+              continue;
+            auto symbolName = [&]() {
+              auto name = g.getName();
+              std::vector<char> sname(name.begin(), name.end());
+              sname.push_back('\0');
+
+              std::string globalName = std::string(llvm::formatv(
+                  "__polygeist_{0}_{1}_global_name", moduleName, name));
+
+              return LLVM::createGlobalString(
+                  loc, ctorBuilder, globalName,
+                  StringRef(sname.data(), sname.size()),
+                  LLVM::Linkage::Internal);
+            }();
+            // TODO could this be a memref global op?
+            auto stub = moduleOp.lookupSymbol<LLVM::GlobalOp>(g.getName());
+            assert(stub);
+            auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
+            auto bitcast =
+                ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
+            auto globalTy = stub.getGlobalType();
+            // TODO This should actually be the GPUModuleOp's data layout I
+            // believe, there were problems with assigning the data layout to
+            // the gpumodule because MLIR didnt like the nested data layout, and
+            // that's why it doesnt have its own, try to fix that or find a way
+            // to pass the GPU DL in here
+            DataLayout DLI(moduleOp);
+            auto size = DLI.getTypeSize(globalTy);
+            auto ret = rtRegisterVarCallBuilder.create(
+                loc, ctorBuilder,
+                {module.getResult(), bitcast, symbolName, symbolName,
+                 /*isExtern*/
+                 ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type,
+                                                      /* TODO */ 0),
+                 /*varSize*/
+                 ctorBuilder.create<LLVM::ConstantOp>(loc, llvmIntPtrType,
+                                                      size),
+                 /*isConstant*/
+                 ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type,
+                                                      /* TODO */ 0),
+                 /* just a 0? */
+                 ctorBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 0)});
+          }
+        }
+        // TODO this has to happen only for some CUDA versions
+        if (gpuTarget == "cuda")
+          rtRegisterFatBinaryEndCallBuilder.create(loc, ctorBuilder,
+                                                   {module.getResult()});
+        ctorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
       }
-      // TODO this has to happen only for some CUDA versions
-      if (gpuTarget == "cuda")
-        rtRegisterFatBinaryEndCallBuilder.create(loc, ctorBuilder,
-                                                 {module.getResult()});
-      ctorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
       auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
-      moduleBuilder.create<LLVM::GlobalCtorsOp>(
-          loc, moduleBuilder.getArrayAttr({std::move(ctorSymbol)}),
-          moduleBuilder.getI32ArrayAttr({65535}),
-          moduleBuilder.getArrayAttr(
-              {LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
       {
-        OpBuilder dtorBuilder(moduleOp->getContext());
-        dtor.addEntryBlock(dtorBuilder);
+        PatternRewriter::InsertionGuard B(rewriter);
+        rewriter.setInsertionPointToEnd(moduleOp.getBody());
+        rewriter.create<LLVM::GlobalCtorsOp>(
+            loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
+            rewriter.getI32ArrayAttr({65535}),
+            rewriter.getArrayAttr(
+                {LLVM::ZeroAttr::get(rewriter.getContext())}));
+      }
+      {
+        PatternRewriter::InsertionGuard B(rewriter);
+        OpBuilder &dtorBuilder = rewriter;
+        dtorBuilder.setInsertionPointToEnd(dtor.addEntryBlock(dtorBuilder));
         auto aoo = dtorBuilder.create<LLVM::AddressOfOp>(loc, moduleGlobal);
         auto module = dtorBuilder.create<LLVM::LoadOp>(
             loc, llvmPointerPointerType, aoo->getResult(0));
@@ -1724,11 +1851,14 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
                                                 module.getResult());
         dtorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
         auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
-        moduleBuilder.create<LLVM::GlobalDtorsOp>(
-            loc, moduleBuilder.getArrayAttr({std::move(dtorSymbol)}),
-            moduleBuilder.getI32ArrayAttr({65535}),
-            moduleBuilder.getArrayAttr(
-                {LLVM::ZeroAttr::get(moduleBuilder.getContext())}));
+        {
+          PatternRewriter::InsertionGuard B(rewriter);
+          rewriter.setInsertionPointToEnd(moduleOp.getBody());
+          Attribute attrs[] = {LLVM::ZeroAttr::get(rewriter.getContext())};
+          rewriter.create<LLVM::GlobalDtorsOp>(
+              loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
+              rewriter.getI32ArrayAttr({65535}), rewriter.getArrayAttr(attrs));
+        }
       }
     }
   }
@@ -1829,9 +1959,14 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
   // Note: If `useBarePtrCallConv` is set in the type converter's options,
   // the value of `kernelBarePtrCallConv` will be ignored.
   OperandRange origArguments = launchOp.getKernelOperands();
-  SmallVector<Value, 8> llvmArguments = getTypeConverter()->promoteOperands(
-      loc, origArguments, adaptor.getKernelOperands(), rewriter,
-      /*useBarePtrCallConv=*/kernelBarePtrCallConv);
+  SmallVector<Value, 8> llvmArguments =
+      llvm::to_vector(adaptor.getKernelOperands());
+  for (auto arg : llvmArguments) {
+    llvm::errs() << " arg: " << arg << "\n";
+  }
+  // getTypeConverter()->promoteOperands(
+  //     loc, origArguments, adaptor.getKernelOperands(), rewriter,
+  //    /*useBarePtrCallConv=*/kernelBarePtrCallConv);
   SmallVector<Value, 8> llvmArgumentsWithSizes;
 
   // Intersperse size information if requested.
@@ -1896,6 +2031,133 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
     rewriter.eraseOp(launchOp);
   return success();
 }
+
+static LogicalResult
+isAsyncWithOneDependency(ConversionPatternRewriter &rewriter,
+                         gpu::AsyncOpInterface op) {
+  if (op.getAsyncDependencies().size() != 1)
+    return rewriter.notifyMatchFailure(
+        op, "Can only convert with exactly one async dependency.");
+
+  if (!op.getAsyncToken())
+    return rewriter.notifyMatchFailure(op, "Can convert only async version.");
+
+  return success();
+}
+
+static LogicalResult
+isAsyncWithNoDependency(ConversionPatternRewriter &rewriter,
+                        gpu::AsyncOpInterface op) {
+  if (op.getAsyncDependencies().size() != 0)
+    return rewriter.notifyMatchFailure(
+        op, "Can only convert with exactly one async dependency.");
+
+  if (op.getAsyncToken())
+    return rewriter.notifyMatchFailure(op, "Can convert only async version.");
+
+  return success();
+}
+
+/// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
+/// call. Currently it supports CUDA and ROCm (HIP).
+template <bool cStyle>
+class ConvertAllocOpToGpuRuntimeCallPattern
+    : public ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp> {
+public:
+  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter)
+      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(gpu::AllocOp allocOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    MemRefType memRefType = allocOp.getType();
+
+    if (failed(areAllLLVMTypes(allocOp, adaptor.getOperands(), rewriter)) ||
+        !isConvertibleAndHasIdentityMaps(memRefType))
+      return failure();
+
+    auto loc = allocOp.getLoc();
+
+    bool isShared = allocOp.getHostShared();
+
+    if (isShared && allocOp.getAsyncToken())
+      return rewriter.notifyMatchFailure(
+          allocOp, "Host Shared allocation cannot be done async");
+    if (!isShared && failed(isAsyncWithNoDependency(rewriter, allocOp)))
+      return failure();
+
+    // Get shape of the memref as values: static sizes are constant
+    // values and dynamic sizes are passed to 'alloc' as operands.
+    SmallVector<Value, 4> shape;
+    SmallVector<Value, 4> strides;
+    Value sizeBytes;
+    getMemRefDescriptorSizes(loc, memRefType, adaptor.getDynamicSizes(),
+                             rewriter, shape, strides, sizeBytes);
+
+    // Allocate the underlying buffer and store a pointer to it in the MemRef
+    // descriptor.
+    auto nullPtr = rewriter.create<mlir::LLVM::ZeroOp>(loc, llvmPointerType);
+    Value stream = adaptor.getAsyncDependencies().empty()
+                       ? nullPtr
+                       : adaptor.getAsyncDependencies().front();
+
+    auto isHostShared = rewriter.create<mlir::LLVM::ConstantOp>(
+        loc, llvmInt8Type, rewriter.getI8IntegerAttr(isShared));
+
+    Value allocatedPtr;
+    if (allocOp.getAsyncDependencies().size() == 0 &&
+        !allocOp.getAsyncToken()) {
+      auto i64 = rewriter.getIntegerType(64);
+      auto i32 = rewriter.getIntegerType(32);
+      auto moduleOp = allocOp->getParentOfType<ModuleOp>();
+
+      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+      auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+      auto one = rewriter.create<LLVM::ConstantOp>(
+          loc, i64, rewriter.getI64IntegerAttr(1));
+
+      auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, ptr1ty, one);
+      Type tys[] = {ptrty, i64};
+      auto cudaMallocFn =
+          LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
+      if (failed(cudaMallocFn)) {
+        llvm::errs() << " cudamalloc already exists with different types\n";
+        return failure();
+      }
+
+      Value args[] = {
+          ptr,
+          sizeBytes,
+      };
+      rewriter.create<LLVM::CallOp>(loc, cudaMallocFn.value(), args);
+      allocatedPtr = rewriter.create<LLVM::LoadOp>(loc, ptr1ty, ptr);
+    } else
+      allocatedPtr =
+          allocCallBuilder
+              .create(loc, rewriter, {sizeBytes, stream, isHostShared})
+              .getResult();
+
+    // No alignment.
+    Value alignedPtr = allocatedPtr;
+
+    // Create the MemRef descriptor.
+    Value memRefDescriptor = alignedPtr;
+    if constexpr (!cStyle)
+      this->createMemRefDescriptor(loc, memRefType, allocatedPtr, alignedPtr,
+                                   shape, strides, rewriter);
+
+    if (allocOp.getAsyncToken()) {
+      // Async alloc: make dependent ops use the same stream.
+      rewriter.replaceOp(allocOp, {memRefDescriptor, stream});
+    } else {
+      rewriter.replaceOp(allocOp, {memRefDescriptor});
+    }
+
+    return success();
+  }
+};
 
 struct ReplaceErrOpWithSuccess : public OpRewritePattern<GPUErrorOp> {
   using OpRewritePattern<GPUErrorOp>::OpRewritePattern;
@@ -2066,69 +2328,6 @@ isAsyncWithZeroDependencies(ConversionPatternRewriter &rewriter,
 
   return success();
 }
-static LogicalResult
-isAsyncWithOneDependency(ConversionPatternRewriter &rewriter,
-                         gpu::AsyncOpInterface op) {
-  if (op.getAsyncDependencies().size() != 1)
-    return rewriter.notifyMatchFailure(
-        op, "Can only convert with exactly one async dependency.");
-
-  if (!op.getAsyncToken())
-    return rewriter.notifyMatchFailure(op, "Can convert only async version.");
-
-  return success();
-}
-
-class ConvertAllocOpToGpuRuntimeCallPattern
-    : public ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp> {
-public:
-  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter)
-      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter) {}
-
-private:
-  LogicalResult
-  matchAndRewrite(gpu::AllocOp allocOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (adaptor.getHostShared())
-      return rewriter.notifyMatchFailure(
-          allocOp, "host_shared allocation is not supported");
-
-    MemRefType memRefType = allocOp.getType();
-
-    if (failed(areAllLLVMTypes(allocOp, adaptor.getOperands(), rewriter)) ||
-        !isConvertibleAndHasIdentityMaps(memRefType))
-      return failure();
-
-    // TODO handle async
-
-    auto loc = allocOp.getLoc();
-
-    // Get shape of the memref as values: static sizes are constant
-    // values and dynamic sizes are passed to 'alloc' as operands.
-    SmallVector<Value, 4> shape;
-    SmallVector<Value, 4> strides;
-    Value sizeBytes;
-    getMemRefDescriptorSizes(loc, memRefType, adaptor.getDynamicSizes(),
-                             rewriter, shape, strides, sizeBytes);
-
-    // Allocate the underlying buffer and store a pointer to it in the MemRef
-    // descriptor.
-    Type elementPtrType = this->getElementPtrType(memRefType);
-
-    // CUDA and ROCM both dont take stream as arguments for alloc
-    // auto stream = adaptor.getAsyncDependencies().front();
-    auto stream = rewriter.create<LLVM::UndefOp>(loc, llvmPointerType);
-    Value allocatedPtr =
-        rtMemAllocCallBuilder.create(loc, rewriter, {sizeBytes, stream})
-            .getResult();
-    allocatedPtr =
-        rewriter.create<LLVM::BitcastOp>(loc, elementPtrType, allocatedPtr);
-
-    rewriter.replaceOp(allocOp, {allocatedPtr});
-
-    return success();
-  }
-};
 
 /// Pattern for function declarations and definitions.
 struct FuncOpLowering : public ConvertOpToLLVMPattern<func::FuncOp> {
@@ -2324,6 +2523,7 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering>(
       typeConverter);
+  patterns.add<CMemcpyOpLowering>(typeConverter);
 }
 
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
@@ -2410,15 +2610,15 @@ struct ConvertPolygeistToLLVMPass
 
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
-      /*
-    patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
-        converter, gpu::getDefaultGpuBinaryAnnotation(), gpuTarget);
-      */
-      patterns.add<LegalizeLaunchFuncOpPattern>(
-          converter, /*kernelBarePtrCallConv*/ true,
-          /*kernelIntersperseSizeCallConv*/ false);
-      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern>(converter);
-    }
+      auto gpuTarget = "cuda";
+      patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
+          converter, "gpu.binary", gpuTarget);
+      // patterns.add<LegalizeLaunchFuncOpPattern>(
+      //     converter, /*kernelBarePtrCallConv*/ true,
+      //     /*kernelIntersperseSizeCallConv*/ false);
+      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter);
+    } else
+      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<false>>(converter);
 
     patterns
         .add<LLVMOpLowering, GlobalOpTypeConversion, ReturnOpTypeConversion>(
