@@ -15399,38 +15399,83 @@ struct ScatterIndicesAreUnique
       if (shape.empty())
         return failure();
 
+      auto dimNumbers = op.getScatterDimensionNumbers();
+      int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+
       int64_t numTuples = 1;
-      for (int64_t i = 0; i < shape.size() - 1; ++i) {
-        numTuples *= shape[i];
+      for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i != indexVectorDim) {
+          numTuples *= shape[i];
+        }
       }
-      int64_t tupleSize = shape.back();
+      int64_t tupleSize = shape[indexVectorDim];
+
+      SmallVector<int64_t> strides(shape.size());
+      strides[shape.size() - 1] = 1;
+      for (int64_t i = shape.size() - 2; i >= 0; --i) {
+        strides[i] = strides[i + 1] * shape[i + 1];
+      }
+
+      SmallVector<int64_t> nonIndexVectorShape;
+      for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i != indexVectorDim) {
+          nonIndexVectorShape.push_back(shape[i]);
+        }
+      }
 
       // Iterate over the scatter indices tensor to extract tuples
       SmallVector<SmallVector<int64_t>> indexTuples;
       auto values = denseAttr.getValues<APInt>();
-      auto it = values.begin();
-      for (int64_t i = 0; i < numTuples; ++i) {
-        SmallVector<int64_t> indexTuple;
-        for (int64_t j = 0; j < tupleSize; ++j) {
-          if (it == values.end()) {
-            return failure(); // Unexpected end of values
-          }
-          indexTuple.push_back((*it).getSExtValue());
-          ++it;
-        }
-        indexTuples.push_back(indexTuple);
-      }
 
-      if (areIndexTuplesUnique(indexTuples)) {
-        auto newOp = rewriter.create<stablehlo::ScatterOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(),
-            op.getScatterIndices(), op.getUpdates(),
-            op.getScatterDimensionNumbers(), op.getIndicesAreSortedAttr(),
-            rewriter.getBoolAttr(true));
-        newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
-        rewriter.replaceOp(op, newOp);
-        return success();
-      }
+      std::function<void(SmallVector<int64_t>, int64_t)> extractTuples =
+          [&](SmallVector<int64_t> currentIndices, int64_t dim) {
+            if (dim == nonIndexVectorShape.size()) {
+              SmallVector<int64_t> indexTuple;
+              for (int64_t component = 0; component < tupleSize; ++component) {
+                // Build full multi-dimensional index
+                SmallVector<int64_t> fullIndex;
+                int64_t nonIndexDim = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  if (d == indexVectorDim) {
+                    fullIndex.push_back(component);
+                  } else {
+                    fullIndex.push_back(currentIndices[nonIndexDim++]);
+                  }
+                }
+
+                // Convert to linear index
+                int64_t linearIdx = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  linearIdx += fullIndex[d] * strides[d];
+                }
+
+                auto it = values.begin();
+                std::advance(it, linearIdx);
+                indexTuple.push_back((*it).getSExtValue());
+              }
+              indexTuples.push_back(indexTuple);
+              return;
+            }
+
+            for (int64_t i = 0; i < nonIndexVectorShape[dim]; ++i) {
+              SmallVector<int64_t> newIndices = currentIndices;
+              newIndices.push_back(i);
+              extractTuples(newIndices, dim + 1);
+            }
+          };
+
+      extractTuples({}, 0);
+
+      bool uniqueIndices = areIndexTuplesUnique(indexTuples);
+      if (!uniqueIndices && !op.getUniqueIndices())
+        return failure();
+      auto newOp = rewriter.create<stablehlo::ScatterOp>(
+          op.getLoc(), op.getResultTypes(), op.getInputs(), scatterIndices,
+          op.getUpdates(), dimNumbers, op.getIndicesAreSortedAttr(),
+          rewriter.getBoolAttr(uniqueIndices));
+      newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+      rewriter.replaceOp(op, newOp);
+      return success();
     }
 
     return failure();
@@ -15439,17 +15484,13 @@ struct ScatterIndicesAreUnique
 private:
   bool areIndexTuplesUnique(
       const SmallVector<SmallVector<int64_t>> &indexTuples) const {
-    bool hasUnique = true;
-    for (int64_t i = 0; i < indexTuples.size() && hasUnique; ++i) {
-      for (int64_t j = i + 1; j < indexTuples.size() && hasUnique; ++j) {
-        if (std::equal(indexTuples[i].begin(), indexTuples[i].end(),
-                       indexTuples[j].begin(), indexTuples[j].end())) {
-          hasUnique = false;
-          break;
-        }
+    std::set<SmallVector<int64_t>> uniqueSet;
+    for (const auto &tuple : indexTuples) {
+      if (!uniqueSet.insert(tuple).second) {
+        return false; // Duplicate found
       }
     }
-    return hasUnique;
+    return true;
   }
 };
 
