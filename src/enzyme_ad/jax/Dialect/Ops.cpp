@@ -1427,7 +1427,8 @@ void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
   GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
 }
 
-LogicalResult XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+LogicalResult
+XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
   auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
@@ -1444,9 +1445,7 @@ void XLAWrapperOp::setCalleeFromCallable(CallInterfaceCallable callee) {
   setFnAttr(cast<FlatSymbolRefAttr>(symbol));
 }
 
-CallInterfaceCallable XLAWrapperOp::getCallableForCallee() {
-  return getFn();
-}
+CallInterfaceCallable XLAWrapperOp::getCallableForCallee() { return getFn(); }
 
 MutableOperandRange XLAWrapperOp::getArgOperandsMutable() {
   return getInputsMutable();
@@ -1469,6 +1468,6 @@ Attribute XLAWrapperOp::removeResAttrsAttr() { return nullptr; }
 void XLAWrapperOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
-   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
-   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
 }
