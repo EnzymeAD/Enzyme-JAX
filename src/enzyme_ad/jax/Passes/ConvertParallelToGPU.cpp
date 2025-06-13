@@ -1541,6 +1541,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     rewriter.setInsertionPoint(wrapper);
     auto errOp = rewriter.create<enzymexla::GPUErrorOp>(loc);
+
+    for (auto atname : {"passthrough", "target_features"})
+      if (auto attr = wrapper->getAttr(atname)) {
+        errOp->setAttr(atname, attr);
+      }
     rewriter.setInsertionPointToStart(errOp.getBody());
     rewriter.eraseOp(wrapper.getBody()->getTerminator());
     rewriter.inlineBlockBefore(wrapper.getBody(),
@@ -2238,6 +2243,51 @@ gdgo->erase();
       signalPassFailure();
       return;
     }
+    SymbolTableCollection symbolTable;
+    symbolTable.getSymbolTable(getOperation());
+    getOperation()->walk([&](GPUErrorOp err) {
+      std::string sm;
+      if (auto attr =
+              dyn_cast_or_null<ArrayAttr>(err->getAttr("passthrough"))) {
+        for (auto a : attr) {
+          if (auto ar = dyn_cast<ArrayAttr>(a)) {
+            if (ar.size() != 2)
+              continue;
+            auto s0 = dyn_cast<StringAttr>(ar[0]);
+            auto s1 = dyn_cast<StringAttr>(ar[1]);
+            if (!s0 || !s1)
+              continue;
+            if (s0.getValue() == "target-cpu")
+              sm = s1.getValue();
+          }
+        }
+      }
+      std::string feat;
+      if (auto attr = dyn_cast_or_null<LLVM::TargetFeaturesAttr>(
+              err->getAttr("target_features"))) {
+        feat = attr.getFeaturesString();
+      }
+
+      err->walk([&](gpu::LaunchFuncOp launch) {
+        auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(
+            symbolTable.lookupNearestSymbolFrom(launch, launch.getKernel()));
+        if (!gfunc)
+          return;
+        auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
+        if (!gmod.getTargetsAttr()) {
+          auto chip = sm;
+          if (chip.size() == 0)
+            chip = "sm_50";
+          auto features = feat;
+          if (features.size() == 0)
+            features = "+ptx60";
+          auto target = NVVM::NVVMTargetAttr::get(
+              gmod.getContext(), /*optLevel*/ 2,
+              /*triple*/ "nvptx64-nvidia-cuda", chip, features);
+          gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
+        }
+      });
+    });
   }
 };
 

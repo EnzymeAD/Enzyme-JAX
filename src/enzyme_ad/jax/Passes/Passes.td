@@ -787,4 +787,9 @@ def FixGPUFunc : Pass<"fix-gpu-func", "mlir::gpu::GPUModuleOp"> {
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
 }
 
+def StripGPUInfo : Pass<"strip-gpu-info"> {
+  let summary = "Stirng GPU Debug info";
+  let dependentDialects = ["gpu::GPUDialect"];
+}
+
 #endif
