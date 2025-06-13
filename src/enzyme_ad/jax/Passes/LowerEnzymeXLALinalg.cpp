@@ -829,9 +829,9 @@ struct QRFactorizationOpLowering
                                           type_llvm_lapack_int, // matrix_layout
                                           type_llvm_lapack_int, // m
                                           type_llvm_lapack_int, // n
-                                          type_llvm_ptr,   // A
+                                          type_llvm_ptr,        // A
                                           type_llvm_lapack_int, // lda
-                                          type_llvm_ptr    // tau
+                                          type_llvm_ptr         // tau
                                       },
                                       false);
       rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
@@ -874,17 +874,17 @@ struct QRFactorizationOpLowering
       auto lda = m;
 
       // call to `lapacke_*geqrf*`
-      auto res =
-          rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_llvm_lapack_int},
-                                        SymbolRefAttr::get(ctx, bind_fn),
-                                        ValueRange{
-                                            layout.getResult(),
-                                            m.getResult(),
-                                            n.getResult(),
-                                            func.getArgument(0),
-                                            lda.getResult(),
-                                            func.getArgument(1),
-                                        });
+      auto res = rewriter.create<LLVM::CallOp>(op.getLoc(),
+                                               TypeRange{type_llvm_lapack_int},
+                                               SymbolRefAttr::get(ctx, bind_fn),
+                                               ValueRange{
+                                                   layout.getResult(),
+                                                   m.getResult(),
+                                                   n.getResult(),
+                                                   func.getArgument(0),
+                                                   lda.getResult(),
+                                                   func.getArgument(1),
+                                               });
 
       rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(),
                                      func.getArgument(2));
@@ -985,7 +985,8 @@ struct QRFactorizationOpLowering
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
 
     // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
-    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto type_info =
+        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
     auto info_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
     rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
@@ -1032,7 +1033,8 @@ struct QRFactorizationOpLowering
     rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
-    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto type_info =
+        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
     auto info_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
     rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
