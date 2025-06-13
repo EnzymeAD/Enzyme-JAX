@@ -9477,43 +9477,6 @@ bool is_iota(ArrayRef<int64_t> idx) {
   return true;
 }
 
-/// Converts gather ops to slice ops in case we have a single set of constant
-/// indices.
-struct GatherSimplify final
-    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
-                                    PatternRewriter &rewriter) const {
-    DenseIntElementsAttr startIndicesCst;
-    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
-      return failure();
-
-    {
-      DenseIntElementsAttr operandVals;
-      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
-        auto out = stablehlo::gatherOp(
-            stablehlo::constantOp(operandVals),
-            stablehlo::constantOp(startIndicesCst),
-            stablehlo::Axes(op.getDimensionNumbers().getOffsetDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getCollapsedSliceDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getOperandBatchingDims()),
-            stablehlo::Axes(
-                op.getDimensionNumbers().getStartIndicesBatchingDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getStartIndexMap()),
-            stablehlo::Axis(op.getDimensionNumbers().getIndexVectorDim()),
-            stablehlo::Sizes(op.getSliceSizes()), op.getIndicesAreSorted(),
-            op.getType());
-
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
-                                                           fromTensor(out));
-        return success();
-      }
-    }
-    return failure();
-  }
-};
-
 struct CSEIota : CheckedOpRewritePattern<stablehlo::IotaOp, CSEIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -20003,7 +19966,7 @@ struct EnzymeHLOOptPass
              ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
              ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
              DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
+             BroadcastToReshape, ReshapeEmptyBroadcast,
              BroadcastReshape, ConstPropThroughBarrier,
              ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
              SimplifyBoundary<enzymexla::ExtendOp>,
