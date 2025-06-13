@@ -282,7 +282,8 @@ def AllPipelines():
     from enzyme_ad.jax import (
         XLAPipeline,
         JaXPipeline,
-        hlo_opts,
+        optimization_passes,
+        full_optimization_pass_pipeline,
     )
 
     return [
@@ -341,22 +342,16 @@ and_simplify<16>;
 max_simplify<16>;
 min_simplify<16>;
 or_simplify<16>;
-negate_simplify<16>;
 mul_simplify<16>;
 div_simplify<16>;
 rem_simplify<16>;
 pow_simplify<16>;
-sqrt_simplify<16>;
-cos_simplify<16>;
-sin_simplify<16>;
 noop_slice<16>;
 const_prop_through_barrier<16>;
 slice_slice<16>;
 shift_right_logical_simplify<16>;
 pad_simplify<16>(1024);
 negative_pad_to_slice<16>;
-tanh_simplify<16>;
-exp_simplify<16>;
 slice_simplify<16>;
 convert_simplify<16>;
 dynamic_slice_to_static<16>;
@@ -403,7 +398,8 @@ def pipelines():
     from enzyme_ad.jax import (
         XLAPipeline,
         JaXPipeline,
-        hlo_opts,
+        optimization_passes,
+        full_optimization_pass_pipeline,
     )
 
     return [
@@ -418,7 +414,11 @@ def pipelines():
             CurBackends,
         ),
         ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        (
+            "DefOpt",
+            JaXPipeline(full_optimization_pass_pipeline(inline=False)),
+            CurBackends,
+        ),
         (
             "IPartOpt",
             JaXPipeline(
@@ -429,10 +429,7 @@ def pipelines():
         ),
         (
             "IDefOpt",
-            JaXPipeline(
-                "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
-                + hlo_opts()
-            ),
+            JaXPipeline(full_optimization_pass_pipeline()),
             CurBackends,
         ),
     ]

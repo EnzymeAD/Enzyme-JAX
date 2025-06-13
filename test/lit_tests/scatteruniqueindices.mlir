@@ -37,3 +37,15 @@ func.func @test_scatter_single(%arg0: tensor<2x3xf32>, %arg2: tensor<1x3xf32>) -
   }) : (tensor<2x3xf32>, tensor<1x1xi32>, tensor<1x3xf32>) -> tensor<2x3xf32>
   return %0 : tensor<2x3xf32>
 }
+
+// CHECK-LABEL: func.func @test_scatter_unique2
+func.func @test_scatter_unique2(%arg0: tensor<5xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<5xf32>) -> tensor<5xf32> {
+  %c = stablehlo.constant dense<[[3, 0, 0, 4, 2]]> : tensor<1x5xi64>
+  // CHECK: %{{.+}} = "stablehlo.scatter"(%{{.+}}, %{{.+}}, %{{.+}}) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>}> ({
+  %0 = "stablehlo.scatter"(%arg0, %c, %arg1) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>}> ({
+  ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+    %1 = stablehlo.add %arg2, %arg3 : tensor<f32>
+    stablehlo.return %1 : tensor<f32>
+  }) : (tensor<5xf32>, tensor<1x5xi64>, tensor<5xf32>) -> tensor<5xf32>
+  return %0 : tensor<5xf32>
+}
