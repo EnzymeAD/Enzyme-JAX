@@ -947,22 +947,17 @@ struct QRFactorizationOpLowering
     const int64_t n = shape_input[rank_input - 1];
     const int64_t numBatchDims = rank_input - 2;
 
-    if (numBatchDims > 0) {
-      return rewriter.notifyMatchFailure(
-          op, "QR factorization with batch dimensions is not yet supported");
-    }
-
-    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
-
+    
+    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
-    SmallVector<int64_t> ranks_operands = {rank_input};
-    SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
-    SmallVector<bool> isColMajorArrOperands = {true};
-    SmallVector<bool> isColMajorArrOutputs = {true, true};
-
+      ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+      SmallVector<int64_t> ranks_operands = {rank_input};
+      SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
+      SmallVector<bool> isColMajorArrOperands = {true};
+      SmallVector<bool> isColMajorArrOutputs = {true, true};
+      
     auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
         rewriter.getStringAttr("cusolver_geqrf_ffi"),
@@ -985,6 +980,7 @@ struct QRFactorizationOpLowering
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
 
     // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
+    // TODO what does JAX do?
     auto type_info =
         RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
     auto info_op = rewriter.create<stablehlo::ConstantOp>(
@@ -1010,12 +1006,7 @@ struct QRFactorizationOpLowering
     const int64_t n = shape_input[rank_input - 1];
     const int64_t numBatchDims = rank_input - 2;
 
-    if (numBatchDims > 0) {
-      return rewriter.notifyMatchFailure(
-          op, "QR factorization with batch dimensions is not yet supported");
-    }
-
-    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+    // emit `stablehlo.custom_call` to `@QrDecomposition` kernel from XLA
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
 
     auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
