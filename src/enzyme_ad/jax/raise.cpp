@@ -11,22 +11,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/IRReader/IRReader.h"
-#include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "mlir/Target/LLVMIR/Import.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/SourceMgr.h"
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
-
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext Context;
@@ -62,7 +61,22 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   using namespace llvm;
   using namespace mlir;
   std::string pass_pipeline =
-      "inline{default-pipeline=canonicalize max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-affine-to-stablehlo{prefer_while_raising=false dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,gpu-module-to-binary";
+      "inline{default-pipeline=canonicalize "
+      "max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-"
+      "recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-"
+      "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
+      "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
+      "canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,"
+      "canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,"
+      "func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,"
+      "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
+      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func("
+      "affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-"
+      "affine-to-stablehlo{prefer_while_raising=false "
+      "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
+      "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,gpu-"
+      "module-to-binary";
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
   }
