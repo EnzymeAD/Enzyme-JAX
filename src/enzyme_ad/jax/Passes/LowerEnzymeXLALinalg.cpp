@@ -936,8 +936,69 @@ struct QRFactorizationOpLowering
 
   LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op,
                                      PatternRewriter &rewriter) const {
-    // TODO
-    return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"cuda\"");
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto input = op.getOperand();
+    auto type_input = cast<RankedTensorType>(input.getType());
+    auto shape_input = type_input.getShape();
+    auto rank_input = static_cast<int64_t>(shape_input.size());
+    auto inputElementType = type_input.getElementType();
+
+    const int64_t m = shape_input[rank_input - 2];
+    const int64_t n = shape_input[rank_input - 1];
+    const int64_t numBatchDims = rank_input - 2;
+
+    if (numBatchDims > 0) {
+      return rewriter.notifyMatchFailure(
+          op, "QR factorization with batch dimensions is not yet supported");
+    }
+
+    auto blasIntType = rewriter.getIntegerType(blasIntWidth);
+    auto type_lapack_int = typeConverter.convertType(blasIntType);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+
+    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
+    auto rank_tau = type_tau.getRank();
+
+    auto type_info = cast<RankedTensorType>(op.getResult(2).getType());
+    auto rank_info = type_info.getRank();
+
+    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+    SmallVector<int64_t> ranks_operands = {rank_input};
+    SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
+    SmallVector<bool> isColMajorArrOperands = {true};
+    SmallVector<bool> isColMajorArrOutputs = {true, true};
+
+    auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
+        op.getLoc(),
+        TypeRange{type_input, type_tau},
+        ValueRange{input},
+        rewriter.getStringAttr("cusolver_geqrf_ffi"),
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ nullptr,
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(rewriter.getContext(), mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands, rank_input),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases)
+    );
+
+    rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
+    
+    // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
+    auto info_op = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
+    rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
+    
+    rewriter.eraseOp(op);
+
+    return success();
   }
 
   LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op,
