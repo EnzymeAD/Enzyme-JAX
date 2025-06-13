@@ -15399,38 +15399,83 @@ struct ScatterIndicesAreUnique
       if (shape.empty())
         return failure();
 
+      auto dimNumbers = op.getScatterDimensionNumbers();
+      int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+
       int64_t numTuples = 1;
-      for (int64_t i = 0; i < shape.size() - 1; ++i) {
-        numTuples *= shape[i];
+      for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i != indexVectorDim) {
+          numTuples *= shape[i];
+        }
       }
-      int64_t tupleSize = shape.back();
+      int64_t tupleSize = shape[indexVectorDim];
+
+      SmallVector<int64_t> strides(shape.size());
+      strides[shape.size() - 1] = 1;
+      for (int64_t i = shape.size() - 2; i >= 0; --i) {
+        strides[i] = strides[i + 1] * shape[i + 1];
+      }
+
+      SmallVector<int64_t> nonIndexVectorShape;
+      for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i != indexVectorDim) {
+          nonIndexVectorShape.push_back(shape[i]);
+        }
+      }
 
       // Iterate over the scatter indices tensor to extract tuples
       SmallVector<SmallVector<int64_t>> indexTuples;
       auto values = denseAttr.getValues<APInt>();
-      auto it = values.begin();
-      for (int64_t i = 0; i < numTuples; ++i) {
-        SmallVector<int64_t> indexTuple;
-        for (int64_t j = 0; j < tupleSize; ++j) {
-          if (it == values.end()) {
-            return failure(); // Unexpected end of values
-          }
-          indexTuple.push_back((*it).getSExtValue());
-          ++it;
-        }
-        indexTuples.push_back(indexTuple);
-      }
 
-      if (areIndexTuplesUnique(indexTuples)) {
-        auto newOp = rewriter.create<stablehlo::ScatterOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(),
-            op.getScatterIndices(), op.getUpdates(),
-            op.getScatterDimensionNumbers(), op.getIndicesAreSortedAttr(),
-            rewriter.getBoolAttr(true));
-        newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
-        rewriter.replaceOp(op, newOp);
-        return success();
-      }
+      std::function<void(SmallVector<int64_t>, int64_t)> extractTuples =
+          [&](SmallVector<int64_t> currentIndices, int64_t dim) {
+            if (dim == nonIndexVectorShape.size()) {
+              SmallVector<int64_t> indexTuple;
+              for (int64_t component = 0; component < tupleSize; ++component) {
+                // Build full multi-dimensional index
+                SmallVector<int64_t> fullIndex;
+                int64_t nonIndexDim = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  if (d == indexVectorDim) {
+                    fullIndex.push_back(component);
+                  } else {
+                    fullIndex.push_back(currentIndices[nonIndexDim++]);
+                  }
+                }
+
+                // Convert to linear index
+                int64_t linearIdx = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  linearIdx += fullIndex[d] * strides[d];
+                }
+
+                auto it = values.begin();
+                std::advance(it, linearIdx);
+                indexTuple.push_back((*it).getSExtValue());
+              }
+              indexTuples.push_back(indexTuple);
+              return;
+            }
+
+            for (int64_t i = 0; i < nonIndexVectorShape[dim]; ++i) {
+              SmallVector<int64_t> newIndices = currentIndices;
+              newIndices.push_back(i);
+              extractTuples(newIndices, dim + 1);
+            }
+          };
+
+      extractTuples({}, 0);
+
+      bool uniqueIndices = areIndexTuplesUnique(indexTuples);
+      if (!uniqueIndices && !op.getUniqueIndices())
+        return failure();
+      auto newOp = rewriter.create<stablehlo::ScatterOp>(
+          op.getLoc(), op.getResultTypes(), op.getInputs(), scatterIndices,
+          op.getUpdates(), dimNumbers, op.getIndicesAreSortedAttr(),
+          rewriter.getBoolAttr(uniqueIndices));
+      newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+      rewriter.replaceOp(op, newOp);
+      return success();
     }
 
     return failure();
@@ -15439,17 +15484,13 @@ struct ScatterIndicesAreUnique
 private:
   bool areIndexTuplesUnique(
       const SmallVector<SmallVector<int64_t>> &indexTuples) const {
-    bool hasUnique = true;
-    for (int64_t i = 0; i < indexTuples.size() && hasUnique; ++i) {
-      for (int64_t j = i + 1; j < indexTuples.size() && hasUnique; ++j) {
-        if (std::equal(indexTuples[i].begin(), indexTuples[i].end(),
-                       indexTuples[j].begin(), indexTuples[j].end())) {
-          hasUnique = false;
-          break;
-        }
+    std::set<SmallVector<int64_t>> uniqueSet;
+    for (const auto &tuple : indexTuples) {
+      if (!uniqueSet.insert(tuple).second) {
+        return false; // Duplicate found
       }
     }
-    return hasUnique;
+    return true;
   }
 };
 
@@ -19370,6 +19411,312 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+stablehlo::GatherDimensionNumbersAttr
+getGatherDims(mlir::MLIRContext *ctx,
+              stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {
+  return stablehlo::GatherDimensionNumbersAttr::get(
+      ctx, scatterDimNumbers.getUpdateWindowDims(),
+      scatterDimNumbers.getInsertedWindowDims(),
+      scatterDimNumbers.getInputBatchingDims(),
+      scatterDimNumbers.getScatterIndicesBatchingDims(),
+      scatterDimNumbers.getScatterDimsToOperandDims(),
+      scatterDimNumbers.getIndexVectorDim());
+}
+
+bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
+  auto &updateComputation = scatterOp.getUpdateComputation();
+
+  if (!updateComputation.hasOneBlock())
+    return false;
+
+  auto &block = updateComputation.front();
+  if (block.getNumArguments() != 2)
+    return false;
+
+  auto originalValue = block.getArgument(0);
+  auto updateValue = block.getArgument(1);
+
+  // The block should have exactly one operation (the return)
+  if (block.getOperations().size() != 1)
+    return false;
+
+  auto &returnOp = block.front();
+  auto stablehloReturn = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturn)
+    return false;
+
+  if (stablehloReturn.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the update value (second argument)
+  return stablehloReturn.getOperand(0) == updateValue;
+}
+
+SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
+  auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
+  auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
+  auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+
+  auto inputShape = inputType.getShape();
+  auto updateShape = updateType.getShape();
+
+  SmallVector<int64_t> sliceSizes(inputShape.size(), 1);
+
+  auto updateWindowDims = scatterDimNumbers.getUpdateWindowDims();
+  auto scatterIndicesBatchingDims =
+      scatterDimNumbers.getScatterIndicesBatchingDims();
+
+  // Map update window dimensions to their corresponding input dimensions
+  for (int64_t i = 0; i < updateWindowDims.size(); ++i) {
+    int64_t inputDim = updateWindowDims[i];
+
+    // Calculate the corresponding dimension in the update tensor
+    // Update tensor layout: [scatter_indices_batching_dims...,
+    // update_window_dims...]
+    int64_t updateDimIndex = scatterIndicesBatchingDims.size() + i;
+
+    if (updateDimIndex < updateShape.size()) {
+      sliceSizes[inputDim] = updateShape[updateDimIndex];
+    }
+  }
+
+  return sliceSizes;
+}
+
+struct ScatterMultiplySimplify final
+    : public CheckedOpRewritePattern<stablehlo::MulOp,
+                                     ScatterMultiplySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ScatterMultiplySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    stablehlo::ScatterOp scatterOp;
+    mlir::Value otherValue;
+
+    auto lhsScatterOp = lhs.getDefiningOp<stablehlo::ScatterOp>();
+    auto rhsScatterOp = rhs.getDefiningOp<stablehlo::ScatterOp>();
+    if (!lhsScatterOp && !rhsScatterOp) {
+      return failure();
+    } else {
+      if (lhsScatterOp) {
+        scatterOp = lhsScatterOp;
+        otherValue = rhs;
+      } else {
+        scatterOp = rhsScatterOp;
+        otherValue = lhs;
+      }
+    }
+
+    if (scatterOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "ScatterOp with more than one input not supported");
+
+    auto input = scatterOp.getInputs()[0];
+    if (!matchPattern(input, m_AnyZeroFloat()) &&
+        !matchPattern(input, m_Zero()))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-zero input");
+
+    if (!scatterOp.getResult(0).hasOneUse())
+      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
+
+    if (!isScatterSetindexOp(scatterOp))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+
+    auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+
+    SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
+
+    auto gatheredValues = rewriter.create<stablehlo::GatherOp>(
+        op.getLoc(), otherValue, scatterOp.getScatterIndices(),
+        getGatherDims(rewriter.getContext(), scatterDimNumbers),
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        scatterOp.getIndicesAreSortedAttr());
+
+    auto newUpdates = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), gatheredValues, scatterOp.getUpdates()[0]);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op.getLoc(), scatterOp.getResultTypes(), scatterOp.getInputs(),
+        scatterOp.getScatterIndices(), ValueRange(newUpdates),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp);
+
+    return success();
+  }
+};
+
+struct GatherConstProp final
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherConstProp> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherConstProp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr operandAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&operandAttr)))
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-constant input");
+
+    if (operandAttr.isSplat()) {
+      // In this case the indices don't matter and we can construct a new
+      // splatted result
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), operandAttr.resizeSplat(op.getType()));
+      return success();
+    }
+
+    DenseElementsAttr startIndicesAttr;
+    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesAttr))) {
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp with non-constant start indices and unsplatted input");
+    }
+
+    stablehlo::Tensor operandTensor = stablehlo::constantOp(operandAttr);
+    stablehlo::Tensor startIndicesTensor =
+        stablehlo::constantOp(startIndicesAttr);
+    auto gatherDims = op.getDimensionNumbers();
+
+    auto sliceSizes = op.getSliceSizes();
+    auto elementType = rewriter.getIntegerType(64);
+    auto attrType =
+        RankedTensorType::get({(int64_t)sliceSizes.size()}, elementType);
+    auto sliceSizesAttr = DenseElementsAttr::get(attrType, sliceSizes);
+
+    auto result = stablehlo::gatherOp(
+        operandTensor, startIndicesTensor,
+        stablehlo::Axes(gatherDims.getOffsetDims()),
+        stablehlo::Axes(gatherDims.getCollapsedSliceDims()),
+        stablehlo::Axes(gatherDims.getOperandBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndicesBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndexMap()),
+        stablehlo::Axis(gatherDims.getIndexVectorDim()),
+        stablehlo::makeSizes(stablehlo::constantOp(sliceSizesAttr)),
+        op.getIndicesAreSorted(), op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(result));
+    return success();
+  }
+};
+
+struct UnaryElementwiseScatterSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          UnaryElementwiseScatterSimplify> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      UnaryElementwiseScatterSimplify>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 1)
+      return rewriter.notifyMatchFailure(op, "not a unary elementwise op");
+
+    auto input = op->getOperand(0);
+    auto scatterOp = input.getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatterOp)
+      return rewriter.notifyMatchFailure(op, "not a scatter op");
+
+    if (scatterOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "ScatterOp with more than one input not supported");
+
+    if (!scatterOp.getResult(0).hasOneUse())
+      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
+
+    if (!isScatterSetindexOp(scatterOp))
+      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+
+    auto scatterInput = scatterOp.getInputs()[0];
+    DenseElementsAttr scatterInputAttr;
+    // In this case, we are will definitely increase the compute cost
+    if (!matchPattern(scatterInput, m_Constant(&scatterInputAttr)))
+      return rewriter.notifyMatchFailure(op,
+                                         "ScatterOp with non-constant input");
+
+    auto elemType =
+        cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+
+    // TODO: support convert op. we need to rewrite the update computation to
+    // take the converted element type
+    if (isa<stablehlo::ConvertOp>(op))
+      return rewriter.notifyMatchFailure(op,
+                                         "ConvertOp not supported for now.");
+
+    // should get constant propagated
+    auto scatterInputElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(scatterInput),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterInput.getType()).getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto scatterUpdatesElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(),
+        ValueRange(scatterOp.getUpdates()),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterOp.getUpdates()[0].getType())
+                .getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto resultType = RankedTensorType::get(
+        cast<RankedTensorType>(scatterOp.getResultTypes()[0]).getShape(),
+        elemType);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op->getLoc(), TypeRange(resultType),
+        ValueRange(scatterInputElem->getResult(0)),
+        scatterOp.getScatterIndices(),
+        ValueRange(scatterUpdatesElem->getResult(0)),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp->getResult(0));
+    return success();
+  }
+};
+
+struct GatherElementwise
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherElementwise> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherElementwise>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gatherInput = op.getOperand();
+    auto defOp = gatherInput.getDefiningOp();
+    if (!defOp || !defOp->hasTrait<mlir::OpTrait::Elementwise>())
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-elementwise input");
+
+    if (!isOnlyUsedInOperation(defOp, op))
+      return failure();
+
+    SmallVector<Value> newElementwiseInputs;
+    for (auto input : defOp->getOperands()) {
+      auto neeGatherOp = rewriter.create<stablehlo::GatherOp>(
+          op.getLoc(), input, op.getStartIndices(),
+          op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+          op.getIndicesAreSortedAttr());
+      newElementwiseInputs.push_back(neeGatherOp->getResult(0));
+    }
+
+    auto newElemOp = rewriter.create(
+        op.getLoc(), defOp->getName().getIdentifier(),
+        ValueRange(newElementwiseInputs), TypeRange{op.getResult().getType()},
+        defOp->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newElemOp->getResult(0));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19656,6 +20003,8 @@ struct EnzymeHLOOptPass
                  BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
                  BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
 
+    patterns.add<GatherConstProp>(context);
+
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
                  BinaryOpTransposeSimplify<stablehlo::MulOp>,
@@ -19888,7 +20237,10 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
         ConjComplexSimplify,
-        SplitConvolutionIntoReverseConvolution
+        SplitConvolutionIntoReverseConvolution,
+        ScatterMultiplySimplify,
+        UnaryElementwiseScatterSimplify,
+        GatherElementwise
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
