@@ -11,68 +11,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/Dialect.h"
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Dialect/Ops.h"
-#include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
-#include "Enzyme/MLIR/Passes/Passes.h"
-#include "Implementations/XLADerivatives.h"
-#include "Passes/Passes.h"
-#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
-#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
-#include "mlir/Conversion/Passes.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Async/IR/Async.h"
-#include "mlir/Dialect/Complex/IR/Complex.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
-#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
-#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Transform/Transforms/Passes.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "mlir/InitAllPasses.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "mlir/Transforms/Passes.h"
-#include "llvm/IRReader/IRReader.h"
-
+#include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Import.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/SourceMgr.h"
+
+#include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
-
-#include "mlir/Target/LLVM/NVVM/Target.h"
-#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
-
-#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
-#include "stablehlo/dialect/ChloOps.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/tests/CheckOps.h"
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
-
-using namespace mlir;
-
-namespace mlir {
-namespace enzyme {
-void registerGenerateApplyPatternsPass();
-void registerRemoveTransformPass();
-} // namespace enzyme
-} // namespace mlir
-
-void prepareRegistry(mlir::DialectRegistry &registry);
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext Context;
@@ -121,7 +75,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-"
       "affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce";
+      "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
+      "gpu-info,gpu-"
+      "module-to-binary";
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
   }
@@ -144,11 +101,50 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
     llvm::errs() << error_stream.str() << "\n";
+    return "";
   }
 
+  llvm::LLVMContext llvmContext;
+  auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
+
+  if (auto F = outModule->getFunction("mgpuModuleLoad")) {
+    for (auto U : llvm::make_early_inc_range(F->users())) {
+      if (auto CI = dyn_cast<CallInst>(U)) {
+        if (GlobalVariable *glob =
+                dyn_cast<GlobalVariable>(CI->getArgOperand(0))) {
+          GlobalVariable *newMod = nullptr;
+          for (auto U2 : llvm::make_early_inc_range(CI->users())) {
+            auto ST = cast<StoreInst>(U2);
+            newMod = cast<GlobalVariable>(ST->getPointerOperand());
+            ST->eraseFromParent();
+          }
+          CI->eraseFromParent();
+          assert(newMod);
+          for (auto U : llvm::make_early_inc_range(newMod->users())) {
+            for (auto U2 : llvm::make_early_inc_range(U->users())) {
+              cast<Instruction>(U2)->eraseFromParent();
+            }
+            cast<Instruction>(U)->eraseFromParent();
+          }
+          newMod->eraseFromParent();
+          auto oldName = (glob->getName().substr(0, glob->getName().size() -
+                                                        strlen("_binary")) +
+                          "_gpubin_cst")
+                             .str();
+          llvm::errs() << "oldName: " << oldName << "\n";
+          outModule->dump();
+          auto oldG = outModule->getGlobalVariable(oldName, true);
+          assert(oldG);
+          oldG->replaceAllUsesWith(glob);
+          oldG->eraseFromParent();
+          break;
+        }
+      }
+    }
+  }
   std::string res;
   llvm::raw_string_ostream ss(res);
-  ss << *mod;
+  ss << *outModule;
 
   return res;
 }

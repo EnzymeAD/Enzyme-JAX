@@ -91,7 +91,6 @@ struct GPULaunchRecognitionPass
               cop.getArgOperands()[0].getDefiningOp<LLVM::AddressOfOp>();
           if (!argop)
             continue;
-          llvm::errs() << "argop: " << argop << "\n";
           auto cur = argop.getFunction(symbolTable);
           if (!cur)
             continue;
@@ -156,14 +155,12 @@ struct GPULaunchRecognitionPass
             });
           }
 
-          auto loc = launchFunc->getLoc();
+          auto loc = cop->getLoc();
           builder.setInsertionPointAfter(cop);
 
           auto shMemSize = builder.create<LLVM::TruncOp>(
               loc, builder.getI32Type(), cop.getArgOperands()[7]);
           auto stream = cop.getArgOperands()[8];
-          llvm::errs() << " stream: " << stream << "\n";
-          // TODO stream is arg 8
           llvm::SmallVector<mlir::Value> args;
           for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
             args.push_back(cop.getArgOperands()[i]);
@@ -194,8 +191,8 @@ struct GPULaunchRecognitionPass
                   ValueRange(args));
             } else {
               auto op = builder.create<mlir::gpu::LaunchOp>(
-                  loc, grid[0], grid[1], grid[2], block[0], block[1], block[2],
-                  shMemSize, nullptr, ValueRange());
+                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, nullptr, ValueRange());
               builder.setInsertionPointToStart(&op.getRegion().front());
               builder.create<LLVM::CallOp>(loc, cur, args);
               builder.create<gpu::TerminatorOp>(loc);
@@ -208,8 +205,9 @@ struct GPULaunchRecognitionPass
                   ValueRange(args), stream.getType(), ValueRange(stream));
             } else {
               auto op = builder.create<mlir::gpu::LaunchOp>(
-                  loc, grid[0], grid[1], grid[2], block[0], block[1], block[2],
-                  shMemSize, stream.getType(), ValueRange(stream));
+                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, stream.getType(),
+                  ValueRange(stream));
               builder.setInsertionPointToStart(&op.getRegion().front());
               builder.create<LLVM::CallOp>(loc, cur, args);
               builder.create<gpu::TerminatorOp>(loc);
