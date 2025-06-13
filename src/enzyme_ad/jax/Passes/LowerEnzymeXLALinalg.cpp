@@ -943,7 +943,6 @@ struct QRFactorizationOpLowering
     auto type_input = cast<RankedTensorType>(input.getType());
     auto shape_input = type_input.getShape();
     auto rank_input = static_cast<int64_t>(shape_input.size());
-    auto inputElementType = type_input.getElementType();
 
     const int64_t m = shape_input[rank_input - 2];
     const int64_t n = shape_input[rank_input - 1];
@@ -966,36 +965,39 @@ struct QRFactorizationOpLowering
     auto type_info = cast<RankedTensorType>(op.getResult(2).getType());
     auto rank_info = type_info.getRank();
 
-    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
+        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
     SmallVector<int64_t> ranks_operands = {rank_input};
     SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
     SmallVector<bool> isColMajorArrOperands = {true};
     SmallVector<bool> isColMajorArrOutputs = {true, true};
 
     auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
-        op.getLoc(),
-        TypeRange{type_input, type_tau},
-        ValueRange{input},
+        op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
         rewriter.getStringAttr("cusolver_geqrf_ffi"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/
-        stablehlo::CustomCallApiVersionAttr::get(rewriter.getContext(), mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/
-        getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands, rank_input),
+        getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands,
+                      rank_input),
         /*result_layouts*/
-        getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases)
-    );
+        getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
+                      rank_input),
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
 
     rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
-    
+
     // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
-    auto info_op = rewriter.create<stablehlo::ConstantOp>(op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
+    auto info_op = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
     rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
-    
+
     rewriter.eraseOp(op);
 
     return success();
