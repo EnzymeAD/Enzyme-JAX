@@ -331,6 +331,7 @@ def optimization_passes(
         # "concat_to_onedim_dusslice",
         "scatter_multiply_simplify",
         "unary_elementwise_scatter_simplify",
+        "gather_elementwise",
     ]
 
     # constant propagation patterns
@@ -431,6 +432,7 @@ def optimization_passes(
             "transpose_batch_norm_inference",
             "transpose_batch_norm_grad",
             "transpose_if",
+            "transpose_scatter",
         ]
     elif transpose_propagate == "down":
         transform_passes_list += [
