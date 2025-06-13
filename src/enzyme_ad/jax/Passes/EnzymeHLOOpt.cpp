@@ -19683,6 +19683,40 @@ struct UnaryElementwiseScatterSimplify final
   }
 };
 
+struct GatherElementwise
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherElementwise> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherElementwise>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gatherInput = op.getOperand();
+    auto defOp = gatherInput.getDefiningOp();
+    if (!defOp || !defOp->hasTrait<mlir::OpTrait::Elementwise>())
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-elementwise input");
+
+    if (!isOnlyUsedInOperation(defOp, op))
+      return failure();
+
+    SmallVector<Value> newElementwiseInputs;
+    for (auto input : defOp->getOperands()) {
+      auto neeGatherOp = rewriter.create<stablehlo::GatherOp>(
+          op.getLoc(), input, op.getStartIndices(),
+          op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+          op.getIndicesAreSortedAttr());
+      newElementwiseInputs.push_back(neeGatherOp->getResult(0));
+    }
+
+    auto newElemOp = rewriter.create(
+        op.getLoc(), defOp->getName().getIdentifier(),
+        ValueRange(newElementwiseInputs), TypeRange{op.getResult().getType()},
+        defOp->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newElemOp->getResult(0));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20205,7 +20239,8 @@ struct EnzymeHLOOptPass
         ConjComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
-        UnaryElementwiseScatterSimplify
+        UnaryElementwiseScatterSimplify,
+        GatherElementwise
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
