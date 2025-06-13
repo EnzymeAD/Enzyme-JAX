@@ -792,4 +792,22 @@ def StripGPUInfo : Pass<"strip-gpu-info"> {
   let dependentDialects = ["gpu::GPUDialect"];
 }
 
+def ResolveCustomLoweringPass : Pass<"resolve-custom-lowering", "ModuleOp"> {
+  let summary = "Resolve custom lowering";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+
+  let options =
+    [Option<
+       /*C++ variable name=*/"removeRegisterOps",
+       /*CLI argument=*/"remove_register_ops",
+       /*type=*/"bool",
+       /*default=*/"true",
+       /*description=*/"Remove enzymexla.lowering.register ops after lowering">
+  ];
+}
+
 #endif
