@@ -40,6 +40,7 @@ namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_PARALLELLOWER
 #define GEN_PASS_DEF_FIXGPUFUNC
+#define GEN_PASS_DEF_STRIPGPUINFO
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -111,6 +112,10 @@ struct ConvertCudaRTtoHipRT
 */
 struct FixGPUFunc : public enzyme::impl::FixGPUFuncBase<FixGPUFunc> {
   using FixGPUFuncBase::FixGPUFuncBase;
+  void runOnOperation() override;
+};
+struct StripGPUInfo : public enzyme::impl::StripGPUInfoBase<StripGPUInfo> {
+  using StripGPUInfoBase::StripGPUInfoBase;
   void runOnOperation() override;
 };
 } // end anonymous namespace
@@ -905,6 +910,22 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   }
 }
 #endif
+
+void StripGPUInfo::runOnOperation() {
+  getOperation()->walk([](gpu::GPUModuleOp v) {
+    auto unknown = OpBuilder(v).getUnknownLoc();
+    v->walk([&](Operation* op) {
+	op->setLoc(unknown);
+	for (auto &region : op->getRegions()) {
+	  for (auto &blk : region) {
+	    for (auto &arg : blk.getArguments()) {
+	      arg.setLoc(unknown);
+	    }
+	  }
+	}
+    });
+  });
+}
 
 // Returns a list of all symbols provided by cudart (obtained from
 // libcudart_static.a)

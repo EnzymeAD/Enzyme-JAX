@@ -191,8 +191,8 @@ struct GPULaunchRecognitionPass
                   ValueRange(args));
             } else {
               auto op = builder.create<mlir::gpu::LaunchOp>(
-                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0], block[1], block[2],
-                  shMemSize, nullptr, ValueRange());
+                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, nullptr, ValueRange());
               builder.setInsertionPointToStart(&op.getRegion().front());
               builder.create<LLVM::CallOp>(loc, cur, args);
               builder.create<gpu::TerminatorOp>(loc);
@@ -205,8 +205,9 @@ struct GPULaunchRecognitionPass
                   ValueRange(args), stream.getType(), ValueRange(stream));
             } else {
               auto op = builder.create<mlir::gpu::LaunchOp>(
-                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0], block[1], block[2],
-                  shMemSize, stream.getType(), ValueRange(stream));
+                  launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, stream.getType(),
+                  ValueRange(stream));
               builder.setInsertionPointToStart(&op.getRegion().front());
               builder.create<LLVM::CallOp>(loc, cur, args);
               builder.create<gpu::TerminatorOp>(loc);

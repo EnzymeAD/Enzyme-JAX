@@ -76,7 +76,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
-      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,gpu-"
+      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-gpu-info,gpu-"
       "module-to-binary";
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
