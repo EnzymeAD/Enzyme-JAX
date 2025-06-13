@@ -414,7 +414,11 @@ def pipelines():
             CurBackends,
         ),
         ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        ("DefOpt", JaXPipeline(full_optimization_pass_pipeline()), CurBackends),
+        (
+            "DefOpt",
+            JaXPipeline(full_optimization_pass_pipeline(inline=False)),
+            CurBackends,
+        ),
         (
             "IPartOpt",
             JaXPipeline(

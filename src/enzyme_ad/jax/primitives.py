@@ -100,6 +100,7 @@ class JaXPipeline:
 
 def optimization_passes(
     *,
+    inline: bool = True,
     no_nan: bool = False,
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
@@ -474,19 +475,25 @@ def optimization_passes(
 
     func_passes = ",".join(["canonicalize", "cse", "canonicalize", transform_passes])
 
-    return "inline{default-pipeline=canonicalize max-iterations=4}" + "," + func_passes
+    if inline:
+        func_passes = (
+            "inline{default-pipeline=canonicalize max-iterations=4}" + "," + func_passes
+        )
+    return func_passes
 
 
 # TODO: implement options similar to ones in Reactant for benchmarking
 #       currently we mimic the `:all` option from Reactant
 def full_optimization_pass_pipeline(
     *,
+    inline: bool = True,
     no_nan: bool = False,
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
 ):
     opt_passes = optimization_passes(
+        inline=inline,
         no_nan=no_nan,
         transpose_propagate=transpose_propagate,
         reshape_propagate=reshape_propagate,
@@ -498,6 +505,7 @@ def full_optimization_pass_pipeline(
     propagate_down_passes = ""
     if transpose_propagate == "up" or reshape_propagate == "up":
         propagate_down_passes = optimization_passes(
+            inline=inline,
             no_nan=no_nan,
             transpose_propagate=transpose_propagate,
             reshape_propagate=reshape_propagate,
