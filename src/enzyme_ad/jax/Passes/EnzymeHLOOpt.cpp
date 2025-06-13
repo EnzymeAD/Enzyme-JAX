@@ -19642,12 +19642,6 @@ struct UnaryElementwiseScatterSimplify final
     auto elemType =
         cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
 
-    // TODO: support convert op. we need to rewrite the update computation to
-    // take the converted element type
-    if (isa<stablehlo::ConvertOp>(op))
-      return rewriter.notifyMatchFailure(op,
-                                         "ConvertOp not supported for now.");
-
     // should get constant propagated
     auto scatterInputElem = rewriter.create(
         op->getLoc(), op->getName().getIdentifier(), ValueRange(scatterInput),
@@ -19676,8 +19670,15 @@ struct UnaryElementwiseScatterSimplify final
         ValueRange(scatterUpdatesElem->getResult(0)),
         scatterOp.getScatterDimensionNumbersAttr(),
         scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
-    newScatterOp.getUpdateComputation().takeBody(
-        scatterOp.getUpdateComputation());
+
+    auto &updateRegion = newScatterOp.getUpdateComputation();
+    auto *block = rewriter.createBlock(&updateRegion);
+    auto argType = RankedTensorType::get({}, elemType);
+    block->addArgument(argType, op->getLoc());
+    block->addArgument(argType, op->getLoc());
+    rewriter.setInsertionPointToStart(block);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), block->getArgument(1));
+
     rewriter.replaceOp(op, newScatterOp->getResult(0));
     return success();
   }
