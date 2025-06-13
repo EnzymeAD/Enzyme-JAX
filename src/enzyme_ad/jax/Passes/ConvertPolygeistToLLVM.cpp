@@ -1866,7 +1866,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
           }
 
           rewriter.create<LLVM::CallOp>(loc, cudaRegisterFatbinFn.value(),
-                                        ValueRange(bitcastOfWrapper));
+                                        ValueRange(module->getResult(0)));
         }
         ctorBuilder.create<LLVM::ReturnOp>(loc, ValueRange());
       }

@@ -91,7 +91,6 @@ struct GPULaunchRecognitionPass
               cop.getArgOperands()[0].getDefiningOp<LLVM::AddressOfOp>();
           if (!argop)
             continue;
-          llvm::errs() << "argop: " << argop << "\n";
           auto cur = argop.getFunction(symbolTable);
           if (!cur)
             continue;
@@ -156,14 +155,12 @@ struct GPULaunchRecognitionPass
             });
           }
 
-          auto loc = launchFunc->getLoc();
+          auto loc = cop->getLoc();
           builder.setInsertionPointAfter(cop);
 
           auto shMemSize = builder.create<LLVM::TruncOp>(
               loc, builder.getI32Type(), cop.getArgOperands()[7]);
           auto stream = cop.getArgOperands()[8];
-          llvm::errs() << " stream: " << stream << "\n";
-          // TODO stream is arg 8
           llvm::SmallVector<mlir::Value> args;
           for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
             args.push_back(cop.getArgOperands()[i]);

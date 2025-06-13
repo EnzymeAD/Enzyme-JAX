@@ -20,6 +20,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/IR/Instructions.h"
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
@@ -105,6 +106,37 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext llvmContext;
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
 
+  if (auto F = outModule->getFunction("mgpuModuleLoad")) {
+    for (auto U : llvm::make_early_inc_range(F->users())) {
+      if (auto CI = dyn_cast<CallInst>(U)) {
+        if (GlobalVariable *glob = dyn_cast<GlobalVariable>(CI->getArgOperand(0))) {
+          GlobalVariable* newMod = nullptr;
+	  for (auto U2 : llvm::make_early_inc_range(CI->users())) {
+	    auto ST = cast<StoreInst>(U2);
+	    newMod = cast<GlobalVariable>(ST->getPointerOperand());
+	    ST->eraseFromParent();
+	  }
+	  CI->eraseFromParent();
+	  assert(newMod);
+	    for (auto U : llvm::make_early_inc_range(newMod->users())) {
+	      for (auto U2 : llvm::make_early_inc_range(U->users())) {
+		cast<Instruction>(U2)->eraseFromParent();
+	      }
+	      cast<Instruction>(U)->eraseFromParent();
+	    }
+	    newMod->eraseFromParent();
+	    auto oldName = (glob->getName().substr(0, glob->getName().size() - strlen("_binary")) + "_gpubin_cst").str();
+	    llvm::errs() << "oldName: " << oldName << "\n";
+	    outModule->dump();
+	    auto oldG = outModule->getGlobalVariable(oldName, true);
+	    assert(oldG);
+	    oldG->replaceAllUsesWith(glob);
+	    oldG->eraseFromParent();
+	  break;
+	}
+      }
+    }
+  }
   std::string res;
   llvm::raw_string_ostream ss(res);
   ss << *outModule;
