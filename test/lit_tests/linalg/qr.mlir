@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
-// TODO-RUN enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
 
 module {
   func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
@@ -29,6 +29,12 @@ module {
 // CUDA-NEXT:   %0:2 = stablehlo.custom_call @cusolver_geqrf_ffi(%arg0) {api_version = 4 : i32, operand_layouts = [dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>]} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
 // CUDA-NEXT:   return %0#0, %0#1, %c : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
 // CUDA-NEXT: }
+
+// TPU: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
+// TPU-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
+// TPU-NEXT:   %0:2 = stablehlo.custom_call @QrDecomposition(%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
+// TPU-NEXT:   return %0#0, %0#1, %c : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
+// TPU-NEXT: }
 
 module {
   // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>) {
