@@ -798,8 +798,8 @@ struct QRFactorizationOpLowering
           op, "QR factorization with batch dimensions is not yet supported");
     }
 
-    auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-    auto type_lapack_int = typeConverter.convertType(blasIntType);
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
@@ -824,13 +824,13 @@ struct QRFactorizationOpLowering
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
       auto func_type =
-          LLVM::LLVMFunctionType::get(type_lapack_int,
+          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
                                       {
-                                          type_lapack_int, // matrix_layout
-                                          type_lapack_int, // m
-                                          type_lapack_int, // n
+                                          type_llvm_lapack_int, // matrix_layout
+                                          type_llvm_lapack_int, // m
+                                          type_llvm_lapack_int, // n
                                           type_llvm_ptr,   // A
-                                          type_lapack_int, // lda
+                                          type_llvm_lapack_int, // lda
                                           type_llvm_ptr    // tau
                                       },
                                       false);
@@ -863,19 +863,19 @@ struct QRFactorizationOpLowering
 
       // `101` for row-major, `102` for col-major
       auto layout = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_lapack_int,
-          rewriter.getIntegerAttr(blasIntType, 101));
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, 101));
       auto m = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_lapack_int,
-          rewriter.getIntegerAttr(blasIntType, inputShape[0]));
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
       auto n = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_lapack_int,
-          rewriter.getIntegerAttr(blasIntType, inputShape[1]));
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
       auto lda = m;
 
       // call to `lapacke_*geqrf*`
       auto res =
-          rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_lapack_int},
+          rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{type_llvm_lapack_int},
                                         SymbolRefAttr::get(ctx, bind_fn),
                                         ValueRange{
                                             layout.getResult(),
@@ -892,8 +892,7 @@ struct QRFactorizationOpLowering
     }
 
     // emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    auto type_info =
-        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto type_info = RankedTensorType::get({}, type_lapack_int);
     auto info = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
@@ -953,17 +952,9 @@ struct QRFactorizationOpLowering
           op, "QR factorization with batch dimensions is not yet supported");
     }
 
-    auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-    auto type_lapack_int = typeConverter.convertType(blasIntType);
-    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
-    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
-
     // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
-
-    auto type_info = cast<RankedTensorType>(op.getResult(2).getType());
-    auto rank_info = type_info.getRank();
 
     SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
         ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
@@ -994,6 +985,7 @@ struct QRFactorizationOpLowering
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
 
     // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
+    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
     auto info_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
     rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
