@@ -282,7 +282,8 @@ def AllPipelines():
     from enzyme_ad.jax import (
         XLAPipeline,
         JaXPipeline,
-        hlo_opts,
+        optimization_passes,
+        full_optimization_pass_pipeline,
     )
 
     return [
@@ -397,7 +398,8 @@ def pipelines():
     from enzyme_ad.jax import (
         XLAPipeline,
         JaXPipeline,
-        hlo_opts,
+        optimization_passes,
+        full_optimization_pass_pipeline,
     )
 
     return [
@@ -412,7 +414,11 @@ def pipelines():
             CurBackends,
         ),
         ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        ("DefOpt", JaXPipeline(hlo_opts()), CurBackends),
+        (
+            "DefOpt",
+            JaXPipeline(full_optimization_pass_pipeline(inline=False)),
+            CurBackends,
+        ),
         (
             "IPartOpt",
             JaXPipeline(
@@ -423,10 +429,7 @@ def pipelines():
         ),
         (
             "IDefOpt",
-            JaXPipeline(
-                "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
-                + hlo_opts()
-            ),
+            JaXPipeline(full_optimization_pass_pipeline()),
             CurBackends,
         ),
     ]
