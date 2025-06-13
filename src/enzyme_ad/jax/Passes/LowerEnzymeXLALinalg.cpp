@@ -949,15 +949,15 @@ struct QRFactorizationOpLowering
 
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
-    
+
     // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-      ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
-      SmallVector<int64_t> ranks_operands = {rank_input};
-      SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
-      SmallVector<bool> isColMajorArrOperands = {true};
-      SmallVector<bool> isColMajorArrOutputs = {true, true};
-      
+        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+    SmallVector<int64_t> ranks_operands = {rank_input};
+    SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
+    SmallVector<bool> isColMajorArrOperands = {true};
+    SmallVector<bool> isColMajorArrOutputs = {true, true};
+
     auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
         rewriter.getStringAttr("cusolver_geqrf_ffi"),
