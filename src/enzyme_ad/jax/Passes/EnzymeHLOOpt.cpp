@@ -19959,21 +19959,20 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
 
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
-             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             SimplifyBoundary<enzymexla::ExtendOp>,
-             SimplifyBoundary<enzymexla::WrapOp>,
-             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-             ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
-            context, PatternBenefit(65000));
+    patterns.add<
+        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
+        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        SimplifyBoundary<enzymexla::WrapOp>,
+        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
