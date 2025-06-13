@@ -1005,8 +1005,47 @@ struct QRFactorizationOpLowering
 
   LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op,
                                     PatternRewriter &rewriter) const {
-    // TODO
-    return rewriter.notifyMatchFailure(op, "Unimplemented backend: \"tpu\"");
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto input = op.getOperand();
+    auto type_input = cast<RankedTensorType>(input.getType());
+    auto shape_input = type_input.getShape();
+    auto rank_input = static_cast<int64_t>(shape_input.size());
+
+    const int64_t m = shape_input[rank_input - 2];
+    const int64_t n = shape_input[rank_input - 1];
+    const int64_t numBatchDims = rank_input - 2;
+
+    if (numBatchDims > 0) {
+      return rewriter.notifyMatchFailure(
+          op, "QR factorization with batch dimensions is not yet supported");
+    }
+
+    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
+
+    auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
+        op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
+        rewriter.getStringAttr("QrDecomposition"),
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ nullptr,
+        /*api_version*/ nullptr,
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/ nullptr,
+        /*result_layouts*/ nullptr,
+        /*output_operand_aliases*/ nullptr);
+
+    rewriter.replaceAllUsesWith(op.getResult(0), custom_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
+
+    // Netlib's LAPACK returns `info`, but TPU kernel doesn't
+    auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto info_op = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
+    rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
+
+    return success();
   }
 };
 
