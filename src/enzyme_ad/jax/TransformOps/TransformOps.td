@@ -2033,3 +2033,7 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
     "UnaryElementwiseScatterSimplify"
   ];
 }
+
+def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
+  let patterns = ["GatherElementwise"];
+}
