@@ -914,15 +914,15 @@ void ConvertCudaRTtoCPU::runOnOperation() {
 void StripGPUInfo::runOnOperation() {
   getOperation()->walk([](gpu::GPUModuleOp v) {
     auto unknown = OpBuilder(v).getUnknownLoc();
-    v->walk([&](Operation* op) {
-	op->setLoc(unknown);
-	for (auto &region : op->getRegions()) {
-	  for (auto &blk : region) {
-	    for (auto &arg : blk.getArguments()) {
-	      arg.setLoc(unknown);
-	    }
-	  }
-	}
+    v->walk([&](Operation *op) {
+      op->setLoc(unknown);
+      for (auto &region : op->getRegions()) {
+        for (auto &blk : region) {
+          for (auto &arg : blk.getArguments()) {
+            arg.setLoc(unknown);
+          }
+        }
+      }
     });
   });
 }
