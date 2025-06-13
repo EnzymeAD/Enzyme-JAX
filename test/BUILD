@@ -53,7 +53,7 @@ TEST_DEPS = [
         data = [
             ":lit.cfg.py",
             ":lit_site_cfg_py",
-	    "//:enzyme_ad",
+            "//:enzyme_ad",
             "@llvm-project//clang:builtin_headers_gen",
             "@llvm-project//llvm:FileCheck",
             "@llvm-project//llvm:count",
