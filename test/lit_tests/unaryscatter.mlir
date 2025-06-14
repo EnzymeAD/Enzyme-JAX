@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(enzyme-hlo-opt{passses=65536},enzyme-hlo-opt)' | FileCheck %s
 
 func.func @unaryscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
     %cst = stablehlo.constant dense<2.000000e+00> : tensor<24xf32>
@@ -33,8 +33,7 @@ func.func @unaryscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tenso
 // CHECK-NEXT:     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg4 : tensor<f32>
 // CHECK-NEXT:     }) : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
-// CHECK-NEXT:     %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
-// CHECK-NEXT:     return %7 : tensor<1024x1024xf32>
+// CHECK-NEXT:     return %6 : tensor<1024x1024xf32>
 // CHECK-NEXT: }
 
 func.func @expscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
@@ -70,8 +69,7 @@ func.func @expscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<
 // CHECK-NEXT:     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg4 : tensor<f32>
 // CHECK-NEXT:     }) : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
-// CHECK-NEXT:     %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
-// CHECK-NEXT:     return %7 : tensor<1024x1024xf32>
+// CHECK-NEXT:     return %6 : tensor<1024x1024xf32>
 // CHECK-NEXT: }
 
 func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tensor<5x4xf32> {
@@ -99,23 +97,21 @@ func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tens
 }
 
 // CHECK: func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tensor<5x4xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x5xf32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x4xf32>
 // CHECK-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[4, 5], [4, 5], [4, 5], [4, 5], [4, 5]]> : tensor<5x2xi64>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<[-1, 3, 7, 11, 15]> : tensor<5xi64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<4> : tensor<5xi64>
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<5x4xf32>) -> tensor<4x5xf32>
-// CHECK-NEXT:     %1 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
-// CHECK-NEXT:     %2 = stablehlo.add %1, %c_0 : tensor<5xi64>
-// CHECK-NEXT:     %3 = stablehlo.divide %2, %c_1 : tensor<5xi64>
+// CHECK-NEXT:     %0 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
+// CHECK-NEXT:     %1 = stablehlo.add %0, %c_0 : tensor<5xi64>
+// CHECK-NEXT:     %2 = stablehlo.divide %1, %c_1 : tensor<5xi64>
+// CHECK-NEXT:     %3 = stablehlo.reshape %1 : (tensor<5xi64>) -> tensor<5x1xi64>
 // CHECK-NEXT:     %4 = stablehlo.reshape %2 : (tensor<5xi64>) -> tensor<5x1xi64>
-// CHECK-NEXT:     %5 = stablehlo.reshape %3 : (tensor<5xi64>) -> tensor<5x1xi64>
-// CHECK-NEXT:     %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<5x1xi64>, tensor<5x1xi64>) -> tensor<5x2xi64>
-// CHECK-NEXT:     %7 = stablehlo.remainder %6, %c : tensor<5x2xi64>
-// CHECK-NEXT:     %8 = "stablehlo.gather"(%0, %7) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<4x5xf32>, tensor<5x2xi64>) -> tensor<5xf32>
-// CHECK-NEXT:     %9 = "stablehlo.scatter"(%cst, %7, %8) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
+// CHECK-NEXT:     %5 = stablehlo.concatenate %3, %4, dim = 1 : (tensor<5x1xi64>, tensor<5x1xi64>) -> tensor<5x2xi64>
+// CHECK-NEXT:     %6 = stablehlo.remainder %5, %c : tensor<5x2xi64>
+// CHECK-NEXT:     %7 = "stablehlo.gather"(%arg0, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<5x4xf32>, tensor<5x2xi64>) -> tensor<5xf32>
+// CHECK-NEXT:     %8 = "stablehlo.scatter"(%cst, %6, %7) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
 // CHECK-NEXT:     ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg3 : tensor<f32>
-// CHECK-NEXT:     }) : (tensor<4x5xf32>, tensor<5x2xi64>, tensor<5xf32>) -> tensor<4x5xf32>
-// CHECK-NEXT:     %10 = stablehlo.transpose %9, dims = [1, 0] : (tensor<4x5xf32>) -> tensor<5x4xf32>
-// CHECK-NEXT:     return %10 : tensor<5x4xf32>
+// CHECK-NEXT:     }) : (tensor<5x4xf32>, tensor<5x2xi64>, tensor<5xf32>) -> tensor<5x4xf32>
+// CHECK-NEXT:     return %8 : tensor<5x4xf32>
 // CHECK-NEXT: }
