@@ -83,8 +83,16 @@ std::optional<int64_t> WhileLoopInfo::getConstantLimit() {
 }
 
 int64_t WhileLoopInfo::getConstantNumIters() {
-  return (getConstantLimit().value() - getConstantStart().value()) /
-         getConstantStep().value();
+  int64_t start = getConstantStart().value(),
+          limit = getConstantLimit().value(), step = getConstantStep().value();
+
+  if (limit < start) // cmp is lt
+    return 0;
+
+  if (step < 0 && limit > start)
+    return 0;
+
+  return (limit - start) / step;
 }
 
 Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
