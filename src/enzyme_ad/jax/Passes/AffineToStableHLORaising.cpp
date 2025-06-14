@@ -2451,6 +2451,76 @@ struct AffineToStableHLORaisingPass
       }
       funcs.pop_back();
     }
+    std::vector<enzymexla::GPUWrapperOp> gwrap;
+    op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    for (auto g : gwrap) {
+      auto modOp = g->getParentOfType<ModuleOp>();
+      Block *body = &g->getRegion(0).front();
+      Block *newBlock = new Block();
+
+      IRMapping mapping;
+      mapping.map(body, newBlock);
+      SetVector<Value> operands;
+      getUsedValuesDefinedAbove(g->getRegion(0), operands);
+
+      SmallVector<Type> tensorTypes;
+      for (auto arg : operands) {
+        auto MT = cast<MemRefType>(arg.getType());
+        auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+        auto newArg = newBlock->addArgument(TT, arg.getLoc());
+        mapping.map(arg, newArg);
+        tensorTypes.push_back(TT);
+      }
+
+      auto newFuncType =
+          FunctionType::get(g->getContext(), tensorTypes, tensorTypes);
+
+      std::string name = "raised";
+
+      auto newFunc = func::FuncOp::create(g->getLoc(), name, newFuncType);
+      newFunc.setVisibility(mlir::SymbolTable::Visibility::Private);
+      newFunc.getBody().push_back(newBlock);
+
+      OpBuilder builder(newBlock, newBlock->end());
+
+      bool anyFailed = false;
+
+      llvm::DenseMap<Value, affine::AffineValueMap> maps;
+
+      ParallelContext emptyPc = ParallelContext::getEmpty(options);
+      for (auto &it : body->without_terminator()) {
+        anyFailed =
+            tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
+                .failed();
+        if (anyFailed)
+          break;
+      }
+
+      if (anyFailed) {
+        newFunc->erase();
+        return;
+      }
+
+      SmallVector<Value> results;
+      for (auto arg : operands) {
+        auto val = mapping.lookup(arg);
+        results.push_back(val);
+      }
+
+      builder.create<func::ReturnOp>(g->getLoc(), results);
+      modOp.getBody()->push_back(newFunc);
+      SymbolTable::setSymbolVisibility(newFunc,
+                                       SymbolTable::Visibility::Private);
+
+      {
+        OpBuilder builder(g);
+        auto newCall = builder.create<enzymexla::XLAWrapperOp>(
+            g->getLoc(), SymbolRefAttr::get(newFunc),
+            llvm::to_vector(operands));
+        g->erase();
+        anyRaised = true;
+      }
+    }
 
     if (!anyRaised) {
       markAllAnalysesPreserved();

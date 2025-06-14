@@ -152,6 +152,20 @@ def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
       OpBuilder<(ins)>];
 }
 
+def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "XLA Call operation";
+
+  let arguments = (ins
+    SymbolRefAttr:$fn,
+    Variadic<AnyType>:$inputs
+  );
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+}
+
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
   RecursiveMemoryEffects,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
