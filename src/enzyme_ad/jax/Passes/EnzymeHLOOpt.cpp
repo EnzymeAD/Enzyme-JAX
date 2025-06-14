@@ -18885,6 +18885,9 @@ struct ReduceReduce final
       return rewriter.notifyMatchFailure(
           op, "reduce op has more than one input. not yet supported");
 
+    if (!llvm::hasSingleElement(op.getInputs()[0].getUses()))
+      return failure();
+
     if (!OperationEquivalence::isEquivalentTo(
             redOp.getInitValues()[0].getDefiningOp(),
             op.getInitValues()[0].getDefiningOp(),
@@ -18927,6 +18930,7 @@ struct ReduceReduce final
     rewriter.inlineRegionBefore(redOp.getBody(), newReduceOp.getBody(),
                                 newReduceOp.getBody().end());
     rewriter.replaceOp(op, newReduceOp.getResult(0));
+    rewriter.eraseOp(redOp);
     return success();
   }
 };
