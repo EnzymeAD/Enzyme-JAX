@@ -3,6 +3,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -74,18 +75,23 @@ struct addSampleToTraceOpConversion
 
       std::string addSampleToTraceFn = "enzyme_probprog_add_sample_to_trace";
 
-      auto traceConstType = RankedTensorType::get({}, llvmI64Type);
-      auto symbolConstType = RankedTensorType::get({}, llvmI64Type);
+      auto sampleType = cast<RankedTensorType>(sample[0].getType());
+      auto sampleShape = sampleType.getShape();
+      auto sampleElementType = sampleType.getElementType();
+      int64_t numDims = sampleShape.size();
+      int64_t datatypeWidth = sampleElementType.getIntOrFloatBitWidth();
+
+      auto i64TensorType = RankedTensorType::get({}, llvmI64Type);
 
       auto traceConst = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), traceConstType,
+          op.getLoc(), i64TensorType,
           cast<ElementsAttr>(
-              makeAttr(traceConstType, traceAttr.getValue().getZExtValue())));
+              makeAttr(i64TensorType, traceAttr.getValue().getZExtValue())));
 
       auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), symbolConstType,
+          op.getLoc(), i64TensorType,
           cast<ElementsAttr>(
-              makeAttr(symbolConstType, symbolAttr.getValue().getZExtValue())));
+              makeAttr(i64TensorType, symbolAttr.getValue().getZExtValue())));
 
       // Generate the LLVM function body
       std::string fnName =
@@ -102,13 +108,56 @@ struct addSampleToTraceOpConversion
             rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
+        auto oneConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type, rewriter.getIntegerAttr(llvmI64Type, 1));
+
+        auto numDimsConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type,
+            rewriter.getIntegerAttr(llvmI64Type, numDims));
+
+        auto datatypeWidthConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type,
+            rewriter.getIntegerAttr(llvmI64Type, datatypeWidth));
+
+        auto numDimsAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, oneConst);
+        auto datatypeWidthAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, oneConst);
+
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), numDimsConst,
+                                       numDimsAlloca);
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), datatypeWidthConst,
+                                       datatypeWidthAlloca);
+
+        auto shapeArraySizeConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type,
+            rewriter.getIntegerAttr(llvmI64Type, numDims));
+        auto shapeArrayAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, shapeArraySizeConst);
+
+        for (int64_t i = 0; i < numDims; ++i) {
+          auto indexConst = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), llvmI64Type,
+              rewriter.getIntegerAttr(llvmI64Type, i));
+          auto dimConst = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), llvmI64Type,
+              rewriter.getIntegerAttr(llvmI64Type, sampleShape[i]));
+          auto gepPtr = rewriter.create<LLVM::GEPOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, shapeArrayAlloca,
+              ValueRange{indexConst});
+          rewriter.create<LLVM::StoreOp>(op.getLoc(), dimConst, gepPtr);
+        }
+
         auto callResult = rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{},
             SymbolRefAttr::get(ctx, addSampleToTraceFn),
             ValueRange{
-                func.getArgument(0),
-                func.getArgument(1),
-                func.getArgument(2),
+                /* trace */ func.getArgument(0),
+                /* symbol */ func.getArgument(1),
+                /* sample data */ func.getArgument(2),
+                /* num_dims */ numDimsAlloca,
+                /* shape array */ shapeArrayAlloca,
+                /* datatype_width */ datatypeWidthAlloca,
             });
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
@@ -119,8 +168,11 @@ struct addSampleToTraceOpConversion
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType,
+                                        {llvmPtrType, llvmPtrType, llvmPtrType,
+                                         llvmPtrType, llvmPtrType, llvmPtrType},
+                                        false);
 
         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), addSampleToTraceFn,
                                           funcType, LLVM::Linkage::External);
