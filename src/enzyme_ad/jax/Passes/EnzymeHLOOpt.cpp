@@ -18927,6 +18927,7 @@ struct ReduceReduce final
     rewriter.inlineRegionBefore(redOp.getBody(), newReduceOp.getBody(),
                                 newReduceOp.getBody().end());
     rewriter.replaceOp(op, newReduceOp.getResult(0));
+    rewriter.eraseOp(redOp);
     return success();
   }
 };
