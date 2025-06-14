@@ -9477,43 +9477,6 @@ bool is_iota(ArrayRef<int64_t> idx) {
   return true;
 }
 
-/// Converts gather ops to slice ops in case we have a single set of constant
-/// indices.
-struct GatherSimplify final
-    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
-                                    PatternRewriter &rewriter) const {
-    DenseIntElementsAttr startIndicesCst;
-    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
-      return failure();
-
-    {
-      DenseIntElementsAttr operandVals;
-      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
-        auto out = stablehlo::gatherOp(
-            stablehlo::constantOp(operandVals),
-            stablehlo::constantOp(startIndicesCst),
-            stablehlo::Axes(op.getDimensionNumbers().getOffsetDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getCollapsedSliceDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getOperandBatchingDims()),
-            stablehlo::Axes(
-                op.getDimensionNumbers().getStartIndicesBatchingDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getStartIndexMap()),
-            stablehlo::Axis(op.getDimensionNumbers().getIndexVectorDim()),
-            stablehlo::Sizes(op.getSliceSizes()), op.getIndicesAreSorted(),
-            op.getType());
-
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
-                                                           fromTensor(out));
-        return success();
-      }
-    }
-    return failure();
-  }
-};
-
 struct CSEIota : CheckedOpRewritePattern<stablehlo::IotaOp, CSEIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -19718,6 +19681,72 @@ struct GatherElementwise
   }
 };
 
+SmallVector<int64_t> applyPermutation(ArrayRef<int64_t> dims,
+                                      ArrayRef<int64_t> permutation,
+                                      bool sort = false) {
+  SmallVector<int64_t> newDims(dims.size(), -1);
+  for (int64_t i = 0; i < dims.size(); ++i) {
+    newDims[i] = permutation[dims[i]];
+  }
+
+  if (sort)
+    llvm::sort(newDims);
+
+  return newDims;
+}
+
+struct TransposeScatter
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
+  using CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                TransposeScatter>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto scatterOp = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatterOp)
+      return rewriter.notifyMatchFailure(op,
+                                         "TransposeOp with non-scatter input");
+
+    if (scatterOp.getInputs().size() != 1)
+      return rewriter.notifyMatchFailure(
+          op, "TransposeOp with scatter input with more than 1 operand");
+
+    if (!isOnlyUsedInOperation(scatterOp, op))
+      return failure();
+
+    auto transposedInput = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), scatterOp.getInputs()[0], op.getPermutation());
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op.getLoc(), TypeRange(op.getType()), ValueRange(transposedInput),
+        scatterOp.getScatterIndices(), scatterOp.getUpdates(),
+        transposeScatterDimensionNumbers(
+            scatterOp.getScatterDimensionNumbers(),
+            getInversePermutation(op.getPermutation()), rewriter),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp->getResult(0));
+    return success();
+  }
+
+private:
+  stablehlo::ScatterDimensionNumbersAttr transposeScatterDimensionNumbers(
+      stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers,
+      SmallVector<int64_t> mapping, PatternRewriter &rewriter) const {
+    return stablehlo::ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(), scatterDimNumbers.getUpdateWindowDims(),
+        applyPermutation(scatterDimNumbers.getInsertedWindowDims(), mapping,
+                         true),
+        applyPermutation(scatterDimNumbers.getInputBatchingDims(), mapping,
+                         true),
+        scatterDimNumbers.getScatterIndicesBatchingDims(),
+        applyPermutation(scatterDimNumbers.getScatterDimsToOperandDims(),
+                         mapping, true),
+        scatterDimNumbers.getIndexVectorDim());
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19928,21 +19957,20 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
 
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
-             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             SimplifyBoundary<enzymexla::ExtendOp>,
-             SimplifyBoundary<enzymexla::WrapOp>,
-             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-             ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
-            context, PatternBenefit(65000));
+    patterns.add<
+        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
+        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        SimplifyBoundary<enzymexla::WrapOp>,
+        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
@@ -20130,7 +20158,7 @@ struct EnzymeHLOOptPass
                TransposeIota, TransposeReduceWindow, TransposeReduce,
                TransposeSelect, TransposeDynamicSlice, TransposeReverse,
                TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf>(context);
+               TransposeBatchNormGrad, TransposeIf, TransposeScatter>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 

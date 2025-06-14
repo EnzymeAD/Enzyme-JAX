@@ -359,7 +359,6 @@ dynamic_update_slice_elim<16>;
 concat_to_broadcast<16>;
 reduce_to_reshape<16>;
 broadcast_to_reshape<16>;
-gather_simplify<16>;
 iota_simplify<16>(1024);
 broadcast_in_dim_simplify<16>(1024);
 convert_concat<1>;
