@@ -18884,7 +18884,7 @@ struct ReduceReduce final
     if (redOp.getInputs().size() != 1)
       return rewriter.notifyMatchFailure(
           op, "reduce op has more than one input. not yet supported");
-    
+
     if (!llvm::hasSingleElement(op.getInputs()[0].getUses()))
       return failure();
 
