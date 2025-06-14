@@ -1426,3 +1426,48 @@ void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
   builder.createBlock(bodyRegion);
   GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
 }
+
+LogicalResult
+XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // TODO: Verify that the result type is same as the type of the referenced
+  // func.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
+void XLAWrapperOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
+CallInterfaceCallable XLAWrapperOp::getCallableForCallee() { return getFn(); }
+
+MutableOperandRange XLAWrapperOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
+Operation::operand_range XLAWrapperOp::getArgOperands() { return getInputs(); }
+
+ArrayAttr XLAWrapperOp::getArgAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+ArrayAttr XLAWrapperOp::getResAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute XLAWrapperOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute XLAWrapperOp::removeResAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+}
