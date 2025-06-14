@@ -5040,6 +5040,7 @@ public:
     SetVector<Operation *> backwardSlice;
     DominanceInfo dominance;
     BackwardSliceOptions options;
+    options.omitBlockArguments = true;
     getBackwardSlice(loadOp.getOperation(), &backwardSlice, options);
 
     Operation *conditional =
