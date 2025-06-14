@@ -353,4 +353,20 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   }];
 }
 
+def LoweringRegisterOp: EnzymeXLA_Op<"lowering.register", [Pure]> {
+  let summary = "Registers a function for lowering for a custom op";
+
+  let arguments = (ins
+    StrAttr:$op_name,
+    FlatSymbolRefAttr:$fn,
+    DictionaryAttr:$config
+  );
+
+  let assemblyFormat = [{
+    $op_name $fn `(` $config `)` attr-dict
+  }];
+
+  let results = (outs);
+}
+
 #endif // ENZYMEXLA_OPS
