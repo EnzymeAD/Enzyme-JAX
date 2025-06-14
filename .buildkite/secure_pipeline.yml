@@ -29,7 +29,7 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
-      BAZEL_BUILD_FLAGS+=(--jobs \${nproc})
+      BAZEL_BUILD_FLAGS+=()
 
       if [ "{{matrix.os}}" == "macos" ]; then
         export MACOSX_DEPLOYMENT_TARGET=11.3
