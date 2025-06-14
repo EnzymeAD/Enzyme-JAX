@@ -371,4 +371,24 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def SVDJobzAttr : I32EnumAttr<"jobz", "SVD jobz values", [
+  I32EnumAttrCase<"A", 0>,
+  I32EnumAttrCase<"S", 1>,
+  I32EnumAttrCase<"O", 2>,
+  I32EnumAttrCase<"N", 3>
+]> {}
+
+def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation."
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    // HLO_Tensor:$output,
+    // SVDJobzAttr:$jobz,
+  );
+}
+
 #endif // ENZYMEXLA_OPS
