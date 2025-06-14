@@ -19735,8 +19735,7 @@ private:
       stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers,
       SmallVector<int64_t> mapping, PatternRewriter &rewriter) const {
     return stablehlo::ScatterDimensionNumbersAttr::get(
-        rewriter.getContext(),
-        scatterDimNumbers.getUpdateWindowDims(),
+        rewriter.getContext(), scatterDimNumbers.getUpdateWindowDims(),
         applyPermutation(scatterDimNumbers.getInsertedWindowDims(), mapping,
                          true),
         applyPermutation(scatterDimNumbers.getInputBatchingDims(), mapping,
