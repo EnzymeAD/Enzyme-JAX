@@ -13,6 +13,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Region.h"
@@ -218,6 +219,35 @@ struct PropagateConstantBoundsPass
       reg->walk([&](NVVM::BlockIdZOp blkIdzOp) {
         setConstantRangeAttrIfConstant(blkIdzOp, maxRange.blockIdZ);
       });
+      
+      reg->walk([&](gpu::ThreadIdOp op) {
+        switch (op.getDimension()) {
+          case gpu::Dimension::x:
+            setConstantRangeAttrIfConstant(op, maxRange.threadIdX);
+            return;
+          case gpu::Dimension::y:
+            setConstantRangeAttrIfConstant(op, maxRange.threadIdY);
+            return;
+          case gpu::Dimension::z:
+            setConstantRangeAttrIfConstant(op, maxRange.threadIdZ);
+            return;
+          default: return;
+        }
+      });
+      reg->walk([&](gpu::BlockIdOp op) {
+        switch (op.getDimension()) {
+          case gpu::Dimension::x:
+            setConstantRangeAttrIfConstant(op, maxRange.blockIdX);
+            return;
+          case gpu::Dimension::y:
+            setConstantRangeAttrIfConstant(op, maxRange.blockIdY);
+            return;
+          case gpu::Dimension::z:
+            setConstantRangeAttrIfConstant(op, maxRange.blockIdZ);
+            return;
+          default: return;
+        }
+      });
 
       // Attempt to replace BlockDim and GridDim with constants if we have a
       // single caller for this callee and BlockDim and GridDim are known
@@ -251,6 +281,21 @@ struct PropagateConstantBoundsPass
         replaceWithConstantOrSetConstantRangeAttr(
             blockDimIdZOp, maxRange.blockDimZ, hasSingleCaller);
       });
+      reg->walk([&](gpu::BlockDimOp op) {
+        switch (op.getDimension()) {
+          case gpu::Dimension::x:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.blockDimX, hasSingleCaller);
+            return;
+          case gpu::Dimension::y:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.blockDimY, hasSingleCaller);
+            setConstantRangeAttrIfConstant(op, maxRange.threadIdY);
+            return;
+          case gpu::Dimension::z:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.blockDimZ, hasSingleCaller);
+            return;
+          default: return;
+        }
+      });
       reg->walk([&](NVVM::GridDimXOp gridDimXOp) {
         replaceWithConstantOrSetConstantRangeAttr(gridDimXOp, maxRange.gridDimX,
                                                   hasSingleCaller);
@@ -262,6 +307,21 @@ struct PropagateConstantBoundsPass
       reg->walk([&](NVVM::GridDimZOp gridDimZOp) {
         replaceWithConstantOrSetConstantRangeAttr(gridDimZOp, maxRange.gridDimZ,
                                                   hasSingleCaller);
+      });
+      reg->walk([&](gpu::GridDimOp op) {
+        switch (op.getDimension()) {
+          case gpu::Dimension::x:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.gridDimX, hasSingleCaller);
+            return;
+          case gpu::Dimension::y:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.gridDimY, hasSingleCaller);
+            setConstantRangeAttrIfConstant(op, maxRange.threadIdY);
+            return;
+          case gpu::Dimension::z:
+            replaceWithConstantOrSetConstantRangeAttr(op, maxRange.gridDimZ, hasSingleCaller);
+            return;
+          default: return;
+        }
       });
 
       // Set no-alias for each callee arguments. No-alias is guaranteed.
