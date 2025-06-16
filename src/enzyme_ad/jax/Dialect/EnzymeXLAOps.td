@@ -353,4 +353,22 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   }];
 }
 
+def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
+  let summary = "QR factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$tau,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 #endif // ENZYMEXLA_OPS
