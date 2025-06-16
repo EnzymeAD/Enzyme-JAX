@@ -29,6 +29,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
 include "mlir/Dialect/GPU/IR/GPUBase.td"
+include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
@@ -243,7 +244,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
   let summary = "Extract and LLVM pointer from a MemRef";
 
   let arguments = (ins AnyMemRef : $source);
-  let results = (outs AnyType:$result);
+  let results = (outs LLVM_AnyPointer:$result);
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -258,7 +259,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 ]> {
   let summary = "Upgrade a pointer to a memref";
 
-  let arguments = (ins AnyType:$source);
+  let arguments = (ins LLVM_AnyPointer:$source);
   let results = (outs AnyMemRef : $result);
 
   let hasFolder = 1;
