@@ -237,7 +237,7 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     Value replacement = newAlloc;
     if (memrefType.getElementType() != p2m.getType().getElementType()) {
       replacement = rewriter.create<enzymexla::Memref2PointerOp>(
-          alloc->getLoc(), p2m.getType(), replacement);
+          alloc->getLoc(), p2m.getOperand().getType(), replacement);
       rewriter.modifyOpInPlace(
           p2m, [&]() { p2m.getSourceMutable().set(replacement); });
       continue;
