@@ -48,7 +48,6 @@ using namespace mlir::arith;
 using namespace mlir::LLVM;
 using namespace mlir::stablehlo;
 
-
 static std::optional<int64_t> getConstant(Operation *op) {
   if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(op)) {
     return cst.value();
@@ -1167,89 +1166,92 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
     if (finalType.getElementType() == op.getTarget().getType().getElementType())
       return failure();
 
-
     DataLayoutAnalysis dataLayoutAnalysis(op);
     auto &dataLayout = dataLayoutAnalysis.getAtOrAbove(op);
-    int64_t elNum = dataLayout.getTypeSize(op.getTarget().getType().getElementType());
+    int64_t elNum =
+        dataLayout.getTypeSize(op.getTarget().getType().getElementType());
 
     Value sz = op.getSize();
     APInt copySize;
     if (matchPattern(sz, m_ConstantInt(&copySize))) {
       elNum *= (copySize.getSExtValue());
-    } else { 
-        size_t num = 1;
-        size_t den = 1;
-        Value op = sz;
-        while (true) {
-          if (auto icast = op.getDefiningOp<arith::IndexCastOp>()) {
-            op = icast.getOperand();
-            continue;
-          }
-          if (auto icast = op.getDefiningOp<arith::IndexCastUIOp>()) {
-            op = icast.getOperand();
-            continue;
-          }
-          if (auto shr = op.getDefiningOp<arith::ShRSIOp>()) {
-            if (auto cst = getConstant(shr.getRhs())) {
-              auto val = 1ULL << *cst;
-              if (num % val == 0) {
-                num /= val;
-                op = shr.getLhs();
-                continue;
-              } else if (val != 0 && val % num == 0) {
-                den *= (val / num);
-                num = 1;
-                op = shr.getLhs();
-                continue;
-              }
-            }
-          }
-          if (auto shr = op.getDefiningOp<arith::ShRUIOp>()) {
-            if (auto cst = getConstant(shr.getRhs())) {
-              auto val = 1ULL << *cst;
-              if (num % val == 0) {
-                num /= val;
-                op = shr.getLhs();
-                continue;
-              } else if (val != 0 && val % num == 0) {
-                den *= (val / num);
-                num = 1;
-                op = shr.getLhs();
-                continue;
-              }
-            }
-          }
-          if (auto shl = op.getDefiningOp<arith::ShLIOp>()) {
-            if (auto cst = getConstant(shl.getRhs())) {
-              auto val = 1ULL << *cst;
-              if (den % val == 0) {
-                den /= val;
-                op = shl.getLhs();
-                continue;
-              } else if (val != 0 && val % den == 0) {
-                num *= (val / den);
-                den = 1;
-                op = shl.getLhs();
-                continue;
-              }
-            }
-          }
-          LLVM_DEBUG(llvm::dbgs() << "could not deduce size of copy due to " << op << " num=" << num << " den=" << den << "\n");
-          break;
+    } else {
+      size_t num = 1;
+      size_t den = 1;
+      Value op = sz;
+      while (true) {
+        if (auto icast = op.getDefiningOp<arith::IndexCastOp>()) {
+          op = icast.getOperand();
+          continue;
         }
-        assert(den == 1);
-        if (den == 1) {
-          elNum *= num;
-        } else {
-          return failure();
+        if (auto icast = op.getDefiningOp<arith::IndexCastUIOp>()) {
+          op = icast.getOperand();
+          continue;
         }
+        if (auto shr = op.getDefiningOp<arith::ShRSIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shr = op.getDefiningOp<arith::ShRUIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shl = op.getDefiningOp<arith::ShLIOp>()) {
+          if (auto cst = getConstant(shl.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (den % val == 0) {
+              den /= val;
+              op = shl.getLhs();
+              continue;
+            } else if (val != 0 && val % den == 0) {
+              num *= (val / den);
+              den = 1;
+              op = shl.getLhs();
+              continue;
+            }
+          }
+        }
+        LLVM_DEBUG(llvm::dbgs() << "could not deduce size of copy due to " << op
+                                << " num=" << num << " den=" << den << "\n");
+        break;
+      }
+      assert(den == 1);
+      if (den == 1) {
+        elNum *= num;
+      } else {
+        return failure();
+      }
     }
 
     auto newElSize = dataLayout.getTypeSize(finalType.getElementType());
 
     int64_t newElnum = elNum / newElSize;
     if (newElSize * newElnum != elNum) {
-      LLVM_DEBUG(llvm::dbgs() << "non divisible size: newElSize " << newElSize << " elNum " << elNum << " newElnum: " << newElnum << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "non divisible size: newElSize " << newElSize << " elNum "
+                 << elNum << " newElnum: " << newElnum << "\n");
       return failure();
     }
 

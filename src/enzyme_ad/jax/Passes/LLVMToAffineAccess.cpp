@@ -231,7 +231,9 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
               }
             }
           }
-          LLVM_DEBUG(llvm::dbgs() << "could not deduce size of copy due to " << op << " num=" << num << " den=" << den << "\n");
+          LLVM_DEBUG(llvm::dbgs()
+                     << "could not deduce size of copy due to " << op
+                     << " num=" << num << " den=" << den << "\n");
           break;
         }
         if (den == 1) {
@@ -297,7 +299,7 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     auto newOp = cast<FromAlloc>(rewriter.create(
         alloc->getLoc(), alloc->getName().getIdentifier(), alloc->getOperands(),
         tys, alloc->getAttrs(), alloc->getSuccessors()));
-    
+
     if (alloc.getDynamicSizes().size()) {
       newOp.getDynamicSizesMutable().assign(dyn);
     }
@@ -323,7 +325,7 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
   for (auto other : others) {
     rewriter.eraseOp(other);
   }
-  
+
   rewriter.eraseOp(alloc);
   return success();
 }
