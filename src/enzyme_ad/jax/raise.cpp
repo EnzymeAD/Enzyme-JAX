@@ -64,7 +64,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-"
-      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-"
+      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,parallel-"
+      "lower{wrapParallelOps=true},llvm-to-"
       "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
       "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
       "canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,"
