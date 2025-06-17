@@ -476,11 +476,13 @@ struct GPUConvert : public OpRewritePattern<From> {
     auto res = rewriter.create<To>(op.getLoc(), dim);
     for (auto u : llvm::make_early_inc_range(op->getUsers())) {
       if (auto ext = dyn_cast<arith::ExtUIOp>(u)) {
-        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
+        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(),
+                                                          res);
         continue;
       }
       if (auto ext = dyn_cast<arith::ExtSIOp>(u)) {
-        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
+        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(),
+                                                          res);
         continue;
       }
     }
