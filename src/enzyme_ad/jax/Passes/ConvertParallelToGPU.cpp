@@ -1956,8 +1956,7 @@ struct ConvertParallelToGPU1Pass
           // If we have already varied the block size in SplitParallelOp, avoid
           // doing that here too.
           bool altBlockSize = false;
-          if (auto aop =
-          wrapper->getParentOfType<enzymexla::AlternativesOp>())
+          if (auto aop = wrapper->getParentOfType<enzymexla::AlternativesOp>())
             if (aop->getAttrOfType<StringAttr>("alternatives.type")
                     .getValue() == "gpu_kernel")
               altBlockSize = true;

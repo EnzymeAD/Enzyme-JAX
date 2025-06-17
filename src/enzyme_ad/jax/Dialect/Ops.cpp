@@ -1563,8 +1563,6 @@ void XLAWrapperOp::getEffects(
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
 }
 
-
-
 //===----------------------------------------------------------------------===//
 // AlternativesOp
 //===----------------------------------------------------------------------===//
@@ -1680,4 +1678,3 @@ void AlternativesOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                  MLIRContext *context) {
   results.insert<HoistSingleAlternative, FlattenAlternatives>(context);
 }
-
