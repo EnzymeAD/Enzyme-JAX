@@ -84,7 +84,7 @@ def main(argv):
             ("sam_fit", benchmark.sam.sam_fit_run, Both),
         ]
 
-    num_tests = 5
+    # num_tests = 5
     num_tests = 1
 
     for bname, bench, ADs in benchfns:
