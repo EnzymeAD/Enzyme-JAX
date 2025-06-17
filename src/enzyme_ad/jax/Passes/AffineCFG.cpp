@@ -43,10 +43,11 @@ using namespace mlir::enzyme;
 void populateAffineParallelizationPattern(MLIRContext &context,
                                           RewritePatternSet &patterns);
 
-Region* getLocalAffineScope(Operation *op) {
+Region *getLocalAffineScope(Operation *op) {
   auto curOp = op;
   while (auto parentOp = curOp->getParentOp()) {
-    if (parentOp->hasTrait<OpTrait::AffineScope>() || isa<LLVM::LLVMFuncOp>(parentOp)) {
+    if (parentOp->hasTrait<OpTrait::AffineScope>() ||
+        isa<LLVM::LLVMFuncOp>(parentOp)) {
       return curOp->getParentRegion();
     }
     curOp = parentOp;
