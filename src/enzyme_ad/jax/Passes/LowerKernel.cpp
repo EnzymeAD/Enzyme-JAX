@@ -345,17 +345,17 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.erase();
   });
   executeRegion->walk([&](gpu::BlockIdOp idxOp) {
-      Value val = nullptr;
-      if (idxOp.getDimension() == gpu::Dimension::x)
-        val = par.getIVs()[0];
-      else if (idxOp.getDimension() == gpu::Dimension::y)
-        val = par.getIVs()[1];
-      else if (idxOp.getDimension() == gpu::Dimension::z)
-        val = par.getIVs()[2];
-      else
-        llvm_unreachable("illegal dimension");
-      idxOp.replaceAllUsesWith(val);
-      idxOp.erase();
+    Value val = nullptr;
+    if (idxOp.getDimension() == gpu::Dimension::x)
+      val = par.getIVs()[0];
+    else if (idxOp.getDimension() == gpu::Dimension::y)
+      val = par.getIVs()[1];
+    else if (idxOp.getDimension() == gpu::Dimension::z)
+      val = par.getIVs()[2];
+    else
+      llvm_unreachable("illegal dimension");
+    idxOp.replaceAllUsesWith(val);
+    idxOp.erase();
   });
 
   // thread idx
@@ -381,17 +381,17 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.erase();
   });
   executeRegion->walk([&](gpu::ThreadIdOp idxOp) {
-      Value val = nullptr;
-      if (idxOp.getDimension() == gpu::Dimension::x)
-        val = par.getIVs()[3];
-      else if (idxOp.getDimension() == gpu::Dimension::y)
-        val = par.getIVs()[4];
-      else if (idxOp.getDimension() == gpu::Dimension::z)
-        val = par.getIVs()[5];
-      else
-        llvm_unreachable("illegal dimension");
-      idxOp.replaceAllUsesWith(val);
-      idxOp.erase();
+    Value val = nullptr;
+    if (idxOp.getDimension() == gpu::Dimension::x)
+      val = par.getIVs()[3];
+    else if (idxOp.getDimension() == gpu::Dimension::y)
+      val = par.getIVs()[4];
+    else if (idxOp.getDimension() == gpu::Dimension::z)
+      val = par.getIVs()[5];
+    else
+      llvm_unreachable("illegal dimension");
+    idxOp.replaceAllUsesWith(val);
+    idxOp.erase();
   });
 
   OpBuilder rewriter(kcall);
