@@ -474,18 +474,20 @@ struct GPUConvert : public OpRewritePattern<From> {
   LogicalResult matchAndRewrite(From op,
                                 PatternRewriter &rewriter) const override {
     auto res = rewriter.create<To>(op.getLoc(), dim);
-    for (auto u : llvm::make_early_inc_range(op->getUsers())) {
+    SmallVector<Operation *> toReplace;
+    for (auto u : op->getUsers()) {
       if (auto ext = dyn_cast<arith::ExtUIOp>(u)) {
-        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(),
-                                                          res);
+        toReplace.push_back(ext);
         continue;
       }
       if (auto ext = dyn_cast<arith::ExtSIOp>(u)) {
-        rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(),
-                                                          res);
+        toReplace.push_back(ext);
         continue;
       }
     }
+    for (auto e : toReplace)
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(e, e->getResultType(0),
+                                                        res);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
     return success();
   }
