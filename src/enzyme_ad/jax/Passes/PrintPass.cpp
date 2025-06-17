@@ -34,7 +34,16 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
       flags.enableDebugInfo(true, /*pretty*/ false);
     if (generic)
       flags.printGenericOpForm(true);
-    if (use_stdout) {
+    if (!filename.empty()) {
+      std::error_code EC;
+      llvm::raw_fd_ostream f(filename, EC);
+      if (EC) {
+        llvm::errs() << "Opening output file failed\n";
+        return signalPassFailure();
+      }
+      getOperation()->print(f, flags);
+      f.flush();
+    } else if (use_stdout) {
       getOperation()->print(llvm::outs(), flags);
       llvm::outs() << "\n";
     } else {
