@@ -1630,7 +1630,9 @@ struct SimplifyDeadAlloc : public OpRewritePattern<T> {
     }
 
     if constexpr (gpu) {
-      alloc->getResult(1).replaceAllUsesWith(alloc.getAsyncToken());
+      if (alloc.getAsyncToken()) {
+        alloc->getResult(1).replaceAllUsesWith(alloc.getAsyncToken());
+      }
     }
 
     for (Operation *user : llvm::make_early_inc_range(alloc->getUsers()))
