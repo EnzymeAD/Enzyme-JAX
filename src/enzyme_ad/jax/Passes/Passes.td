@@ -239,6 +239,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "math::MathDialect",
+    "gpu::GPUDialect",
   ];
   let options = [
     Option<
