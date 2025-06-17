@@ -271,6 +271,15 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
   }];
 }
 
+def AlternativesOp : EnzymeXLA_Op<"alternatives", [
+  RecursiveMemoryEffects]> {
+  let summary = "Provides several alternatives kernels for gpu code";
+  let regions = (region VariadicRegion<SizedRegion<1>>:$regions);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins "int":$regionNum)>];
+  let hasCanonicalizer = 1;
+}
+
 def AffineScopeOp : EnzymeXLA_Op<"scope", [
       AffineScope,
       AutomaticAllocationScope,

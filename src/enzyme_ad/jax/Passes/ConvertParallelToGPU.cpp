@@ -94,7 +94,6 @@ using namespace enzymexla;
 void moveParallelLoopInvariantCode(scf::ParallelOp looplike);
 
 namespace {
-#if 0
 static void shrinkAlternativesOp(enzymexla::AlternativesOp alternativesOp,
                                  unsigned size, PatternRewriter &rewriter) {
   // New AOP with the exact number of regions needed
@@ -142,7 +141,6 @@ static void shrinkAlternativesOp(enzymexla::AlternativesOp alternativesOp,
   newAop->setAttr("alternatives.descs", builder.getArrayAttr(descs));
   alternativesOp->erase();
 }
-#endif
 std::optional<int> getConstantInteger(Value v) {
   if (auto cstint = dyn_cast_or_null<arith::ConstantIntOp>(v.getDefiningOp())) {
     return cstint.value();
@@ -453,7 +451,7 @@ struct CreateParallelOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///   }
 /// }
 ///
-#if 0
+#if 1
 struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
   using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
   const char *PATTERN = "split-parallel-op";
@@ -1735,7 +1733,7 @@ struct ConvertParallelToGPU1Pass
         CreateParallelOps,
         ParallelizeBlockOps
         >(&getContext());
-      //patterns.insert<SplitParallelOp>(&getContext());
+      patterns.insert<SplitParallelOp>(&getContext());
       // clang-format on
     };
     auto runNormalization = [&]() {
@@ -1958,11 +1956,11 @@ struct ConvertParallelToGPU1Pass
           // If we have already varied the block size in SplitParallelOp, avoid
           // doing that here too.
           bool altBlockSize = false;
-          // if (auto aop =
-          // wrapper->getParentOfType<enzymexla::AlternativesOp>())
-          //   if (aop->getAttrOfType<StringAttr>("alternatives.type")
-          //           .getValue() == "gpu_kernel")
-          //     altBlockSize = true;
+          if (auto aop =
+          wrapper->getParentOfType<enzymexla::AlternativesOp>())
+            if (aop->getAttrOfType<StringAttr>("alternatives.type")
+                    .getValue() == "gpu_kernel")
+              altBlockSize = true;
 
           auto loc = wrapper->getLoc();
 
@@ -2019,7 +2017,6 @@ struct ConvertParallelToGPU1Pass
             callBuilder.abortCallBuilder(loc, elseBuilder, {});
           };
 
-#if 0
           // Coarsen blocks with all factors, and coarsen threads only by
           // factors which do not bring the number of threads under 32
           unsigned numAlternatives =
@@ -2131,7 +2128,6 @@ struct ConvertParallelToGPU1Pass
                                   builder.getArrayAttr(descs));
 
           shrinkAlternativesOp(alternativesOp, curRegion, builder);
-#endif
         }
         // Make sure LICM doesnt change the structure
         m->walk([&](scf::ParallelOp pop) {

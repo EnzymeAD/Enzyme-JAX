@@ -1562,3 +1562,122 @@ void XLAWrapperOp::getEffects(
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
 }
+
+
+
+//===----------------------------------------------------------------------===//
+// AlternativesOp
+//===----------------------------------------------------------------------===//
+
+void AlternativesOp::build(OpBuilder &builder, OperationState &result,
+                           int regionNum) {
+  OpBuilder::InsertionGuard g(builder);
+  for (int i = 0; i < regionNum; i++) {
+    Region *bodyRegion = result.addRegion();
+    Block *block = builder.createBlock(bodyRegion);
+    builder.setInsertionPointToEnd(block);
+    builder.create<PolygeistYieldOp>(result.location);
+  }
+}
+
+class HoistSingleAlternative final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    assert(aop->getNumRegions() > 0);
+    if (aop->getNumRegions() > 1) {
+      return failure();
+    }
+    auto block = &*aop->getRegions()[0].begin();
+    rewriter.eraseOp(block->getTerminator());
+    rewriter.inlineBlockBefore(block, aop);
+    rewriter.eraseOp(aop);
+    return success();
+  }
+};
+
+class FlattenAlternatives final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    // Ignore nested alternatives ops
+    if (aop->getParentOfType<AlternativesOp>())
+      return failure();
+
+    AlternativesOp innerAop = nullptr;
+    unsigned regionId = 0;
+    for (auto &region : aop->getRegions()) {
+      for (auto &op : region.getOps()) {
+        if (auto aop = dyn_cast<AlternativesOp>(&op)) {
+          innerAop = aop;
+          break;
+        }
+      }
+      if (innerAop)
+        break;
+      regionId++;
+    }
+    if (!innerAop)
+      return failure();
+
+    // TODO use block insertion etc for better performance
+    auto newAop = rewriter.create<enzymexla::AlternativesOp>(
+        aop->getLoc(), innerAop->getNumRegions() + aop->getNumRegions() - 1);
+    newAop->setAttrs(aop->getAttrs());
+    auto outerDescs = aop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    auto innerDescs = innerAop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    std::vector<Attribute> configs;
+    unsigned curRegion = 0;
+    for (; curRegion < innerAop->getNumRegions(); curRegion++) {
+      IRMapping mapping;
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      for (auto &op : *innerAop->getBlock()) {
+        if (&op == innerAop.getOperation()) {
+          for (auto &op : innerAop->getRegion(curRegion).getOps())
+            if (!isa<PolygeistYieldOp>(&op))
+              rewriter.clone(op, mapping);
+        } else {
+          if (!isa<PolygeistYieldOp>(&op))
+            rewriter.clone(op, mapping);
+        }
+      }
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[regionId]).str() +
+          cast<StringAttr>(innerDescs[curRegion]).str()));
+    }
+
+    unsigned oldRegion = 0;
+    for (; oldRegion < aop->getNumRegions(); oldRegion++) {
+      auto &srcRegion = aop->getRegion(oldRegion);
+      if (innerAop->getBlock()->getParent() == &srcRegion) {
+        assert(oldRegion == regionId);
+        continue;
+      }
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      IRMapping mapping;
+      for (auto &op : srcRegion.getOps())
+        if (!isa<PolygeistYieldOp>(&op))
+          rewriter.clone(op, mapping);
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[oldRegion]).str()));
+      curRegion++;
+    }
+    newAop->setAttr("alternatives.descs", rewriter.getArrayAttr(configs));
+
+    rewriter.eraseOp(aop);
+
+    return success();
+  }
+};
+
+void AlternativesOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                 MLIRContext *context) {
+  results.insert<HoistSingleAlternative, FlattenAlternatives>(context);
+}
+
