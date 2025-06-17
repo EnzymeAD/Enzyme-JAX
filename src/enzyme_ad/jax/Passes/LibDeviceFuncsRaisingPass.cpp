@@ -493,20 +493,15 @@ struct GPUConvert : public OpRewritePattern<From> {
   }
 };
 
-struct BarrierConvert : public OpRewritePattern<LLVM::CallOp> {
-  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+struct BarrierConvert : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(LLVM::CallOp op,
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
                                 PatternRewriter &rewriter) const override {
-    CallInterfaceCallable callable = op.getCallableForCallee();
-    auto callee = dyn_cast<SymbolRefAttr>(callable);
-    if (!callee)
+    if (op.getIntrin() != "llvm.nvvm.barrier.cta.sync.aligned.all")
       return failure();
 
-    if (callee.getLeafReference() != "llvm.nvvm.barrier.cta.sync.aligned.all")
-      return failure();
-
-    if (!matchPattern(op.getArgOperands()[0], m_Zero()))
+    if (!matchPattern(op.getArgs()[0], m_Zero()))
       return failure();
 
     rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
