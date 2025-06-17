@@ -402,8 +402,8 @@ def pipelines():
     )
 
     return [
-        ("JaX  ", None, CurBackends),
         ("JaXPipe", JaXPipeline(), CurBackends),
+        ("JaX  ", None, CurBackends),
         (
             "HLOOpt",
             JaXPipeline(
@@ -562,6 +562,14 @@ def recursive_check(tester, lhs, rhs, tol=1e-6):
     tester.assertTrue(False)
 
 
+def pretty_print_table(name, pname, backend, key, time):
+    print(
+        "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
+            name, pname, backend, key, time
+        )
+    )
+
+
 class EnzymeJaxTest(absltest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -679,15 +687,11 @@ class EnzymeJaxTest(absltest.TestCase):
                     else:
                         recursive_check(self, ao, primres, self.tol)
 
-                    print(
+                    pretty_print_table(
                         name,
-                        ",",
                         pname,
-                        ",",
                         backend,
-                        ",",
                         "Primal",
-                        ",",
                         timeit.Timer(
                             primalstr,
                             globals={
@@ -696,7 +700,6 @@ class EnzymeJaxTest(absltest.TestCase):
                             | primalins,
                         ).timeit(self.count)
                         / self.count,
-                        sep="\t",
                     )
 
             # assert primres is not None
@@ -731,15 +734,11 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, tangents, fwdres, self.tol)
 
-                        print(
+                        pretty_print_table(
                             name,
-                            ",",
                             pname,
-                            ",",
                             backend,
-                            ",",
                             "Forward",
-                            ",",
                             timeit.Timer(
                                 fwdstr,
                                 globals={
@@ -748,7 +747,6 @@ class EnzymeJaxTest(absltest.TestCase):
                                 | fwdins,
                             ).timeit(self.count)
                             / self.count,
-                            sep="\t",
                         )
 
             # assert fwdres is not None
@@ -789,15 +787,11 @@ class EnzymeJaxTest(absltest.TestCase):
                             else:
                                 recursive_check(self, grads, revres, self.tol)
 
-                            print(
+                            pretty_print_table(
                                 name,
-                                ",",
                                 pname,
-                                ",",
                                 backend,
-                                ",",
                                 "PreRev",
-                                ",",
                                 timeit.Timer(
                                     revstr,
                                     globals={
@@ -806,7 +800,6 @@ class EnzymeJaxTest(absltest.TestCase):
                                     | revins,
                                 ).timeit(self.count)
                                 / self.count,
-                                sep="\t",
                             )
 
                         rfn_enzyme = in_fn
@@ -837,15 +830,11 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol)
 
-                        print(
+                        pretty_print_table(
                             name,
-                            ",",
                             pname,
-                            ",",
                             backend,
-                            ",",
                             "PostRev",
-                            ",",
                             timeit.Timer(
                                 revstr,
                                 globals={
@@ -854,7 +843,6 @@ class EnzymeJaxTest(absltest.TestCase):
                                 | revins,
                             ).timeit(self.count)
                             / self.count,
-                            sep="\t",
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -892,15 +880,11 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol)
 
-                        print(
+                        pretty_print_table(
                             name,
-                            ",",
                             pname,
-                            ",",
                             backend,
-                            ",",
                             "BothRev",
-                            ",",
                             timeit.Timer(
                                 revstr,
                                 globals={
@@ -909,5 +893,4 @@ class EnzymeJaxTest(absltest.TestCase):
                                 | revins,
                             ).timeit(self.count)
                             / self.count,
-                            sep="\t",
                         )
