@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(enzyme-hlo-opt{passses=65536},enzyme-hlo-opt)' | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
 
 func.func @main(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
     %cst = stablehlo.constant dense<2.000000e+00> : tensor<24xf32>
@@ -21,11 +21,13 @@ func.func @main(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1
 }
 
 // CHECK: func.func @main(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
-// CHECK:   %[[CST_1:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<1024x1024xf32>
 // CHECK:   %[[CST:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<24xf32>
 // CHECK:   %[[CST_0:.*]] = stablehlo.constant dense<1> : tensor<24x2xi64>
-// CHECK:   %[[GATHER:.*]] = "stablehlo.gather"(%arg2, %[[SCATTER_INDICES:.*]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<1024x1024xf32>, tensor<24x2xi64>) -> tensor<24xf32>
+// CHECK:   %[[CST_1:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<1024x1024xf32>
+// CHECK:   %[[arg2_T:.*]] = stablehlo.transpose %arg2, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
+// CHECK:   %[[GATHER:.*]] = "stablehlo.gather"(%[[arg2_T]], %[[SCATTER_INDICES:.*]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<1024x1024xf32>, tensor<24x2xi64>) -> tensor<24xf32>
 // CHECK:   %[[MUL:.*]] = stablehlo.multiply %[[GATHER]], %[[CST]] : tensor<24xf32>
 // CHECK:   %[[SCATTER:.*]] = "stablehlo.scatter"(%[[CST_1]], %[[SCATTER_INDICES]], %[[MUL]]) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
-// CHECK:   return %[[SCATTER]] : tensor<1024x1024xf32>
+// CHECK:   %[[RESULT:.*]] = stablehlo.transpose %[[SCATTER]], dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
+// CHECK:   return %[[RESULT]] : tensor<1024x1024xf32>
 // CHECK: }
