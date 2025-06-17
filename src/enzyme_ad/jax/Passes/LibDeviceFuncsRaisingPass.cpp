@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -465,6 +467,32 @@ struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
   }
 };
 
+template <typename From, typename To, mlir::gpu::Dimension dim>
+struct GPUConvert : public OpRewritePattern<From> {
+  using OpRewritePattern<From>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(From op,
+                                PatternRewriter &rewriter) const override {
+    auto res = rewriter.create<To>(op.getLoc(), dim);
+    SmallVector<Operation *> toReplace;
+    for (auto u : op->getUsers()) {
+      if (auto ext = dyn_cast<arith::ExtUIOp>(u)) {
+        toReplace.push_back(ext);
+        continue;
+      }
+      if (auto ext = dyn_cast<arith::ExtSIOp>(u)) {
+        toReplace.push_back(ext);
+        continue;
+      }
+    }
+    for (auto e : toReplace)
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
+          e, e->getResultTypes()[0], res);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
+    return success();
+  }
+};
+
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
@@ -615,6 +643,40 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
+
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdXOp, gpu::ThreadIdOp, gpu::Dimension::x>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdYOp, gpu::ThreadIdOp, gpu::Dimension::y>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdZOp, gpu::ThreadIdOp, gpu::Dimension::z>>(
+          converter);
+
+  patterns.add<GPUConvert<NVVM::BlockIdXOp, gpu::BlockIdOp, gpu::Dimension::x>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::BlockIdYOp, gpu::BlockIdOp, gpu::Dimension::y>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::BlockIdZOp, gpu::BlockIdOp, gpu::Dimension::z>>(
+      converter);
+
+  patterns
+      .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::BlockDimYOp, gpu::BlockDimOp, gpu::Dimension::y>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::BlockDimZOp, gpu::BlockDimOp, gpu::Dimension::z>>(
+          converter);
+
+  patterns.add<GPUConvert<NVVM::GridDimXOp, gpu::GridDimOp, gpu::Dimension::x>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::GridDimYOp, gpu::GridDimOp, gpu::Dimension::y>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::GridDimZOp, gpu::GridDimOp, gpu::Dimension::z>>(
+      converter);
 
   patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
   patterns.add<ReadOnlyAllocaElim>(converter);

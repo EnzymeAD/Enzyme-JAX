@@ -61,24 +61,38 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
 
   using namespace llvm;
   using namespace mlir;
+  // clang-format off
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-"
-      "recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-"
+      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,parallel-"
+      "lower{wrapParallelOps=true},llvm-to-"
       "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
       "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
-      "canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,"
-      "canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,"
-      "func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,"
+      "canonicalize,"
+      "func.func(canonicalize-loops),"
+      "llvm.func(canonicalize-loops),"
+      "canonicalize-scf-for,"
+      "canonicalize,affine-cfg,canonicalize,"
+      "func.func(canonicalize-loops),"
+      "llvm.func(canonicalize-loops),"
+      "canonicalize,llvm-to-affine-access,"
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
-      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func("
-      "affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-"
-      "affine-to-stablehlo{prefer_while_raising=false "
+      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
+      "func.func(affine-loop-invariant-code-motion),"
+      "canonicalize,sort-memory";
+  auto xla = getenv("EXPORT_XLA");
+  if (xla)
+      pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      "symbol-dce";
+  else
+      pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
       "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
+
+  // clang-format on
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
   }

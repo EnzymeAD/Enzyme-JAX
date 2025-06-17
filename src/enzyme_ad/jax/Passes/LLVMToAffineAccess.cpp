@@ -110,7 +110,8 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
   for (auto op : alloc->getResult(0).getUsers()) {
     if (inPlace) {
       if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(op)) {
-        for (auto op2 : m2p.getResult().getUsers()) {
+        for (auto &op2u : m2p.getResult().getUses()) {
+          auto op2 = op2u.getOwner();
           if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op2)) {
             p2ms.push_back(p2m);
             continue;
@@ -172,9 +173,77 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     elNum = alloc.getType().getShape()[0];
     if (elNum == ShapedType::kDynamic) {
       auto sizeVal = getConstant(alloc.getDynamicSizes()[0]);
-      if (!sizeVal)
-        return failure();
-      elNum = *sizeVal;
+      if (!sizeVal) {
+        size_t num = 1;
+        size_t den = 1;
+        Value op = alloc.getDynamicSizes()[0];
+        while (true) {
+          if (auto icast = op.getDefiningOp<arith::IndexCastOp>()) {
+            op = icast.getOperand();
+            continue;
+          }
+          if (auto icast = op.getDefiningOp<arith::IndexCastUIOp>()) {
+            op = icast.getOperand();
+            continue;
+          }
+          if (auto shr = op.getDefiningOp<arith::ShRSIOp>()) {
+            if (auto cst = getConstant(shr.getRhs())) {
+              auto val = 1ULL << *cst;
+              if (num % val == 0) {
+                num /= val;
+                op = shr.getLhs();
+                continue;
+              } else if (val != 0 && val % num == 0) {
+                den *= (val / num);
+                num = 1;
+                op = shr.getLhs();
+                continue;
+              }
+            }
+          }
+          if (auto shr = op.getDefiningOp<arith::ShRUIOp>()) {
+            if (auto cst = getConstant(shr.getRhs())) {
+              auto val = 1ULL << *cst;
+              if (num % val == 0) {
+                num /= val;
+                op = shr.getLhs();
+                continue;
+              } else if (val != 0 && val % num == 0) {
+                den *= (val / num);
+                num = 1;
+                op = shr.getLhs();
+                continue;
+              }
+            }
+          }
+          if (auto shl = op.getDefiningOp<arith::ShLIOp>()) {
+            if (auto cst = getConstant(shl.getRhs())) {
+              auto val = 1ULL << *cst;
+              if (den % val == 0) {
+                den /= val;
+                op = shl.getLhs();
+                continue;
+              } else if (val != 0 && val % den == 0) {
+                num *= (val / den);
+                den = 1;
+                op = shl.getLhs();
+                continue;
+              }
+            }
+          }
+          LLVM_DEBUG(llvm::dbgs()
+                     << "could not deduce size of copy due to " << op
+                     << " num=" << num << " den=" << den << "\n");
+          break;
+        }
+        if (den == 1) {
+          elNum = num;
+        } else {
+          return failure();
+        }
+      } else {
+        elNum = *sizeVal;
+      }
     }
     elNum *= dataLayout.getTypeSize(
         cast<MemRefType>(alloc->getResult(0).getType()).getElementType());
@@ -209,12 +278,9 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
 
     auto tys = llvm::to_vector(alloc->getResultTypes());
     tys[0] = memrefType;
-    auto newOp = cast<FromAlloc>(rewriter.create(
-        alloc->getLoc(), alloc->getName().getIdentifier(), alloc->getOperands(),
-        tys, alloc->getAttrs(), alloc->getSuccessors()));
 
-    if (newOp.getDynamicSizes().size()) {
-      auto dyn = llvm::to_vector(newOp.getDynamicSizes());
+    auto dyn = llvm::to_vector(alloc.getDynamicSizes());
+    if (alloc.getDynamicSizes().size()) {
       dyn[dyn.size() - 1] = rewriter.create<arith::MulIOp>(
           alloc->getLoc(), dyn[dyn.size() - 1],
           rewriter.create<arith::ConstantIndexOp>(
@@ -228,8 +294,16 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
               alloc->getLoc(),
               dataLayout.getTypeSize(
                   ptr2memref.getResult().getType().getElementType())));
+    }
+
+    auto newOp = cast<FromAlloc>(rewriter.create(
+        alloc->getLoc(), alloc->getName().getIdentifier(), alloc->getOperands(),
+        tys, alloc->getAttrs(), alloc->getSuccessors()));
+
+    if (alloc.getDynamicSizes().size()) {
       newOp.getDynamicSizesMutable().assign(dyn);
     }
+
     newAlloc = newOp->getResult(0);
   }
 
@@ -237,7 +311,7 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     Value replacement = newAlloc;
     if (memrefType.getElementType() != p2m.getType().getElementType()) {
       replacement = rewriter.create<enzymexla::Memref2PointerOp>(
-          alloc->getLoc(), p2m.getType(), replacement);
+          alloc->getLoc(), p2m.getOperand().getType(), replacement);
       rewriter.modifyOpInPlace(
           p2m, [&]() { p2m.getSourceMutable().set(replacement); });
       continue;
@@ -247,8 +321,11 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
                                                     replacement);
     rewriter.replaceOp(p2m, replacement);
   }
-  for (auto other : others)
+
+  for (auto other : others) {
     rewriter.eraseOp(other);
+  }
+
   rewriter.eraseOp(alloc);
   return success();
 }

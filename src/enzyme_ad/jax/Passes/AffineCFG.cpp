@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -41,6 +42,18 @@ using namespace mlir::enzyme;
 
 void populateAffineParallelizationPattern(MLIRContext &context,
                                           RewritePatternSet &patterns);
+
+Region *getLocalAffineScope(Operation *op) {
+  auto curOp = op;
+  while (auto parentOp = curOp->getParentOp()) {
+    if (parentOp->hasTrait<OpTrait::AffineScope>() ||
+        isa<LLVM::LLVMFuncOp>(parentOp)) {
+      return curOp->getParentRegion();
+    }
+    curOp = parentOp;
+  }
+  return nullptr;
+}
 
 bool isValidSymbolInt(Value value, bool recur = true);
 bool isValidSymbolInt(Operation *defOp, bool recur) {
@@ -95,7 +108,7 @@ bool isValidSymbolInt(Value value, bool recur) {
   if (auto *defOp = value.getDefiningOp()) {
     if (isValidSymbolInt(defOp, recur))
       return true;
-    return affine::isValidSymbol(value, affine::getAffineScope(defOp));
+    return affine::isValidSymbol(value, getLocalAffineScope(defOp));
   }
 
   return false;
@@ -1012,7 +1025,7 @@ struct CanonicalizeAffineApply
     auto map = affineOp.getMap();
     auto prevMap = map;
 
-    auto *scope = affine::getAffineScope(affineOp)->getParentOp();
+    auto *scope = getLocalAffineScope(affineOp)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &mapOperands, DI);
@@ -1560,7 +1573,7 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
       // load->getParentOfType<FuncOp>().dump();
       llvm::errs() << " load: " << load << "\n";
     }
-    auto *scope = affine::getAffineScope(load)->getParentOp();
+    auto *scope = getLocalAffineScope(load)->getParentOp();
     DominanceInfo DI(scope);
     assert(map.getNumInputs() == operands.size());
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
@@ -1598,7 +1611,7 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
                               rewriter.getContext());
     SmallVector<Value, 4> operands = store.getIndices();
 
-    auto *scope = affine::getAffineScope(store)->getParentOp();
+    auto *scope = getLocalAffineScope(store)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
@@ -1639,7 +1652,7 @@ template <typename T> struct AffineFixup : public OpRewritePattern<T> {
     auto prevMap = map;
     auto prevOperands = operands;
 
-    auto *scope = affine::getAffineScope(op)->getParentOp();
+    auto *scope = getLocalAffineScope(op)->getParentOp();
     DominanceInfo DI(scope);
 
     assert(map.getNumInputs() == operands.size());
@@ -1725,7 +1738,7 @@ struct CanonicalieForBounds : public OpRewritePattern<affine::AffineForOp> {
     // llvm::errs() << "*********\n";
     // ubMap.dump();
 
-    auto *scope = affine::getAffineScope(forOp)->getParentOp();
+    auto *scope = getLocalAffineScope(forOp)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &lbMap, &lbOperands, DI);
@@ -1775,7 +1788,7 @@ struct CanonicalizIfBounds : public OpRewritePattern<affine::AffineIfOp> {
     // llvm::errs() << "*********\n";
     // ubMap.dump();
 
-    auto *scope = affine::getAffineScope(op)->getParentOp();
+    auto *scope = getLocalAffineScope(op)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeIntegerSetAndOperands(rewriter, &map, &operands, DI);
@@ -1877,7 +1890,7 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
         operands.push_back(operand);
       }
 
-      auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+      auto *scope = getLocalAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
       auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
@@ -2012,7 +2025,7 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
         operands.push_back(operand);
       }
 
-      auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+      auto *scope = getLocalAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
       auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
@@ -2066,7 +2079,7 @@ struct MoveSIToFPToAffine : public OpRewritePattern<arith::SIToFPOp> {
                               rewriter.getContext());
     SmallVector<Value, 1> operands = {ifOp.getOperand()};
 
-    auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+    auto *scope = getLocalAffineScope(ifOp)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
@@ -2190,7 +2203,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
         operands.push_back(operand);
       }
 
-      auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+      auto *scope = getLocalAffineScope(ifOp)->getParentOp();
       DominanceInfo DI(scope);
 
       auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
@@ -2305,7 +2318,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
             operands.push_back(operand);
           }
 
-          auto *scope = affine::getAffineScope(ifOp)->getParentOp();
+          auto *scope = getLocalAffineScope(ifOp)->getParentOp();
           DominanceInfo DI(scope);
 
           std::vector<mlir::Type> types = {ifOp.getCondition().getType()};
@@ -2444,7 +2457,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
         rewrittenStep = true;
       }
 
-      auto *scope = affine::getAffineScope(loop)->getParentOp();
+      auto *scope = getLocalAffineScope(loop)->getParentOp();
       DominanceInfo DI(scope);
 
       AffineMap lbMap = getMultiSymbolIdentity(builder, lbs.size());
@@ -2521,7 +2534,7 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
     auto lbMap = forOp.getLowerBoundsMap();
     auto ubMap = forOp.getUpperBoundsMap();
 
-    auto *scope = affine::getAffineScope(forOp)->getParentOp();
+    auto *scope = getLocalAffineScope(forOp)->getParentOp();
     DominanceInfo DI(scope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &lbMap, &lbOperands, DI);
@@ -2541,7 +2554,8 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
     OpBuilder builder(loop);
 
     if (loop.getResults().size())
-      return failure();
+      return rewriter.notifyMatchFailure(
+          loop, "not dependent on a conditional result");
 
     if (!llvm::all_of(loop.getLowerBound(), isValidIndex)) {
       return failure();
@@ -4351,7 +4365,7 @@ struct MergeParallelInductions
 
           idxCst = addOp;
 
-          auto *scope = affine::getAffineScope(op)->getParentOp();
+          auto *scope = getLocalAffineScope(op)->getParentOp();
           DominanceInfo DI(scope);
 
           AffineExpr dimExprs[1] = {rewriter.getAffineSymbolExpr(0)};
