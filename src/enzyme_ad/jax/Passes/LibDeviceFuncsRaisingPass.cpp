@@ -506,13 +506,13 @@ struct BarrierConvert : public OpRewritePattern<LLVM::CallOp> {
     if (callee.getLeafReference() != "llvm.nvvm.barrier.cta.sync.aligned.all")
       return failure();
 
-    if (!matchPattern(op.getArgOperands()[0], m_Zero())) return failure();
+    if (!matchPattern(op.getArgOperands()[0], m_Zero()))
+      return failure();
 
     rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
     return success();
   }
 };
-
 
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
@@ -681,7 +681,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
       converter);
   patterns.add<GPUConvert<NVVM::BlockIdZOp, gpu::BlockIdOp, gpu::Dimension::z>>(
       converter);
-  
+
   patterns.add<BarrierConvert>(converter);
 
   patterns
