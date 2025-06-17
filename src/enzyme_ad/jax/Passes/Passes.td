@@ -158,6 +158,11 @@ def PrintPass : Pass<"print"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Whether to print to generic mlir form">,
+      Option</*C++ variable name=*/"filename",
+      /*CLI argument=*/"filename",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"If not-empty, will print the module to a file">,
       ];
 }
 
