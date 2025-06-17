@@ -239,6 +239,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "math::MathDialect",
+    "gpu::GPUDialect",
   ];
   let options = [
     Option<
@@ -598,7 +599,7 @@ def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
 
 def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
   let options = [
   Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
   ];

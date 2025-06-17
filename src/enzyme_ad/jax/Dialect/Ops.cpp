@@ -48,6 +48,25 @@ using namespace mlir::arith;
 using namespace mlir::LLVM;
 using namespace mlir::stablehlo;
 
+static std::optional<int64_t> getConstant(Operation *op) {
+  if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<arith::ConstantIndexOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<LLVM::ConstantOp>(op)) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return intAttr.getValue().getSExtValue();
+  }
+  return {};
+}
+
+static std::optional<int64_t> getConstant(Value v) {
+  Operation *op = v.getDefiningOp();
+  if (op)
+    return getConstant(op);
+  return {};
+}
+
 LogicalResult
 KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -1147,22 +1166,94 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
     if (finalType.getElementType() == op.getTarget().getType().getElementType())
       return failure();
 
-    APInt copySize;
-    if (!matchPattern(op.getSize(), m_ConstantInt(&copySize))) {
-      return failure();
-    }
-
     DataLayoutAnalysis dataLayoutAnalysis(op);
     auto &dataLayout = dataLayoutAnalysis.getAtOrAbove(op);
     int64_t elNum =
-        dataLayout.getTypeSize(op.getTarget().getType().getElementType()) *
-        (copySize.getSExtValue());
+        dataLayout.getTypeSize(op.getTarget().getType().getElementType());
+
+    Value sz = op.getSize();
+    APInt copySize;
+    if (matchPattern(sz, m_ConstantInt(&copySize))) {
+      elNum *= (copySize.getSExtValue());
+    } else {
+      size_t num = 1;
+      size_t den = 1;
+      Value op = sz;
+      while (true) {
+        if (auto icast = op.getDefiningOp<arith::IndexCastOp>()) {
+          op = icast.getOperand();
+          continue;
+        }
+        if (auto icast = op.getDefiningOp<arith::IndexCastUIOp>()) {
+          op = icast.getOperand();
+          continue;
+        }
+        if (auto shr = op.getDefiningOp<arith::ShRSIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shr = op.getDefiningOp<arith::ShRUIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shl = op.getDefiningOp<arith::ShLIOp>()) {
+          if (auto cst = getConstant(shl.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (den % val == 0) {
+              den /= val;
+              op = shl.getLhs();
+              continue;
+            } else if (val != 0 && val % den == 0) {
+              num *= (val / den);
+              den = 1;
+              op = shl.getLhs();
+              continue;
+            }
+          }
+        }
+        LLVM_DEBUG(llvm::dbgs() << "could not deduce size of copy due to " << op
+                                << " num=" << num << " den=" << den << "\n");
+        break;
+      }
+      assert(den == 1);
+      if (den == 1) {
+        elNum *= num;
+      } else {
+        return failure();
+      }
+    }
 
     auto newElSize = dataLayout.getTypeSize(finalType.getElementType());
 
     int64_t newElnum = elNum / newElSize;
-    if (newElSize * newElnum != elNum)
+    if (newElSize * newElnum != elNum) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "non divisible size: newElSize " << newElSize << " elNum "
+                 << elNum << " newElnum: " << newElnum << "\n");
       return failure();
+    }
 
     SmallVector<int64_t, 1> sizes = {newElnum};
     for (int i = 0; i < 2; i++) {
@@ -1470,4 +1561,120 @@ void XLAWrapperOp::getEffects(
         &effects) {
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+}
+
+//===----------------------------------------------------------------------===//
+// AlternativesOp
+//===----------------------------------------------------------------------===//
+
+void AlternativesOp::build(OpBuilder &builder, OperationState &result,
+                           int regionNum) {
+  OpBuilder::InsertionGuard g(builder);
+  for (int i = 0; i < regionNum; i++) {
+    Region *bodyRegion = result.addRegion();
+    Block *block = builder.createBlock(bodyRegion);
+    builder.setInsertionPointToEnd(block);
+    builder.create<PolygeistYieldOp>(result.location);
+  }
+}
+
+class HoistSingleAlternative final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    assert(aop->getNumRegions() > 0);
+    if (aop->getNumRegions() > 1) {
+      return failure();
+    }
+    auto block = &*aop->getRegions()[0].begin();
+    rewriter.eraseOp(block->getTerminator());
+    rewriter.inlineBlockBefore(block, aop);
+    rewriter.eraseOp(aop);
+    return success();
+  }
+};
+
+class FlattenAlternatives final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    // Ignore nested alternatives ops
+    if (aop->getParentOfType<AlternativesOp>())
+      return failure();
+
+    AlternativesOp innerAop = nullptr;
+    unsigned regionId = 0;
+    for (auto &region : aop->getRegions()) {
+      for (auto &op : region.getOps()) {
+        if (auto aop = dyn_cast<AlternativesOp>(&op)) {
+          innerAop = aop;
+          break;
+        }
+      }
+      if (innerAop)
+        break;
+      regionId++;
+    }
+    if (!innerAop)
+      return failure();
+
+    // TODO use block insertion etc for better performance
+    auto newAop = rewriter.create<enzymexla::AlternativesOp>(
+        aop->getLoc(), innerAop->getNumRegions() + aop->getNumRegions() - 1);
+    newAop->setAttrs(aop->getAttrs());
+    auto outerDescs = aop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    auto innerDescs = innerAop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    std::vector<Attribute> configs;
+    unsigned curRegion = 0;
+    for (; curRegion < innerAop->getNumRegions(); curRegion++) {
+      IRMapping mapping;
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      for (auto &op : *innerAop->getBlock()) {
+        if (&op == innerAop.getOperation()) {
+          for (auto &op : innerAop->getRegion(curRegion).getOps())
+            if (!isa<PolygeistYieldOp>(&op))
+              rewriter.clone(op, mapping);
+        } else {
+          if (!isa<PolygeistYieldOp>(&op))
+            rewriter.clone(op, mapping);
+        }
+      }
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[regionId]).str() +
+          cast<StringAttr>(innerDescs[curRegion]).str()));
+    }
+
+    unsigned oldRegion = 0;
+    for (; oldRegion < aop->getNumRegions(); oldRegion++) {
+      auto &srcRegion = aop->getRegion(oldRegion);
+      if (innerAop->getBlock()->getParent() == &srcRegion) {
+        assert(oldRegion == regionId);
+        continue;
+      }
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      IRMapping mapping;
+      for (auto &op : srcRegion.getOps())
+        if (!isa<PolygeistYieldOp>(&op))
+          rewriter.clone(op, mapping);
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[oldRegion]).str()));
+      curRegion++;
+    }
+    newAop->setAttr("alternatives.descs", rewriter.getArrayAttr(configs));
+
+    rewriter.eraseOp(aop);
+
+    return success();
+  }
+};
+
+void AlternativesOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                 MLIRContext *context) {
+  results.insert<HoistSingleAlternative, FlattenAlternatives>(context);
 }
