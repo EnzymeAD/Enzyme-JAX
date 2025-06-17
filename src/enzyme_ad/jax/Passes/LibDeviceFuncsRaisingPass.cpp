@@ -486,8 +486,8 @@ struct GPUConvert : public OpRewritePattern<From> {
       }
     }
     for (auto e : toReplace)
-      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(e, e->getResultType(0),
-                                                        res);
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
+          e, e->getResultTypes()[0], res);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
     return success();
   }

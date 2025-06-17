@@ -136,6 +136,7 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
 
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   RecursiveMemoryEffects,
+  AffineScope,
   AutomaticAllocationScope,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
   let arguments = (ins Variadic<Index>:$blockDims);
