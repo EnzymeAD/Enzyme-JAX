@@ -135,6 +135,10 @@ def ApplyBroadcastToReshapePatterns : EnzymeHLOPatternOp<
     "broadcast_to_reshape"> {
   let patterns = ["BroadcastToReshape"];
 }
+def ApplyGatherSimplifyPatterns : EnzymeHLOPatternOp<
+    "gather_simplify"> {
+  let patterns = ["GatherSimplify"];
+}
 def ApplyNotConstProp : EnzymeHLOPatternOp<
     "not_const_prop"> {
   let patterns = ["UnaryConstProp<stablehlo::NotOp,stablehlo::notOp>"];
@@ -2032,8 +2036,4 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
-}
-
-def ApplyTransposeScatter : EnzymeHLOPatternOp<"transpose_scatter"> {
-  let patterns = ["TransposeScatter"];
 }
