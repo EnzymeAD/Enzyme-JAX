@@ -87,7 +87,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
   else
-      pass_pipeline += "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
       "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
