@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(enzyme-hlo-opt{passses=65536},enzyme-hlo-opt)' | FileCheck %s
+// BROKEN RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(enzyme-hlo-opt{passses=65536},enzyme-hlo-opt)' | FileCheck %s
 
 func.func @main(%arg0: tensor<5x2xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<4x3x2xf32>) -> tensor<5x2xf32> {
     %c = stablehlo.constant dense<[[[0, 1, 2, 3], [3, 1, 0, 2], [2, 4, 4, 2]]]> : tensor<1x3x4xi64>

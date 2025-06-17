@@ -19699,6 +19699,7 @@ SmallVector<int64_t> applyPermutation(ArrayRef<int64_t> dims,
   return newDims;
 }
 
+// XXX: currently busted and not used
 struct TransposeScatter
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
   using CheckedOpRewritePattern<stablehlo::TransposeOp,
@@ -20157,12 +20158,13 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
+      // XXX: TransposeScatter is currently broken hence not adding it here
       patterns
           .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
                TransposeIota, TransposeReduceWindow, TransposeReduce,
                TransposeSelect, TransposeDynamicSlice, TransposeReverse,
                TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf, TransposeScatter>(context);
+               TransposeBatchNormGrad, TransposeIf>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
