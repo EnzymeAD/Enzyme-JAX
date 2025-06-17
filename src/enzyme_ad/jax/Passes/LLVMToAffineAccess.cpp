@@ -1687,7 +1687,7 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
       return failure();
     }
 
-    if (loads.size() != 1)
+    if (loads.size() != 1 || stored.size() != 1)
       return failure();
 
     DominanceInfo DI(alloc->getParentOp());

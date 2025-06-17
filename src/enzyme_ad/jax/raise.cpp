@@ -80,7 +80,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory";
+      "canonicalize,sort-memory,";
   auto xla = getenv("EXPORT_XLA");
   if (xla)
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
