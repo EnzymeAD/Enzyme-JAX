@@ -770,8 +770,8 @@ kagglehub==0.3.4 \
     --hash=sha256:0b063d081ecefc6d8bfbd0885733aad9b3cebb5b46183ff105313a5b2ddabd90 \
     --hash=sha256:ae608069ab09758fbbcdc51108e4786187bd1c77bf120b1c349d0a7e353f7940
     # via keras-hub
-keras @ https://github.com/avik-pal/keras/archive/9f027a287a6d0cad834cb2353a42b5ae4e31c6c8.tar.gz \
-    --hash=sha256:b7d0fcb4d842a93fe5f98a7acad8e743476d1ed1d6b2ae94e94241c1773e3537
+keras @ https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz \
+    --hash=sha256:9b91264f19392dd2f3930b7626f1ce9217396cdc5c89276992771ec665ed86b5
     # via
     #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-24f7662de0c4/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   tensorflow

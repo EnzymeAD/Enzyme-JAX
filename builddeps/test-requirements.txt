@@ -16,7 +16,7 @@ neuralgcm
 gcsfs; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 
-https://github.com/avik-pal/keras/archive/9f027a287a6d0cad834cb2353a42b5ae4e31c6c8.tar.gz; sys_platform == 'linux'
+https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz; sys_platform == 'linux'
 https://github.com/wsmoses/keras-benchmarks/archive/7d8df90ce7d2c2be2541148070cc368281ac15a5.tar.gz; sys_platform == 'linux'
 tf_keras; sys_platform == 'linux'
 keras-nlp >= 0.17; sys_platform == 'linux'
