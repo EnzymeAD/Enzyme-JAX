@@ -2464,12 +2464,27 @@ struct AffineToStableHLORaisingPass
       getUsedValuesDefinedAbove(g->getRegion(0), operands);
 
       SmallVector<Type> tensorTypes;
+      bool failed = false;
       for (auto arg : operands) {
-        auto MT = cast<MemRefType>(arg.getType());
+        auto MT = dyn_cast<MemRefType>(arg.getType());
+        if (!MT) {
+          failed = true;
+          if (err_if_not_fully_raised) {
+            llvm::errs() << "failed to raise operand: " << arg << "\n"
+                         << " within " << g << "\n";
+            ;
+            signalPassFailure();
+          }
+          break;
+        }
         auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
         auto newArg = newBlock->addArgument(TT, arg.getLoc());
         mapping.map(arg, newArg);
         tensorTypes.push_back(TT);
+      }
+      if (failed) {
+        delete newBlock;
+        continue;
       }
 
       auto newFuncType =
@@ -2492,13 +2507,19 @@ struct AffineToStableHLORaisingPass
         anyFailed =
             tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
                 .failed();
-        if (anyFailed)
+        if (anyFailed) {
+          if (err_if_not_fully_raised) {
+            llvm::errs() << "failed to raise operation: " << *&it << "\n"
+                         << " within " << g << "\n";
+            signalPassFailure();
+          }
           break;
+        }
       }
 
       if (anyFailed) {
         newFunc->erase();
-        return;
+        continue;
       }
 
       SmallVector<Value> results;

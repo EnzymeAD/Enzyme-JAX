@@ -80,14 +80,18 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
-      "llvm.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory,raise-"
-      "affine-to-stablehlo{prefer_while_raising=false "
+      "canonicalize,sort-memory";
+  auto xla = getenv("EXPORT_XLA");
+  if (xla)
+      pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      "symbol-dce";
+  else
+      pass_pipeline += "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
       "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
+
   // clang-format on
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
