@@ -2541,7 +2541,8 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
     OpBuilder builder(loop);
 
     if (loop.getResults().size())
-      return failure();
+      return rewriter.notifyMatchFailure(
+          loop, "not dependent on a conditional result");
 
     if (!llvm::all_of(loop.getLowerBound(), isValidIndex)) {
       return failure();
