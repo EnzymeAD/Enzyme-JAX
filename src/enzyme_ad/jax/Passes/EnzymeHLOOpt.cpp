@@ -19685,72 +19685,6 @@ struct GatherElementwise
   }
 };
 
-SmallVector<int64_t> applyPermutation(ArrayRef<int64_t> dims,
-                                      ArrayRef<int64_t> permutation,
-                                      bool sort = false) {
-  SmallVector<int64_t> newDims(dims.size(), -1);
-  for (int64_t i = 0; i < dims.size(); ++i) {
-    newDims[i] = permutation[dims[i]];
-  }
-
-  if (sort)
-    llvm::sort(newDims);
-
-  return newDims;
-}
-
-struct TransposeScatter
-    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
-  using CheckedOpRewritePattern<stablehlo::TransposeOp,
-                                TransposeScatter>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
-                                    PatternRewriter &rewriter) const {
-    auto scatterOp = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
-    if (!scatterOp)
-      return rewriter.notifyMatchFailure(op,
-                                         "TransposeOp with non-scatter input");
-
-    if (scatterOp.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "TransposeOp with scatter input with more than 1 operand");
-
-    if (!isOnlyUsedInOperation(scatterOp, op))
-      return failure();
-
-    auto transposedInput = rewriter.create<stablehlo::TransposeOp>(
-        op.getLoc(), scatterOp.getInputs()[0], op.getPermutation());
-
-    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
-        op.getLoc(), TypeRange(op.getType()), ValueRange(transposedInput),
-        scatterOp.getScatterIndices(), scatterOp.getUpdates(),
-        transposeScatterDimensionNumbers(
-            scatterOp.getScatterDimensionNumbers(),
-            getInversePermutation(op.getPermutation()), rewriter),
-        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
-    newScatterOp.getUpdateComputation().takeBody(
-        scatterOp.getUpdateComputation());
-    rewriter.replaceOp(op, newScatterOp->getResult(0));
-    return success();
-  }
-
-private:
-  stablehlo::ScatterDimensionNumbersAttr transposeScatterDimensionNumbers(
-      stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers,
-      SmallVector<int64_t> mapping, PatternRewriter &rewriter) const {
-    return stablehlo::ScatterDimensionNumbersAttr::get(
-        rewriter.getContext(), scatterDimNumbers.getUpdateWindowDims(),
-        applyPermutation(scatterDimNumbers.getInsertedWindowDims(), mapping,
-                         true),
-        applyPermutation(scatterDimNumbers.getInputBatchingDims(), mapping,
-                         true),
-        scatterDimNumbers.getScatterIndicesBatchingDims(),
-        applyPermutation(scatterDimNumbers.getScatterDimsToOperandDims(),
-                         mapping, true),
-        scatterDimNumbers.getIndexVectorDim());
-  }
-};
-
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20162,7 +20096,7 @@ struct EnzymeHLOOptPass
                TransposeIota, TransposeReduceWindow, TransposeReduce,
                TransposeSelect, TransposeDynamicSlice, TransposeReverse,
                TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf, TransposeScatter>(context);
+               TransposeBatchNormGrad, TransposeIf>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
