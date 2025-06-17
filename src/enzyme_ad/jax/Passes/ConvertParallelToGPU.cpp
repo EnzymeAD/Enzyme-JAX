@@ -112,6 +112,7 @@ static void shrinkAlternativesOp(enzymexla::AlternativesOp alternativesOp,
   for (unsigned i = 0; i < newAop->getNumRegions(); i++) {
     auto &region = alternativesOp->getRegion(i);
     auto &newRegion = newAop->getRegion(i);
+    rewriter.eraseBlock(&newRegion.front());
     rewriter.inlineRegionBefore(region, newRegion, newRegion.begin());
     descs.push_back(oldDescs[i]);
   }
@@ -903,6 +904,7 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
 
     rewriter.setInsertionPointToStart(innerBlock);
     auto it = outerBlock->begin();
+    auto end = outerBlock->getTerminator()->getIterator();
     SmallVector<Operation *> toErase;
     IRMapping mapping;
     for (; &*it != pop.getOperation(); ++it) {
@@ -911,7 +913,8 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       if (isa<scf::ParallelOp>(&op)) {
         llvm_unreachable("Unhandled case");
         break;
-      } else if (isa<scf::YieldOp>(&op)) {
+      } else if (it == end) {
+        llvm_unreachable("Impossible");
         continue;
       } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
         continue;
@@ -959,13 +962,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       }
       auto ifOp = rewriter.create<scf::IfOp>(loc, condition);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      for (; it != outerBlock->end(); ++it) {
+      for (; it != end; ++it) {
         Operation &op = *it;
         if (isa<scf::ParallelOp>(&op)) {
           llvm_unreachable("Unhandled case");
           break;
-        } else if (isa<scf::YieldOp>(&op)) {
-          continue;
         } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
           llvm_unreachable("Unhandled case");
           break;
