@@ -2284,9 +2284,13 @@ struct ADDataFlowWhileOp
     if (&srt.getCond() == term->getParentRegion())
       return {};
     SmallVector<Value> sv;
-    for (auto &&[res, arg] : llvm::zip(srt.getResults(), term->getOperands())) {
-      if (arg == v)
+    for (auto &&[res, arg, barg] :
+         llvm::zip(srt.getResults(), term->getOperands(),
+                   srt.getBody().front().getArguments())) {
+      if (arg == v) {
         sv.push_back(res);
+        sv.push_back(barg);
+      }
     }
     return sv;
   }
