@@ -621,6 +621,11 @@ void ParallelLower::runOnOperation() {
       builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
           op, threadB->getArguments());
     });
+    container.walk([&](gpu::BarrierOp op) {
+      builder.setInsertionPoint(op);
+      builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
+          op, threadB->getArguments());
+    });
 
     container.walk([&](gpu::GridDimOp bidx) {
       Value val = nullptr;

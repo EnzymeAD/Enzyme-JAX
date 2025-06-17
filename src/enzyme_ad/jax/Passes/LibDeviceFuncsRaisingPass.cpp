@@ -493,6 +493,27 @@ struct GPUConvert : public OpRewritePattern<From> {
   }
 };
 
+struct BarrierConvert : public OpRewritePattern<LLVM::CallOp> {
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() != "llvm.nvvm.barrier.cta.sync.aligned.all")
+      return failure();
+
+    if (!matchPattern(op.getArgOperands()[0], m_Zero())) return failure();
+
+    rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
+    return success();
+  }
+};
+
+
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
@@ -660,6 +681,8 @@ void populateLLVMToMathPatterns(MLIRContext *context,
       converter);
   patterns.add<GPUConvert<NVVM::BlockIdZOp, gpu::BlockIdOp, gpu::Dimension::z>>(
       converter);
+  
+  patterns.add<BarrierConvert>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
