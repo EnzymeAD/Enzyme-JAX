@@ -45,7 +45,8 @@ module {
 // REVERSE-NEXT:      stablehlo.return %[[a5]] : tensor<i1>
 // REVERSE-NEXT:    } do {
 // REVERSE-NEXT:      %[[a5:.+]] = stablehlo.add %iterArg, %c : tensor<i64>
-// REVERSE-NEXT:      stablehlo.return %[[a5]], %iterArg_2 : tensor<i64>, tensor<3xf64>
+// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.add %iterArg_2, %cst : tensor<3xf64>
+// REVERSE-NEXT:      stablehlo.return %[[a5]], %[[a6]] : tensor<i64>, tensor<3xf64>
 // REVERSE-NEXT:    }
 // REVERSE-NEXT:    %[[a4:.+]] = stablehlo.add %[[a3]]#1, %cst : tensor<3xf64>
 // REVERSE-NEXT:    return %[[a4]] : tensor<3xf64>
