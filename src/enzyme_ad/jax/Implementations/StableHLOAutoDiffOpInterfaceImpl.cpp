@@ -561,11 +561,6 @@ public:
   }
 };
 
-bool definedOutside(Value v, Operation *op) {
-  return !op->isProperAncestor(v.getParentBlock()->getParentOp()) &&
-         v.getParentBlock()->getParentOp() != op;
-}
-
 class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
@@ -784,15 +779,7 @@ class AutoDiffWhileRev
     for (auto &&[active, operand] :
          llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
-        // if defined within the body, set diffe here, not add because it should
-        // not accumulate across iterations. Instead the new gradient for this
-        // operand is passed in the return of the reverse while body.
-        if (!definedOutside(operand, orig)) {
-          gutils->setDiffe(operand, revLoopBody->getArgument(revIdx), builder);
-        } else {
-          gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx),
-                             builder);
-        }
+        gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
     }
@@ -991,14 +978,7 @@ public:
       for (auto &&[active, operand] :
            llvm::zip(operandsActive, term->getOperands())) {
         if (active) {
-          // if defined within the body, set diffe here, not add because it
-          // should not accumulate across iterations. Instead the new gradient
-          // for this operand is passed in the return of the reverse while body.
-          if (!definedOutside(operand, whileOp)) {
-            gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
-          } else {
-            gutils->addToDiffe(operand, body->getArgument(revIdx), bodyBuilder);
-          }
+          gutils->addToDiffe(operand, body->getArgument(revIdx), bodyBuilder);
           revIdx++;
         }
       }

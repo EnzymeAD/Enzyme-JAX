@@ -48,9 +48,10 @@ module {
 // CHECK-NEXT:      %[[v7:.+]] = stablehlo.reshape %[[v6]] : (tensor<1x3xf64>) -> tensor<3xf64>
 // CHECK-NEXT:      %[[v8:.+]] = stablehlo.cosine %[[v7]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v9:.+]] = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      %[[v10:.+]] = stablehlo.multiply %iterArg_4, %[[v8]] : tensor<3xf64>
+// CHECK-NEXT:      %[[a4:.+]] = arith.addf %iterArg_4, %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:      %[[v10:.+]] = stablehlo.multiply %[[a4]], %[[v8]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v11:.+]] = arith.addf %[[v10]], %[[ZERO]] : tensor<3xf64>
-// CHECK-NEXT:      %[[v12:.+]] = stablehlo.multiply %iterArg_4, %[[v8]] : tensor<3xf64>
+// CHECK-NEXT:      %[[v12:.+]] = stablehlo.multiply %[[a4]], %[[v8]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v13:.+]] = arith.addf %[[v11]], %[[v12]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v14:.+]] = stablehlo.sine %[[v7]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v15:.+]] = stablehlo.negate %[[v14]] : tensor<3xf64>
