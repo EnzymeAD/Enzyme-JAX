@@ -787,7 +787,7 @@ class AutoDiffWhileRev
         // if defined within the body, set diffe here, not add because it should
         // not accumulate across iterations. Instead the new gradient for this
         // operand is passed in the return of the reverse while body.
-        if (!definedOutside(operand, whileOp)) {
+        if (!definedOutside(operand, orig)) {
           gutils->setDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         } else {
           gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx),
