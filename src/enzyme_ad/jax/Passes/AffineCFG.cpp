@@ -4548,8 +4548,10 @@ struct MergeParallelInductions
       rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                   affineLoop.getRegion().begin());
       rewriter.eraseOp(op);
-      rewriter.eraseOp(op);
       return success();
+    }
+    for (auto op : llvm::reverse(insertedOps)) {
+      op->erase();
     }
     return failure();
   }
