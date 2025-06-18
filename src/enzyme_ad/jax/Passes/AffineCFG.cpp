@@ -726,9 +726,9 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands) {
   return false;
 }
 
-void fully2ComposeAffineMapAndOperands(PatternRewriter *builder, AffineMap *map,
-                                       SmallVectorImpl<Value> *operands,
-                                       DominanceInfo *DI) {
+void fully2ComposeAffineMapAndOperands(
+    PatternRewriter *builder, AffineMap *map, SmallVectorImpl<Value> *operands,
+    DominanceInfo *DI, SmallVectorImpl<Operation *> *insertedOps = nullptr) {
   IRMapping indexMap;
   if (builder)
     for (auto op : *operands) {
@@ -771,25 +771,33 @@ void fully2ComposeAffineMapAndOperands(PatternRewriter *builder, AffineMap *map,
         if (auto v = indexMap.lookupOrNull(op))
           op = v;
         else {
-          PatternRewriter::InsertionGuard B(*builder);
-          builder->setInsertionPoint(toInsert);
-          op = builder->create<IndexCastOp>(op.getLoc(),
-                                            builder->getIndexType(), op);
+          if (insertedOps) {
+            OpBuilder builder(toInsert);
+            auto inserted = builder.create<IndexCastOp>(
+                op.getLoc(), builder.getIndexType(), op);
+            op = inserted->getResult(0);
+            insertedOps->push_back(inserted);
+          } else {
+            PatternRewriter::InsertionGuard B(*builder);
+            builder->setInsertionPoint(toInsert);
+            auto inserted = builder->create<IndexCastOp>(
+                op.getLoc(), builder->getIndexType(), op);
+            op = inserted->getResult(0);
+          }
         }
       }
     }
 }
 
-void fully2ComposeAffineMapAndOperands(PatternRewriter &builder, AffineMap *map,
-                                       SmallVectorImpl<Value> *operands,
-                                       DominanceInfo &DI) {
-  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI);
+void fully2ComposeAffineMapAndOperands(
+    PatternRewriter &builder, AffineMap *map, SmallVectorImpl<Value> *operands,
+    DominanceInfo &DI, SmallVectorImpl<Operation *> *insertedOps) {
+  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI, insertedOps);
 }
 
-void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
-                                        IntegerSet *set,
-                                        SmallVectorImpl<Value> *operands,
-                                        DominanceInfo &DI) {
+void fully2ComposeIntegerSetAndOperands(
+    PatternRewriter &builder, IntegerSet *set, SmallVectorImpl<Value> *operands,
+    DominanceInfo &DI, SmallVectorImpl<Operation *> *insertedOps = nullptr) {
   IRMapping indexMap;
   for (auto op : *operands) {
     SmallVector<IndexCastOp> attempt;
@@ -832,10 +840,19 @@ void fully2ComposeIntegerSetAndOperands(PatternRewriter &builder,
       if (auto v = indexMap.lookupOrNull(op))
         op = v;
       else {
-        PatternRewriter::InsertionGuard B(builder);
-        builder.setInsertionPoint(toInsert);
-        op = builder.create<IndexCastOp>(op.getLoc(), builder.getIndexType(),
-                                         op);
+        if (insertedOps) {
+          OpBuilder builder(toInsert);
+          auto inserted = builder.create<IndexCastOp>(
+              op.getLoc(), builder.getIndexType(), op);
+          op = inserted->getResult(0);
+          insertedOps->push_back(inserted);
+        } else {
+          PatternRewriter::InsertionGuard B(builder);
+          builder.setInsertionPoint(toInsert);
+          auto inserted = builder.create<IndexCastOp>(
+              op.getLoc(), builder.getIndexType(), op);
+          op = inserted->getResult(0);
+        }
       }
     }
   }
@@ -4241,6 +4258,7 @@ struct MergeParallelInductions
     }
 
     std::map<size_t, SmallVector<Operation *>> illegalOps;
+    SmallVector<Operation *> insertedOps;
     for (auto iv : op.getIVs()) {
       if (!CanonicalBounds.count(iv.getArgNumber()))
         continue;
@@ -4374,7 +4392,8 @@ struct MergeParallelInductions
                                     rewriter.getContext());
 
           operands = {addOp->getResult(0)};
-          fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
+          fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI,
+                                            &insertedOps);
 
           exprs.push_back(map.getResult(0));
           numDims = map.getNumDims();
@@ -4491,6 +4510,10 @@ struct MergeParallelInductions
       if (!legalPair)
         continue;
 
+      if (auto list = rewriter.getListener())
+        for (auto op : insertedOps) {
+          list->notifyOperationInserted(op, {});
+        }
       SmallVector<int32_t> uboundGroup;
       for (auto U : op.getUpperBoundsGroups())
         uboundGroup.push_back(U.getZExtValue());
@@ -4524,6 +4547,7 @@ struct MergeParallelInductions
 
       rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                   affineLoop.getRegion().begin());
+      rewriter.eraseOp(op);
       rewriter.eraseOp(op);
       return success();
     }
