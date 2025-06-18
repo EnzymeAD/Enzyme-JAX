@@ -71,7 +71,7 @@ module @reactant_differe... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 
 // CHECK:  func.func private @diffef(%arg0: tensor<f64>, %arg1: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<3> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<16> : tensor<i64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0:4 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg1, %iterArg_3 = %cst, %iterArg_4 = %cst) : tensor<i64>, tensor<f64>, tensor<f64>, tensor<f64>
@@ -80,7 +80,8 @@ module @reactant_differe... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      stablehlo.return %1 : tensor<i1>
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:      %1 = stablehlo.add %iterArg, %c : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %1, %iterArg_2, %iterArg_2, %iterArg_3 : tensor<i64>, tensor<f64>, tensor<f64>, tensor<f64>
+// CHECK-NEXT:      %2 = stablehlo.add %iterArg_4, %iterArg_3 : tensor<f64>
+// CHECK-NEXT:      stablehlo.return %1, %iterArg_2, %iterArg_2, %2 : tensor<i64>, tensor<f64>, tensor<f64>, tensor<f64>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return %0#3 : tensor<f64>
 // CHECK-NEXT:  }
