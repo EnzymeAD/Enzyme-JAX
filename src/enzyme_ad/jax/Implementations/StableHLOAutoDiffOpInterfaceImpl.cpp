@@ -561,6 +561,11 @@ public:
   }
 };
 
+bool definedOutside(Value v, Operation *op) {
+  return !op->isProperAncestor(v.getParentBlock()->getParentOp()) &&
+         v.getParentBlock()->getParentOp() != op;
+}
+
 class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
@@ -655,7 +660,13 @@ class AutoDiffWhileRev
     int64_t numIters = revInfo.info.getConstantNumIters();
     int64_t nInner = std::sqrt(numIters);
     int64_t nOuter = nInner;
-    assert(nInner * nOuter == numIters);
+    if (nInner * nOuter != revInfo.info.getConstantNumIters()) {
+      orig->emitError()
+          << "Non square number of iterations for checkpointing, nInner="
+          << nInner << " nOuter=" << nOuter
+          << " iters=" << revInfo.info.getConstantNumIters() << "\n";
+      return failure();
+    }
 
     auto outer = gutils->getNewFromOriginal(orig);
 
@@ -773,10 +784,15 @@ class AutoDiffWhileRev
     for (auto &&[active, operand] :
          llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
-        // Set diffe here, not add because it should not accumulate across
-        // iterations. Instead the new gradient for this operand is passed in
-        // the return of the reverse while body.
-        gutils->setDiffe(operand, revLoopBody->getArgument(revIdx), builder);
+        // if defined within the body, set diffe here, not add because it should
+        // not accumulate across iterations. Instead the new gradient for this
+        // operand is passed in the return of the reverse while body.
+        if (!definedOutside(operand, whileOp)) {
+          gutils->setDiffe(operand, revLoopBody->getArgument(revIdx), builder);
+        } else {
+          gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx),
+                             builder);
+        }
         revIdx++;
       }
     }
@@ -975,10 +991,14 @@ public:
       for (auto &&[active, operand] :
            llvm::zip(operandsActive, term->getOperands())) {
         if (active) {
-          // Set diffe here, not add because it should not accumulate across
-          // iterations. Instead the new gradient for this operand is passed in
-          // the return of the reverse while body.
-          gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          // if defined within the body, set diffe here, not add because it
+          // should not accumulate across iterations. Instead the new gradient
+          // for this operand is passed in the return of the reverse while body.
+          if (!definedOutside(operand, whileOp)) {
+            gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          } else {
+            gutils->addToDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          }
           revIdx++;
         }
       }
@@ -1052,86 +1072,95 @@ public:
           int64_t nInner = std::sqrt(info.getConstantNumIters());
           int64_t nOuter = nInner;
 
-          assert(nInner * nOuter == info.getConstantNumIters());
-          auto outer = makeForLoop(
-              builder, orig->getLoc(), 0, nOuter, 1,
-              newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
+          if (nInner * nOuter != info.getConstantNumIters()) {
+            orig->emitError()
+                << "Non square number of iterations for checkpointing, nInner="
+                << nInner << " nOuter=" << nOuter
+                << " iters=" << info.getConstantNumIters() << "\n";
+          } else {
+            auto outer = makeForLoop(builder, orig->getLoc(), 0, nOuter, 1,
+                                     newWhile->getOperands().slice(
+                                         1, newWhile->getNumOperands() - 1));
 
-          Block *outerBody = &outer.getBody().front();
-          builder.setInsertionPointToStart(outerBody);
+            Block *outerBody = &outer.getBody().front();
+            builder.setInsertionPointToStart(outerBody);
 
-          Value outerIV = builder.create<stablehlo::MulOp>(
-              newWhile.getLoc(), outerBody->getArgument(0),
-              makeI64Constant(newWhile.getLoc(), builder, nOuter));
+            Value outerIV = builder.create<stablehlo::MulOp>(
+                newWhile.getLoc(), outerBody->getArgument(0),
+                makeI64Constant(newWhile.getLoc(), builder, nOuter));
 
-          for (auto arg : outerBody->getArguments().slice(1)) {
-            caches.push_back(gutils->initAndPushCache(arg, builder));
-          }
-
-          builder.setInsertionPoint(outer);
-
-          for (auto ref : outsideRefs) {
-            caches.push_back(gutils->initAndPushCache(
-                gutils->getNewFromOriginal(ref), builder));
-          }
-
-          builder.setInsertionPointAfterValue(outerIV);
-
-          SmallVector<Value> operands(
-              outerBody->getArguments().slice(1).begin(),
-              outerBody->getArguments().slice(1).end());
-          auto inner =
-              makeForLoop(builder, orig->getLoc(), 0, nInner, 1, operands);
-
-          outerBody->getTerminator()->setOperands(
-              1, inner.getNumResults() - 1,
-              inner.getResults().slice(1, inner.getNumResults() - 1));
-
-          Block *innerBody = &inner.getBody().front();
-          Block *oldInnerBody = &newWhile.getBody().front();
-          builder.setInsertionPointToStart(innerBody);
-
-          IRMapping mapping;
-
-          for (auto [oldArg, newArg] : llvm::zip_equal(
-                   oldInnerBody->getArguments(), innerBody->getArguments())) {
-            mapping.map(oldArg, newArg);
-          }
-
-          Value oldIV = oldInnerBody->getArgument(0);
-          Value newIV = builder.create<stablehlo::AddOp>(
-              oldIV.getLoc(), innerBody->getArgument(0), outerIV);
-
-          mapping.map(oldIV, newIV);
-
-          for (Operation &innerOp : oldInnerBody->without_terminator()) {
-            auto newOp = builder.clone(innerOp, mapping);
-            for (auto [oldRes, newRes] :
-                 llvm::zip_equal(innerOp.getResults(), newOp->getResults())) {
-              mapping.map(oldRes, newRes);
+            for (auto arg : outerBody->getArguments().slice(1)) {
+              caches.push_back(gutils->initAndPushCache(arg, builder));
             }
+
+            builder.setInsertionPoint(outer);
+
+            for (auto ref : outsideRefs) {
+              caches.push_back(gutils->initAndPushCache(
+                  gutils->getNewFromOriginal(ref), builder));
+            }
+
+            builder.setInsertionPointAfterValue(outerIV);
+
+            SmallVector<Value> operands(
+                outerBody->getArguments().slice(1).begin(),
+                outerBody->getArguments().slice(1).end());
+            auto inner =
+                makeForLoop(builder, orig->getLoc(), 0, nInner, 1, operands);
+
+            outerBody->getTerminator()->setOperands(
+                1, inner.getNumResults() - 1,
+                inner.getResults().slice(1, inner.getNumResults() - 1));
+
+            Block *innerBody = &inner.getBody().front();
+            Block *oldInnerBody = &newWhile.getBody().front();
+            builder.setInsertionPointToStart(innerBody);
+
+            IRMapping mapping;
+
+            for (auto [oldArg, newArg] : llvm::zip_equal(
+                     oldInnerBody->getArguments(), innerBody->getArguments())) {
+              mapping.map(oldArg, newArg);
+            }
+
+            Value oldIV = oldInnerBody->getArgument(0);
+            Value newIV = builder.create<stablehlo::AddOp>(
+                oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+
+            mapping.map(oldIV, newIV);
+
+            for (Operation &innerOp : oldInnerBody->without_terminator()) {
+              auto newOp = builder.clone(innerOp, mapping);
+              for (auto [oldRes, newRes] :
+                   llvm::zip_equal(innerOp.getResults(), newOp->getResults())) {
+                mapping.map(oldRes, newRes);
+              }
+            }
+
+            SmallVector<Value> newReturns;
+            for (auto oldRes :
+                 oldInnerBody->getTerminator()->getOperands().slice(
+                     1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+              newReturns.push_back(mapping.lookupOrDefault(oldRes));
+            }
+            Operation *term = innerBody->getTerminator();
+            term->setOperands(1, term->getNumOperands() - 1, newReturns);
+
+            builder.setInsertionPointAfter(outer);
+            SmallVector<Value> newResults{makeI64Constant(
+                oldIV.getLoc(), builder, *info.getConstantLimit())};
+            newResults.append(
+                outer->getResults()
+                    .slice(1, outer->getNumResults() - 1)
+                    .begin(),
+                outer->getResults().slice(1, outer->getNumResults() - 1).end());
+
+            gutils->replaceOrigOpWith(orig, newResults);
+            gutils->erase(newWhile);
+            gutils->originalToNewFnOps[orig] = outer;
+
+            return caches;
           }
-
-          SmallVector<Value> newReturns;
-          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
-                   1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
-            newReturns.push_back(mapping.lookup(oldRes));
-          }
-          Operation *term = innerBody->getTerminator();
-          term->setOperands(1, term->getNumOperands() - 1, newReturns);
-
-          builder.setInsertionPointAfter(outer);
-          SmallVector<Value> newResults{makeI64Constant(
-              oldIV.getLoc(), builder, *info.getConstantLimit())};
-          newResults.append(
-              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
-              outer->getResults().slice(1, outer->getNumResults() - 1).end());
-
-          gutils->replaceOrigOpWith(orig, newResults);
-          gutils->erase(newWhile);
-          gutils->originalToNewFnOps[orig] = outer;
-
-          return caches;
         }
 
         return {};
@@ -2689,19 +2718,11 @@ private:
     }
     void dump() const {
       if (type == VAL)
-        llvm::errs() << "[" << V << ", "
-                     << "Value"
-                     << "]\n";
+        llvm::errs() << "[" << V << ", " << "Value" << "]\n";
       else if (type == OP)
-        llvm::errs() << "[" << *O << ", "
-                     << "Operation"
-                     << "]\n";
+        llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
       else
-        llvm::errs() << "["
-                     << "NULL"
-                     << ", "
-                     << "None"
-                     << "]\n";
+        llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
     }
   };
 
