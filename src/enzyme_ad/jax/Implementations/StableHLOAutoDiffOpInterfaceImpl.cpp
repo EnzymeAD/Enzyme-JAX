@@ -839,6 +839,7 @@ public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
+    auto whileOp = cast<WhileOp>(orig);
     // While op has the same number of results and operands.
     // if the while is not executed (i.e. the condition is false on the first
     // evaluation), then the arguments are returned. This means that we need to
@@ -846,8 +847,11 @@ public:
     // operands.
     SmallVector<bool> operandsActive(orig->getNumOperands(), false);
     for (int i = 0; i < operandsActive.size(); ++i) {
-      operandsActive[i] = !gutils->isConstantValue(orig->getOperand(i)) ||
-                          !gutils->isConstantValue(orig->getResult(i));
+      operandsActive[i] =
+          !gutils->isConstantValue(orig->getOperand(i)) ||
+          !gutils->isConstantValue(whileOp.getCond().front().getArgument(i)) ||
+          !gutils->isConstantValue(whileOp.getBody().front().getArgument(i)) ||
+          !gutils->isConstantValue(orig->getResult(i));
     }
 
     auto revInfo = getReverseMode(orig);
