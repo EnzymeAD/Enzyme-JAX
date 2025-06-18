@@ -779,8 +779,7 @@ class AutoDiffWhileRev
     for (auto &&[active, operand] :
          llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
-        gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx),
-                             builder);
+        gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
     }
