@@ -371,13 +371,6 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
-def SVDJobAttr : I8EnumAttr<"svd_job", "SVD job values", [
-  I8EnumAttrCase<"all", 'A'>,
-  I8EnumAttrCase<"some", 'S'>,
-  I8EnumAttrCase<"overwrite", 'O'>,
-  I8EnumAttrCase<"none", 'N'>
-]> {}
-
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation."
 
