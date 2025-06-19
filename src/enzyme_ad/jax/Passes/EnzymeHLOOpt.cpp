@@ -66,6 +66,14 @@ bool anyPadSizesNegative(stablehlo::PadOp pad) {
 
 namespace {
 
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
+  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
+  for (int64_t i = 0; i < perm.size(); ++i) {
+    inversePerm[perm[i]] = i;
+  }
+  return inversePerm;
+}
+
 class ReshapeDimMapping {
 public:
   void addMapping(int64_t left, int64_t right) {
@@ -2923,6 +2931,10 @@ struct TransposeAllUsersSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
+    if (llvm::hasSingleElement(op->getUsers()))
+      return rewriter.notifyMatchFailure(op,
+                                         "should be handled by SliceTranspose");
+
     SmallVector<stablehlo::SliceOp> sliceOps;
     for (auto user : op->getUsers()) {
       auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
@@ -2940,7 +2952,7 @@ struct TransposeAllUsersSlice final
       sliceOps.push_back(sliceOp);
     }
 
-    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+    auto mapping = getInversePermutation(op.getPermutation());
 
     for (int64_t i = 0; i < sliceOps.size(); ++i) {
       auto origSlice = sliceOps[i];
@@ -2956,8 +2968,8 @@ struct TransposeAllUsersSlice final
       SmallVector<int64_t> newLimitIndices;
       SmallVector<int64_t> newStrides;
 
-      for (size_t j = 0; j < permutation.size(); ++j) {
-        size_t permIndex = permutation[j];
+      for (size_t j = 0; j < mapping.size(); ++j) {
+        size_t permIndex = mapping[j];
         newStartIndices.push_back(originalStartIndices[permIndex]);
         newLimitIndices.push_back(originalLimitIndices[permIndex]);
         newStrides.push_back(originalStrides[permIndex]);
@@ -2969,7 +2981,7 @@ struct TransposeAllUsersSlice final
           rewriter.getDenseI64ArrayAttr(newLimitIndices),
           rewriter.getDenseI64ArrayAttr(newStrides));
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(origSlice, newSlice,
-                                                          permutation);
+                                                          op.getPermutation());
     }
 
     rewriter.eraseOp(op);
@@ -5622,14 +5634,6 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   }
 
   return true;
-}
-
-llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
-  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
-  for (int64_t i = 0; i < perm.size(); ++i) {
-    inversePerm[perm[i]] = i;
-  }
-  return inversePerm;
 }
 
 template <typename OpType>
