@@ -204,6 +204,9 @@ struct GPULaunchRecognitionPass
                   gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                   ValueRange(args), stream.getType(), ValueRange(stream));
             } else {
+              assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+              stream = builder.create<enzymexla::StreamToTokenOp>(
+                  loc, gpu::AsyncTokenType::get(ctx), stream);
               auto op = builder.create<mlir::gpu::LaunchOp>(
                   launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
                   block[1], block[2], shMemSize, stream.getType(),
