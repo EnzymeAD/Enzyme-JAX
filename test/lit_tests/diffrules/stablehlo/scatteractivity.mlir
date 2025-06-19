@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
-// TODO: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_dup mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_dup mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
 
 module {
   func.func public @main(%arg3: tensor<3xf32>, %arg6: tensor<5xf32>) -> (tensor<5xf32>) {
@@ -20,3 +20,13 @@ module {
 // FORWARD-NEXT:    }) : (tensor<5xf32>, tensor<5xf32>, tensor<3x1xi32>, tensor<3xf32>, tensor<3xf32>) -> (tensor<5xf32>, tensor<5xf32>)
 // FORWARD-NEXT:    return %0#0, %0#1 : tensor<5xf32>, tensor<5xf32>
 // FORWARD-NEXT:  }
+
+// REVERSE: func.func @main(%arg0: tensor<3xf32>, %arg1: tensor<5xf32>, %arg2: tensor<5xf32>, %arg3: tensor<5xf32>) -> tensor<3xf32> {
+// REVERSE-NEXT:     %c = stablehlo.constant dense<{{\[\[}}3], [2], [1{{\]\]}}> : tensor<3x1xi32>
+// REVERSE-NEXT:     %cst = arith.constant dense<0.000000e+00> : tensor<5xf32>
+// REVERSE-NEXT:     %cst_0 = arith.constant dense<0.000000e+00> : tensor<3xf32>
+// REVERSE-NEXT:     %0 = arith.addf %arg3, %cst : tensor<5xf32>
+// REVERSE-NEXT:     %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<5xf32>, tensor<3x1xi32>) -> tensor<3xf32>
+// REVERSE-NEXT:     %2 = arith.addf %1, %cst_0 : tensor<3xf32>
+// REVERSE-NEXT:     return %2 : tensor<3xf32>
+// REVERSE-NEXT: }
