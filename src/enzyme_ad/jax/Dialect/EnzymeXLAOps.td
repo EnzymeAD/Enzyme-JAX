@@ -371,24 +371,31 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
-def SVDJobzAttr : I32EnumAttr<"jobz", "SVD jobz values", [
-  I32EnumAttrCase<"A", 0>,
-  I32EnumAttrCase<"S", 1>,
-  I32EnumAttrCase<"O", 2>,
-  I32EnumAttrCase<"N", 3>
+def SVDJobAttr : I8EnumAttr<"svd_job", "SVD job values", [
+  I8EnumAttrCase<"all", 'A'>,
+  I8EnumAttrCase<"some", 'S'>,
+  I8EnumAttrCase<"overwrite", 'O'>,
+  I8EnumAttrCase<"none", 'N'>
 ]> {}
 
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation."
 
   let arguments = (ins
-    HLO_Tensor:$input
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full
   );
 
   let results = (outs
-    // HLO_Tensor:$output,
-    // SVDJobzAttr:$jobz,
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt
+    HLO_Tensor:$info
   );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
 }
 
 #endif // ENZYMEXLA_OPS
