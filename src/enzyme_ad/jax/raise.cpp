@@ -83,7 +83,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "canonicalize,sort-memory,";
   auto xla = getenv("EXPORT_XLA");
   auto parallel = getenv("EXPORT_OMP");
-  auto scf = parallel ? "convert-scf-to-openmp" : "convert-scf-to-cf";
+  std::string scf = parallel ? "convert-scf-to-openmp" : "convert-scf-to-cf";
   if (xla)
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
