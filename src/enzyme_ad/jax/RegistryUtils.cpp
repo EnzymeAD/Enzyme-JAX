@@ -285,7 +285,7 @@ void initializePasses() {
   mlir::registerSymbolDCEPass();
   mlir::registerLoopInvariantCodeMotionPass();
   mlir::registerConvertSCFToOpenMPPass();
-  mlir::registerConvertSCFToControlFlowPass();
+  mlir::registerSCFToControlFlowPass();
   mlir::affine::registerAffinePasses();
   mlir::registerReconcileUnrealizedCastsPass();
   mlir::enzyme::registerConvertLLVMToControlFlowPass();
