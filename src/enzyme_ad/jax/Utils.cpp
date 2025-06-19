@@ -30,6 +30,8 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
+
 #include <set>
 
 using namespace mlir;
@@ -549,4 +551,81 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
 }
 
 } // namespace enzyme
+
+namespace stablehlo {
+
+stablehlo::GatherDimensionNumbersAttr
+getGatherDims(mlir::MLIRContext *ctx,
+              stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {
+  return stablehlo::GatherDimensionNumbersAttr::get(
+      ctx, scatterDimNumbers.getUpdateWindowDims(),
+      scatterDimNumbers.getInsertedWindowDims(),
+      scatterDimNumbers.getInputBatchingDims(),
+      scatterDimNumbers.getScatterIndicesBatchingDims(),
+      scatterDimNumbers.getScatterDimsToOperandDims(),
+      scatterDimNumbers.getIndexVectorDim());
+}
+
+bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
+  auto &updateComputation = scatterOp.getUpdateComputation();
+
+  if (!updateComputation.hasOneBlock())
+    return false;
+
+  auto &block = updateComputation.front();
+  if (block.getNumArguments() != 2)
+    return false;
+
+  auto originalValue = block.getArgument(0);
+  auto updateValue = block.getArgument(1);
+
+  // The block should have exactly one operation (the return)
+  if (block.getOperations().size() != 1)
+    return false;
+
+  auto &returnOp = block.front();
+  auto stablehloReturn = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturn)
+    return false;
+
+  if (stablehloReturn.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the update value (second argument)
+  return stablehloReturn.getOperand(0) == updateValue;
+}
+
+SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
+  auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
+  auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
+  auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+
+  auto inputShape = inputType.getShape();
+  auto updateShape = updateType.getShape();
+
+  SmallVector<int64_t> sliceSizes(inputShape.size(), 1);
+
+  auto updateWindowDims = scatterDimNumbers.getUpdateWindowDims();
+  auto scatterIndicesBatchingDims =
+      scatterDimNumbers.getScatterIndicesBatchingDims();
+
+  // Map update window dimensions to their corresponding input dimensions
+  for (int64_t i = 0; i < updateWindowDims.size(); ++i) {
+    int64_t inputDim = updateWindowDims[i];
+
+    // Calculate the corresponding dimension in the update tensor
+    // Update tensor layout: [scatter_indices_batching_dims...,
+    // update_window_dims...]
+    int64_t updateDimIndex = scatterIndicesBatchingDims.size() + i;
+
+    if (updateDimIndex < updateShape.size()) {
+      sliceSizes[inputDim] = updateShape[updateDimIndex];
+    }
+  }
+
+  return sliceSizes;
+}
+
+} // namespace stablehlo
+
 } // namespace mlir

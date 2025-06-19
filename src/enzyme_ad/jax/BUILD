@@ -443,20 +443,20 @@ td_library(
 
 cc_library(
     name = "XLADerivatives",
-    srcs = glob(
-        [
-            "Implementations/*.cpp",
-	    "Utils.cpp",
-            "Passes/*.cpp",
-            "Dialect/*.cpp",
-        ],
-    ),
+    srcs = glob([
+        "Implementations/*.cpp",
+        "Passes/*.cpp",
+        "Dialect/*.cpp",
+    ]) + [
+        "Utils.cpp"
+    ],
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
-        "Utils.h",
-    ]),
+    ]) + [
+        "Utils.h"
+    ],
     copts = [
         "-Werror=unused-variable",
         "-Werror=unused-result",
