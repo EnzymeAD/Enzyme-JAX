@@ -19671,6 +19671,16 @@ struct GatherElementwise
     if (!isOnlyUsedInOperation(defOp, op))
       return failure();
 
+    int64_t outElemCount = 1, inElemCount = 1;
+    for (auto dim : cast<RankedTensorType>(op.getType()).getShape())
+      outElemCount *= dim;
+    for (auto dim : cast<RankedTensorType>(gatherInput.getType()).getShape())
+      inElemCount *= dim;
+
+    if (outElemCount >= inElemCount)
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp has more output elements than input elements");
+
     SmallVector<Value> newElementwiseInputs;
     for (auto input : defOp->getOperands()) {
       auto neeGatherOp = rewriter.create<stablehlo::GatherOp>(
