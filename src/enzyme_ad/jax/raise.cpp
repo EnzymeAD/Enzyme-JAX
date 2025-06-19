@@ -90,7 +90,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "symbol-dce";
   else
       pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
-      "convert-parallel-to-gpu2,lower-affine" + scf + ",convert-polygeist-to-llvm,strip-"
+      "convert-parallel-to-gpu2,lower-affine," + scf + ",convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
 
