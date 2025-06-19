@@ -82,13 +82,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "func.func(affine-loop-invariant-code-motion),"
       "canonicalize,sort-memory,";
   auto xla = getenv("EXPORT_XLA");
+  auto parallel = getenv("EXPORT_OMP");
+  auto scf = parallel ? "convert-scf-to-openmp" : "convert-scf-to-cf";
   if (xla)
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
   else
       pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
-      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
+      "convert-parallel-to-gpu2,lower-affine" + scf + ",convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
 
