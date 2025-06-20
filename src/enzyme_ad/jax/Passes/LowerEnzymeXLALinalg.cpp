@@ -1209,8 +1209,12 @@ struct SVDFactorizationOpLowering
     auto op_u = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_u, cast<ElementsAttr>(makeAttr(type_u, 0)));
 
+    auto type_input_element_real = inputElementType;
+    if (auto complex_type = dyn_cast<ComplexType>(inputElementType)) {
+      type_input_element_real = complex_type.getElementType();
+    }
     auto type_s = RankedTensorType::get(
-        {std::min(inputShape[0], inputShape[1])}, inputElementType);
+        {std::min(inputShape[0], inputShape[1])}, type_input_element_real);
     auto op_s = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_s, cast<ElementsAttr>(makeAttr(type_s, 0)));
 
@@ -1291,7 +1295,12 @@ struct SVDFactorizationOpLowering
     auto type_u = cast<RankedTensorType>(op.getResult(0).getType());
     auto rank_u = type_u.getRank();
 
-    auto type_s = cast<RankedTensorType>(op.getResult(1).getType());
+    auto type_input_element_real = type_input.getElementType();
+    if (auto complex_type = dyn_cast<ComplexType>(type_input_element_real)) {
+      type_input_element_real = complex_type.getElementType();
+    }
+    auto type_s = cast<RankedTensorType>(RankedTensorType::get(
+        {std::min(shape_input[0], shape_input[1])}, type_input_element_real));
     auto rank_s = type_s.getRank();
 
     auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
