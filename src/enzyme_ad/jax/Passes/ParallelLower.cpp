@@ -583,6 +583,30 @@ void ParallelLower::runOnOperation() {
       }
     });
 
+    llvm::StringMap<memref::AllocaOp> sharedmems;
+    container.walk([&](mlir::LLVM::AddressOfOp alop) {
+      auto PT = cast<LLVM::LLVMPointerType>(alop.getType());
+      if (PT.getAddressSpace() != 3)
+        return;
+
+      if (auto glob = alop.getGlobal(symbolTable)) {
+        if (sharedmems.find(glob.getName()) == sharedmems.end()) {
+          builder.setInsertionPointToStart(blockB);
+          SmallVector<int64_t> size;
+          Type elType = glob.getGlobalType();
+          while (auto AT = dyn_cast<LLVM::LLVMArrayType>(elType)) {
+            size.push_back(AT.getNumElements());
+            elType = AT.getElementType();
+          }
+          auto newAlloca = builder.create<memref::AllocaOp>(
+              alop.getLoc(), MemRefType::get(size, elType));
+          sharedmems[glob.getName()] = newAlloca;
+        }
+        builder.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
+            alop, alop.getType(), sharedmems[glob.getName()]);
+      }
+    });
+
     /*
     // If we are compiling for GPU
     if (gpuKernelStructureMode != PGSM_Discard) {
@@ -617,6 +641,11 @@ void ParallelLower::runOnOperation() {
     });
 
     container.walk([&](mlir::NVVM::Barrier0Op op) {
+      builder.setInsertionPoint(op);
+      builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
+          op, threadB->getArguments());
+    });
+    container.walk([&](gpu::BarrierOp op) {
       builder.setInsertionPoint(op);
       builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
           op, threadB->getArguments());

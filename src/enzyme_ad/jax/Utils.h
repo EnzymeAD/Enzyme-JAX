@@ -13,6 +13,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
+
 namespace mlir {
 namespace enzyme {
 
@@ -290,4 +292,17 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a,
 bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
 } // namespace enzyme
+
+namespace stablehlo {
+
+stablehlo::GatherDimensionNumbersAttr
+getGatherDims(mlir::MLIRContext *ctx,
+              stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers);
+
+bool isScatterSetindexOp(stablehlo::ScatterOp &op);
+
+SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
+
+} // namespace stablehlo
+
 } // namespace mlir

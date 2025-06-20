@@ -66,6 +66,14 @@ bool anyPadSizesNegative(stablehlo::PadOp pad) {
 
 namespace {
 
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
+  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
+  for (int64_t i = 0; i < perm.size(); ++i) {
+    inversePerm[perm[i]] = i;
+  }
+  return inversePerm;
+}
+
 class ReshapeDimMapping {
 public:
   void addMapping(int64_t left, int64_t right) {
@@ -2923,6 +2931,10 @@ struct TransposeAllUsersSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
+    if (llvm::hasSingleElement(op->getUsers()))
+      return rewriter.notifyMatchFailure(op,
+                                         "should be handled by SliceTranspose");
+
     SmallVector<stablehlo::SliceOp> sliceOps;
     for (auto user : op->getUsers()) {
       auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
@@ -2940,7 +2952,7 @@ struct TransposeAllUsersSlice final
       sliceOps.push_back(sliceOp);
     }
 
-    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+    auto mapping = getInversePermutation(op.getPermutation());
 
     for (int64_t i = 0; i < sliceOps.size(); ++i) {
       auto origSlice = sliceOps[i];
@@ -2956,8 +2968,8 @@ struct TransposeAllUsersSlice final
       SmallVector<int64_t> newLimitIndices;
       SmallVector<int64_t> newStrides;
 
-      for (size_t j = 0; j < permutation.size(); ++j) {
-        size_t permIndex = permutation[j];
+      for (size_t j = 0; j < mapping.size(); ++j) {
+        size_t permIndex = mapping[j];
         newStartIndices.push_back(originalStartIndices[permIndex]);
         newLimitIndices.push_back(originalLimitIndices[permIndex]);
         newStrides.push_back(originalStrides[permIndex]);
@@ -2969,7 +2981,7 @@ struct TransposeAllUsersSlice final
           rewriter.getDenseI64ArrayAttr(newLimitIndices),
           rewriter.getDenseI64ArrayAttr(newStrides));
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(origSlice, newSlice,
-                                                          permutation);
+                                                          op.getPermutation());
     }
 
     rewriter.eraseOp(op);
@@ -5622,14 +5634,6 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   }
 
   return true;
-}
-
-llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
-  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
-  for (int64_t i = 0; i < perm.size(); ++i) {
-    inversePerm[perm[i]] = i;
-  }
-  return inversePerm;
 }
 
 template <typename OpType>
@@ -19378,78 +19382,6 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
-stablehlo::GatherDimensionNumbersAttr
-getGatherDims(mlir::MLIRContext *ctx,
-              stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {
-  return stablehlo::GatherDimensionNumbersAttr::get(
-      ctx, scatterDimNumbers.getUpdateWindowDims(),
-      scatterDimNumbers.getInsertedWindowDims(),
-      scatterDimNumbers.getInputBatchingDims(),
-      scatterDimNumbers.getScatterIndicesBatchingDims(),
-      scatterDimNumbers.getScatterDimsToOperandDims(),
-      scatterDimNumbers.getIndexVectorDim());
-}
-
-bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
-  auto &updateComputation = scatterOp.getUpdateComputation();
-
-  if (!updateComputation.hasOneBlock())
-    return false;
-
-  auto &block = updateComputation.front();
-  if (block.getNumArguments() != 2)
-    return false;
-
-  auto originalValue = block.getArgument(0);
-  auto updateValue = block.getArgument(1);
-
-  // The block should have exactly one operation (the return)
-  if (block.getOperations().size() != 1)
-    return false;
-
-  auto &returnOp = block.front();
-  auto stablehloReturn = dyn_cast<stablehlo::ReturnOp>(returnOp);
-  if (!stablehloReturn)
-    return false;
-
-  if (stablehloReturn.getNumOperands() != 1)
-    return false;
-
-  // The returned value should be the update value (second argument)
-  return stablehloReturn.getOperand(0) == updateValue;
-}
-
-SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
-  auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
-  auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
-  auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
-
-  auto inputShape = inputType.getShape();
-  auto updateShape = updateType.getShape();
-
-  SmallVector<int64_t> sliceSizes(inputShape.size(), 1);
-
-  auto updateWindowDims = scatterDimNumbers.getUpdateWindowDims();
-  auto scatterIndicesBatchingDims =
-      scatterDimNumbers.getScatterIndicesBatchingDims();
-
-  // Map update window dimensions to their corresponding input dimensions
-  for (int64_t i = 0; i < updateWindowDims.size(); ++i) {
-    int64_t inputDim = updateWindowDims[i];
-
-    // Calculate the corresponding dimension in the update tensor
-    // Update tensor layout: [scatter_indices_batching_dims...,
-    // update_window_dims...]
-    int64_t updateDimIndex = scatterIndicesBatchingDims.size() + i;
-
-    if (updateDimIndex < updateShape.size()) {
-      sliceSizes[inputDim] = updateShape[updateDimIndex];
-    }
-  }
-
-  return sliceSizes;
-}
-
 struct ScatterMultiplySimplify final
     : public CheckedOpRewritePattern<stablehlo::MulOp,
                                      ScatterMultiplySimplify> {
@@ -19667,6 +19599,16 @@ struct GatherElementwise
     if (!isOnlyUsedInOperation(defOp, op))
       return failure();
 
+    int64_t outElemCount = 1, inElemCount = 1;
+    for (auto dim : cast<RankedTensorType>(op.getType()).getShape())
+      outElemCount *= dim;
+    for (auto dim : cast<RankedTensorType>(gatherInput.getType()).getShape())
+      inElemCount *= dim;
+
+    if (outElemCount >= inElemCount)
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp has more output elements than input elements");
+
     SmallVector<Value> newElementwiseInputs;
     for (auto input : defOp->getOperands()) {
       auto neeGatherOp = rewriter.create<stablehlo::GatherOp>(
@@ -19682,72 +19624,6 @@ struct GatherElementwise
         defOp->getAttrs(), {}, {});
     rewriter.replaceOp(op, newElemOp->getResult(0));
     return success();
-  }
-};
-
-SmallVector<int64_t> applyPermutation(ArrayRef<int64_t> dims,
-                                      ArrayRef<int64_t> permutation,
-                                      bool sort = false) {
-  SmallVector<int64_t> newDims(dims.size(), -1);
-  for (int64_t i = 0; i < dims.size(); ++i) {
-    newDims[i] = permutation[dims[i]];
-  }
-
-  if (sort)
-    llvm::sort(newDims);
-
-  return newDims;
-}
-
-struct TransposeScatter
-    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
-  using CheckedOpRewritePattern<stablehlo::TransposeOp,
-                                TransposeScatter>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
-                                    PatternRewriter &rewriter) const {
-    auto scatterOp = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
-    if (!scatterOp)
-      return rewriter.notifyMatchFailure(op,
-                                         "TransposeOp with non-scatter input");
-
-    if (scatterOp.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "TransposeOp with scatter input with more than 1 operand");
-
-    if (!isOnlyUsedInOperation(scatterOp, op))
-      return failure();
-
-    auto transposedInput = rewriter.create<stablehlo::TransposeOp>(
-        op.getLoc(), scatterOp.getInputs()[0], op.getPermutation());
-
-    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
-        op.getLoc(), TypeRange(op.getType()), ValueRange(transposedInput),
-        scatterOp.getScatterIndices(), scatterOp.getUpdates(),
-        transposeScatterDimensionNumbers(
-            scatterOp.getScatterDimensionNumbers(),
-            getInversePermutation(op.getPermutation()), rewriter),
-        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
-    newScatterOp.getUpdateComputation().takeBody(
-        scatterOp.getUpdateComputation());
-    rewriter.replaceOp(op, newScatterOp->getResult(0));
-    return success();
-  }
-
-private:
-  stablehlo::ScatterDimensionNumbersAttr transposeScatterDimensionNumbers(
-      stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers,
-      SmallVector<int64_t> mapping, PatternRewriter &rewriter) const {
-    return stablehlo::ScatterDimensionNumbersAttr::get(
-        rewriter.getContext(), scatterDimNumbers.getUpdateWindowDims(),
-        applyPermutation(scatterDimNumbers.getInsertedWindowDims(), mapping,
-                         true),
-        applyPermutation(scatterDimNumbers.getInputBatchingDims(), mapping,
-                         true),
-        scatterDimNumbers.getScatterIndicesBatchingDims(),
-        applyPermutation(scatterDimNumbers.getScatterDimsToOperandDims(),
-                         mapping, true),
-        scatterDimNumbers.getIndexVectorDim());
   }
 };
 
@@ -20162,7 +20038,7 @@ struct EnzymeHLOOptPass
                TransposeIota, TransposeReduceWindow, TransposeReduce,
                TransposeSelect, TransposeDynamicSlice, TransposeReverse,
                TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf, TransposeScatter>(context);
+               TransposeBatchNormGrad, TransposeIf>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
