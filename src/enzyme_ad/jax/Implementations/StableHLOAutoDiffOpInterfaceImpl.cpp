@@ -2546,44 +2546,51 @@ public:
 
     // gradient of the inputs
     SmallVector<Value> selectedOutputDiffe, newScatterUpdates;
+    SmallVector<Type> selectedOutputTypes;
     for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
       if (!gutils->isConstantValue(operand)) {
         selectedOutputDiffe.push_back(outputDiffe[i]);
         newScatterUpdates.push_back(zeroUpdate);
+        selectedOutputTypes.push_back(
+            cast<RankedTensorType>(outputDiffe[i].getType()));
       }
     }
     int64_t nNonConsts = selectedOutputDiffe.size();
 
-    auto newScatterOp = builder.create<stablehlo::ScatterOp>(
-        op->getLoc(), scatterOp.getResultTypes(), selectedOutputDiffe,
-        scatterIndices, newScatterUpdates,
-        scatterOp.getScatterDimensionNumbersAttr(),
-        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    if (nNonConsts > 0) {
+      auto newScatterOp = builder.create<stablehlo::ScatterOp>(
+          op->getLoc(), selectedOutputTypes, selectedOutputDiffe,
+          scatterIndices, newScatterUpdates,
+          scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
 
-    auto &updateRegion = newScatterOp.getUpdateComputation();
-    auto *block = builder.createBlock(&updateRegion);
-    auto argType = RankedTensorType::get({}, elemType);
+      auto &updateRegion = newScatterOp.getUpdateComputation();
+      auto *block = builder.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, elemType);
 
-    for (int i = 0; i < 2 * nNonConsts; i++)
-      block->addArgument(argType, op->getLoc());
+      for (int i = 0; i < 2 * nNonConsts; i++)
+        block->addArgument(argType, op->getLoc());
 
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(block);
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(block);
 
-      SmallVector<Value> returnValues;
-      for (int i = nNonConsts; i < 2 * nNonConsts; i++)
-        returnValues.push_back(zeroScaler);
+        SmallVector<Value> returnValues;
+        for (int i = nNonConsts; i < 2 * nNonConsts; i++)
+          returnValues.push_back(zeroScaler);
 
-      builder.create<stablehlo::ReturnOp>(op->getLoc(), returnValues);
-    }
+        builder.create<stablehlo::ReturnOp>(op->getLoc(), returnValues);
+      }
 
-    builder.setInsertionPointAfter(newScatterOp);
+      builder.setInsertionPointAfter(newScatterOp);
 
-    int64_t counter = 0;
-    for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
-      if (!gutils->isConstantValue(operand)) {
-        gutils->addToDiffe(operand, newScatterOp.getResult(counter++), builder);
+      int64_t counter = 0;
+      for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
+        if (!gutils->isConstantValue(operand)) {
+          gutils->addToDiffe(operand, newScatterOp.getResult(counter++),
+                             builder);
+        }
       }
     }
 
