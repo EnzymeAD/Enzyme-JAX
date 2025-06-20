@@ -919,8 +919,8 @@ struct QRFactorizationOpLowering
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
         ValueRange{input, tau.getResult(), info.getResult()},
         rewriter.getStringAttr(""),
-        /*operand_layouts=*/operandLayouts, // TODO
-        /*result_layouts=*/resultLayouts,   // TODO
+        /*operand_layouts=*/operandLayouts,
+        /*result_layouts=*/resultLayouts,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -1275,7 +1275,6 @@ struct SVDFactorizationOpLowering
     return success();
   }
 
-  // TODO revise this is ok
   LogicalResult matchAndRewrite_cuda(enzymexla::SVDFactorizationOp op,
                                      PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
@@ -1319,8 +1318,6 @@ struct SVDFactorizationOpLowering
     SmallVector<bool> isColMajorArrOperands = {true};
     SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
 
-    // TODO pass `full_matrices`, `compute_uv` and `transposed` attrs from
-    // https://github.com/jax-ml/jax/blob/22f7b7b5cc2cfb8ed43b15fdad491b2268f4f3de/jaxlib/gpu/solver_kernels_ffi.cc#L864-L877
     auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input, type_s, type_u, type_vt, type_info},
         ValueRange{input}, rewriter.getStringAttr("cusolver_gesvd_ffi"),
