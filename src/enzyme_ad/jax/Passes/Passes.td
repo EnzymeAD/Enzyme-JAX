@@ -387,6 +387,19 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   ];
 }
 
+def DeadArgElimPass : Pass<"dead-arg-elim"> {
+  let summary = "Remove trivially dead arguments to match JAX's 'kept args'";
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"func",
+        /*CLI argument=*/"func",
+        /*type=*/"std::string",
+        /*default=*/"\"main\"",
+        /*description=*/"Function to perform dead arg elim on">,
+  ];
+}
+
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
