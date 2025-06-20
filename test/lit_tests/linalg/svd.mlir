@@ -30,3 +30,30 @@ module {
 // CUDA-NEXT:   %0:5 = stablehlo.custom_call @cusolver_gesvd_ffi(%arg0) {api_version = 4 : i32, compute_uv = true, full_matrices = false, operand_layouts = [dense<[0, 1]> : tensor<2xindex>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], transposed = false} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<i64>)
 // CUDA-NEXT:   return %0#2, %0#1, %0#3, %0#4 : tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>
 // CUDA-NEXT: }
+
+module {
+  // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<64x64xf64>, tensor<i64>) {
+  func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<64x64xf64>, tensor<i64>) {
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgesvd_[[WRAPPER_ID:[0-9]+]]
+    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<64x64xf64>, tensor<i64>)
+    return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xf64>, tensor<64xf64>, tensor<64x64xf64>, tensor<i64>
+  }
+}
+
+module {
+  // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>) {
+  func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>) {
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgesvd_[[WRAPPER_ID:[0-9]+]]
+    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>)
+    return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>
+  }
+}
+
+module {
+  // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>) {
+  func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>) {
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgesvd_[[WRAPPER_ID:[0-9]+]]
+    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>)
+    return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>
+  }
+}
