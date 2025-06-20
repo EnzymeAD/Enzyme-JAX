@@ -1006,12 +1006,12 @@ struct QRFactorizationOpLowering
     const int64_t n = shape_input[rank_input - 1];
     const int64_t numBatchDims = rank_input - 2;
 
-    // emit `stablehlo.custom_call` to `@QrDecomposition` kernel from XLA
+    // emit `stablehlo.custom_call` to `@Qr` kernel from XLA
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
 
     auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
-        rewriter.getStringAttr("QrDecomposition"),
+        rewriter.getStringAttr("Qr"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/ nullptr,

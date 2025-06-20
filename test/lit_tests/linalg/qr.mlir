@@ -32,7 +32,7 @@ module {
 
 // TPU: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
 // TPU-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
-// TPU-NEXT:   %0:2 = stablehlo.custom_call @QrDecomposition(%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
+// TPU-NEXT:   %0:2 = stablehlo.custom_call @Qr(%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
 // TPU-NEXT:   return %0#0, %0#1, %c : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
 // TPU-NEXT: }
 
