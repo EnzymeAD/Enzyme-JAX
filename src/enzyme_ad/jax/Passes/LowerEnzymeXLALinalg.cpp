@@ -1074,11 +1074,10 @@ struct SVDFactorizationOpLowering
     auto inputRank = static_cast<int64_t>(inputShape.size());
     auto inputElementType = inputType.getElementType();
 
-    auto isfull = op.getFull();
-
     const int64_t m = inputShape[inputRank - 2];
     const int64_t n = inputShape[inputRank - 1];
     const int64_t numBatchDims = inputRank - 2;
+    const bool isfull = op.getFull();
 
     if (numBatchDims > 0) {
       return rewriter.notifyMatchFailure(
@@ -1163,10 +1162,10 @@ struct SVDFactorizationOpLowering
           rewriter.getIntegerAttr(type_lapack_int, 101));
       auto op_jobu = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, op.getFull() ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
       auto op_jobvt = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, op.getFull() ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
       auto op_m = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
@@ -1178,7 +1177,7 @@ struct SVDFactorizationOpLowering
       auto op_ldvt = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int,
-                                  std::min(inputShape[0], inputShape[1])));
+                                  isfull ? n : std::min(m, n)));
 
       // call to `lapacke_*gesvd`
       auto llvm_call_op = rewriter.create<LLVM::CallOp>(
@@ -1203,9 +1202,8 @@ struct SVDFactorizationOpLowering
     }
 
     // emit the `enzymexla.jit_call` op to `gesvd` wrapper
-    auto type_u = RankedTensorType::get(
-        {inputShape[0], std::min(inputShape[0], inputShape[1])},
-        inputElementType);
+    auto type_u = RankedTensorType::get({m, isfull ? m : std::min(m, n)},
+                                        inputElementType);
     auto op_u = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_u, cast<ElementsAttr>(makeAttr(type_u, 0)));
 
@@ -1213,19 +1211,18 @@ struct SVDFactorizationOpLowering
     if (auto complex_type = dyn_cast<ComplexType>(inputElementType)) {
       type_input_element_real = complex_type.getElementType();
     }
-    auto type_s = RankedTensorType::get(
-        {std::min(inputShape[0], inputShape[1])}, type_input_element_real);
+    auto type_s =
+        RankedTensorType::get({std::min(m, n)}, type_input_element_real);
     auto op_s = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_s, cast<ElementsAttr>(makeAttr(type_s, 0)));
 
-    auto type_vt = RankedTensorType::get(
-        {std::min(inputShape[0], inputShape[1]), inputShape[1]},
-        inputElementType);
+    auto type_vt = RankedTensorType::get({isfull ? n : std::min(m, n), n},
+                                         inputElementType);
     auto op_vt = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_vt, cast<ElementsAttr>(makeAttr(type_vt, 0)));
 
-    auto type_superb = RankedTensorType::get(
-        {std::min(inputShape[0], inputShape[1]) - 1}, inputElementType);
+    auto type_superb =
+        RankedTensorType::get({std::min(m, n) - 1}, inputElementType);
     auto op_superb = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_superb, cast<ElementsAttr>(makeAttr(type_superb, 0)));
 
