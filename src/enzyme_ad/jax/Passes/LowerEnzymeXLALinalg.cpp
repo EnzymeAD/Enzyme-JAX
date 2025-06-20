@@ -1074,7 +1074,7 @@ struct SVDFactorizationOpLowering
     auto inputRank = static_cast<int64_t>(inputShape.size());
     auto inputElementType = inputType.getElementType();
 
-    auto isfull = op.getFull();222e
+    auto isfull = op.getFull();
 
     const int64_t m = inputShape[inputRank - 2];
     const int64_t n = inputShape[inputRank - 1];
@@ -1202,8 +1202,7 @@ struct SVDFactorizationOpLowering
                                                    op_func.getArgument(4), // superb
                                                });
 
-      rewriter.create<LLVM::StoreOp>(op.getLoc(), llvm_call_op.getResult(),
-                                     func.getArgument(5));
+      rewriter.create<LLVM::StoreOp>(op.getLoc(), llvm_call_op.getResult(), op_func.getArgument(5));
       rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
@@ -1250,7 +1249,7 @@ struct SVDFactorizationOpLowering
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, std::vector<int64_t>{3}, 5, std::vector<int64_t>{}));
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
-        op.getLoc(), TypeRange{inputType, type_u, type_s, type_vt, type_superb, type_info},
+        op.getLoc(), TypeRange{type_u, type_s, type_vt, type_info},
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
         ValueRange{input, op_u.getResult(), op_s.getResult(), op_vt.getResult(), op_superb.getResult(), op_info.getResult()},
         rewriter.getStringAttr(""),
@@ -1259,7 +1258,7 @@ struct SVDFactorizationOpLowering
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-    // replace enzymexla.linalg.svd with the jit_call
+    // replace enzymexla.linalg.svd with enzymexla.jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
     rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
@@ -1275,6 +1274,8 @@ struct SVDFactorizationOpLowering
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
     auto shape_input = type_input.getShape();
@@ -1285,7 +1286,7 @@ struct SVDFactorizationOpLowering
     const int64_t numBatchDims = rank_input - 2;
 
     auto type_u = cast<RankedTensorType>(op.getResult(0).getType());
-    auto rank_tau = type_u.getRank();
+    auto rank_u = type_u.getRank();
 
     auto type_s = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_s = type_s.getRank();
@@ -1294,15 +1295,16 @@ struct SVDFactorizationOpLowering
     auto rank_vt = type_vt.getRank();
 
     auto type_info = RankedTensorType::get({}, type_lapack_int);
+    auto rank_info = type_info.getRank();
     auto op_info = rewriter.create<stablehlo::ConstantOp>(
       op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
     // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     SmallVector<Attribute> aliases = {};
     SmallVector<int64_t> ranks_operands = {rank_input};
-    SmallVector<int64_t> ranks_results = {rank_u, rank_s, rank_vt};
+    SmallVector<int64_t> ranks_results = {rank_input, rank_s, rank_u, rank_vt, rank_info};
     SmallVector<bool> isColMajorArrOperands = {true};
-    SmallVector<bool> isColMajorArrOutputs = {true, true, true};
+    SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
 
     // TODO pass `full_matrices`, `compute_uv` and `transposed` attrs from 
     // https://github.com/jax-ml/jax/blob/22f7b7b5cc2cfb8ed43b15fdad491b2268f4f3de/jaxlib/gpu/solver_kernels_ffi.cc#L864-L877
@@ -1316,26 +1318,18 @@ struct SVDFactorizationOpLowering
             rewriter.getContext(),
             mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
         /*calledcomputations*/ nullptr,
-        /*operand_layouts*/
-        getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands,
-                      rank_input),
-        /*result_layouts*/
-        getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
-                      rank_input),
+        /*operand_layouts*/ getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands, rank_input),
+        /*result_layouts*/ getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
         /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+    cusolver_call_op->setAttr(rewriter.getStringAttr("full_matrices"), rewriter.getBoolAttr(op.getFull()));
+    cusolver_call_op->setAttr(rewriter.getStringAttr("compute_uv"), rewriter.getBoolAttr(true));
+    cusolver_call_op->setAttr(rewriter.getStringAttr("transposed"), rewriter.getBoolAttr(false));
 
+    // replace enzymexla.linalg.svd with stablehlo.custom_call
     rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(2));
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
     rewriter.replaceAllUsesWith(op.getResult(2), cusolver_call_op.getResult(3));
-
-    // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
-    // TODO what does JAX do?
-    auto type_info =
-        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info_op = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
-    rewriter.replaceAllUsesWith(op.getResult(3), info_op.getResult());
-
+    rewriter.replaceAllUsesWith(op.getResult(3), cusolver_call_op.getResult(4));
     rewriter.eraseOp(op);
 
     return success();
