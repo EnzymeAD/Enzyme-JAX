@@ -6114,13 +6114,14 @@ struct PowSimplify
   }
 };
 
-struct NoNanPowSimplify final
-    : public CheckedOpRewritePattern<stablehlo::PowOp, NoNanPowSimplify> {
-  using CheckedOpRewritePattern<stablehlo::PowOp,
-                                NoNanPowSimplify>::CheckedOpRewritePattern;
+struct NoNanZeroBasePowSimplify final
+    : public CheckedOpRewritePattern<stablehlo::PowOp,
+                                     NoNanZeroBasePowSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::PowOp, NoNanZeroBasePowSimplify>::CheckedOpRewritePattern;
 
-  NoNanPowSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
+  NoNanZeroBasePowSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                           PatternBenefit benefit = 1)
       : CheckedOpRewritePattern(context, benefit),
         allowOnFloatingPointMath(allowOnFloatingPointMath) {}
 
@@ -20396,12 +20397,12 @@ void mlir::transform::addNoNanDivSimplify(RewritePatternSet &patterns,
                                     benefit);
 }
 
-void mlir::transform::addNoNanPowSimplify(RewritePatternSet &patterns,
-                                          bool allowOnFloatingPointMath,
-                                          MLIRContext &context,
-                                          PatternBenefit benefit) {
-  patterns.insert<NoNanPowSimplify>(allowOnFloatingPointMath, &context,
-                                    benefit);
+void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
+                                                  bool allowOnFloatingPointMath,
+                                                  MLIRContext &context,
+                                                  PatternBenefit benefit) {
+  patterns.insert<NoNanZeroBasePowSimplify>(allowOnFloatingPointMath, &context,
+                                            benefit);
 }
 
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
@@ -20730,8 +20731,8 @@ struct EnzymeHLOOptPass
       patterns.add<AllFinite>(context);
     if (no_nan || all_finite)
       patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanPowSimplify>((no_nan || all_finite), context);
+    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
+        (no_nan || all_finite), context);
 
     // clang-format off
     patterns.add<

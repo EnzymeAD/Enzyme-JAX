@@ -467,13 +467,13 @@ def optimization_passes(
             "no_nan_self_sub_simplify",
             "no_nan_add_sub_simplify(1)",
             "no_nan_div_simplify(1)",
-            "no_nan_pow_simplify(1)",
+            # "no_nan_zero_base_pow_simplify(1)",
         ]
     else:
         transform_passes_list += [
             "no_nan_add_sub_simplify(0)",
             "no_nan_div_simplify(0)",
-            "no_nan_pow_simplify(0)",
+            # "no_nan_zero_base_pow_simplify(0)",
         ]
 
     transform_passes = ",".join(

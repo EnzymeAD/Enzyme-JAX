@@ -30,9 +30,9 @@ void addNoNanMulSimplify(RewritePatternSet &patterns,
 void addNoNanDivSimplify(RewritePatternSet &patterns,
                          bool allowOnFloatingPointMath, MLIRContext &context,
                          PatternBenefit benefit);
-void addNoNanPowSimplify(RewritePatternSet &patterns,
-                         bool allowOnFloatingPointMath, MLIRContext &context,
-                         PatternBenefit benefit);
+void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
+                                 bool allowOnFloatingPointMath,
+                                 MLIRContext &context, PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addConcatConstProp(RewritePatternSet &patterns,
