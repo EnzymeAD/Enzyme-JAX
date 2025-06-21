@@ -6011,6 +6011,13 @@ struct NoNanDivSimplify final
       return success();
     }
 
+    // x / x -> 1
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      return success();
+    }
+
     return failure();
   }
 
@@ -20008,6 +20015,217 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+struct LogSimplify final
+    : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
+  using CheckedOpRewritePattern<stablehlo::LogOp,
+                                LogSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
+                                    PatternRewriter &rewriter) const {
+    { // log(exp(x)) -> x
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+      if (defOp) {
+        rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log(pow(x, y)) -> y * log(x)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
+      if (defOp) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+            op, defOp.getRhs(),
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getLhs()));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+              op,
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), lhs.getType(),
+                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs));
+          return success();
+        }
+
+        if (anyOperandIsConstant(defOp) &&
+            !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
+                                              // log(b) if a or b is constant
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+              op, rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), rhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::AddOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+        if (lhs == rhs) { // log(add(a, a)) -> log(2) + log(a)
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+              op,
+              rewriter.create<stablehlo::LogOp>(
+                  op.getLoc(),
+                  rewriter.create<stablehlo::ConstantOp>(
+                      op.getLoc(), lhs.getType(),
+                      cast<ElementsAttr>(makeAttr(lhs.getType(), 2)))),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::DivOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+
+        if (anyOperandIsConstant(defOp) &&
+            !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
+                                              // log(b) if a or b is constant
+          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+              op, rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), rhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(sqrt(x)) -> log(x) / 2
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), 2))));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::CbrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(cbrt(x)) -> log(x) / 3
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), 3))));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), -2))));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct NegMulConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegMulConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto mulOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp)
+      return failure();
+
+    auto lhs = mulOp.getLhs();
+    auto rhs = mulOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct NegDivConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegDivConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegDivConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto divOp = op.getOperand().getDefiningOp<stablehlo::DivOp>();
+    if (!divOp)
+      return failure();
+
+    auto lhs = divOp.getLhs();
+    auto rhs = divOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20238,16 +20456,17 @@ struct EnzymeHLOOptPass
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
         PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
-        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
+        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
         ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
         AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim,
-        PowerMultiplyToPower>(context, PatternBenefit(65000));
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
+        NegMulConstSimplify, NegDivConstSimplify>(context,
+                                                  PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

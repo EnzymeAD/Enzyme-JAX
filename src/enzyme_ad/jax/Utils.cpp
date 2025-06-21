@@ -566,6 +566,24 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
   return allowOnFloatingPointMath;
 }
 
+bool anyOperandIsConstant(mlir::Operation *op) {
+  DenseElementsAttr attr;
+  for (auto operand : op->getOperands()) {
+    if (matchPattern(operand, m_Constant(&attr)))
+      return true;
+  }
+  return false;
+}
+
+bool allOperandsAreConstant(mlir::Operation *op) {
+  DenseElementsAttr attr;
+  for (auto operand : op->getOperands()) {
+    if (!matchPattern(operand, m_Constant(&attr)))
+      return false;
+  }
+  return true;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
