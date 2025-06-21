@@ -36,6 +36,14 @@ void ApplyNoNanMulSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanMulSimplify(patterns, getParameter(), *getContext(),
                       PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyNoNanDivSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addNoNanDivSimplify(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyNoNanPowSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addNoNanPowSimplify(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyWhileSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addWhileSimplify(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(0)));

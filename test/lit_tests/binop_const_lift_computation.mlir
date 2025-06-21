@@ -42,8 +42,8 @@ func.func @divmulconst(%arg0: tensor<f64>) -> tensor<f64> {
 // (x / 2) / 4 == x / (2 * 4)
 func.func @divdivconst(%arg0: tensor<f64>) -> tensor<f64> {
   // CHECK-LABEL: func @divdivconst
-  // CHECK:      %[[CST:.*]] = stablehlo.constant dense<8.000000e+00> : tensor<f64>
-  // CHECK-NEXT: %[[RES:.*]] = stablehlo.divide %arg0, %[[CST]] : tensor<f64>
+  // CHECK:      %[[CST:.*]] = stablehlo.constant dense<1.250000e-01> : tensor<f64>
+  // CHECK-NEXT: %[[RES:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<f64>
   // CHECK-NEXT: return %[[RES]] : tensor<f64>
   %cst = stablehlo.constant dense<2.0> : tensor<f64>
   %cst_0 = stablehlo.constant dense<4.0> : tensor<f64>

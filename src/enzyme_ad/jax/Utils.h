@@ -291,6 +291,9 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a,
 
 bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
+
 } // namespace enzyme
 
 namespace stablehlo {
