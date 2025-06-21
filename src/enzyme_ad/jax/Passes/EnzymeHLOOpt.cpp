@@ -20008,6 +20008,41 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+struct LogExpSimplify final
+    : public CheckedOpRewritePattern<stablehlo::LogOp, LogExpSimplify> {
+  using CheckedOpRewritePattern<stablehlo::LogOp,
+                                LogExpSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
+                                    PatternRewriter &rewriter) const {
+    auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!defOp)
+      return failure();
+
+    rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LogPowSimplify final
+    : public CheckedOpRewritePattern<stablehlo::LogOp, LogPowSimplify> {
+  using CheckedOpRewritePattern<stablehlo::LogOp,
+                                LogPowSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
+                                    PatternRewriter &rewriter) const {
+    auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
+    if (!defOp)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+        op, defOp.getRhs(),
+        rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getLhs()));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20247,7 +20282,8 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim,
-        PowerMultiplyToPower>(context, PatternBenefit(65000));
+        PowerMultiplyToPower, LogExpSimplify,
+        LogPowSimplify>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

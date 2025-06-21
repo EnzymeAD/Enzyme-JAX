@@ -333,6 +333,8 @@ def optimization_passes(
         # "chained_multiply_to_power", # TODO: make it into an optional pass
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
+        "log_exp_simplify",
+        "log_pow_simplify",
     ]
 
     # constant propagation patterns
