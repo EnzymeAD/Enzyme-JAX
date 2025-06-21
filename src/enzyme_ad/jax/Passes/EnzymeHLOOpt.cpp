@@ -5963,7 +5963,22 @@ struct DivSimplify
       return success();
     }
 
-    // TODO: div by constant to mul
+    // x / const -> x * (1 / const)
+    if (isa<FloatType>(op.getType().getElementType())) {
+      DenseElementsAttr rhsAttr;
+      if (matchPattern(op.getRhs(), m_Constant(&rhsAttr))) {
+        auto rhsTen = stablehlo::constantOp(rhsAttr);
+        auto oneTen = stablehlo::constantOp(
+            cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+        auto out = fromTensor(stablehlo::divideOp(oneTen, rhsTen, op.getType()));
+
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+            op, op.getLhs(),
+            rewriter.create<stablehlo::ConstantOp>(op.getLoc(), op.getType(),
+                                                   out));
+        return success();
+      }
+    }
 
     return failure();
   }
