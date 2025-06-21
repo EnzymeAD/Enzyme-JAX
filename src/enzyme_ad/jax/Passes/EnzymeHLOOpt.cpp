@@ -19879,6 +19879,11 @@ struct CommonAssociativeCommutativeOpReorder final
     if (lhs == rhs)
       return failure(); // already in a good form
 
+    DenseFPElementsAttr constAttr;
+    if (matchPattern(lhs, m_Constant(&constAttr)) &&
+        matchPattern(rhs, m_Constant(&constAttr)))
+      return rewriter.notifyMatchFailure(op, "const prop has higher priority");
+
     auto lhsDefOp = lhs.template getDefiningOp<Op>();
     auto rhsDefOp = rhs.template getDefiningOp<Op>();
 
@@ -19889,12 +19894,22 @@ struct CommonAssociativeCommutativeOpReorder final
       if (lhsLhs == lhsRhs)
         return failure(); // already in a good form
 
+      if (matchPattern(lhsRhs, m_Constant(&constAttr)) &&
+          matchPattern(lhsLhs, m_Constant(&constAttr)))
+        return rewriter.notifyMatchFailure(op,
+                                           "const prop has higher priority");
+
       if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
         auto rhsLhs = rhsDefOp.getLhs();
         auto rhsRhs = rhsDefOp.getRhs();
 
         if (rhsLhs == rhsRhs)
           return failure(); // already in a good form
+
+        if (matchPattern(rhsRhs, m_Constant(&constAttr)) &&
+            matchPattern(rhsLhs, m_Constant(&constAttr)))
+          return rewriter.notifyMatchFailure(op,
+                                             "const prop has higher priority");
 
         Value commonOperand, otherOperand1, otherOperand2;
         bool foundCommonOperand = false;
@@ -19970,6 +19985,11 @@ struct CommonAssociativeCommutativeOpReorder final
 
       if (rhsLhs == rhsRhs)
         return failure(); // already in a good form
+
+      if (matchPattern(rhsRhs, m_Constant(&constAttr)) &&
+          matchPattern(rhsLhs, m_Constant(&constAttr)))
+        return rewriter.notifyMatchFailure(op,
+                                           "const prop has higher priority");
 
       if (rhsLhs == lhs) { // (op x (op x y)) => (op (op x x) y)
         rewriter.replaceOpWithNewOp<Op>(
