@@ -550,6 +550,40 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   return true;
 }
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
+  Ty = getElementTypeOrSelf(Ty);
+  if (Ty.isInteger())
+    return true;
+  return allowOnFloatingPointMath;
+}
+
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
+                          Type inTy) {
+  outTy = getElementTypeOrSelf(outTy);
+  inTy = getElementTypeOrSelf(inTy);
+  if (outTy.isInteger() && inTy.isInteger())
+    return true;
+  return allowOnFloatingPointMath;
+}
+
+bool anyOperandIsConstant(mlir::Operation *op) {
+  DenseElementsAttr attr;
+  for (auto operand : op->getOperands()) {
+    if (matchPattern(operand, m_Constant(&attr)))
+      return true;
+  }
+  return false;
+}
+
+bool allOperandsAreConstant(mlir::Operation *op) {
+  DenseElementsAttr attr;
+  for (auto operand : op->getOperands()) {
+    if (!matchPattern(operand, m_Constant(&attr)))
+      return false;
+  }
+  return true;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
