@@ -513,6 +513,36 @@ def ApplyNoNanMulSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyNoNanDivSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_div_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyNoNanZeroBasePowSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_zero_base_pow_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
@@ -611,7 +641,19 @@ def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
                   "AssociativeBinaryOpReordering<stablehlo::MinOp>",
                   "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
                   "AssociativeBinaryOpReordering<stablehlo::AndOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::OrOp>"];
+                  "AssociativeBinaryOpReordering<stablehlo::OrOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::XorOp>"];
+}
+
+def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
+    "common_associative_commutative_op_reorder"> {
+  let patterns = ["CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>"];
 }
 
 def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
@@ -2032,4 +2074,24 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
+}
+
+def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"> {
+  let patterns = ["ChainedMultiplyToPower"];
+}
+
+def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
+  let patterns = ["PowerMultiplyToPower"];
+}
+
+def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
+  let patterns = ["LogSimplify"];
+}
+
+def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
+  let patterns = ["NegMulConstSimplify"];
+}
+
+def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
+  let patterns = ["NegDivConstSimplify"];
 }

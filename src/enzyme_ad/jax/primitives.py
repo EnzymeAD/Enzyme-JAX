@@ -330,6 +330,12 @@ def optimization_passes(
         # "concat_to_onedim_dusslice",
         "scatter_multiply_simplify",
         "unary_elementwise_scatter_simplify",
+        # "chained_multiply_to_power", # TODO: make it into an optional pass
+        "power_multiply_to_power",
+        "common_associative_commutative_op_reorder",
+        "log_simplify",
+        "neg_mul_const_simplify",
+        "neg_div_const_simplify",
     ]
 
     # constant propagation patterns
@@ -460,9 +466,15 @@ def optimization_passes(
             "no_nan",
             "no_nan_self_sub_simplify",
             "no_nan_add_sub_simplify(1)",
+            "no_nan_div_simplify(1)",
+            # "no_nan_zero_base_pow_simplify(1)",
         ]
     else:
-        transform_passes_list += ["no_nan_add_sub_simplify(0)"]
+        transform_passes_list += [
+            "no_nan_add_sub_simplify(0)",
+            "no_nan_div_simplify(0)",
+            # "no_nan_zero_base_pow_simplify(0)",
+        ]
 
     transform_passes = ",".join(
         [
