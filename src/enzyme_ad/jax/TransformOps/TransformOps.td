@@ -2083,3 +2083,11 @@ def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"
 def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
   let patterns = ["PowerMultiplyToPower"];
 }
+
+def ApplyLogExpSimplify : EnzymeHLOPatternOp<"log_exp_simplify"> {
+  let patterns = ["LogExpSimplify"];
+}
+
+def ApplyLogPowSimplify : EnzymeHLOPatternOp<"log_pow_simplify"> {
+  let patterns = ["LogPowSimplify"];
+}
