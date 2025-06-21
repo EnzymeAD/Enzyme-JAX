@@ -330,7 +330,7 @@ def optimization_passes(
         # "concat_to_onedim_dusslice",
         "scatter_multiply_simplify",
         "unary_elementwise_scatter_simplify",
-        "chained_multiply_to_power",
+        # "chained_multiply_to_power", # TODO: make it into an optional pass
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
     ]

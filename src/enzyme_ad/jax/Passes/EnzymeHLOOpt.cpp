@@ -5967,6 +5967,10 @@ struct DivSimplify
     if (isa<FloatType>(op.getType().getElementType())) {
       DenseElementsAttr rhsAttr;
       if (matchPattern(op.getRhs(), m_Constant(&rhsAttr))) {
+        DenseElementsAttr lhsAttr;
+        if (matchPattern(op.getLhs(), m_Constant(&lhsAttr)))
+          return failure(); // const prop will evaluate this
+
         auto rhsTen = stablehlo::constantOp(rhsAttr);
         auto oneTen = stablehlo::constantOp(
             cast<ElementsAttr>(makeAttr(op.getType(), 1)));
@@ -6112,7 +6116,8 @@ struct NoNanPowSimplify final
     // pow(x, 0) -> 1 || pow(1, x) -> 1
     if ((matchPattern(op.getRhs(), m_Zero()) ||
          matchPattern(op.getRhs(), m_AnyZeroFloat())) ||
-        (matchPattern(op.getLhs(), m_One()))) {
+        (matchPattern(op.getLhs(), m_One()) ||
+         matchPattern(op.getLhs(), m_OneFloat()))) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
       return success();
@@ -19871,6 +19876,9 @@ struct CommonAssociativeCommutativeOpReorder final
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
+    if (lhs == rhs)
+      return failure(); // already in a good form
+
     auto lhsDefOp = lhs.template getDefiningOp<Op>();
     auto rhsDefOp = rhs.template getDefiningOp<Op>();
 
@@ -20219,8 +20227,7 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim,
-        ChainedMultiplyToPower, PowerMultiplyToPower>(context,
-                                                      PatternBenefit(65000));
+        PowerMultiplyToPower>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
