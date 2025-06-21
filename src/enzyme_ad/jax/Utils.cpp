@@ -550,6 +550,22 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   return true;
 }
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
+  Ty = getElementTypeOrSelf(Ty);
+  if (Ty.isInteger())
+    return true;
+  return allowOnFloatingPointMath;
+}
+
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
+                          Type inTy) {
+  outTy = getElementTypeOrSelf(outTy);
+  inTy = getElementTypeOrSelf(inTy);
+  if (outTy.isInteger() && inTy.isInteger())
+    return true;
+  return allowOnFloatingPointMath;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {

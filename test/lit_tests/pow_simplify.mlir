@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt="no_nan" | FileCheck %s
 
 func.func @main1(%arg0: tensor<10x4xf32>) -> tensor<10x4xf32> {
     %cst = stablehlo.constant dense<2.000000e+00> : tensor<10x4xf32>

@@ -5956,13 +5956,6 @@ struct DivSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
 
-    // 0 / x -> 0 [assume non nan here]
-    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
-        matchPattern(op.getLhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
     // x / 1 -> x
     if (matchPattern(op.getRhs(), m_OneFloat()) ||
         matchPattern(op.getRhs(), m_One())) {
@@ -5970,8 +5963,39 @@ struct DivSimplify
       return success();
     }
 
+    // TODO: div by constant to mul
+
     return failure();
   }
+};
+
+struct NoNanDivSimplify final
+    : public CheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
+  using CheckedOpRewritePattern<stablehlo::DivOp,
+                                NoNanDivSimplify>::CheckedOpRewritePattern;
+
+  NoNanDivSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType()))
+      return failure();
+
+    // 0 / x -> 0
+    if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(op.getLhs(), m_Zero())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    return failure();
+  }
+
+private:
+  bool allowOnFloatingPointMath;
 };
 
 struct RemSimplify
@@ -5999,16 +6023,20 @@ struct PowSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
+    // pow(x, 1) -> x
+    if (matchPattern(op.getRhs(), m_One()) ||
+        matchPattern(op.getRhs(), m_OneFloat())) {
+      rewriter.replaceAllUsesWith(op, op.getLhs());
+      return success();
+    }
+
     if (isa<FloatType>(op.getType().getElementType())) {
       DenseFPElementsAttr rhs;
       if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
-        bool allHalf = true, allOne = true, allNegOne = true, allZero = true,
-             allNegHalf = true, allTwo = true;
+        bool allHalf = true, allNegOne = true, allNegHalf = true, allTwo = true;
         for (auto v : rhs) {
           allHalf &= v.isExactlyValue(0.5);
-          allOne &= v.isExactlyValue(1.0);
           allNegOne &= v.isExactlyValue(-1.0);
-          allZero &= v.isExactlyValue(0.0);
           allNegHalf &= v.isExactlyValue(-0.5);
           allTwo &= v.isExactlyValue(2.0);
         }
@@ -6030,22 +6058,9 @@ struct PowSimplify
           return success();
         }
 
-        // pow(X, 0) -> 1
-        if (allZero) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-          return success();
-        }
-
         // pow(X, 0.5) -> sqrt(X)
         if (allHalf) {
           rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
-          return success();
-        }
-
-        // pow(X, 1) -> X
-        if (allOne) {
-          rewriter.replaceAllUsesWith(op, op.getLhs());
           return success();
         }
 
@@ -6060,6 +6075,40 @@ struct PowSimplify
 
     return failure();
   }
+};
+
+struct NoNanPowSimplify final
+    : public CheckedOpRewritePattern<stablehlo::PowOp, NoNanPowSimplify> {
+  using CheckedOpRewritePattern<stablehlo::PowOp,
+                                NoNanPowSimplify>::CheckedOpRewritePattern;
+
+  NoNanPowSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType())) {
+      return failure();
+    }
+
+    // pow(x, 0) -> 1 || pow(1, x) -> 1
+    if ((matchPattern(op.getRhs(), m_Zero()) ||
+         matchPattern(op.getRhs(), m_AnyZeroFloat())) ||
+        (matchPattern(op.getLhs(), m_One()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      return success();
+    }
+
+    // TODO: pow(0, x) -> 0 for X > 0
+
+    return failure();
+  }
+
+private:
+  bool allowOnFloatingPointMath;
 };
 
 bool is_broadcastable_compare(Value operand) {
@@ -14939,21 +14988,11 @@ struct NoNanMulSimplify final
       : CheckedOpRewritePattern(context, benefit),
         allowOnFloatingPointMath(allowOnFloatingPointMath) {}
 
-  // Apply the pattern only if the output types are integers or if the pattern
-  // is allowed on floating point math.
-  bool canApplyPattern(bool allowOnFloatingPointMath, Type mulOutTy,
-                       Type mulInTy) const {
-    mulOutTy = getElementTypeOrSelf(mulOutTy);
-    mulInTy = getElementTypeOrSelf(mulInTy);
-    if (mulOutTy.isInteger() && mulInTy.isInteger())
-      return true;
-    return allowOnFloatingPointMath;
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyPattern(allowOnFloatingPointMath, op.getResult().getType(),
-                         op.getOperand(0).getType())) {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath,
+                              op.getResult().getType(),
+                              op.getOperand(0).getType())) {
       return failure();
     }
 
@@ -14994,17 +15033,6 @@ struct NoNanAddSubSimplify final
       : CheckedOpRewritePattern(context, benefit),
         allowOnFloatingPointMath(allowOnFloatingPointMath) {}
 
-  // Apply the pattern only if the output types are integers or if the pattern
-  // is allowed on floating point math.
-  bool canApplyPattern(bool allowOnFloatingPointMath, Type addOutTy,
-                       Type subOutTy) const {
-    addOutTy = getElementTypeOrSelf(addOutTy);
-    subOutTy = getElementTypeOrSelf(subOutTy);
-    if (addOutTy.isInteger() && subOutTy.isInteger())
-      return true;
-    return allowOnFloatingPointMath;
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
@@ -15014,7 +15042,7 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -15033,7 +15061,7 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a
@@ -20068,6 +20096,22 @@ void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
                                     benefit);
 }
 
+void mlir::transform::addNoNanDivSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<NoNanDivSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
+}
+
+void mlir::transform::addNoNanPowSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<NoNanPowSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
+}
+
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                                 int64_t maxConstantExpansion,
                                                 MLIRContext &context,
@@ -20392,11 +20436,10 @@ struct EnzymeHLOOptPass
 
     if (all_finite)
       patterns.add<AllFinite>(context);
-    if (no_nan || all_finite) {
+    if (no_nan || all_finite)
       patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    }
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify>((no_nan || all_finite),
-                                                        context);
+    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
+                 NoNanPowSimplify>((no_nan || all_finite), context);
 
     // clang-format off
     patterns.add<
