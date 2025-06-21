@@ -19,10 +19,9 @@ export TMP=$TMPDIR
 export TEMP=$TMPDIR
 BAZEL_BUILD_FLAGS+=(--action_env=TMP=$TMPDIR --action_env=TEMP=$TMPDIR --action_env=TMPDIR=$TMPDIR --sandbox_tmpfs_path=$TMPDIR)
 
-# export CUDA_HOME=$HOME/miniconda3/
-# export PATH=$PATH:$CUDA_HOME/bin
-# export CUDACXX=$CUDA_HOME/bin/nvcc
+export CUDA_HOME=$HOME/miniconda3/
+export PATH=$PATH:$CUDA_HOME/bin
+export CUDACXX=$CUDA_HOME/bin/nvcc
 BAZEL_BUILD_FLAGS+=(--config=cuda)
 HERMETIC_PYTHON_VERSION=3.11 bazel build ${BAZEL_BUILD_FLAGS[@]} :wheel
 pip install bazel-bin/enzyme_ad-0.0.8-py311-none-manylinux2014_x86_64.whl --no-deps --force-reinstall
-

@@ -351,7 +351,7 @@ def pipelines():
     eqsat = (
         "EqSat",
         JaXPipeline(
-            "inline{default-pipeline=canonicalize max-iterations=4},"
+            "print,inline{default-pipeline=canonicalize max-iterations=4},"
             + "equality-saturation-pass"
         ),
         CurBackends,
