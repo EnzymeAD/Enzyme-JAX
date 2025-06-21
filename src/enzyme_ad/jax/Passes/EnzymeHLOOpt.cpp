@@ -6057,6 +6057,16 @@ struct PowSimplify
       return success();
     }
 
+    // pow(x, 0) -> 1 || pow(1, x) -> 1
+    if ((matchPattern(op.getRhs(), m_Zero()) ||
+         matchPattern(op.getRhs(), m_AnyZeroFloat())) ||
+        (matchPattern(op.getLhs(), m_One()) ||
+         matchPattern(op.getLhs(), m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      return success();
+    }
+
     if (isa<FloatType>(op.getType().getElementType())) {
       DenseFPElementsAttr rhs;
       if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
@@ -6120,17 +6130,37 @@ struct NoNanPowSimplify final
       return failure();
     }
 
-    // pow(x, 0) -> 1 || pow(1, x) -> 1
-    if ((matchPattern(op.getRhs(), m_Zero()) ||
-         matchPattern(op.getRhs(), m_AnyZeroFloat())) ||
-        (matchPattern(op.getLhs(), m_One()) ||
-         matchPattern(op.getLhs(), m_OneFloat()))) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+    if (matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroFloat())) {
+
+      DenseElementsAttr attr;
+      if (matchPattern(op.getRhs(), m_Constant(&attr)))
+        return failure(); // let constant propagation handle this
+
+      // 0 ^ x => x == 0 ? 1 : (x > 0 ? 0 : Inf)
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), rewriter.getZeroAttr(op.getType()));
+      auto nonZeroCase = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::CompareOp>(
+              op.getLoc(), op.getRhs(), zero,
+              stablehlo::ComparisonDirection::GT),
+          zero,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(
+                  op.getType(), std::numeric_limits<float>::infinity()))));
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+          op,
+          rewriter.create<stablehlo::CompareOp>(
+              op.getLoc(), op.getRhs(), zero,
+              stablehlo::ComparisonDirection::EQ),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(op.getType(), 1))),
+          nonZeroCase);
       return success();
     }
-
-    // TODO: pow(0, x) -> 0 for X > 0
 
     return failure();
   }
