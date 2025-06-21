@@ -5970,7 +5970,8 @@ struct DivSimplify
         auto rhsTen = stablehlo::constantOp(rhsAttr);
         auto oneTen = stablehlo::constantOp(
             cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-        auto out = fromTensor(stablehlo::divideOp(oneTen, rhsTen, op.getType()));
+        auto out =
+            fromTensor(stablehlo::divideOp(oneTen, rhsTen, op.getType()));
 
         rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
             op, op.getLhs(),
