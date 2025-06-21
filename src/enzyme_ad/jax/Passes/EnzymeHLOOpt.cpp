@@ -15526,6 +15526,7 @@ struct AssociativeBinaryOpReordering
   using CheckedOpRewritePattern<
       Op, AssociativeBinaryOpReordering<Op>>::CheckedOpRewritePattern;
 
+  // TODO: generalize to the case where lhs is an Op
   LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhsOp = op.getRhs().template getDefiningOp<Op>();
@@ -19627,6 +19628,281 @@ struct GatherElementwise
   }
 };
 
+struct ChainedMultiplyToPower final
+    : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ChainedMultiplyToPower>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsDefOp = lhs.getDefiningOp<stablehlo::MulOp>();
+    auto rhsDefOp = rhs.getDefiningOp<stablehlo::MulOp>();
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+      auto lhsRhs = lhsDefOp.getRhs();
+      if (lhsLhs == lhsRhs) {
+        if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+          auto rhsLhs = rhsDefOp.getLhs();
+          auto rhsRhs = rhsDefOp.getRhs();
+          if (rhsLhs == rhsRhs &&
+              rhsLhs == lhsRhs) { // (mul (mul x x) (mul x x))
+            auto powType = RankedTensorType::get(
+                cast<RankedTensorType>(lhs.getType()).getShape(),
+                lhs.getType().getElementType());
+            auto powVal = rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 4)));
+            rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, powVal);
+            return success();
+          }
+        }
+
+        if (lhsLhs == rhs) { // (mul (mul x x) x)
+          auto powType = RankedTensorType::get(
+              cast<RankedTensorType>(rhs.getType()).getShape(),
+              rhs.getType().getElementType());
+          auto powVal = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 3)));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhs, powVal);
+          return success();
+        }
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) { // mul x (mul x x)
+      auto rhsLhs = rhsDefOp.getLhs();
+      auto rhsRhs = rhsDefOp.getRhs();
+      if (rhsLhs == rhsRhs) {
+        if (rhsLhs == lhs) {
+          auto powType = RankedTensorType::get(
+              cast<RankedTensorType>(lhs.getType()).getShape(),
+              lhs.getType().getElementType());
+          auto powVal = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 3)));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhs, powVal);
+          return success();
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct PowerMultiplyToPower final
+    : public CheckedOpRewritePattern<stablehlo::MulOp, PowerMultiplyToPower> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                PowerMultiplyToPower>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsDefOp = lhs.getDefiningOp<stablehlo::PowOp>();
+    auto rhsDefOp = rhs.getDefiningOp<stablehlo::PowOp>();
+
+    auto rType = cast<RankedTensorType>(op.getType());
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+
+      if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+        auto rhsLhs = rhsDefOp.getLhs();
+
+        if (lhsLhs ==
+            rhsLhs) { // (mul (pow a b) (pow a c)) => (pow a (add b c))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), lhsDefOp.getRhs(), rhsDefOp.getRhs());
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+          return success();
+        }
+      }
+
+      auto rhsMulDefOp = rhs.getDefiningOp<stablehlo::MulOp>();
+      if (rhsMulDefOp && isOnlyUsedInOperation(rhsMulDefOp, op)) {
+        auto rhsMulLhs = rhsMulDefOp.getLhs();
+        auto rhsMulRhs = rhsMulDefOp.getRhs();
+
+        if (rhsMulLhs == rhsMulRhs &&
+            rhsMulLhs ==
+                lhsLhs) { // (mul (pow a b) (mul a a)) => (pow a (add b 2))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), lhsDefOp.getRhs(),
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 2))));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+          return success();
+        }
+      }
+
+      if (lhsLhs == rhs) { // (mul (pow x y) x) => (pow x (add y 1))
+        auto newPowVal = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(), lhsDefOp.getRhs(),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 1))));
+        rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+        return success();
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+      auto rhsLhs = rhsDefOp.getLhs();
+
+      if (rhsLhs == lhs) { // (mul x (pow x y)) => (pow x (add y 1))
+        auto newPowVal = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(), rhsDefOp.getRhs(),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 1))));
+        rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, newPowVal);
+        return success();
+      }
+
+      auto lhsMulDefOp = lhs.getDefiningOp<stablehlo::MulOp>();
+      if (lhsMulDefOp && isOnlyUsedInOperation(lhsMulDefOp, op)) {
+        auto lhsMulLhs = lhsMulDefOp.getLhs();
+        auto lhsMulRhs = lhsMulDefOp.getRhs();
+
+        if (lhsMulLhs == lhsMulRhs &&
+            lhsMulLhs ==
+                rhsLhs) { // (mul (mul a a) (pow a b)) => (pow a (add b 2))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), rhsDefOp.getRhs(),
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 2))));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, newPowVal);
+          return success();
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
+template <typename Op>
+struct CommonAssociativeCommutativeOpReorder final
+    : public CheckedOpRewritePattern<
+          Op, CommonAssociativeCommutativeOpReorder<Op>> {
+  using CheckedOpRewritePattern<
+      Op, CommonAssociativeCommutativeOpReorder<Op>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsDefOp = lhs.template getDefiningOp<Op>();
+    auto rhsDefOp = rhs.template getDefiningOp<Op>();
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+      auto lhsRhs = lhsDefOp.getRhs();
+
+      if (lhsLhs == lhsRhs)
+        return failure(); // already in a good form
+
+      if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+        auto rhsLhs = rhsDefOp.getLhs();
+        auto rhsRhs = rhsDefOp.getRhs();
+
+        if (rhsLhs == rhsRhs)
+          return failure(); // already in a good form
+
+        Value commonOperand, otherOperand1, otherOperand2;
+        bool foundCommonOperand = false;
+
+        if (lhsLhs ==
+            rhsLhs) { // (op (op x y) (op x z)) => (op (op x x) (op y z))
+          if (lhsRhs == rhsRhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsLhs;
+          otherOperand1 = lhsRhs;
+          otherOperand2 = rhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsLhs == rhsRhs) { // (op (op x y) (op z x)) => (op (op x x)
+                                // (op y z))
+          if (lhsRhs == rhsLhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsLhs;
+          otherOperand1 = rhsLhs;
+          otherOperand2 = lhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsRhs == rhsLhs) { // (op (op y x) (op x z)) => (op (op x x)
+                                // (op y z))
+          if (lhsLhs == rhsRhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsRhs;
+          otherOperand1 = lhsLhs;
+          otherOperand2 = rhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsRhs == rhsRhs) { // (op (op y x) (op z x)) => (op (op x x)
+                                // (op y z))
+          if (lhsLhs == rhsLhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsRhs;
+          otherOperand1 = rhsLhs;
+          otherOperand2 = lhsLhs;
+          foundCommonOperand = true;
+        }
+
+        if (foundCommonOperand) {
+          rewriter.replaceOpWithNewOp<Op>(
+              op,
+              rewriter.create<Op>(op.getLoc(), commonOperand, commonOperand),
+              rewriter.create<Op>(op.getLoc(), otherOperand1, otherOperand2));
+          return success();
+        }
+      }
+
+      if (lhsLhs == rhs) { // (op (op x y) x) => (op (op x x) y)
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rewriter.create<Op>(op.getLoc(), lhsLhs, lhsLhs), lhsRhs);
+        return success();
+      }
+
+      if (lhsRhs == rhs) { // (op (op y x) x) => (op y (op x x))
+        rewriter.replaceOpWithNewOp<Op>(
+            op, lhsLhs, rewriter.create<Op>(op.getLoc(), lhsRhs, lhsRhs));
+        return success();
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+      auto rhsLhs = rhsDefOp.getLhs();
+      auto rhsRhs = rhsDefOp.getRhs();
+
+      if (rhsLhs == rhsRhs)
+        return failure(); // already in a good form
+
+      if (rhsLhs == lhs) { // (op x (op x y)) => (op (op x x) y)
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rewriter.create<Op>(op.getLoc(), rhsLhs, rhsLhs), rhsRhs);
+        return success();
+      }
+
+      if (rhsRhs == lhs) { // (op x (op y x)) => (op y (op x x))
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rhsLhs, rewriter.create<Op>(op.getLoc(), rhsRhs, rhsRhs));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19849,8 +20125,9 @@ struct EnzymeHLOOptPass
         AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
-        context, PatternBenefit(65000));
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim,
+        ChainedMultiplyToPower, PowerMultiplyToPower>(context,
+                                                      PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
@@ -19944,7 +20221,16 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering<stablehlo::MinOp>,
                  AssociativeBinaryOpReordering<stablehlo::MaxOp>,
                  AssociativeBinaryOpReordering<stablehlo::AndOp>,
-                 AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
+                 AssociativeBinaryOpReordering<stablehlo::OrOp>,
+                 AssociativeBinaryOpReordering<stablehlo::XorOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>>(
+        context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,

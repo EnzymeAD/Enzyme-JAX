@@ -611,7 +611,19 @@ def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
                   "AssociativeBinaryOpReordering<stablehlo::MinOp>",
                   "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
                   "AssociativeBinaryOpReordering<stablehlo::AndOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::OrOp>"];
+                  "AssociativeBinaryOpReordering<stablehlo::OrOp>",
+                  "AssociativeBinaryOpReordering<stablehlo::XorOp>"];
+}
+
+def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
+    "common_associative_commutative_op_reorder"> {
+  let patterns = ["CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>",
+                  "CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>"];
 }
 
 def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
@@ -2032,4 +2044,12 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
+}
+
+def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"> {
+  let patterns = ["ChainedMultiplyToPower"];
+}
+
+def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
+  let patterns = ["PowerMultiplyToPower"];
 }
