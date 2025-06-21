@@ -18,10 +18,11 @@ func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<4.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.log %arg0 : tensor<f64>
 // CHECK-NEXT:    %1 = stablehlo.multiply %cst, %0 : tensor<f64>
-// CHECK-NEXT:    return %1 : tensor<f64>
+// CHECK-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<f64>
+// CHECK-NEXT:    return %2 : tensor<f64>
 // CHECK-NEXT:  }
 
 func.func @main3(%arg0: tensor<f64>) -> tensor<f64> {
@@ -113,9 +114,9 @@ func.func @main9(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main9(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<5.000000e-01> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.log %arg0 : tensor<f64>
-// CHECK-NEXT:     %1 = stablehlo.multiply %0, %cst : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.divide %0, %cst : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
 // CHECK-NEXT: }
 
@@ -126,9 +127,9 @@ func.func @main10(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main10(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<-5.000000e-01> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<-2.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.log %arg0 : tensor<f64>
-// CHECK-NEXT:     %1 = stablehlo.multiply %0, %cst : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.divide %0, %cst : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
 // CHECK-NEXT: }
 
@@ -139,8 +140,8 @@ func.func @main11(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main11(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.33333333333333331> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<3.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.log %arg0 : tensor<f64>
-// CHECK-NEXT:     %1 = stablehlo.multiply %0, %cst : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.divide %0, %cst : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
 // CHECK-NEXT: }

@@ -2087,3 +2087,11 @@ def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
 def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
 }
+
+def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
+  let patterns = ["NegMulConstSimplify"];
+}
+
+def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
+  let patterns = ["NegDivConstSimplify"];
+}

@@ -20148,6 +20148,84 @@ struct LogSimplify final
   }
 };
 
+struct NegMulConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegMulConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto mulOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp)
+      return failure();
+
+    auto lhs = mulOp.getLhs();
+    auto rhs = mulOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct NegDivConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegDivConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegDivConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto divOp = op.getOperand().getDefiningOp<stablehlo::DivOp>();
+    if (!divOp)
+      return failure();
+
+    auto lhs = divOp.getLhs();
+    auto rhs = divOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20386,8 +20464,9 @@ struct EnzymeHLOOptPass
         AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim,
-        PowerMultiplyToPower>(context, PatternBenefit(65000));
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
+        NegMulConstSimplify, NegDivConstSimplify>(context,
+                                                  PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
