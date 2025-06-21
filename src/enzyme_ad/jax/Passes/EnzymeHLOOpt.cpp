@@ -5999,28 +5999,61 @@ struct PowSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
-
-    SmallVector<Attribute> constants;
-    constants.assign(op->getNumOperands(), Attribute());
-    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
-      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
-
     if (isa<FloatType>(op.getType().getElementType())) {
-      // pow(X, 0.5) -> sqrt(X)
-      {
-        DenseFPElementsAttr rhs;
-        if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
-          bool allHalf = true;
-          for (auto v : rhs) {
-            if (!v.isExactlyValue(0.5)) {
-              allHalf = false;
-              break;
-            }
-          }
-          if (allHalf) {
-            rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
-            return success();
-          }
+      DenseFPElementsAttr rhs;
+      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+        bool allHalf = true, allOne = true, allNegOne = true, allZero = true,
+             allNegHalf = true, allTwo = true;
+        for (auto v : rhs) {
+          allHalf &= v.isExactlyValue(0.5);
+          allOne &= v.isExactlyValue(1.0);
+          allNegOne &= v.isExactlyValue(-1.0);
+          allZero &= v.isExactlyValue(0.0);
+          allNegHalf &= v.isExactlyValue(-0.5);
+          allTwo &= v.isExactlyValue(2.0);
+        }
+
+        // pow(X, -1) -> 1 / X
+        if (allNegOne) {
+          rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+              op,
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), op.getType(),
+                  cast<ElementsAttr>(makeAttr(op.getType(), 1))),
+              op.getLhs());
+          return success();
+        }
+
+        // pow(X, -0.5) -> rsqrt(X)
+        if (allNegHalf) {
+          rewriter.replaceOpWithNewOp<stablehlo::RsqrtOp>(op, op.getLhs());
+          return success();
+        }
+
+        // pow(X, 0) -> 1
+        if (allZero) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+          return success();
+        }
+
+        // pow(X, 0.5) -> sqrt(X)
+        if (allHalf) {
+          rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
+          return success();
+        }
+
+        // pow(X, 1) -> X
+        if (allOne) {
+          rewriter.replaceAllUsesWith(op, op.getLhs());
+          return success();
+        }
+
+        // pow(X, 2) -> X * X
+        if (allTwo) {
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                        op.getLhs());
+          return success();
         }
       }
     }
