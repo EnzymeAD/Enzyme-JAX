@@ -2084,10 +2084,6 @@ def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
   let patterns = ["PowerMultiplyToPower"];
 }
 
-def ApplyLogExpSimplify : EnzymeHLOPatternOp<"log_exp_simplify"> {
-  let patterns = ["LogExpSimplify"];
-}
-
-def ApplyLogPowSimplify : EnzymeHLOPatternOp<"log_pow_simplify"> {
-  let patterns = ["LogPowSimplify"];
+def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
+  let patterns = ["LogSimplify"];
 }
