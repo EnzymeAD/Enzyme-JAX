@@ -46,8 +46,7 @@ void populateAffineParallelizationPattern(MLIRContext &context,
 Region *getLocalAffineScope(Operation *op) {
   auto curOp = op;
   while (auto parentOp = curOp->getParentOp()) {
-    if (parentOp->hasTrait<OpTrait::AffineScope>() ||
-        isa<LLVM::LLVMFuncOp>(parentOp)) {
+    if (parentOp->hasTrait<OpTrait::AffineScope>()) {
       return curOp->getParentRegion();
     }
     curOp = parentOp;

@@ -237,7 +237,7 @@ bool initJIT() {
                 [](llvm::orc::ExecutionSession &ES)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
-                      llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
+                      llvm::orc::RTDyldObjectLinkingLayer>(ES, [](const llvm::MemoryBuffer &) {
                     return std::make_unique<llvm::SectionMemoryManager>();
                   });
                   if (getenv("ENABLE_GDBLISTENER")) {
