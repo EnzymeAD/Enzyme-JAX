@@ -20296,6 +20296,56 @@ struct NegDivConstSimplify final
   }
 };
 
+struct ReshapeBroadcastInDimSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeBroadcastInDimSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcastInDimOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastInDimOp)
+      return failure();
+
+    if (!isOnlyUsedInOperation(bcastInDimOp, op))
+      return failure();
+
+    auto inputTy = op.getOperand().getType();
+    auto outputTy = op.getType();
+
+    auto deletionDims = findReshapeInsertionDims(outputTy, inputTy);
+    if (deletionDims.empty())
+      return failure();
+
+    auto bcastDims = bcastInDimOp.getBroadcastDimensions();
+
+    for (auto dim : deletionDims) {
+      if (llvm::is_contained(bcastDims, dim))
+        return failure();
+    }
+
+    SmallVector<int64_t> newBcastDims;
+    for (auto dim : bcastDims) {
+      int64_t nDeleted = 0;
+      for (auto delDim : deletionDims) {
+        if (delDim == dim)
+          return failure();
+        if (delDim < dim)
+          nDeleted++;
+      }
+      int64_t newDim = dim - nDeleted;
+      if (newDim < 0)
+        return failure(); // this should not happen
+      newBcastDims.push_back(dim - nDeleted);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), bcastInDimOp.getOperand(), newBcastDims);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20535,8 +20585,8 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify>(context,
-                                                  PatternBenefit(65000));
+        NegMulConstSimplify, NegDivConstSimplify,
+        ReshapeBroadcastInDimSimplify>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

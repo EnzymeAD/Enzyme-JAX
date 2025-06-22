@@ -336,6 +336,7 @@ def optimization_passes(
         "log_simplify",
         "neg_mul_const_simplify",
         "neg_div_const_simplify",
+        "reshape_broadcast_in_dim_simplify",
     ]
 
     # constant propagation patterns
