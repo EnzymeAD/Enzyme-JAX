@@ -30,6 +30,8 @@ run_experiment() {
     echo "--------------------------------" >> $filename
 }
 
+export EQSAT_ONLY=true
+
 for platform in "${platforms[@]}"; do
     for model in "${models[@]}"; do
         for threshold in "${thresholds[@]}"; do
@@ -37,11 +39,6 @@ for platform in "${platforms[@]}"; do
             export SEGMENTATION_THRESHOLD=$threshold
             read ILP_LIMIT SAT_LIMIT <<< $(python compute_time_limits.py --csv "$segmentation_size_csv" --model "$model" --tau "$threshold")
             export EQSAT_PLATFORM=$platform
-            if [[ $threshold -eq 10 ]]; then
-                export EQSAT_ONLY=false
-            else
-                export EQSAT_ONLY=true
-            fi
 
             if [ "$platform" == "gpu" ]; then
                 COMMAND="ILP_TIME_LIMIT=${ILP_LIMIT} SATURATION_TIME_LIMIT=${SAT_LIMIT} python test/${model}.py"

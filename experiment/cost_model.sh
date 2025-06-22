@@ -14,7 +14,7 @@ platforms=("cpu" "gpu")
 models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
-num_repeats=12
+num_repeats=3
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME
@@ -30,7 +30,6 @@ for repeat in $(seq 1 $num_repeats); do
                 config="${configs[$i]}"
                 config_name="${config_names[$i]}"
                 eval "$config"
-                export KERAS_BACKEND="jax"
                 export EQSAT_PLATFORM=$platform
                 export ILP_TIME_LIMIT=10
                 export SATURATION_TIME_LIMIT=10
