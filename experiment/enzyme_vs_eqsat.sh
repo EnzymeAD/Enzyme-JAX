@@ -2,14 +2,13 @@
 
 # Define the combinations of environment variables
 configs=(
-  # "export ENZYME_RULES=true MULTI_RULES=true EQSAT_RULES=false"
   "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
 )
 platforms=("cpu" "gpu")
 models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=enzyme_vs_eqsat_$datetime.txt
-num_repeats=12
+num_repeats=9
 
 export STATS_FILENAME=stats_enzyme_vs_eqsat_$datetime.csv
 touch $STATS_FILENAME
@@ -24,7 +23,6 @@ for repeat in $(seq 1 $num_repeats); do
         for platform in "${platforms[@]}"; do
             for config in "${configs[@]}"; do
                 eval "$config"
-                export KERAS_BACKEND="jax"
                 export EQSAT_PLATFORM=$platform
                 export LIMIT_RULES="true"
                 export ILP_TIME_LIMIT=10
