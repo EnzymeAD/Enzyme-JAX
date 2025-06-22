@@ -7165,15 +7165,54 @@ struct BinBroadcastSplat final
   }
 };
 
-struct AllFinite
-    : public CheckedOpRewritePattern<stablehlo::IsFiniteOp, AllFinite> {
+struct AllFiniteIsFinite
+    : public CheckedOpRewritePattern<stablehlo::IsFiniteOp, AllFiniteIsFinite> {
   using CheckedOpRewritePattern<stablehlo::IsFiniteOp,
-                                AllFinite>::CheckedOpRewritePattern;
+                                AllFiniteIsFinite>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
                                     PatternRewriter &rewriter) const {
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+    return success();
+  }
+};
+
+struct AllFiniteIsInf
+    : public CheckedOpRewritePattern<chlo::IsInfOp, AllFiniteIsInf> {
+  using CheckedOpRewritePattern<chlo::IsInfOp,
+                                AllFiniteIsInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+    return success();
+  }
+};
+
+struct AllFiniteIsPosInf
+    : public CheckedOpRewritePattern<chlo::IsPosInfOp, AllFiniteIsPosInf> {
+  using CheckedOpRewritePattern<chlo::IsPosInfOp,
+                                AllFiniteIsPosInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsPosInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+    return success();
+  }
+};
+
+struct AllFiniteIsNegInf
+    : public CheckedOpRewritePattern<chlo::IsNegInfOp, AllFiniteIsNegInf> {
+  using CheckedOpRewritePattern<chlo::IsNegInfOp,
+                                AllFiniteIsNegInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsNegInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
     return success();
   }
 };
@@ -20728,7 +20767,8 @@ struct EnzymeHLOOptPass
     }
 
     if (all_finite)
-      patterns.add<AllFinite>(context);
+      patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
+                   AllFiniteIsNegInf>(context);
     if (no_nan || all_finite)
       patterns.add<NoNan, NoNanSelfSubSimplify>(context);
     patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(

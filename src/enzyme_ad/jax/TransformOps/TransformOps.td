@@ -449,9 +449,21 @@ def ApplySliceReshapePatterns : EnzymeHLOPatternOp<
     "slice_reshape"> {
   let patterns = ["SliceReshape"];
 }
-def ApplyAllFinitePatterns : EnzymeHLOPatternOp<
-    "all_finite"> {
-  let patterns = ["AllFinite"];
+def ApplyAllFiniteIsFinitePatterns : EnzymeHLOPatternOp<
+    "all_finite_is_finite"> {
+  let patterns = ["AllFiniteIsFinite"];
+}
+def ApplyAllFiniteIsInfPatterns : EnzymeHLOPatternOp<
+    "all_finite_is_inf"> {
+  let patterns = ["AllFiniteIsInf"];
+}
+def ApplyAllFiniteIsPosInfPatterns : EnzymeHLOPatternOp<
+    "all_finite_is_pos_inf"> {
+  let patterns = ["AllFiniteIsPosInf"];
+}
+def ApplyAllFiniteIsNegInfPatterns : EnzymeHLOPatternOp<
+    "all_finite_is_neg_inf"> {
+  let patterns = ["AllFiniteIsNegInf"];
 }
 def ApplyNoNanPatterns : EnzymeHLOPatternOp<
     "no_nan"> {
