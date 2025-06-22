@@ -2108,6 +2108,10 @@ def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
   let patterns = ["NegDivConstSimplify"];
 }
 
-def ApplyReshapeBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_broadcast_in_dim_simplify"> {
-  let patterns = ["ReshapeBroadcastInDimSimplify"];
+def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_deletions_broadcast_in_dim_simplify"> {
+  let patterns = ["ReshapeDeletionsBroadcastInDimSimplify"];
+}
+
+def ApplyReshapeInsertionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_insertions_broadcast_in_dim_simplify"> {
+  let patterns = ["ReshapeInsertionsBroadcastInDimSimplify"];
 }

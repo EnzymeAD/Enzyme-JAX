@@ -20296,9 +20296,9 @@ struct NegDivConstSimplify final
   }
 };
 
-struct ReshapeBroadcastInDimSimplify final
+struct ReshapeDeletionsBroadcastInDimSimplify final
     : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
-                                     ReshapeBroadcastInDimSimplify> {
+                                     ReshapeDeletionsBroadcastInDimSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
@@ -20311,22 +20311,13 @@ struct ReshapeBroadcastInDimSimplify final
     if (!isOnlyUsedInOperation(bcastInDimOp, op))
       return failure();
 
-    auto inputTy = op.getOperand().getType();
-    auto outputTy = op.getType();
-
-    auto deletionDims = findReshapeInsertionDims(outputTy, inputTy);
+    auto deletionDims =
+        findReshapeInsertionDims(op.getType(), op.getOperand().getType());
     if (deletionDims.empty())
       return failure();
 
-    auto bcastDims = bcastInDimOp.getBroadcastDimensions();
-
-    for (auto dim : deletionDims) {
-      if (llvm::is_contained(bcastDims, dim))
-        return failure();
-    }
-
     SmallVector<int64_t> newBcastDims;
-    for (auto dim : bcastDims) {
+    for (auto dim : bcastInDimOp.getBroadcastDimensions()) {
       int64_t nDeleted = 0;
       for (auto delDim : deletionDims) {
         if (delDim == dim)
@@ -20337,7 +20328,46 @@ struct ReshapeBroadcastInDimSimplify final
       int64_t newDim = dim - nDeleted;
       if (newDim < 0)
         return failure(); // this should not happen
-      newBcastDims.push_back(dim - nDeleted);
+      newBcastDims.push_back(newDim);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), bcastInDimOp.getOperand(), newBcastDims);
+    return success();
+  }
+};
+
+struct ReshapeInsertionsBroadcastInDimSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeInsertionsBroadcastInDimSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcastInDimOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastInDimOp)
+      return failure();
+
+    if (!isOnlyUsedInOperation(bcastInDimOp, op))
+      return failure();
+
+    auto insertionDims =
+        findReshapeInsertionDims(op.getOperand().getType(), op.getType());
+    if (insertionDims.empty())
+      return failure();
+
+    SmallVector<int64_t> newPositions;
+    for (int i = 0; i < cast<ShapedType>(op.getType()).getRank(); i++) {
+      if (!llvm::is_contained(insertionDims, i))
+        newPositions.push_back(i);
+    }
+
+    SmallVector<int64_t> newBcastDims;
+    for (auto dim : bcastInDimOp.getBroadcastDimensions()) {
+      if (dim >= newPositions.size())
+        return failure(); // this should not happen
+      newBcastDims.push_back(newPositions[dim]);
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
@@ -20586,7 +20616,9 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
         NegMulConstSimplify, NegDivConstSimplify,
-        ReshapeBroadcastInDimSimplify>(context, PatternBenefit(65000));
+        ReshapeDeletionsBroadcastInDimSimplify,
+        ReshapeInsertionsBroadcastInDimSimplify>(context,
+                                                 PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
