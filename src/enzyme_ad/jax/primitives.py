@@ -1373,7 +1373,13 @@ def hlo_call(
 
     return _enzyme_primal_p.bind(
         *args,
-        source=(in_tree, tuple(in_idx_map.items()), tuple(out_idx_map.iterms()), mfunc, tuple(jit_options.items())),
+        source=(
+            in_tree,
+            tuple(in_idx_map.items()),
+            tuple(out_idx_map.iterms()),
+            mfunc,
+            tuple(jit_options.items()),
+        ),
         fn=fn,
         argv=argv,
         out_shapes=tuple(out_shapes),
@@ -1482,7 +1488,13 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         out_idx_map2 = {2 * k: v for k, v in out_idx_map.items()} | {
             2 * k + 1: v for k, v in out_idx_map.items()
         }
-        source = (in_tree, tuple(avals.items()), tuple(out_idx_map2.items()), mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(out_idx_map2.items()),
+            mfunc,
+            jit_options,
+        )
         shadconv = ffi_call(
             *args,
             out_shapes=outshapes2,
@@ -1718,7 +1730,13 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             if v == "enzyme_dup":
                 argidx += 1
 
-        source = (in_tree, tuple(avals.items()), tuple(outmap.items()), mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(outmap.items()),
+            mfunc,
+            jit_options,
+        )
 
         assert len(outmap) == len(out_shapes2)
         shadconv = _enzyme_primal_p.bind(
@@ -1835,7 +1853,13 @@ def enzyme_jax_ir(
 
             out_flat = ffi_call(
                 *args_flat,
-                source=(in_tree, tuple(in_idxs.items()), tuple(out_idxs.items()), func, tuple(jit_options.items())),
+                source=(
+                    in_tree,
+                    tuple(in_idxs.items()),
+                    tuple(out_idxs.items()),
+                    func,
+                    tuple(jit_options.items()),
+                ),
                 fn="",
                 out_shapes=out_shape_flat,
                 argv=argv,
