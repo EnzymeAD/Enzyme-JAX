@@ -20456,8 +20456,8 @@ private:
     }
 
     if (invalidMove)
-      return {preTransposePerm, postTransposePerm, newFftLength, needsPostTranspose,
-              invalidMove};
+      return {preTransposePerm, postTransposePerm, newFftLength,
+              needsPostTranspose, invalidMove};
 
     SmallVector<int64_t> nonFftTargets, nonFftSources;
     for (int64_t i = 0; i < nonFftDims; i++) {
@@ -20473,7 +20473,8 @@ private:
     }
 
     if (fftType == stablehlo::FftType::FFT ||
-        fftType == stablehlo::FftType::IFFT) { // can permute fft dims without restriction
+        fftType == stablehlo::FftType::IFFT) { // can permute fft dims without
+                                               // restriction
       for (int64_t i = 0; i < nDimFft; ++i) {
         int64_t fftDimIdx = nonFftDims + i;
         if (permutation[fftDimIdx] != fftDimIdx) {
