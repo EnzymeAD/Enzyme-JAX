@@ -20376,6 +20376,166 @@ struct ReshapeInsertionsBroadcastInDimSimplify final
   }
 };
 
+struct TransposeFFT final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeFFT> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto fftOp = op.getOperand().getDefiningOp<stablehlo::FftOp>();
+    if (!fftOp)
+      return failure();
+
+    auto fftLength = llvm::to_vector(fftOp.getFftLength());
+    int64_t nDimFft = fftLength.size();
+    int64_t rank = cast<ShapedType>(op.getOperand().getType()).getRank();
+
+    auto perm = op.getPermutation();
+
+    llvm::errs() << "fftOp: " << fftOp << "\n";
+
+    auto [preTransposePerm, postTransposePerm, newFftLength, needsPostTranspose,
+          invalidMove] =
+        splitPermutation(perm, rank, nDimFft, fftOp.getFftType(), fftLength);
+
+    if (invalidMove)
+      return rewriter.notifyMatchFailure(fftOp,
+                                         "Can't move transpose above FFT");
+
+    auto preTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), fftOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(preTransposePerm));
+    auto newFftOp = rewriter.create<stablehlo::FftOp>(
+        fftOp.getLoc(), preTransposeOp.getResult(), fftOp.getFftType(),
+        fftLength);
+
+    if (needsPostTranspose) {
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+          op, newFftOp.getResult(),
+          rewriter.getDenseI64ArrayAttr(postTransposePerm));
+    } else {
+      rewriter.replaceOp(op, newFftOp.getResult());
+    }
+
+    return success();
+  }
+
+private:
+  bool isIotaVector(SmallVector<int64_t> v) const {
+    for (int64_t i = 0; i < v.size(); ++i) {
+      if (v[i] != i)
+        return false;
+    }
+    return true;
+  }
+
+  std::tuple<SmallVector<int64_t>, SmallVector<int64_t>, SmallVector<int64_t>,
+             bool, bool>
+  splitPermutation(ArrayRef<int64_t> permutation, int64_t rank, int64_t nDimFft,
+                   stablehlo::FftType fftType,
+                   SmallVector<int64_t> fftLength) const {
+    SmallVector<int64_t> preTransposePerm(rank), postTransposePerm(rank);
+    bool needsPostTranspose = false, invalidMove = false;
+    SmallVector<int64_t> newFftLength(fftLength.size());
+
+    std::iota(preTransposePerm.begin(), preTransposePerm.end(), 0);
+    std::iota(postTransposePerm.begin(), postTransposePerm.end(), 0);
+
+    int64_t nonFftDims = rank - nDimFft;
+
+    for (int64_t i = 0; i < rank; ++i) {
+      int64_t target = permutation[i];
+      bool sourceIsNonFft = (i < nonFftDims);
+      bool targetIsNonFft = (target < nonFftDims);
+
+      if (sourceIsNonFft != targetIsNonFft) {
+        // Cross-boundary permutation - this is not a valid move
+        invalidMove = true;
+        break;
+      }
+    }
+
+    if (invalidMove)
+      return {preTransposePerm, postTransposePerm, newFftLength, needsPostTranspose,
+              invalidMove};
+
+    SmallVector<int64_t> nonFftTargets, nonFftSources;
+    for (int64_t i = 0; i < nonFftDims; i++) {
+      int64_t target = permutation[i];
+      if (target < nonFftDims) {
+        nonFftTargets.push_back(target);
+        nonFftSources.push_back(i);
+      }
+    }
+
+    for (size_t i = 0; i < nonFftSources.size(); ++i) {
+      preTransposePerm[nonFftTargets[i]] = nonFftSources[i];
+    }
+
+    if (fftType == stablehlo::FftType::FFT ||
+        fftType == stablehlo::FftType::IFFT) { // can permute fft dims without restriction
+      for (int64_t i = 0; i < nDimFft; ++i) {
+        int64_t fftDimIdx = nonFftDims + i;
+        if (permutation[fftDimIdx] != fftDimIdx) {
+          preTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+          newFftLength[i] = fftLength[permutation[fftDimIdx] - nonFftDims];
+        } else {
+          newFftLength[i] = fftLength[i];
+        }
+      }
+    } else {
+      for (int64_t i = 0; i < nDimFft; ++i) {
+        int64_t fftDimIdx = nonFftDims + i;
+        if (permutation[fftDimIdx] != fftDimIdx) {
+          needsPostTranspose = true;
+          postTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+        }
+      }
+
+      for (int64_t i = 0; i < fftLength.size(); ++i) {
+        newFftLength[i] = fftLength[i];
+      }
+    }
+
+    // TODO: remove from here
+    llvm::errs() << "preTransposePerm: ";
+    for (auto p : preTransposePerm) {
+      llvm::errs() << p << " ";
+    }
+    llvm::errs() << "\n";
+    llvm::errs() << "postTransposePerm: ";
+    for (auto p : postTransposePerm) {
+      llvm::errs() << p << " ";
+    }
+    llvm::errs() << "\n";
+    // TODO: remove till here
+
+    // If we determined iota then we can't move the transpose above the FFT
+    invalidMove = invalidMove || isIotaVector(preTransposePerm);
+    // Adding a couple of sanity checks below to ensure that the permutation
+    // is valid
+    if (!invalidMove) {
+      SmallVector<int64_t> preTransposePerm2(preTransposePerm.size());
+      for (int i = 0; i < preTransposePerm.size(); ++i) {
+        preTransposePerm2[i] = preTransposePerm[i];
+      }
+      std::sort(preTransposePerm2.begin(), preTransposePerm2.end());
+      invalidMove = !isIotaVector(preTransposePerm2);
+    }
+    if (!invalidMove) {
+      SmallVector<int64_t> postTransposePerm2(postTransposePerm.size());
+      for (int i = 0; i < postTransposePerm.size(); ++i) {
+        postTransposePerm2[i] = postTransposePerm[i];
+      }
+      std::sort(postTransposePerm2.begin(), postTransposePerm2.end());
+      invalidMove = !isIotaVector(postTransposePerm2);
+    }
+
+    return {preTransposePerm, postTransposePerm, newFftLength,
+            needsPostTranspose, invalidMove};
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20815,7 +20975,7 @@ struct EnzymeHLOOptPass
                TransposeIota, TransposeReduceWindow, TransposeReduce,
                TransposeSelect, TransposeDynamicSlice, TransposeReverse,
                TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf>(context);
+               TransposeBatchNormGrad, TransposeIf, TransposeFFT>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
