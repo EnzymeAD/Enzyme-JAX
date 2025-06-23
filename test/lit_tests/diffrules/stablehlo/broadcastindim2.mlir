@@ -18,8 +18,7 @@ func.func @main(%arg1: tensor<5x4x3xf32>, %arg2: tensor<10xf32>) -> (tensor<3x4x
 // REVERSE:  func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<10xf32>, %arg2: tensor<3x4x10x5xf32>, %arg3: tensor<10x3xf32>) -> (tensor<5x4x3xf32>, tensor<10xf32>) {
 // REVERSE-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // REVERSE-NEXT:     %0 = stablehlo.reduce(%arg2 init: %cst) applies stablehlo.add across dimensions = [2] : (tensor<3x4x10x5xf32>, tensor<f32>) -> tensor<3x4x5xf32>
-// REVERSE-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [2, 1, 0] : (tensor<3x4x5xf32>) -> tensor<5x4x3x1xf32>
-// REVERSE-NEXT:     %2 = stablehlo.reshape %1 : (tensor<5x4x3x1xf32>) -> tensor<5x4x3xf32>
-// REVERSE-NEXT:     %3 = stablehlo.reduce(%arg3 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<10x3xf32>, tensor<f32>) -> tensor<10xf32>
-// REVERSE-NEXT:     return %2, %3 : tensor<5x4x3xf32>, tensor<10xf32>
+// REVERSE-NEXT:     %1 = stablehlo.transpose %0, dims = [2, 1, 0] : (tensor<3x4x5xf32>) -> tensor<5x4x3xf32>
+// REVERSE-NEXT:     %2 = stablehlo.reduce(%arg3 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<10x3xf32>, tensor<f32>) -> tensor<10xf32>
+// REVERSE-NEXT:     return %1, %2 : tensor<5x4x3xf32>, tensor<10xf32>
 // REVERSE-NEXT: }
