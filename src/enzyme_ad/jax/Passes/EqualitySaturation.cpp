@@ -2610,7 +2610,6 @@ public:
     std::cout << "TIME" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
-    module.dump();
     auto context = module->getContext();
     OpBuilder builder(context);
 
