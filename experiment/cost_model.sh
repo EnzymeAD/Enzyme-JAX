@@ -11,7 +11,7 @@ config_names=(
   "no-zero"
 )
 platforms=("cpu" "gpu")
-models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
+models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
 num_repeats=3

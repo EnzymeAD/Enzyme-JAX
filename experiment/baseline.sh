@@ -1,7 +1,7 @@
 #!/bin/bash
 
 platforms=("cpu" "gpu")
-models=("bert" "gemma" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
+models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 filename=baseline_$(date '+%Y-%m-%d_%H:%M:%S').txt
 num_repeats=9
 
