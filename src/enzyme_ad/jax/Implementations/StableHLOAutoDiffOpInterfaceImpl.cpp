@@ -3326,7 +3326,28 @@ public:
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
-    llvm::errs() << " pre remove: " << *whileOp << "\n";
+    if (op->walk([&](enzyme::SetOp sub){
+                if (sub->getParentOp() != op) {
+                llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+                llvm::errs() << "op: " << *op<< "\n";
+                llvm::errs() << "sub: " << sub<< "\n";
+                return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+                }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(op, "had set op which was not a direct descendant");
+    }
+    if (op->walk([&](enzyme::GetOp sub){
+                if (sub->getParentOp() != op) {
+                llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+                llvm::errs() << "op: " << *op<< "\n";
+                llvm::errs() << "sub: " << sub<< "\n";
+                return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+                }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(op, "had get op which was not a direct descendant");
+    }
 
     for (auto &it : *body) {
       Operation *op = &it;
@@ -3373,12 +3394,20 @@ public:
           op, "WhileOp does not have static iteration count for cache removal");
     }
 
+    DenseMap<Value, SmallVector<Operation*>> updatedGradientUsers;
+
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
       Operation *op = &it;
-
+      
       auto getOp = dyn_cast<enzyme::GetOp>(op);
+      if (getOp && updatedGradients.contains(getOp.getGradient())) {
+        updatedGradientUsers[getOp.getGradient()].push_back(getOp);
+      } else if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+        updatedGradientUsers[setOp.getGradient()].push_back(setOp);
+      }
+
       if (!getOp || updatedGradients.contains(getOp.getGradient()))
         continue;
 
@@ -3407,15 +3436,20 @@ public:
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
+        // here we do a primitive form of mem2reg within the loop. We have a sorted
+        // (by instruction number) list of all users of the instruction.
+        Value val = newArg;
+        for (auto user : updatedGradientUsers[grad]) {
+          if (auto getOp = dyn_cast<enzyme::GetOp>(user)) {
+            rewriter.replaceOp(getOp, val);
+          } else {
+            auto setOp = cast<enzyme::SetOp>(user);
+            val = setOp.getValue();
+            rewriter.eraseOp(setOp);
+          }
+        }
 
-        rewriter.setInsertionPointToStart(body);
-        rewriter.create<enzyme::SetOp>(grad.getLoc(), grad, newArg);
-
-        rewriter.setInsertionPoint(term);
-
-        auto outputVal =
-            rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad).getResult();
-        term->insertOperands(term->getNumOperands(), ValueRange(outputVal));
+        term->insertOperands(term->getNumOperands(), ValueRange(val));
       }
     }
 
