@@ -2,8 +2,10 @@
 
 platforms=("cpu" "gpu")
 models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
-filename=baseline_$(date '+%Y-%m-%d_%H:%M:%S').txt
 num_repeats=9
+
+datetime=$(date '+%Y-%m-%d_%H:%M:%S')
+filename=baseline_$datetime.txt
 
 echo "Baseline" > $filename
 echo "--------------------------" >> $filename
@@ -11,7 +13,7 @@ echo "--------------------------" >> $filename
 for repeat in $(seq 1 $num_repeats); do
     for model in "${models[@]}"; do
         for platform in "${platforms[@]}"; do
-            export EXPERIMENT_NAME="${model}-${platform}"
+            export EXPERIMENT_NAME="${model}-${platform}_${datetime}_run${repeat}"
             export EQSAT_PLATFORM=$platform
     
             if [ "$platform" == "gpu" ]; then

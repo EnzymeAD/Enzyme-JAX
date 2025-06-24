@@ -1,20 +1,21 @@
 #!/bin/bash
 
-configs=(
-  "export FUSION_COSTS=true ZERO_COSTS=true"
-  "export FUSION_COSTS=false ZERO_COSTS=true"
-  "export FUSION_COSTS=true ZERO_COSTS=false"
-)
-config_names=(
-  "baseline"
-  "no-fusion"
-  "no-zero"
-)
 platforms=("cpu" "gpu")
 models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
+num_repeats=3
+
+configs=(
+    "export FUSION_COSTS=true ZERO_COSTS=true"
+    "export FUSION_COSTS=false ZERO_COSTS=true"
+    "export FUSION_COSTS=true ZERO_COSTS=false"
+)
+config_names=(
+    "baseline"
+    "no-fusion"
+    "no-zero"
+)
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=cost_model_$datetime.txt
-num_repeats=3
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME

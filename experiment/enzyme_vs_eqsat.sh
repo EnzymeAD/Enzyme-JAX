@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# Define the combinations of environment variables
-configs=(
-  "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
-)
 platforms=("cpu" "gpu")
 models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
+num_repeats=9
+
+configs=(
+    "export ENZYME_RULES=true MULTI_RULES=false EQSAT_RULES=false"
+)
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=enzyme_vs_eqsat_$datetime.txt
-num_repeats=9
 
 export STATS_FILENAME=stats_enzyme_vs_eqsat_$datetime.csv
 touch $STATS_FILENAME
