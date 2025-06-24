@@ -20525,6 +20525,122 @@ private:
   }
 };
 
+// This applies if reshape expands certain dimensions and transpose doesn't move
+// those dimensions around. See lit_tests/transpose_reshape.mlir for examples of
+// where this is applicable
+struct TransposeReshape final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    auto inputShape = llvm::to_vector(
+        cast<RankedTensorType>(reshapeOp.getOperand().getType()).getShape());
+    auto outputShape =
+        llvm::to_vector(cast<RankedTensorType>(reshapeOp.getType()).getShape());
+
+    auto [validExpansion, dimOrdering, outputIdxStarts, extrasList] =
+        dimOrderingToPreserve(inputShape, outputShape);
+
+    if (!validExpansion)
+      return rewriter.notifyMatchFailure(op, "Invalid expansion for reshape");
+
+    auto permutation = op.getPermutation();
+    SmallVector<int64_t> newPermutation(inputShape.size(), -1);
+
+    if (dimOrdering.size() != inputShape.size())
+      return rewriter.notifyMatchFailure(op, "Invalid dimOrdering");
+
+    for (auto [i, dimList] : llvm::enumerate(dimOrdering)) {
+      if (dimList.size() == 0)
+        return rewriter.notifyMatchFailure(op,
+                                           "Empty dimList. Should not happen!");
+
+      auto firstDim = dimList[0];
+      auto idx = std::find(permutation.begin(), permutation.end(), firstDim);
+      if (idx == permutation.end())
+        return rewriter.notifyMatchFailure(op, "Invalid permutation");
+
+      int64_t index = std::distance(permutation.begin(), idx);
+
+      for (int i = 1; i < dimList.size(); ++i) {
+        if (i + index >= permutation.size() ||
+            permutation[i + index] != dimList[i])
+          return rewriter.notifyMatchFailure(op, "unsupported permutation");
+      }
+    }
+
+    int64_t outputIdx = 0, extras = 0;
+    for (int i = 0; i < inputShape.size(); ++i) {
+      auto transposeIdx = permutation[outputIdx];
+
+      auto idx = std::find(outputIdxStarts.begin(), outputIdxStarts.end(),
+                           transposeIdx);
+      auto index = std::distance(outputIdxStarts.begin(), idx);
+
+      newPermutation[i] = transposeIdx - extrasList[index];
+
+      for (int j = 0; j < dimOrdering.size(); ++j) {
+        if (dimOrdering[j][0] == transposeIdx) {
+          outputIdx += dimOrdering[j].size();
+          break;
+        }
+      }
+    }
+
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), reshapeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newPermutation));
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newTranspose.getResult());
+    return success();
+  }
+
+private:
+  std::tuple<bool, SmallVector<SmallVector<int64_t>>, SmallVector<int64_t>,
+             SmallVector<int64_t>>
+  dimOrderingToPreserve(SmallVector<int64_t> inputShape,
+                        SmallVector<int64_t> outputShape) const {
+    SmallVector<SmallVector<int64_t>> dimOrdering;
+    SmallVector<int64_t> outputIdxStarts, extrasList;
+    bool validExpansion = true;
+
+    int64_t outputIdx = 0, i = 0, extras = 0;
+    for (; i < inputShape.size() && validExpansion &&
+           outputIdx < outputShape.size();
+         ++i) {
+      int64_t outputSize = 1;
+      SmallVector<int64_t> dims;
+
+      outputIdxStarts.push_back(outputIdx);
+      extrasList.push_back(extras);
+
+      do {
+        outputSize *= outputShape[outputIdx];
+        dims.push_back(outputIdx);
+        outputIdx++;
+      } while (outputIdx < outputShape.size() && outputSize < inputShape[i]);
+
+      if (outputSize != inputShape[i]) {
+        validExpansion = false;
+        break;
+      }
+
+      dimOrdering.push_back(dims);
+      extras += dims.size() - 1;
+    }
+
+    if (i != inputShape.size() || outputIdx != outputShape.size())
+      validExpansion = false;
+
+    return {validExpansion, dimOrdering, outputIdxStarts, extrasList};
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -20959,12 +21075,12 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns
-          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
-               TransposeIota, TransposeReduceWindow, TransposeReduce,
-               TransposeSelect, TransposeDynamicSlice, TransposeReverse,
-               TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf, TransposeFFT>(context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
+                   TransposeDUS, TransposeIota, TransposeReduceWindow,
+                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
+                   TransposeReverse, TransposeBatchNormTraining,
+                   TransposeBatchNormInference, TransposeBatchNormGrad,
+                   TransposeIf, TransposeFFT, TransposeReshape>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 

@@ -439,6 +439,7 @@ def optimization_passes(
             "transpose_batch_norm_grad",
             "transpose_if",
             "transpose_fft",
+            "transpose_reshape",
         ]
     elif transpose_propagate == "down":
         transform_passes_list += [
