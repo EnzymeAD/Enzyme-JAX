@@ -3326,27 +3326,29 @@ public:
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
-    if (op->walk([&](enzyme::SetOp sub){
-                if (sub->getParentOp() != op) {
-                llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-                llvm::errs() << "op: " << *op<< "\n";
-                llvm::errs() << "sub: " << sub<< "\n";
-                return WalkResult::interrupt();
-                }
-                return WalkResult::advance();
-                }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(op, "had set op which was not a direct descendant");
+    if (op->walk([&](enzyme::SetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had set op which was not a direct descendant");
     }
-    if (op->walk([&](enzyme::GetOp sub){
-                if (sub->getParentOp() != op) {
-                llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-                llvm::errs() << "op: " << *op<< "\n";
-                llvm::errs() << "sub: " << sub<< "\n";
-                return WalkResult::interrupt();
-                }
-                return WalkResult::advance();
-                }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(op, "had get op which was not a direct descendant");
+    if (op->walk([&](enzyme::GetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had get op which was not a direct descendant");
     }
 
     for (auto &it : *body) {
@@ -3394,13 +3396,13 @@ public:
           op, "WhileOp does not have static iteration count for cache removal");
     }
 
-    DenseMap<Value, SmallVector<Operation*>> updatedGradientUsers;
+    DenseMap<Value, SmallVector<Operation *>> updatedGradientUsers;
 
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
       Operation *op = &it;
-      
+
       auto getOp = dyn_cast<enzyme::GetOp>(op);
       if (getOp && updatedGradients.contains(getOp.getGradient())) {
         updatedGradientUsers[getOp.getGradient()].push_back(getOp);
@@ -3436,8 +3438,8 @@ public:
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
-        // here we do a primitive form of mem2reg within the loop. We have a sorted
-        // (by instruction number) list of all users of the instruction.
+        // here we do a primitive form of mem2reg within the loop. We have a
+        // sorted (by instruction number) list of all users of the instruction.
         Value val = newArg;
         for (auto user : updatedGradientUsers[grad]) {
           if (auto getOp = dyn_cast<enzyme::GetOp>(user)) {
