@@ -776,8 +776,8 @@ class AutoDiffWhileRev
     builder.setInsertionPointToStart(revLoopBody);
 
     int revIdx = 1;
-    for (auto &&[active, operand] :
-         llvm::zip_equal(operandsActive, origBody->getTerminator()->getOperands())) {
+    for (auto &&[active, operand] : llvm::zip_equal(
+             operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
@@ -807,22 +807,24 @@ class AutoDiffWhileRev
     }
 
     {
-    auto origTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
-    auto term = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+      auto origTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
+      auto term = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
 
-    SmallVector<Value> revInnerResults = { term.getResults()[0] } ;
+      SmallVector<Value> revInnerResults = {term.getResults()[0]};
 
-    for (auto &&[active, res] :
-         llvm::zip_equal(operandsActive.slice(1), origTerm.getResults().slice(1, origTerm.getResults().size()))) {
-      if (active) {
-        revInnerResults.push_back(mapping.lookup(res));
+      for (auto &&[active, res] : llvm::zip_equal(
+               operandsActive.slice(1),
+               origTerm.getResults().slice(1, origTerm.getResults().size()))) {
+        if (active) {
+          revInnerResults.push_back(mapping.lookup(res));
+        }
       }
+
+      term.getResultsMutable().assign(revInnerResults);
     }
 
-    term.getResultsMutable().assign(revInnerResults);
-    }
-
-    revLoopBody->getTerminator()->setOperands(1, revLoopBody->getNumArguments() - 1, newResults);
+    revLoopBody->getTerminator()->setOperands(
+        1, revLoopBody->getNumArguments() - 1, newResults);
 
     revOuterBody->getTerminator()->setOperands(
         1, revInner.getNumResults() - 1,
