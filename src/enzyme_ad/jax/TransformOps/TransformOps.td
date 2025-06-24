@@ -2115,3 +2115,7 @@ def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_de
 def ApplyReshapeInsertionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_insertions_broadcast_in_dim_simplify"> {
   let patterns = ["ReshapeInsertionsBroadcastInDimSimplify"];
 }
+
+def ApplyTransposeFFT : EnzymeHLOPatternOp<"transpose_fft"> {
+  let patterns = ["TransposeFFT"];
+}
