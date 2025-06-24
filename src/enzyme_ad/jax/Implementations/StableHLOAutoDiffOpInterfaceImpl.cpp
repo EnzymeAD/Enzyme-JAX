@@ -777,7 +777,7 @@ class AutoDiffWhileRev
 
     int revIdx = 1;
     for (auto &&[active, operand] :
-         llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
+         llvm::zip_equal(operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
@@ -798,7 +798,7 @@ class AutoDiffWhileRev
 
     SmallVector<Value> newResults;
     for (auto &&[active, arg] :
-         llvm::zip(operandsActive, origBody->getArguments())) {
+         llvm::zip_equal(operandsActive, origBody->getArguments())) {
       if (active) {
         newResults.push_back(gutils->diffe(arg, builder));
         if (!gutils->isConstantValue(arg))
@@ -806,20 +806,25 @@ class AutoDiffWhileRev
       }
     }
 
-    Operation *term = revInnerBody->getTerminator();
-    SmallVector<Value> revInnerResults;
-    for (auto res : origBody->getTerminator()->getOperands().slice(
-             1, term->getNumOperands() - 1)) {
-      revInnerResults.push_back(mapping.lookup(res));
+    {
+    auto origTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
+    auto term = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+
+    SmallVector<Value> revInnerResults = { term.getResults()[0] } ;
+
+    for (auto &&[active, res] :
+         llvm::zip_equal(operandsActive.slice(1), origTerm.getResults().slice(1, origTerm.getResults().size()))) {
+      if (active) {
+        revInnerResults.push_back(mapping.lookup(res));
+      }
     }
 
-    term->setOperands(1, revOuter->getNumOperands() - 1, revInnerResults);
+    term.getResultsMutable().assign(revInnerResults);
+    }
 
-    term = revLoopBody->getTerminator();
-    term->setOperands(1, revLoopBody->getNumArguments() - 1, newResults);
+    revLoopBody->getTerminator()->setOperands(1, revLoopBody->getNumArguments() - 1, newResults);
 
-    term = revOuterBody->getTerminator();
-    term->setOperands(
+    revOuterBody->getTerminator()->setOperands(
         1, revInner.getNumResults() - 1,
         revLoop.getResults().slice(1, revInner.getNumResults() - 1));
 
@@ -827,7 +832,7 @@ class AutoDiffWhileRev
 
     revIdx = 1;
     for (auto &&[active, arg] :
-         llvm::zip(operandsActive, orig->getOperands())) {
+         llvm::zip_equal(operandsActive, orig->getOperands())) {
       if (active) {
         if (!gutils->isConstantValue(arg))
           gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
