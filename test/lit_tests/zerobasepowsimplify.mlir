@@ -7,12 +7,12 @@ func.func @main1(%arg0: tensor<10x4xf32>) -> tensor<10x4xf32> {
 }
 
 // CHECK: func.func @main1(%arg0: tensor<10x4xf32>) -> tensor<10x4xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<1.000000e+00> : tensor<10x4xf32>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0x7F800000> : tensor<10x4xf32>
-// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<10x4xf32>
-// CHECK-NEXT:     %0 = stablehlo.compare  GT, %arg0, %cst_1 : (tensor<10x4xf32>, tensor<10x4xf32>) -> tensor<10x4xi1>
-// CHECK-NEXT:     %1 = stablehlo.select %0, %cst_1, %cst_0 : tensor<10x4xi1>, tensor<10x4xf32>
-// CHECK-NEXT:     %2 = stablehlo.compare  EQ, %arg0, %cst_1 : (tensor<10x4xf32>, tensor<10x4xf32>) -> tensor<10x4xi1>
-// CHECK-NEXT:     %3 = stablehlo.select %2, %cst, %1 : tensor<10x4xi1>, tensor<10x4xf32>
+// CHECK-DAG:     %[[cst:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<10x4xf32>
+// CHECK-DAG:     %[[cst0:.+]] = stablehlo.constant dense<0x7F800000> : tensor<10x4xf32>
+// CHECK-DAG:     %[[cst1:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<10x4xf32>
+// CHECK-NEXT:     %0 = stablehlo.compare  GT, %arg0, %[[cst1]] : (tensor<10x4xf32>, tensor<10x4xf32>) -> tensor<10x4xi1>
+// CHECK-NEXT:     %1 = stablehlo.select %0, %[[cst1]], %[[cst0]] : tensor<10x4xi1>, tensor<10x4xf32>
+// CHECK-NEXT:     %2 = stablehlo.compare  EQ, %arg0, %[[cst1]] : (tensor<10x4xf32>, tensor<10x4xf32>) -> tensor<10x4xi1>
+// CHECK-NEXT:     %3 = stablehlo.select %2, %[[cst]], %1 : tensor<10x4xi1>, tensor<10x4xf32>
 // CHECK-NEXT:     return %3 : tensor<10x4xf32>
 // CHECK-NEXT: }

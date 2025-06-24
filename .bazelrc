@@ -5,7 +5,7 @@ common --noenable_bzlmod
 common --noincompatible_enable_cc_toolchain_resolution
 
 common --announce_rc
-
+common --repo_env=USE_PYWRAP_RULES=True
 common --experimental_repo_remote_exec
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 common --cxxopt=-w --host_cxxopt=-w
