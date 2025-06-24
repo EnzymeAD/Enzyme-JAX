@@ -18,6 +18,7 @@
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -631,21 +632,6 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  static void computeOutsideRefs(stablehlo::WhileOp op,
-                                 SetVector<Value> &outsideRefs) {
-    Region *reg = op->getParentRegion();
-    op->walk([&](Operation *child) {
-      if (child == op)
-        return;
-
-      for (Value operand : child->getOperands()) {
-        if (!reg->isProperAncestor(operand.getParentRegion())) {
-          outsideRefs.insert(operand);
-        }
-      }
-    });
-  }
-
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -666,8 +652,8 @@ class AutoDiffWhileRev
     auto outer = gutils->getNewFromOriginal(orig);
 
     SetVector<Value> outsideRefs;
-    computeOutsideRefs(orig, outsideRefs);
-
+    getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+    
     int numOutsideRefs = outsideRefs.size();
     int nargs = caches.size() + 1;
     int nrets = nargs - numOutsideRefs;
@@ -717,18 +703,16 @@ class AutoDiffWhileRev
     else
       builder.setInsertionPointToStart(revOuterBody);
 
-    operands.assign(revOuterBody->getArguments().slice(1).begin(),
-                    revOuterBody->getArguments().slice(1).end());
 
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revOuterBody->getArguments().drop_front());
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
     revInner->removeAttr("enzymexla.enable_checkpointing");
 
     SmallVector<Value> revGradients(
-        revOuterBody->getArguments().slice(1).begin(),
-        revOuterBody->getArguments().slice(1).end());
+        revOuterBody->getArguments().drop_front());
+    
     auto revLoop =
         makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revGradients);
     Block *revLoopBody = &revLoop.getBody().front();
@@ -760,16 +744,13 @@ class AutoDiffWhileRev
     mapping.map(origBody->getArgument(0), currentIV);
 
     for (auto [arg, newArg] :
-         llvm::zip_equal(origBody->getArguments().slice(1),
-                         revInnerBody->getArguments().slice(1)))
+         llvm::zip_equal(origBody->getArguments().drop_front(),
+                         revInnerBody->getArguments().drop_front()))
       mapping.map(arg, newArg);
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
-      for (auto [oldRes, newRes] :
-           llvm::zip_equal(op.getResults(), newOp->getResults()))
-        mapping.map(oldRes, newRes);
     }
     gutils->originalToNewFnOps[orig] = revInner;
 
@@ -828,7 +809,7 @@ class AutoDiffWhileRev
 
     revOuterBody->getTerminator()->setOperands(
         1, revInner.getNumResults() - 1,
-        revLoop.getResults().slice(1, revInner.getNumResults() - 1));
+        revLoop.getResults().drop_front());
 
     builder.setInsertionPointAfter(revOuter);
 
@@ -836,8 +817,9 @@ class AutoDiffWhileRev
     for (auto &&[active, arg] :
          llvm::zip_equal(operandsActive, orig->getOperands())) {
       if (active) {
-        if (!gutils->isConstantValue(arg))
+        if (!gutils->isConstantValue(arg)) {
           gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        }
         revIdx++;
       }
     }
@@ -1051,8 +1033,7 @@ public:
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
-          computeOutsideRefs(cast<stablehlo::WhileOp>(orig), outsideRefs);
-
+          getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
           SmallVector<Value> caches;
 
           // sqrt scheme
@@ -3351,7 +3332,7 @@ public:
     Block *cond = &whileOp.getCond().front();
 
     // Gradients whose values need to be passed as iteration variables.
-    llvm::SmallDenseSet<Value> updatedGradients;
+    llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
