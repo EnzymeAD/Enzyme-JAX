@@ -812,9 +812,9 @@ class AutoDiffWhileRev
 
       SmallVector<Value> revInnerResults = {term.getResults()[0]};
 
-      for (auto &&[active, res] : llvm::zip_equal(
-               operandsActive.slice(1),
-               origTerm.getResults().slice(1, origTerm.getResults().size()))) {
+      for (auto &&[active, res] :
+           llvm::zip_equal(operandsActive.drop_front(),
+                           origTerm.getResults().drop_front())) {
         if (active) {
           revInnerResults.push_back(mapping.lookup(res));
         }
