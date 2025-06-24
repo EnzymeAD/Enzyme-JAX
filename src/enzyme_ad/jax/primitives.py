@@ -862,6 +862,9 @@ def _enzyme_primal_lowering(
 
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        in_idx_map = dict(in_idx_map)
+        out_idx_map = dict(out_idx_map)
+        jit_options = dict(jit_options)
         print_mlir = False
         if "print_mlir" in jit_options:
             print_mlir = jit_options["print_mlir"]
@@ -1313,7 +1316,7 @@ def ffi_call(
         source=source,
         fn=fn,
         argv=argv,
-        out_shapes=out_shapes,
+        out_shapes=tuple(out_shapes),
         lang=lang,
         pipeline_options=pipeline_options,
     )
@@ -1374,10 +1377,16 @@ def hlo_call(
 
     return _enzyme_primal_p.bind(
         *args,
-        source=(in_tree, in_idx_map, out_idx_map, mfunc, jit_options),
+        source=(
+            in_tree,
+            tuple(in_idx_map.items()),
+            tuple(out_idx_map.iterms()),
+            mfunc,
+            tuple(jit_options.items()),
+        ),
         fn=fn,
         argv=argv,
-        out_shapes=out_shapes,
+        out_shapes=tuple(out_shapes),
         lang=LANG_MHLO,
         pipeline_options=JaXPipeline(passes),
     )
@@ -1429,6 +1438,8 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_idx_map = dict(in_idx_map)
+        out_idx_map = dict(out_idx_map)
         act_tup = []
         args = []
 
@@ -1481,7 +1492,13 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         out_idx_map2 = {2 * k: v for k, v in out_idx_map.items()} | {
             2 * k + 1: v for k, v in out_idx_map.items()
         }
-        source = (in_tree, avals, out_idx_map2, mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(out_idx_map2.items()),
+            mfunc,
+            jit_options,
+        )
         shadconv = ffi_call(
             *args,
             out_shapes=outshapes2,
@@ -1586,7 +1603,8 @@ def primal_partial_eval(trace, *args, **kwargs):
     _, acts, _ = arg_activity_from_pipeline(pipeline_options.pass_pipeline())
 
     (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
-
+    in_idx_map = dict(in_idx_map)
+    out_idx_map = dict(out_idx_map)
     primals = []
     tangents = []
     avals = {}
@@ -1623,7 +1641,7 @@ def primal_partial_eval(trace, *args, **kwargs):
     pipeline_options = JaXPipeline(newpasses)
 
     outmap2 = {k // 2: v for k, v in out_idx_map.items() if k % 2 == 0}
-    source = (in_tree, avals, outmap2, mfunc, jit_options)
+    source = (in_tree, tuple(avals.items()), tuple(outmap2.items()), mfunc, jit_options)
 
     primalret = trace.default_process_primitive(
         _enzyme_primal_p,
@@ -1690,6 +1708,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         pipeline_options = JaXPipeline(newpasses)
 
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_idx_map = dict(in_idx_map)
 
         prim_args = prim_args[: len(acts)]
 
@@ -1715,12 +1734,18 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             if v == "enzyme_dup":
                 argidx += 1
 
-        source = (in_tree, avals, outmap, mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(outmap.items()),
+            mfunc,
+            jit_options,
+        )
 
         assert len(outmap) == len(out_shapes2)
         shadconv = _enzyme_primal_p.bind(
             *(prim_args + tuple(shadow_rets2)),
-            out_shapes=out_shapes2,
+            out_shapes=tuple(out_shapes2),
             source=source,
             fn=kwargs["fn"],
             argv=kwargs["argv"],
@@ -1832,7 +1857,13 @@ def enzyme_jax_ir(
 
             out_flat = ffi_call(
                 *args_flat,
-                source=(in_tree, in_idxs, out_idxs, func, jit_options),
+                source=(
+                    in_tree,
+                    tuple(in_idxs.items()),
+                    tuple(out_idxs.items()),
+                    func,
+                    tuple(jit_options.items()),
+                ),
                 fn="",
                 out_shapes=out_shape_flat,
                 argv=argv,
