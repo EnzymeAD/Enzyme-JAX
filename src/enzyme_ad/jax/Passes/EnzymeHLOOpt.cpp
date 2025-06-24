@@ -20387,16 +20387,12 @@ struct TransposeFFT final
       return failure();
 
     auto fftLength = llvm::to_vector(fftOp.getFftLength());
-    int64_t nDimFft = fftLength.size();
-    int64_t rank = cast<ShapedType>(op.getOperand().getType()).getRank();
-
-    auto perm = op.getPermutation();
-
-    llvm::errs() << "fftOp: " << fftOp << "\n";
 
     auto [preTransposePerm, postTransposePerm, newFftLength, needsPostTranspose,
           invalidMove] =
-        splitPermutation(perm, rank, nDimFft, fftOp.getFftType(), fftLength);
+        splitPermutation(op.getPermutation(),
+                         cast<ShapedType>(op.getOperand().getType()).getRank(),
+                         fftLength.size(), fftOp.getFftType(), fftLength);
 
     if (invalidMove)
       return rewriter.notifyMatchFailure(fftOp,
@@ -20407,7 +20403,7 @@ struct TransposeFFT final
         rewriter.getDenseI64ArrayAttr(preTransposePerm));
     auto newFftOp = rewriter.create<stablehlo::FftOp>(
         fftOp.getLoc(), preTransposeOp.getResult(), fftOp.getFftType(),
-        fftLength);
+        newFftLength);
 
     if (needsPostTranspose) {
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
@@ -20484,32 +20480,24 @@ private:
           newFftLength[i] = fftLength[i];
         }
       }
-    } else {
-      for (int64_t i = 0; i < nDimFft; ++i) {
+    } else { // for IRFFT & RFFT we can't move the last dim
+      for (int64_t i = 0; i < nDimFft - 1; ++i) {
         int64_t fftDimIdx = nonFftDims + i;
         if (permutation[fftDimIdx] != fftDimIdx) {
-          needsPostTranspose = true;
-          postTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+          preTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+          newFftLength[i] = fftLength[permutation[fftDimIdx] - nonFftDims];
+        } else {
+          newFftLength[i] = fftLength[i];
         }
       }
 
-      for (int64_t i = 0; i < fftLength.size(); ++i) {
-        newFftLength[i] = fftLength[i];
+      int64_t lastDimIdx = nonFftDims + nDimFft - 1;
+      newFftLength[nDimFft - 1] = fftLength[nDimFft - 1];
+      if (permutation[lastDimIdx] != lastDimIdx) {
+        needsPostTranspose = true;
+        postTransposePerm[lastDimIdx] = permutation[lastDimIdx];
       }
     }
-
-    // TODO: remove from here
-    llvm::errs() << "preTransposePerm: ";
-    for (auto p : preTransposePerm) {
-      llvm::errs() << p << " ";
-    }
-    llvm::errs() << "\n";
-    llvm::errs() << "postTransposePerm: ";
-    for (auto p : postTransposePerm) {
-      llvm::errs() << p << " ";
-    }
-    llvm::errs() << "\n";
-    // TODO: remove till here
 
     // If we determined iota then we can't move the transpose above the FFT
     invalidMove = invalidMove || isIotaVector(preTransposePerm);
