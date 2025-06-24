@@ -653,7 +653,7 @@ class AutoDiffWhileRev
 
     SetVector<Value> outsideRefs;
     getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
-    
+
     int numOutsideRefs = outsideRefs.size();
     int nargs = caches.size() + 1;
     int nrets = nargs - numOutsideRefs;
@@ -703,16 +703,15 @@ class AutoDiffWhileRev
     else
       builder.setInsertionPointToStart(revOuterBody);
 
-
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revOuterBody->getArguments().drop_front());
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
+                                revOuterBody->getArguments().drop_front());
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
     revInner->removeAttr("enzymexla.enable_checkpointing");
 
-    SmallVector<Value> revGradients(
-        revOuterBody->getArguments().drop_front());
-    
+    SmallVector<Value> revGradients(revOuterBody->getArguments().drop_front());
+
     auto revLoop =
         makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revGradients);
     Block *revLoopBody = &revLoop.getBody().front();
@@ -808,8 +807,7 @@ class AutoDiffWhileRev
         1, revLoopBody->getNumArguments() - 1, newResults);
 
     revOuterBody->getTerminator()->setOperands(
-        1, revInner.getNumResults() - 1,
-        revLoop.getResults().drop_front());
+        1, revInner.getNumResults() - 1, revLoop.getResults().drop_front());
 
     builder.setInsertionPointAfter(revOuter);
 
