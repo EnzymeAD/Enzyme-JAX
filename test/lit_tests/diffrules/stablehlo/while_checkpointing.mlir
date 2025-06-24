@@ -74,8 +74,8 @@ module {
 }
 
 // CHECK:  func.func private @diffewith_checkpointing(%arg0: tensor<f64>, %arg1: tensor<f64>) -> (tensor<f64>, tensor<f64>) {
-// CHECK-NEXT:    %[[zero3:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
 // CHECK-NEXT:    %[[c2:.+]] = stablehlo.constant dense<2> : tensor<i64>
+// CHECK-NEXT:    %[[zero3:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
 // CHECK-NEXT:    %[[c3:.+]] = stablehlo.constant dense<3> : tensor<i64>
 // CHECK-NEXT:    %[[c0:.+]] = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %[[c1:.+]] = stablehlo.constant dense<1> : tensor<i64>

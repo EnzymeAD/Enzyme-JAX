@@ -703,25 +703,22 @@ class AutoDiffWhileRev
     else
       builder.setInsertionPointToStart(revOuterBody);
 
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
-                                revOuterBody->getArguments().drop_front());
+    SmallVector<Value> carried;
+    for (int i = 0; i < nrets - 1; i++) {
+      carried.push_back(cacheVals[i]);
+    }
+
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
     revInner->removeAttr("enzymexla.enable_checkpointing");
 
-    SmallVector<Value> revGradients(revOuterBody->getArguments().drop_front());
-
-    auto revLoop =
-        makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revGradients);
+    auto revLoop = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
+                               revOuterBody->getArguments().drop_front());
     Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
-
-    SmallVector<Value> carried;
-    for (int i = 0; i < nrets - 1; i++) {
-      carried.push_back(cacheVals[i]);
-    }
 
     Value innerIV = builder.create<stablehlo::SubtractOp>(
         orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner - 1),
@@ -742,15 +739,27 @@ class AutoDiffWhileRev
     Block *origBody = &orig.getBody().front();
     mapping.map(origBody->getArgument(0), currentIV);
 
-    for (auto [arg, newArg] :
-         llvm::zip_equal(origBody->getArguments().drop_front(),
-                         revInnerBody->getArguments().drop_front()))
-      mapping.map(arg, newArg);
+    for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
+             origBody->getArguments(), revInnerBody->getArguments())) {
+      mapping.map(origarg, revinnerarg);
+    }
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
     }
+    {
+      auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
+      auto newTerm = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+      SmallVector<Value> vals;
+      for (auto v : oldTerm.getResults().drop_front()) {
+        vals.push_back(mapping.lookupOrDefault(v));
+      }
+      newTerm.getResultsMutable()
+          .slice(1, newTerm.getResultsMutable().size() - 1)
+          .assign(vals);
+    }
+
     gutils->originalToNewFnOps[orig] = revInner;
 
     builder.setInsertionPointToStart(revLoopBody);
@@ -786,28 +795,15 @@ class AutoDiffWhileRev
       }
     }
 
-    {
-      auto origTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
-      auto term = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+    cast<stablehlo::ReturnOp>(revLoopBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revLoop.getNumResults() - 1)
+        .assign(newResults);
 
-      SmallVector<Value> revInnerResults = {term.getResults()[0]};
-
-      for (auto &&[active, res] :
-           llvm::zip_equal(operandsActive.drop_front(),
-                           origTerm.getResults().drop_front())) {
-        if (active) {
-          revInnerResults.push_back(mapping.lookup(res));
-        }
-      }
-
-      term.getResultsMutable().assign(revInnerResults);
-    }
-
-    revLoopBody->getTerminator()->setOperands(
-        1, revLoopBody->getNumArguments() - 1, newResults);
-
-    revOuterBody->getTerminator()->setOperands(
-        1, revInner.getNumResults() - 1, revLoop.getResults().drop_front());
+    cast<stablehlo::ReturnOp>(revOuterBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revOuter.getNumResults() - 1)
+        .assign(revLoop.getResults().drop_front());
 
     builder.setInsertionPointAfter(revOuter);
 
@@ -1096,11 +1092,7 @@ public:
             mapping.map(oldIV, newIV);
 
             for (Operation &innerOp : oldInnerBody->without_terminator()) {
-              auto newOp = builder.clone(innerOp, mapping);
-              for (auto [oldRes, newRes] :
-                   llvm::zip_equal(innerOp.getResults(), newOp->getResults())) {
-                mapping.map(oldRes, newRes);
-              }
+              builder.clone(innerOp, mapping);
             }
 
             SmallVector<Value> newReturns;
@@ -3333,6 +3325,8 @@ public:
     llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
+
+    llvm::errs() << " pre remove: " << *whileOp << "\n";
 
     for (auto &it : *body) {
       Operation *op = &it;
