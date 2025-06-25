@@ -447,7 +447,7 @@ public:
         return failure();
       }
     }
-    
+
     // Determine attributes for the target op
     AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
 
