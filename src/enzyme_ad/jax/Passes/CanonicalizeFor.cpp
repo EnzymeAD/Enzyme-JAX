@@ -2879,8 +2879,9 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
                         thenOperationsToYieldIndex, rewriter);
 
       originalYields.emplace_back(yld);
-      if (yld.first)
+      if (yld.first) {
         changed = true;
+      }
     }
 
     // If no changes to yield operands, return failure
@@ -2978,7 +2979,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
       if (!pair.first) {
         newResults.push_back(newIfOp.getResult(pair.second));
       } else {
-        newResults.push_back(mappingAfterIf.lookup(pair.first));
+        newResults.push_back(mappingAfterIf.lookupOrDefault(pair.first));
       }
     }
 
