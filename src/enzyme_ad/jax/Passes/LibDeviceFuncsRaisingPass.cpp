@@ -430,20 +430,17 @@ using UIToFPOpLowering =
 using XOrIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
 
-using CmpIOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::CmpIOp, LLVM::ICmpOp>;
-
 class CmpIOpLowering : public OpRewritePattern<LLVM::ICmpOp> {
 public:
   using OpRewritePattern<LLVM::ICmpOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(LLVM::ICmpOp op,
                                 PatternRewriter &rewriter) const override {
-    if (isa<PointerType>(op.getLhs().getType())) {
+    if (isa<LLVM::LLVMPointerType>(op.getLhs().getType())) {
       return failure();
     }
     if (auto VT = dyn_cast<mlir::VectorType>(op.getLhs().getType())) {
-      if (isa<PointerType>(VT.getElementType())) {
+      if (isa<LLVM::LLVMPointerType>(VT.getElementType())) {
         return failure();
       }
     }
