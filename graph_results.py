@@ -722,7 +722,12 @@ def plot_segmentation(plot_groups):
 
             tau_files = find_all_tau_files(tau_file_example, platform)
             if not tau_files:
-                raise Exception(f"Error: No tau files found for {model_name} on {platform}")
+                raise Exception(f"Error: No tau files found for {model_name} on {device}")
+
+            print(f"files for {model_name} on {device}:")
+            for (tau, filename) in tau_files:
+                print(f"tau={tau} : {filename}")
+            print()
 
             device_models[device].append((model_name, baseline_file, tau_files, platform))
 

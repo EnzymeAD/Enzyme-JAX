@@ -50,11 +50,11 @@ for platform in "${platforms[@]}"; do
             run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
         done
 
-        unset SEGMENTATION_THRESHOLD
-        export SEGMENTATION_OFF=true
-        export EXPERIMENT_NAME="${model}_no_segmentation-${platform}"
+        # unset SEGMENTATION_THRESHOLD
+        # export SEGMENTATION_OFF=true
+        # export EXPERIMENT_NAME="${model}_no_segmentation-${platform}"
 
-        run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
-        unset SEGMENTATION_OFF
+        # run_experiment "$model" "$platform" "$EXPERIMENT_NAME" "$COMMAND"
+        # unset SEGMENTATION_OFF
     done
 done
