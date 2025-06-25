@@ -25,5 +25,10 @@ module {
       %res = llvm.mlir.constant(1 : i32) : i32
       func.return %res : i32
   }
+  // CHECK-NOT: arith.cmpi 
+  func.func @ptr_icmp(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> i1 {
+      %res = llvm.icmp "eq" %arg0, %arg1 : !llvm.ptr
+      func.return %res : i1
+  }
 }
 

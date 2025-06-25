@@ -429,8 +429,40 @@ using UIToFPOpLowering =
     InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
 using XOrIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
-using CmpIOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::CmpIOp, LLVM::ICmpOp>;
+
+class CmpIOpLowering : public OpRewritePattern<LLVM::ICmpOp> {
+public:
+  using OpRewritePattern<LLVM::ICmpOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ICmpOp op,
+                                PatternRewriter &rewriter) const override {
+    if (isa<LLVM::LLVMPointerType>(op.getLhs().getType())) {
+      return failure();
+    }
+    if (auto VT = dyn_cast<mlir::VectorType>(op.getLhs().getType())) {
+      if (isa<LLVM::LLVMPointerType>(VT.getElementType())) {
+        return failure();
+      }
+    }
+
+    // Determine attributes for the target op
+    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
+
+    auto operands = op->getOperands();
+    auto llvmNDVectorTy = operands[0].getType();
+    if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
+      return failure();
+    }
+
+    Operation *newOp = rewriter.create(
+        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
+        operands, op->getResultTypes(), attrConvert.getAttrs());
+
+    rewriter.replaceOp(op, newOp->getResult(0));
+    return success();
+  }
+};
+
 using CmpFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
                                     AttrConvertFastMathFromLLVM>;
