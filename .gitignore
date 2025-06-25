@@ -15,3 +15,4 @@ eqsat_vs_enzyme_*.txt
 cost_model_*.txt
 speedup_comparison_*.pdf
 stats_*.csv
+!stats_segmentation.csv

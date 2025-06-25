@@ -6,7 +6,7 @@ models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" 
 
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=segmentation_$datetime.txt
-segmentation_size_csv="stats_segmentation_2025-03-23_11:58:22.csv"
+segmentation_size_csv="stats_segmentation.csv"
 
 export STATS_FILENAME=stats_segmentation_$datetime.csv
 touch $STATS_FILENAME
