@@ -737,12 +737,11 @@ class AutoDiffWhileRev
             currentStep));
 
     Block *origBody = &orig.getBody().front();
-    mapping.map(origBody->getArgument(0), currentIV);
-
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
              origBody->getArguments(), revInnerBody->getArguments())) {
       mapping.map(origarg, revinnerarg);
     }
+    mapping.map(origBody->getArgument(0), currentIV);
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
