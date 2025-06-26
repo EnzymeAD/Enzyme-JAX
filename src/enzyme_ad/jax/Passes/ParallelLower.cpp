@@ -191,7 +191,6 @@ void ParallelLower::runOnOperation() {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
-    auto callable = caller.getCallableForCallee();
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
@@ -239,7 +238,6 @@ void ParallelLower::runOnOperation() {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
-    auto callable = caller.getCallableForCallee();
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
