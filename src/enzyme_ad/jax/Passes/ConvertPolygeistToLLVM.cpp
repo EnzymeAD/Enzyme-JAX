@@ -115,9 +115,7 @@ struct Memref2PointerOpLowering
     auto LPT = cast<LLVM::LLVMPointerType>(op.getType());
     auto space0 = op.getSource().getType().getMemorySpaceAsInt();
     if (isa<LLVM::LLVMPointerType>(transformed.getSource().getType())) {
-      mlir::Value ptr = rewriter.create<LLVM::BitcastOp>(
-          loc, LLVM::LLVMPointerType::get(op.getContext(), space0),
-          transformed.getSource());
+      mlir::Value ptr = transformed.getSource();
       if (space0 != LPT.getAddressSpace())
         ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, LPT, ptr);
       rewriter.replaceOp(op, {ptr});
@@ -135,8 +133,6 @@ struct Memref2PointerOpLowering
     Value idxs[] = {baseOffset};
     ptr = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
                                        ptr, idxs);
-    ptr = rewriter.create<LLVM::BitcastOp>(
-        loc, LLVM::LLVMPointerType::get(op.getContext(), space0), ptr);
     if (space0 != LPT.getAddressSpace())
       ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, LPT, ptr);
 
@@ -157,14 +153,23 @@ struct Pointer2MemrefOpLowering
     // MemRefDescriptor sourceMemRef(operands.front());
     auto convertedType = getTypeConverter()->convertType(op.getType());
     assert(convertedType && "unexpected failure in memref type conversion");
+    auto space1 = op.getType().getMemorySpaceAsInt();
     if (auto PT = dyn_cast<LLVM::LLVMPointerType>(convertedType)) {
-      rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, PT, adaptor.getSource());
+      mlir::Value ptr = adaptor.getSource();
+      if (space1 != cast<LLVM::LLVMPointerType>(op.getOperand().getType())
+                        .getAddressSpace())
+        ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, PT, ptr);
+      rewriter.replaceOp(op, {ptr});
       return success();
     }
 
     auto descr = MemRefDescriptor::poison(rewriter, loc, convertedType);
-    auto ptr = rewriter.create<LLVM::BitcastOp>(
-        op.getLoc(), descr.getElementPtrType(), adaptor.getSource());
+    Value ptr = adaptor.getSource();
+
+    if (space1 != cast<LLVM::LLVMPointerType>(op.getOperand().getType())
+                      .getAddressSpace())
+      ptr = rewriter.create<LLVM::AddrSpaceCastOp>(
+          loc, descr.getElementPtrType(), ptr);
 
     // Extract all strides and offsets and verify they are static.
     int64_t offset;
