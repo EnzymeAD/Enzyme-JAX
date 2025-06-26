@@ -11,7 +11,7 @@
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
-
+include "EnzymeXLAAttrs.td"
 
 include "mlir/Interfaces/CopyOpInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
@@ -385,20 +385,6 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
 }
 
 // Machine Learning Ops
-
-def EnzymeXLA_GeluApproximation : I32EnumAttr<"GeluApproximation",
-    "Approximation to use for the GELU activation function",
-    [
-      I32EnumAttrCase<"NONE", 0>,
-      I32EnumAttrCase<"TANH", 1>,
-      I32EnumAttrCase<"SIGMOID", 2>
-    ]> {
-  let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla";
-}
-
-def EnzymeXLA_GeluApproximationAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_GeluApproximation, "gelu_approximation">;
 
 def GELUOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the GELU activation function";
