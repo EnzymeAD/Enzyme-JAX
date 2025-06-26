@@ -45,6 +45,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -1557,10 +1558,37 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Location loc = launchOp.getLoc();
 
   GPUErrorOp errOp = nullptr;
+  Block *remainingOpsBlock = nullptr;
   if ((errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp()))) {
     rewriter.setInsertionPoint(errOp);
-    rewriter.eraseOp(errOp.getBody()->getTerminator());
-    rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+    if (errOp->getRegions()[0].hasOneBlock()) {
+      rewriter.eraseOp(errOp.getBody()->getTerminator());
+      rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+      rewriter.setInsertionPoint(errOp);
+    } else {
+      auto *condBlock = rewriter.getInsertionBlock();
+      auto opPosition = rewriter.getInsertionPoint();
+      remainingOpsBlock = rewriter.splitBlock(condBlock, opPosition);
+
+      auto &region = errOp.getRegion();
+      rewriter.setInsertionPointToEnd(condBlock);
+      rewriter.create<cf::BranchOp>(errOp.getLoc(), &region.front());
+
+      for (Block &block : errOp->getRegions()[0]) {
+        if (auto terminator =
+                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+          ValueRange terminatorOperands = terminator->getOperands();
+          rewriter.setInsertionPointToEnd(&block);
+          rewriter.create<cf::BranchOp>(errOp.getLoc(), remainingOpsBlock,
+                                        terminatorOperands);
+          rewriter.eraseOp(terminator);
+        }
+      }
+
+      rewriter.inlineRegionBefore(region, remainingOpsBlock);
+
+      rewriter.setInsertionPoint(launchOp);
+    }
   }
 
   // Create an LLVM global with CUBIN extracted from the kernel annotation and
@@ -1980,9 +2008,54 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   }
 
   if (errOp) {
-    auto cast = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getIndexType(), launchCall->getResult(0));
-    rewriter.replaceOp(errOp, cast->getResults());
+    if (remainingOpsBlock) {
+      auto parent = launchCall->getBlock();
+      assert(parent->getNumSuccessors() == 1);
+      auto resBlk = parent->getSuccessor(0);
+      auto arg = resBlk->addArgument(launchCall->getResultTypes()[0], loc);
+      auto parentBr =
+          llvm::cast<mlir::BranchOpInterface>(parent->getTerminator());
+      do {
+        for (size_t i = 0; i < parentBr->getNumSuccessors(); i++) {
+          if (parentBr->getSuccessor(i) != resBlk)
+            continue;
+          Value rng[] = {launchCall->getResult(0)};
+          parentBr.getSuccessorOperands(i).append(rng);
+        }
+        parentBr = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
+            parentBr->getPrevNode());
+      } while (parentBr);
+
+      DenseSet<Block *> blocks;
+      for (auto pred : resBlk->getPredecessors()) {
+        if (pred == parent)
+          continue;
+        if (blocks.contains(pred))
+          continue;
+        blocks.insert(pred);
+        rewriter.setInsertionPointToStart(pred);
+        auto zero = rewriter.create<arith::ConstantIntOp>(
+            loc, 0, launchCall->getResultTypes()[0]);
+        auto br = llvm::cast<mlir::BranchOpInterface>(pred->getTerminator());
+        do {
+          for (size_t i = 0; i < br->getNumSuccessors(); i++) {
+            if (br->getSuccessor(i) != resBlk)
+              continue;
+            br.getSuccessorOperands(i).append(zero->getResults());
+          }
+          br = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
+              br->getPrevNode());
+        } while (br);
+      }
+      rewriter.setInsertionPointToStart(resBlk);
+      auto cast = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), arg);
+      rewriter.replaceOp(errOp, cast->getResults());
+    } else {
+      auto cast = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), launchCall->getResult(0));
+      rewriter.replaceOp(errOp, cast->getResults());
+    }
   }
 
   return success();
@@ -2247,9 +2320,31 @@ struct ReplaceErrOpWithSuccess : public OpRewritePattern<GPUErrorOp> {
   LogicalResult matchAndRewrite(GPUErrorOp errOp,
                                 PatternRewriter &rewriter) const override {
     rewriter.setInsertionPoint(errOp);
-    rewriter.eraseOp(errOp.getBody()->getTerminator());
-    rewriter.inlineBlockBefore(errOp.getBody(), errOp);
-    rewriter.setInsertionPoint(errOp);
+    if (errOp->getRegions()[0].hasOneBlock()) {
+      rewriter.eraseOp(errOp.getBody()->getTerminator());
+      rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+      rewriter.setInsertionPoint(errOp);
+    } else {
+      auto *condBlock = rewriter.getInsertionBlock();
+      auto opPosition = rewriter.getInsertionPoint();
+      auto *remainingOpsBlock = rewriter.splitBlock(condBlock, opPosition);
+
+      auto &region = errOp.getRegion();
+      rewriter.setInsertionPointToEnd(condBlock);
+      rewriter.create<cf::BranchOp>(errOp.getLoc(), &region.front());
+
+      for (Block &block : errOp->getRegions()[0]) {
+        if (auto terminator =
+                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+          ValueRange terminatorOperands = terminator->getOperands();
+          rewriter.setInsertionPointToEnd(&block);
+          rewriter.create<cf::BranchOp>(errOp.getLoc(), remainingOpsBlock,
+                                        terminatorOperands);
+          rewriter.eraseOp(terminator);
+        }
+      }
+      rewriter.inlineRegionBefore(region, remainingOpsBlock);
+    }
     auto zero = rewriter.create<arith::ConstantIndexOp>(errOp->getLoc(), 0);
     rewriter.replaceOp(errOp, zero->getResults());
     return success();
