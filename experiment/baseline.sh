@@ -15,6 +15,8 @@ for repeat in $(seq 1 $num_repeats); do
         for platform in "${platforms[@]}"; do
             export EXPERIMENT_NAME="${model}-${platform}_${datetime}_run${repeat}"
             export EQSAT_PLATFORM=$platform
+            export ILP_TIME_LIMIT=10
+            export SATURATION_TIME_LIMIT=10
     
             if [ "$platform" == "gpu" ]; then
                 COMMAND="python test/${model}.py"
