@@ -183,6 +183,72 @@ struct GPULaunchRecognitionPass
               block[i] = builder.create<arith::IndexCastOp>(
                   loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
           }
+
+          SmallVector<DictionaryAttr> newArgAttrs;
+          SmallVector<Type> newParamTys;
+          SmallVector<Type> origFuncByValTys;
+          SmallVector<Location> newArgLocs;
+          bool hadByVal = false;
+          for (auto [arg, paramTy, attr] :
+               llvm::zip(args, cur.getFunctionType().getParams(),
+                         *cur.getArgAttrs())) {
+            auto dattr = cast<DictionaryAttr>(attr);
+            auto byVal = dattr.getNamed(LLVM::LLVMDialect::getByValAttrName());
+            if (byVal) {
+              Type valTy = cast<TypeAttr>(byVal->getValue()).getValue();
+              newParamTys.push_back(arg.getType());
+              origFuncByValTys.push_back(valTy);
+              newArgAttrs.push_back(DictionaryAttr::getWithSorted(ctx, {}));
+              hadByVal = true;
+            } else {
+              newParamTys.push_back(paramTy);
+              origFuncByValTys.push_back(paramTy);
+              newArgAttrs.push_back(dattr);
+            }
+            newArgLocs.push_back(arg.getLoc());
+          }
+          if (hadByVal) {
+            // TODO check if it already exists
+            OpBuilder funcBuilder(cur);
+            auto newName = cur.getName() + ".mlir.no_by_val";
+            auto newFunc = funcBuilder.create<LLVM::LLVMFuncOp>(
+                cur->getLoc(), newName.str().c_str(),
+                LLVM::LLVMFunctionType::get(
+                    cur.getFunctionType().getReturnType(), newParamTys,
+                    cur.getFunctionType().isVarArg()),
+                LLVM::Linkage::Private, cur.getDsoLocal(), cur.getCConv(),
+                cur.getComdatAttr(),
+                /* TODO need to put whatever attrs are needed here */
+                ArrayRef<NamedAttribute>{}, newArgAttrs);
+            funcBuilder.cloneRegionBefore(cur.getBody(), newFunc.getBody(),
+                                          newFunc.getBody().end());
+            funcBuilder.createBlock(&*newFunc.getBody().begin(), newParamTys,
+                                    newArgLocs);
+            IRMapping mapping;
+            SmallVector<Value> brArgs;
+            Type llvmInt32Type = IntegerType::get(ctx, 32);
+            auto one =
+                funcBuilder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
+            for (auto [param, origByValType, origType] :
+                 llvm::zip(newFunc.getArguments(), origFuncByValTys,
+                           cur.getFunctionType().getParams())) {
+              if (param.getType() != origType) {
+                assert(isa<LLVM::LLVMPointerType>(origType));
+                auto alloca = funcBuilder.create<LLVM::AllocaOp>(
+                    loc, LLVM::LLVMPointerType::get(ctx), origByValType, one);
+                funcBuilder.create<LLVM::StoreOp>(loc, param, alloca);
+                brArgs.push_back(alloca);
+              } else {
+                brArgs.push_back(param);
+              }
+            }
+            funcBuilder.create<LLVM::BrOp>(
+                loc, brArgs, &*std::next(newFunc.getBody().begin()));
+            cur = newFunc;
+            llvm::errs() << "NEW FUNC\n";
+            cur.dump();
+          }
+
           if (stream.getDefiningOp<LLVM::ZeroOp>()) {
             if (use_launch_func) {
               builder.create<gpu::LaunchFuncOp>(
@@ -194,7 +260,16 @@ struct GPULaunchRecognitionPass
                   launchFunc->getLoc(), grid[0], grid[1], grid[2], block[0],
                   block[1], block[2], shMemSize, nullptr, ValueRange());
               builder.setInsertionPointToStart(&op.getRegion().front());
-              builder.create<LLVM::CallOp>(loc, cur, args);
+              auto newCall = builder.create<LLVM::CallOp>(loc, cur, args);
+              if (newCall.getCalleeFunctionType() != cur.getFunctionType()) {
+                llvm::errs() << "\nWRONG ARG NUM\n";
+                llvm::errs() << *cop << "\n\n"
+                             << *launchFunc << "\n\n"
+                             << *cur << "\n\n"
+                             << *newCall << "\n\n";
+                llvm::errs() << "\nWRONG ARG NUM\n";
+                llvm_unreachable("wrong ");
+              }
               builder.create<gpu::TerminatorOp>(loc);
             }
           } else {
@@ -212,7 +287,18 @@ struct GPULaunchRecognitionPass
                   block[1], block[2], shMemSize, stream.getType(),
                   ValueRange(stream));
               builder.setInsertionPointToStart(&op.getRegion().front());
-              builder.create<LLVM::CallOp>(loc, cur, args);
+              auto newCall = builder.create<LLVM::CallOp>(loc, cur, args);
+
+              if (newCall.getCalleeFunctionType() != cur.getFunctionType()) {
+                llvm::errs() << "\nWRONG ARG NUM\n";
+                llvm::errs() << *cop << "\n\n"
+                             << *launchFunc << "\n\n"
+                             << *cur << "\n\n"
+                             << *newCall << "\n\n";
+                llvm::errs() << "\nWRONG ARG NUM\n";
+                llvm_unreachable("wrong ");
+              }
+
               builder.create<gpu::TerminatorOp>(loc);
             }
           }
