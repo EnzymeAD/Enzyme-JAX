@@ -58,7 +58,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
     exit(1);
   }
 
-  llvm::errs() << " mod: " << *mod << "\n";
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " imported mlir mod: " << *mod << "\n";
+  }
 
   using namespace llvm;
   using namespace mlir;
@@ -119,6 +121,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
     return "";
   }
 
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " final mlir mod: " << *mod << "\n";
+  }
+
   llvm::LLVMContext llvmContext;
   llvmContext.setDiscardValueNames(false);
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
@@ -147,8 +153,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
                                                         strlen("_binary")) +
                           "_gpubin_cst")
                              .str();
-          llvm::errs() << "oldName: " << oldName << "\n";
-          outModule->dump();
+          if (getenv("DEBUG_REACTANT")) {
+            llvm::errs() << "oldName: " << oldName << "\n";
+            llvm::errs() << " gpumod: " << *outModule << "\n";
+          }
           auto oldG = outModule->getGlobalVariable(oldName, true);
           assert(oldG);
           oldG->replaceAllUsesWith(glob);
@@ -161,6 +169,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   std::string res;
   llvm::raw_string_ostream ss(res);
   ss << *outModule;
+
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " final llvm:" << res << "\n";
+  }
 
   return res;
 }
