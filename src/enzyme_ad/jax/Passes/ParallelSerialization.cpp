@@ -10,10 +10,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
 namespace enzyme {
@@ -112,19 +112,20 @@ struct ParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     return success();
   }
 };
-struct SCFParallelSerializationPass : public enzyme::impl::SCFParallelSerializationBase<SCFParallelSerializationPass> {
+struct SCFParallelSerializationPass
+    : public enzyme::impl::SCFParallelSerializationBase<
+          SCFParallelSerializationPass> {
   using SCFParallelSerializationBase::SCFParallelSerializationBase;
 
   void runOnOperation() override {
     auto m = getOperation();
-      RewritePatternSet patterns(&getContext());
-      patterns.insert<ParallelSerialization>(&getContext());
-      GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
-        signalPassFailure();
-        return;
-      }
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ParallelSerialization>(&getContext());
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      signalPassFailure();
+      return;
+    }
   }
 };
 
