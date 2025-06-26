@@ -1606,10 +1606,10 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return std::string(
         llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
   };
-  auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
-    return std::string(
-        llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
-  };
+  // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
+  //   return std::string(
+  //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
+  // };
 
   // Build module constructor and destructor
   ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
@@ -1691,6 +1691,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
           moduleIDPrefix = "__hip_";
           fatMagic = HIPFatMagic;
         }
+        (void)fatbinConstantName;
+        (void)moduleIDSectionName;
 
         // Register modules and functions like clang
         // (clang/CodeGen/CGCUDANV.cpp)
@@ -1872,7 +1874,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             // to pass the GPU DL in here
             DataLayout DLI(moduleOp);
             auto size = DLI.getTypeSize(globalTy);
-            auto ret = rtRegisterVarCallBuilder.create(
+            rtRegisterVarCallBuilder.create(
                 loc, ctorBuilder,
                 {module.getResult(), bitcast, symbolName, symbolName,
                  /*isExtern*/
@@ -1962,8 +1964,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
                      : adaptor.getAsyncDependencies().front();
   // Create array of pointers to kernel arguments.
   auto kernelParams = generateParamsArray(launchOp, adaptor, rewriter);
-  auto nullpointerpointer =
-      rewriter.create<LLVM::ZeroOp>(loc, llvmPointerPointerType);
   Value dynamicSharedMemorySize = launchOp.getDynamicSharedMemorySize()
                                       ? launchOp.getDynamicSharedMemorySize()
                                       : zero;
