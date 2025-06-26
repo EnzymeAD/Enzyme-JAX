@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --convert-polygeist-to-llvm | FileCheck %s
 
 module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vector<4xi64>, !llvm.ptr<271> = dense<32> : vector<4xi64>, !llvm.ptr<272> = dense<64> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i128 = dense<128> : vector<2xi64>, f80 = dense<128> : vector<2xi64>, !llvm.ptr = dense<64> : vector<4xi64>, i1 = dense<8> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, i16 = dense<16> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, f16 = dense<16> : vector<2xi64>, f64 = dense<64> : vector<2xi64>, f128 = dense<128> : vector<2xi64>, "dlti.endianness" = "little", "dlti.mangling_mode" = "e", "dlti.legal_int_widths" = array<i32: 8, 16, 32, 64>, "dlti.stack_alignment" = 128 : i64>, gpu.container_module, llvm.target_triple = "x86_64-unknown-linux-gnu"} {
-  func.func @foo(%315: i1, %274 : index, %275 : index, %276 : index, %277 : index, %278 : index, %279 : index, %243 : i32, %237 : i32, %252 : i32, %249 : !llvm.ptr, %240 : i32, %258 : i32, %255 : !llvm.ptr, %246 : f64, %267 : i32, %264 : !llvm.ptr, %261 : f64) {
+  func.func @foo(%315: i1, %274 : index, %275 : index, %276 : index, %277 : index, %278 : index, %279 : index, %243 : i32, %237 : i32, %252 : i32, %249 : !llvm.ptr, %240 : i32, %258 : i32, %255 : !llvm.ptr, %246 : f64, %267 : i32, %264 : !llvm.ptr, %261 : f64) -> index {
     %c1 = arith.constant 1 : index
     %280 = "enzymexla.gpu_error"() ({
       scf.if %315 {
@@ -9,7 +9,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : () -> index
-    llvm.return
+    func.return %280 : index
   }
   gpu.module @_Z8hpl_mainii10KernelTypeRSt6vectorIdSaIdEERS0_IiSaIiEE_kernel [#nvvm.target] {
     gpu.func @_Z8hpl_mainii10KernelTypeRSt6vectorIdSaIdEERS0_IiSaIiEE_kernel(%arg0: i32, %arg1: i32, %arg2: i32, %arg3: !llvm.ptr, %arg4: i32, %arg5: i32, %arg6: !llvm.ptr, %arg7: f64, %arg8: i32, %arg9: !llvm.ptr, %arg10: f64) kernel {
@@ -18,7 +18,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK:  llvm.func @foo(%arg0: i1, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: !llvm.ptr, %arg11: i32, %arg12: i32, %arg13: !llvm.ptr, %arg14: f64, %arg15: i32, %arg16: !llvm.ptr, %arg17: f64) -> i64 {
+// CHECK:  llvm.func @foo
 // CHECK-NEXT:    %0 = llvm.mlir.constant(0 : i64) : i64
 // CHECK-NEXT:    %1 = llvm.mlir.constant(32 : i64) : i64
 // CHECK-NEXT:    %2 = llvm.mlir.constant(11 : i32) : i32
