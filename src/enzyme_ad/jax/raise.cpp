@@ -89,11 +89,18 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
-  else
+  else {
       pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
-      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
+      "convert-parallel-to-gpu2,lower-affine";
+      if (getenv("REACTANT_OMP")) {
+        pass_pipeline += ",convert-scf-to-openmp";
+      } else {
+	pass_pipeline += ",convert-scf-to-cf";
+      }
+      pass_pipeline += "convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
       "module-to-binary";
+  }
 
   // clang-format on
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
