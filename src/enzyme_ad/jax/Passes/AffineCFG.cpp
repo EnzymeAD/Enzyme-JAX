@@ -5079,7 +5079,9 @@ public:
     SetVector<Operation *> backwardSlice;
     DominanceInfo dominance;
     BackwardSliceOptions options;
-    getBackwardSlice(loadOp.getOperation(), &backwardSlice, options);
+    if (getBackwardSlice(loadOp.getOperation(), &backwardSlice, options)
+            .failed())
+      return failure();
 
     Operation *conditional =
         llvm::find_singleton<Operation>(backwardSlice, [](Operation *op, bool) {
