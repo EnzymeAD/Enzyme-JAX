@@ -20866,7 +20866,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice, 
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
