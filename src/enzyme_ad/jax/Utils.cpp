@@ -610,7 +610,6 @@ bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
   if (block.getNumArguments() != 2)
     return false;
 
-  auto originalValue = block.getArgument(0);
   auto updateValue = block.getArgument(1);
 
   // The block should have exactly one operation (the return)
