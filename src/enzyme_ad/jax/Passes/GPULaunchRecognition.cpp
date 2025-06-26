@@ -322,7 +322,7 @@ enum __device_builtin__ cudaMemcpyKind
             arg = builder.create<arith::IndexCastOp>(
                 call->getLoc(), builder.getIndexType(), arg);
 
-          auto res = builder.create<enzymexla::MemcpyOp>(
+          builder.create<enzymexla::MemcpyOp>(
               call.getLoc(), (mlir::Type) nullptr, ValueRange(), dst, src, arg);
           auto replace =
               builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
