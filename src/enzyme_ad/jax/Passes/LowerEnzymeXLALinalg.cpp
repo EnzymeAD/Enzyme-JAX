@@ -120,7 +120,6 @@ struct LUFactorizationOpLowering
 
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
     auto pivotRank = pivotType.getRank();
-    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
     auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
     auto infoRank = infoType.getRank();
 
@@ -993,7 +992,6 @@ struct QRFactorizationOpLowering
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
     auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
 
     // emit `stablehlo.custom_call` to `@Qr` kernel from XLA
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
