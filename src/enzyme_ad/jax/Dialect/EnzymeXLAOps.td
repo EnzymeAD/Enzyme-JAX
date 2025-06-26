@@ -345,6 +345,8 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
+// Linear Algebra Ops
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
@@ -376,6 +378,51 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
     HLO_Tensor:$tau,
     HLO_Tensor:$info
   );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+// Machine Learning Ops
+
+def EnzymeXLA_GeluApproximation : I32EnumAttr<"GeluApproximation",
+    "Approximation to use for the GELU activation function",
+    [
+      I32EnumAttrCase<"NONE", 0>,
+      I32EnumAttrCase<"TANH", 1>,
+      I32EnumAttrCase<"SIGMOID", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_GeluApproximationAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_GeluApproximation, "gelu_approximation">;
+
+def GELUOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the GELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_GeluApproximationAttr:$gelu_approximation
+  );
+
+  let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input `,` `gelu_approximation` $gelu_approximation attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def RELUOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the RELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs HLO_Tensor:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
