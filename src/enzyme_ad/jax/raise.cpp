@@ -95,7 +95,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp";
       } else {
-	pass_pipeline += ",convert-scf-to-cf";
+	pass_pipeline += ",parallel-serialization";
       }
       pass_pipeline += "convert-polygeist-to-llvm,strip-"
       "gpu-info,gpu-"
