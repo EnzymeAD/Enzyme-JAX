@@ -106,6 +106,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
   }
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " passes to run: " << pass_pipeline << "\n";
+  }
   mlir::PassManager pm(mod->getContext());
   std::string error_message;
   llvm::raw_string_ostream error_stream(error_message);
