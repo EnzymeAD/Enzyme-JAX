@@ -1098,6 +1098,7 @@ def _enzyme_fwd_lowering(
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
             in_tree, ctx.avals_in[::2]
         )
+        jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
