@@ -649,8 +649,6 @@ class AutoDiffWhileRev
       return failure();
     }
 
-    auto outer = gutils->getNewFromOriginal(orig);
-
     SetVector<Value> outsideRefs;
     getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
 
