@@ -4177,7 +4177,9 @@ struct WhileDeadResults final
       SetVector<Operation *> backwardSlice;
       BackwardSliceOptions options;
       options.omitBlockArguments = true;
-      getBackwardSlice(terminatorOperand.get(), &backwardSlice, options);
+      if (getBackwardSlice(terminatorOperand.get(), &backwardSlice, options)
+              .failed())
+        return false;
       for (Operation *op : backwardSlice) {
         if (llvm::is_contained(op->getOperands(), bodyArgument)) {
           retryIfNewDead = true;
@@ -6151,7 +6153,7 @@ struct NoNanZeroBasePowSimplify final
               op.getLoc(), op.getType(),
               cast<ElementsAttr>(makeAttr(
                   op.getType(), std::numeric_limits<float>::infinity()))));
-      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
           op,
           rewriter.create<stablehlo::CompareOp>(
               op.getLoc(), op.getRhs(), zero,
@@ -15528,12 +15530,6 @@ struct ScatterIndicesAreUnique
       auto dimNumbers = op.getScatterDimensionNumbers();
       int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
 
-      int64_t numTuples = 1;
-      for (int64_t i = 0; i < shape.size(); ++i) {
-        if (i != indexVectorDim) {
-          numTuples *= shape[i];
-        }
-      }
       int64_t tupleSize = shape[indexVectorDim];
 
       SmallVector<int64_t> strides(shape.size());
@@ -20574,7 +20570,7 @@ struct TransposeReshape final
       }
     }
 
-    int64_t outputIdx = 0, extras = 0;
+    int64_t outputIdx = 0;
     for (int i = 0; i < inputShape.size(); ++i) {
       auto transposeIdx = permutation[outputIdx];
 
