@@ -30,6 +30,7 @@
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext Context;
+  Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
   auto llvmModule =
       llvm::parseIR(llvm::MemoryBufferRef(input, "conversion"), Err, Context);
@@ -119,6 +120,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   }
 
   llvm::LLVMContext llvmContext;
+  llvmContext.setDiscardValueNames(false);
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
 
   if (auto F = outModule->getFunction("mgpuModuleLoad")) {
