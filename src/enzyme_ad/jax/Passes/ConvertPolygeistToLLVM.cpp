@@ -1584,7 +1584,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       }
 
       rewriter.inlineRegionBefore(region, remainingOpsBlock);
-      rewriter.setInsertionPointToStart(remainingOpsBlock);
+
+      rewriter.setInsertionPoint(launchOp->getBlock()->getTerminator());
     }
   }
 
