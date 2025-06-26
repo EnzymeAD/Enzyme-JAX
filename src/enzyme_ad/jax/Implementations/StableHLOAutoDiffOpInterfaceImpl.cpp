@@ -18,6 +18,7 @@
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -631,21 +632,6 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  static void computeOutsideRefs(stablehlo::WhileOp op,
-                                 SetVector<Value> &outsideRefs) {
-    Region *reg = op->getParentRegion();
-    op->walk([&](Operation *child) {
-      if (child == op)
-        return;
-
-      for (Value operand : child->getOperands()) {
-        if (!reg->isProperAncestor(operand.getParentRegion())) {
-          outsideRefs.insert(operand);
-        }
-      }
-    });
-  }
-
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -666,7 +652,7 @@ class AutoDiffWhileRev
     auto outer = gutils->getNewFromOriginal(orig);
 
     SetVector<Value> outsideRefs;
-    computeOutsideRefs(orig, outsideRefs);
+    getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
 
     int numOutsideRefs = outsideRefs.size();
     int nargs = caches.size() + 1;
@@ -717,28 +703,22 @@ class AutoDiffWhileRev
     else
       builder.setInsertionPointToStart(revOuterBody);
 
-    operands.assign(revOuterBody->getArguments().slice(1).begin(),
-                    revOuterBody->getArguments().slice(1).end());
+    SmallVector<Value> carried;
+    for (int i = 0; i < nrets - 1; i++) {
+      carried.push_back(cacheVals[i]);
+    }
 
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, operands);
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
     revInner->removeAttr("enzymexla.enable_checkpointing");
 
-    SmallVector<Value> revGradients(
-        revOuterBody->getArguments().slice(1).begin(),
-        revOuterBody->getArguments().slice(1).end());
-    auto revLoop =
-        makeForLoop(builder, orig.getLoc(), 0, nInner, 1, revGradients);
+    auto revLoop = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
+                               revOuterBody->getArguments().drop_front());
     Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
-
-    SmallVector<Value> carried;
-    for (int i = 0; i < nrets - 1; i++) {
-      carried.push_back(cacheVals[i]);
-    }
 
     Value innerIV = builder.create<stablehlo::SubtractOp>(
         orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner - 1),
@@ -757,27 +737,35 @@ class AutoDiffWhileRev
             currentStep));
 
     Block *origBody = &orig.getBody().front();
+    for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
+             origBody->getArguments(), revInnerBody->getArguments())) {
+      mapping.map(origarg, revinnerarg);
+    }
     mapping.map(origBody->getArgument(0), currentIV);
-
-    for (auto [arg, newArg] :
-         llvm::zip_equal(origBody->getArguments().slice(1),
-                         revInnerBody->getArguments().slice(1)))
-      mapping.map(arg, newArg);
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
-      for (auto [oldRes, newRes] :
-           llvm::zip_equal(op.getResults(), newOp->getResults()))
-        mapping.map(oldRes, newRes);
     }
+    {
+      auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
+      auto newTerm = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+      SmallVector<Value> vals;
+      for (auto v : oldTerm.getResults().drop_front()) {
+        vals.push_back(mapping.lookupOrDefault(v));
+      }
+      newTerm.getResultsMutable()
+          .slice(1, newTerm.getResultsMutable().size() - 1)
+          .assign(vals);
+    }
+
     gutils->originalToNewFnOps[orig] = revInner;
 
     builder.setInsertionPointToStart(revLoopBody);
 
     int revIdx = 1;
-    for (auto &&[active, operand] :
-         llvm::zip(operandsActive, origBody->getTerminator()->getOperands())) {
+    for (auto &&[active, operand] : llvm::zip_equal(
+             operandsActive, origBody->getTerminator()->getOperands())) {
       if (active) {
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
@@ -798,7 +786,7 @@ class AutoDiffWhileRev
 
     SmallVector<Value> newResults;
     for (auto &&[active, arg] :
-         llvm::zip(operandsActive, origBody->getArguments())) {
+         llvm::zip_equal(operandsActive, origBody->getArguments())) {
       if (active) {
         newResults.push_back(gutils->diffe(arg, builder));
         if (!gutils->isConstantValue(arg))
@@ -806,31 +794,25 @@ class AutoDiffWhileRev
       }
     }
 
-    Operation *term = revInnerBody->getTerminator();
-    SmallVector<Value> revInnerResults;
-    for (auto res : origBody->getTerminator()->getOperands().slice(
-             1, term->getNumOperands() - 1)) {
-      revInnerResults.push_back(mapping.lookup(res));
-    }
+    cast<stablehlo::ReturnOp>(revLoopBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revLoop.getNumResults() - 1)
+        .assign(newResults);
 
-    term->setOperands(1, revOuter->getNumOperands() - 1, revInnerResults);
-
-    term = revLoopBody->getTerminator();
-    term->setOperands(1, revLoopBody->getNumArguments() - 1, newResults);
-
-    term = revOuterBody->getTerminator();
-    term->setOperands(
-        1, revInner.getNumResults() - 1,
-        revLoop.getResults().slice(1, revInner.getNumResults() - 1));
+    cast<stablehlo::ReturnOp>(revOuterBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revOuter.getNumResults() - 1)
+        .assign(revLoop.getResults().drop_front());
 
     builder.setInsertionPointAfter(revOuter);
 
     revIdx = 1;
     for (auto &&[active, arg] :
-         llvm::zip(operandsActive, orig->getOperands())) {
+         llvm::zip_equal(operandsActive, orig->getOperands())) {
       if (active) {
-        if (!gutils->isConstantValue(arg))
+        if (!gutils->isConstantValue(arg)) {
           gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        }
         revIdx++;
       }
     }
@@ -1044,8 +1026,7 @@ public:
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
-          computeOutsideRefs(cast<stablehlo::WhileOp>(orig), outsideRefs);
-
+          getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
           SmallVector<Value> caches;
 
           // sqrt scheme
@@ -1110,11 +1091,7 @@ public:
             mapping.map(oldIV, newIV);
 
             for (Operation &innerOp : oldInnerBody->without_terminator()) {
-              auto newOp = builder.clone(innerOp, mapping);
-              for (auto [oldRes, newRes] :
-                   llvm::zip_equal(innerOp.getResults(), newOp->getResults())) {
-                mapping.map(oldRes, newRes);
-              }
+              builder.clone(innerOp, mapping);
             }
 
             SmallVector<Value> newReturns;
@@ -3344,9 +3321,34 @@ public:
     Block *cond = &whileOp.getCond().front();
 
     // Gradients whose values need to be passed as iteration variables.
-    llvm::SmallDenseSet<Value> updatedGradients;
+    llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
+
+    if (op->walk([&](enzyme::SetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had set op which was not a direct descendant");
+    }
+    if (op->walk([&](enzyme::GetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had get op which was not a direct descendant");
+    }
 
     for (auto &it : *body) {
       Operation *op = &it;
@@ -3393,12 +3395,20 @@ public:
           op, "WhileOp does not have static iteration count for cache removal");
     }
 
+    DenseMap<Value, SmallVector<Operation *>> updatedGradientUsers;
+
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
       Operation *op = &it;
 
       auto getOp = dyn_cast<enzyme::GetOp>(op);
+      if (getOp && updatedGradients.contains(getOp.getGradient())) {
+        updatedGradientUsers[getOp.getGradient()].push_back(getOp);
+      } else if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+        updatedGradientUsers[setOp.getGradient()].push_back(setOp);
+      }
+
       if (!getOp || updatedGradients.contains(getOp.getGradient()))
         continue;
 
@@ -3427,15 +3437,20 @@ public:
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
+        // here we do a primitive form of mem2reg within the loop. We have a
+        // sorted (by instruction number) list of all users of the instruction.
+        Value val = newArg;
+        for (auto user : updatedGradientUsers[grad]) {
+          if (auto getOp = dyn_cast<enzyme::GetOp>(user)) {
+            rewriter.replaceOp(getOp, val);
+          } else {
+            auto setOp = cast<enzyme::SetOp>(user);
+            val = setOp.getValue();
+            rewriter.eraseOp(setOp);
+          }
+        }
 
-        rewriter.setInsertionPointToStart(body);
-        rewriter.create<enzyme::SetOp>(grad.getLoc(), grad, newArg);
-
-        rewriter.setInsertionPoint(term);
-
-        auto outputVal =
-            rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad).getResult();
-        term->insertOperands(term->getNumOperands(), ValueRange(outputVal));
+        term->insertOperands(term->getNumOperands(), ValueRange(val));
       }
     }
 
