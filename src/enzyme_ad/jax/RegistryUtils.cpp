@@ -291,6 +291,8 @@ void initializePasses() {
   mlir::enzyme::registerEnzymeLiftControlFlowToSCFPass();
   mlir::arith::registerArithPasses();
 
+  mlir::registerSCFToControlFlowPass();
+
   mlir::registerGPUPasses();
 
   // Transform dialect and extensions.
