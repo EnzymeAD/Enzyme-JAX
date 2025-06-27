@@ -313,7 +313,13 @@ def ConvertPolygeistToLLVM
     Option<"useCStyleMemRef", "use-c-style-memref", "bool",
            /*default=*/"true",
            "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">
+           "the default MLIR descriptor structure">,
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">
   ];
 }
 
