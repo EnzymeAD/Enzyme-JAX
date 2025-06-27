@@ -62,6 +62,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
     llvm::errs() << " imported mlir mod: " << *mod << "\n";
   }
 
+  std::string backend = "cuda";
+  if (auto be = getenv("REACTANT_BACKEND")) {
+    backend = be
+  }
   using namespace llvm;
   using namespace mlir;
   // clang-format off
@@ -97,7 +101,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       } else {
 	pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "convert-polygeist-to-llvm,strip-"
+      pass_pipeline += "convert-polygeist-to-llvm{";
+      pass_pipeline += backend;
+      pass_pipeline += "},strip-"
       "gpu-info,gpu-"
       "module-to-binary";
   }

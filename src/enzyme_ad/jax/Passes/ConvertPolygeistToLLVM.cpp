@@ -40,6 +40,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -2735,6 +2736,260 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CMemcpyOpLowering>(typeConverter);
 }
 
+struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
+  using ConvertOpToLLVMPattern<gpu::ShuffleOp>::ConvertOpToLLVMPattern;
+
+  /// Convert gpu dialect shfl mode enum to the equivalent nvvm one.
+  static NVVM::ShflKind convertShflKind(gpu::ShuffleMode mode) {
+    switch (mode) {
+    case gpu::ShuffleMode::XOR:
+      return NVVM::ShflKind::bfly;
+    case gpu::ShuffleMode::UP:
+      return NVVM::ShflKind::up;
+    case gpu::ShuffleMode::DOWN:
+      return NVVM::ShflKind::down;
+    case gpu::ShuffleMode::IDX:
+      return NVVM::ShflKind::idx;
+    }
+    llvm_unreachable("unknown shuffle mode");
+  }
+
+  /// Lowers a shuffle to the corresponding NVVM op.
+  ///
+  /// Convert the `width` argument into an activeMask (a bitmask which specifies
+  /// which threads participate in the shuffle) and a maskAndClamp (specifying
+  /// the highest lane which participates in the shuffle).
+  ///
+  ///     %one = llvm.constant(1 : i32) : i32
+  ///     %minus_one = llvm.constant(-1 : i32) : i32
+  ///     %thirty_two = llvm.constant(32 : i32) : i32
+  ///     %num_lanes = llvm.sub %thirty_two, %width : i32
+  ///     %active_mask = llvm.lshr %minus_one, %num_lanes : i32
+  ///     %mask_and_clamp = llvm.sub %width, %one : i32
+  ///     %shfl = nvvm.shfl.sync.bfly %active_mask, %value, %offset,
+  ///         %mask_and_clamp : !llvm<"{ float, i1 }">
+  ///     %shfl_value = llvm.extractvalue %shfl[0] :
+  ///         !llvm<"{ float, i1 }">
+  ///     %shfl_pred = llvm.extractvalue %shfl[1] :
+  ///         !llvm<"{ float, i1 }">
+  LogicalResult
+  matchAndRewrite(gpu::ShuffleOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+
+    auto valueTy = adaptor.getValue().getType();
+    auto int32Type = IntegerType::get(rewriter.getContext(), 32);
+    auto predTy = IntegerType::get(rewriter.getContext(), 1);
+
+    Value one = rewriter.create<LLVM::ConstantOp>(loc, int32Type, 1);
+    Value minusOne = rewriter.create<LLVM::ConstantOp>(loc, int32Type, -1);
+    Value thirtyTwo = rewriter.create<LLVM::ConstantOp>(loc, int32Type, 32);
+    Value numLeadInactiveLane = rewriter.create<LLVM::SubOp>(
+        loc, int32Type, thirtyTwo, adaptor.getWidth());
+    // Bit mask of active lanes: `(-1) >> (32 - activeWidth)`.
+    Value activeMask = rewriter.create<LLVM::LShrOp>(loc, int32Type, minusOne,
+                                                     numLeadInactiveLane);
+    Value maskAndClamp;
+    if (op.getMode() == gpu::ShuffleMode::UP) {
+      // Clamp lane: `32 - activeWidth`
+      maskAndClamp = numLeadInactiveLane;
+    } else {
+      // Clamp lane: `activeWidth - 1`
+      maskAndClamp =
+          rewriter.create<LLVM::SubOp>(loc, int32Type, adaptor.getWidth(), one);
+    }
+
+    bool predIsUsed = !op->getResult(1).use_empty();
+    UnitAttr returnValueAndIsValidAttr = nullptr;
+    Type resultTy = valueTy;
+    if (predIsUsed) {
+      returnValueAndIsValidAttr = rewriter.getUnitAttr();
+      resultTy = LLVM::LLVMStructType::getLiteral(rewriter.getContext(),
+                                                  {valueTy, predTy});
+    }
+    Value shfl = rewriter.create<NVVM::ShflOp>(
+        loc, resultTy, activeMask, adaptor.getValue(), adaptor.getOffset(),
+        maskAndClamp, convertShflKind(op.getMode()), returnValueAndIsValidAttr);
+    if (predIsUsed) {
+      Value shflValue = rewriter.create<LLVM::ExtractValueOp>(loc, shfl, 0);
+      Value isActiveSrcLane =
+          rewriter.create<LLVM::ExtractValueOp>(loc, shfl, 1);
+      rewriter.replaceOp(op, {shflValue, isActiveSrcLane});
+    } else {
+      rewriter.replaceOp(op, {shfl, nullptr});
+    }
+    return success();
+  }
+};
+
+struct GPULaneIdOpToNVVM : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
+  using ConvertOpToLLVMPattern<gpu::LaneIdOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::LaneIdOp op, gpu::LaneIdOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *context = rewriter.getContext();
+    LLVM::ConstantRangeAttr bounds = nullptr;
+    if (std::optional<APInt> upperBound = op.getUpperBound())
+      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
+          /*bitWidth=*/32, /*lower=*/0, upperBound->getZExtValue());
+    else
+      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
+          /*bitWidth=*/32, /*lower=*/0, /*upper=*/kWarpSize);
+    Value newOp =
+        rewriter.create<NVVM::LaneIdOp>(loc, rewriter.getI32Type(), bounds);
+    // Truncate or extend the result depending on the index bitwidth specified
+    // by the LLVMTypeConverter options.
+    const unsigned indexBitwidth = getTypeConverter()->getIndexTypeBitwidth();
+    if (indexBitwidth > 32) {
+      newOp = rewriter.create<LLVM::SExtOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp);
+    } else if (indexBitwidth < 32) {
+      newOp = rewriter.create<LLVM::TruncOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp);
+    }
+    rewriter.replaceOp(op, {newOp});
+    return success();
+  }
+};
+
+struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
+  using ConvertOpToLLVMPattern<gpu::BarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    return success();
+  }
+};
+
+namespace mlir {
+namespace gpu {
+namespace index_lowering {
+enum class IndexKind : uint32_t { Other = 0, Block = 1, Grid = 2 };
+enum class IntrType : uint32_t {
+  None = 0,
+  Id = 1,
+  Dim = 2,
+};
+
+// Rewriting that replaces Op with XOp, YOp, or ZOp depending on the dimension
+// that Op operates on.  Op is assumed to return an `index` value and
+// XOp, YOp and ZOp are assumed to return an `llvm.i32` value.  Depending on
+// `indexBitwidth`, sign-extend or truncate the resulting value to match the
+// bitwidth expected by the consumers of the value.
+template <typename Op, typename XOp, typename YOp, typename ZOp>
+struct OpLowering : public ConvertOpToLLVMPattern<Op> {
+private:
+  unsigned indexBitwidth;
+  IndexKind indexKind;
+  IntrType intrType;
+
+public:
+  explicit OpLowering(const LLVMTypeConverter &typeConverter,
+                      PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+        indexBitwidth(typeConverter.getIndexTypeBitwidth()),
+        indexKind(IndexKind::Other), intrType(IntrType::None) {}
+
+  explicit OpLowering(const LLVMTypeConverter &typeConverter,
+                      IndexKind indexKind, IntrType intrType,
+                      PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+        indexBitwidth(typeConverter.getIndexTypeBitwidth()),
+        indexKind(indexKind), intrType(intrType) {}
+
+  // Convert the kernel arguments to an LLVM type, preserve the rest.
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *context = rewriter.getContext();
+    Operation *newOp;
+    switch (op.getDimension()) {
+    case gpu::Dimension::x:
+      newOp = rewriter.create<XOp>(loc, IntegerType::get(context, 32));
+      break;
+    case gpu::Dimension::y:
+      newOp = rewriter.create<YOp>(loc, IntegerType::get(context, 32));
+      break;
+    case gpu::Dimension::z:
+      newOp = rewriter.create<ZOp>(loc, IntegerType::get(context, 32));
+      break;
+    }
+
+    // Order of priority for bounds:
+    // 1. The upper_bound attribute
+    // 2. Inherent attributes on a surrounding gpu.func
+    // 3. Discardable attributes on a surrounding function of any kind
+    // The below code handles these in reverse order so that more important
+    // sources overwrite less important ones.
+    DenseI32ArrayAttr funcBounds = nullptr;
+    if (auto funcOp = op->template getParentOfType<FunctionOpInterface>()) {
+      switch (indexKind) {
+      case IndexKind::Block: {
+        auto blockHelper =
+            gpu::GPUDialect::KnownBlockSizeAttrHelper(op.getContext());
+        if (blockHelper.isAttrPresent(funcOp))
+          funcBounds = blockHelper.getAttr(funcOp);
+        break;
+      }
+      case IndexKind::Grid: {
+        auto gridHelper =
+            gpu::GPUDialect::KnownGridSizeAttrHelper(op.getContext());
+        if (gridHelper.isAttrPresent(funcOp))
+          funcBounds = gridHelper.getAttr(funcOp);
+        break;
+      }
+      case IndexKind::Other:
+        break;
+      }
+    }
+    if (auto gpuFunc = op->template getParentOfType<gpu::GPUFuncOp>()) {
+      switch (indexKind) {
+      case IndexKind::Block:
+        funcBounds = gpuFunc.getKnownBlockSizeAttr();
+        break;
+      case IndexKind::Grid:
+        funcBounds = gpuFunc.getKnownGridSizeAttr();
+        break;
+      case IndexKind::Other:
+        break;
+      }
+    }
+    std::optional<int32_t> upperBound;
+    if (funcBounds)
+      upperBound =
+          funcBounds.asArrayRef()[static_cast<uint32_t>(op.getDimension())];
+    if (auto opBound = op.getUpperBound())
+      upperBound = opBound->getZExtValue();
+
+    if (upperBound && intrType != IntrType::None) {
+      int32_t min = (intrType == IntrType::Dim ? 1 : 0);
+      int32_t max = *upperBound == std::numeric_limits<int32_t>::max()
+                        ? *upperBound
+                        : *upperBound + (intrType == IntrType::Id ? 0 : 1);
+      newOp->setAttr("range", LLVM::ConstantRangeAttr::get(
+                                  rewriter.getContext(), 32, min, max));
+    }
+    if (indexBitwidth > 32) {
+      newOp = rewriter.create<LLVM::SExtOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp->getResult(0));
+    } else if (indexBitwidth < 32) {
+      newOp = rewriter.create<LLVM::TruncOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp->getResult(0));
+    }
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+} // namespace index_lowering
+} // namespace gpu
+} // namespace mlir
+
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
 /// pointer to arrays of arrays.
@@ -2750,6 +3005,45 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                       gpuTarget == "cuda"
                           ? NVVM::NVVMDialect::getKernelFuncAttrName()
                           : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
+  if (gpuTarget == "cuda") {
+    using namespace mlir::gpu::index_lowering;
+    PatternBenefit benefit(1);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::ThreadIdOp, NVVM::ThreadIdXOp,
+                                        NVVM::ThreadIdYOp, NVVM::ThreadIdZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Id, benefit);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::BlockDimOp, NVVM::BlockDimXOp,
+                                        NVVM::BlockDimYOp, NVVM::BlockDimZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterIdOp, NVVM::ClusterIdXOp, NVVM::ClusterIdYOp,
+        NVVM::ClusterIdZOp>>(typeConverter, IndexKind::Other, IntrType::Id,
+                             benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
+        NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
+                              benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
+        NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
+        NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::BlockIdOp, NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::GridDimOp, NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
+    patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(typeConverter,
+                                                          benefit);
+
+    populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
+    patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
+  }
 }
 
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
@@ -2810,14 +3104,25 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
+    {
+      LLVMConversionTarget target(getContext());
+      target.addLegalDialect<NVVM::NVVMDialect>();
+      RewritePatternSet patterns(&getContext());
+      // Insert our custom version of GPUFuncLowering
+      if (useCStyleMemRef) {
+        populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+      }
+
+      m->walk([&](gpu::GPUModuleOp mod) {
+        if (failed(applyPartialConversion(mod, target, std::move(patterns))))
+          signalPassFailure();
+      });
+    }
+
+    LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
 
-    auto gpuTarget = "cuda";
-
-    // Insert our custom version of GPUFuncLowering
-    if (useCStyleMemRef) {
-      populateCStyleGPUFuncLoweringPatterns(patterns, converter, gpuTarget);
-    }
+    std::string gpuTarget = backend;
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
@@ -2879,7 +3184,6 @@ struct ConvertPolygeistToLLVMPass
              convertedOperandTypes == op->getOperandTypes();
     };
 
-    LLVMConversionTarget target(getContext());
     configureOpenMPToLLVMConversionLegality(target, converter);
     target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
                         scf::ExecuteRegionOp, func::FuncOp>();
