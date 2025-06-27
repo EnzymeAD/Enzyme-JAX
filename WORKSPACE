@@ -1,5 +1,6 @@
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
+
 hedron_compile_commands_workspace()
 
 load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
@@ -8,9 +9,13 @@ load("@hedron_compile_commands//:workspace_setup_transitive_transitive.bzl", "he
 load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
 
 hedron_compile_commands_setup()
+
 hedron_compile_commands_setup_transitive()
+
 hedron_compile_commands_setup_transitive_transitive()
+
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # LLVM_COMMIT = "1340ecf0ba4b38bae9de9781da72b9a72abd3fbe"
@@ -47,63 +52,84 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # )
 
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
+
 jax_workspace()
 
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
+
 xla_workspace()
 
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
+
 enzyme_workspace()
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
+
 python_init_rules()
 
 load("@xla//third_party/py:python_init_repositories.bzl", "python_init_repositories")
+
 python_init_repositories(
+    local_wheel_inclusion_list = [
+        "enzyme_ad*",
+    ],
     requirements = {
         "3.10": "//builddeps:requirements_lock_3_10.txt",
         "3.11": "//builddeps:requirements_lock_3_11.txt",
         "3.12": "//builddeps:requirements_lock_3_12.txt",
     },
-    local_wheel_inclusion_list = [
-        "enzyme_ad*",
-    ]
 )
 
 load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains")
+
 python_init_toolchains()
 
 load("@xla//third_party/py:python_init_pip.bzl", "python_init_pip")
+
 python_init_pip()
 
 load("@pypi//:requirements.bzl", "install_deps")
+
 install_deps()
 
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
+
 llvm("llvm-raw")
+
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
-llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
+
+llvm_configure(
+    name = "llvm-project",
+    targets = LLVM_TARGETS,
+)
 
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+
 flatbuffers()
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
+
 xla_workspace4()
 
 load("@xla//:workspace3.bzl", "xla_workspace3")
+
 xla_workspace3()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
+
 xla_workspace2()
 
 load("@xla//:workspace1.bzl", "xla_workspace1")
+
 xla_workspace1()
 
 load("@xla//:workspace0.bzl", "xla_workspace0")
+
 xla_workspace0()
 
 load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
+
 jax_python_wheel_repository(
     name = "jax_wheel",
     version_key = "_version",
@@ -114,6 +140,7 @@ load(
     "@xla//third_party/py:python_wheel.bzl",
     "python_wheel_version_suffix_repository",
 )
+
 python_wheel_version_suffix_repository(
     name = "jax_wheel_version_suffix",
 )

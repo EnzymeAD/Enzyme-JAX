@@ -1,7 +1,7 @@
-load("@rules_python//python:py_test.bzl", "py_test")
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@llvm-project//llvm:lit_test.bzl", "lit_test", "package_path")
+load("@rules_python//python:py_test.bzl", "py_test")
 
 expand_template(
     name = "lit_site_cfg_py",
@@ -37,14 +37,17 @@ config_setting(
 )
 
 TEST_DEPS = [
-        "//:enzyme_ad",
-        "@pypi_jax//:pkg",
-        "@pypi_absl_py//:pkg",
-    ] + select({
-        ":use_tpu": ["@pypi_libtpu_nightly//:pkg", "@pypi_requests//:pkg"],
-        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
-        "//conditions:default": []
-    })
+    "//:enzyme_ad",
+    "@pypi_jax//:pkg",
+    "@pypi_absl_py//:pkg",
+] + select({
+    ":use_tpu": [
+        "@pypi_libtpu_nightly//:pkg",
+        "@pypi_requests//:pkg",
+    ],
+    "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+    "//conditions:default": [],
+})
 
 [
     lit_test(
@@ -155,13 +158,13 @@ py_test(
     tags = ["exclusive"],
     deps = TEST_DEPS + select({
         "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_keras//:pkg",
             "@pypi_benchmark//:pkg",
+            "@pypi_keras//:pkg",
             "@pypi_keras_cv//:pkg",
             "@pypi_keras_nlp//:pkg",
             "@pypi_tf_keras//:pkg",
         ],
-        "//conditions:default": []
+        "//conditions:default": [],
     }),
 )
 

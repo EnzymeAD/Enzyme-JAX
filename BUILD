@@ -1,7 +1,7 @@
-load("@rules_python//python:packaging.bzl", "py_wheel")
-load(":package.bzl", "py_package")
+# generate compilation commands for enzymexlamlir-opt
+load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
-
+load("@rules_python//python:packaging.bzl", "py_wheel")
 load(
     "@xla//xla/tsl/platform:build_config_root.bzl",
     "if_llvm_aarch32_available",
@@ -10,6 +10,7 @@ load(
     "if_llvm_system_z_available",
     "if_llvm_x86_available",
 )
+load(":package.bzl", "py_package")
 
 licenses(["notice"])
 
@@ -34,15 +35,19 @@ py_package(
 cc_binary(
     name = "enzymexlamlir-opt",
     srcs = [
-        "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
         "//src/enzyme_ad/jax:RegistryUtils.cpp",
+        "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
+    ],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "@llvm-project//mlir:MlirOptLib",
         "//src/enzyme_ad/jax:RegistryUtils",
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -62,24 +67,25 @@ cc_binary(
         "@llvm-project//llvm:X86AsmParser",
         "@llvm-project//llvm:X86CodeGen",
     ]),
-    copts = [
-        "-Wno-unused-variable",
-        "-Wno-return-type",
-    ],
 )
 
 cc_library(
     name = "RaiseLib",
     srcs = [
-        "//src/enzyme_ad/jax:raise.cpp",
         "//src/enzyme_ad/jax:RegistryUtils.cpp",
+        "//src/enzyme_ad/jax:raise.cpp",
     ],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+    linkstatic = True,
     visibility = ["//visibility:public"],
     deps = [
-        "@llvm-project//mlir:MlirOptLib",
         "//src/enzyme_ad/jax:RegistryUtils",
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
+        "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -100,18 +106,13 @@ cc_library(
         "@llvm-project//llvm:X86CodeGen",
     ]),
     alwayslink = True,
-    linkstatic = True,
-    copts = [
-        "-Wno-unused-variable",
-        "-Wno-return-type",
-    ],
 )
 
 # cc_shared_library(
 cc_binary(
     name = "libRaise.so",
-    linkshared = 1,     ## important
-    linkstatic = 1,     ## important
+    linkshared = 1,  ## important
+    linkstatic = 1,  ## important
     deps = [":RaiseLib"],
 )
 
@@ -128,16 +129,16 @@ cc_binary(
 
 py_library(
     name = "enzyme_ad",
-    visibility = ["//visibility:public"],
-    deps = [
-        "@pypi_jax//:pkg",
-        "@pypi_absl_py//:pkg",
-    ],
-    imports=["src"],
     data = [
         "//:enzyme_jax_data",
         "//src/enzyme_ad/jax:enzyme_jax_internal",
-    ]
+    ],
+    imports = ["src"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pypi_absl_py//:pkg",
+        "@pypi_jax//:pkg",
+    ],
 )
 
 py_wheel(
@@ -158,13 +159,13 @@ py_wheel(
     project_urls = {
         "GitHub": "https://github.com/EnzymeAD/Enzyme-JAX/",
     },
-    python_tag = "py"+HERMETIC_PYTHON_VERSION.replace(".", ""),
+    python_requires = "==" + HERMETIC_PYTHON_VERSION + ".*",
+    python_tag = "py" + HERMETIC_PYTHON_VERSION.replace(".", ""),
     requires = [
         "absl_py >= 2.0.0",
         "jax >= 0.4.21",
         "jaxlib >= 0.4.21",
     ],
-    python_requires = "=="+HERMETIC_PYTHON_VERSION+".*",
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",
     version = "0.0.10",
@@ -173,9 +174,6 @@ py_wheel(
         "//src/enzyme_ad/jax:enzyme_jax_internal",
     ],
 )
-
-# generate compilation commands for enzymexlamlir-opt
-load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 
 refresh_compile_commands(
     name = "refresh_compile_commands",
@@ -186,6 +184,6 @@ refresh_compile_commands(
     # No need to add flags already in .bazelrc. They're automatically picked up.
     # If you don't need flags, a list of targets is also okay, as is a single target string.
     # Wildcard patterns, like //... for everything, *are* allowed here, just like a build.
-      # As are additional targets (+) and subtractions (-), like in bazel query https://docs.bazel.build/versions/main/query.html#expressions
+    # As are additional targets (+) and subtractions (-), like in bazel query https://docs.bazel.build/versions/main/query.html#expressions
     # And if you're working on a header-only library, specify a test or binary target that compiles it.
 )
