@@ -447,8 +447,6 @@ impl ffi::Ops {
     }
 }
 
-/// The APIs of GraphConverter are (intended to) match TASO's so that we can easily
-/// construct TASO graphs using this class
 impl CppGraphConverter {
     pub fn rec_expr(self) -> RecExpr<Mdl> {
         self.rec_expr

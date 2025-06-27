@@ -116,6 +116,9 @@ pub fn recexpr_to_node(
             Mdl::SSplit0(ops) => new_node(ops),
             Mdl::SSplit1(ops) => new_node(ops),
             Mdl::MatchRank(ops) => new_node(ops),
+            Mdl::SinOp(ops) => new_node(ops),
+            Mdl::CosOp(ops) => new_node(ops),
+            Mdl::TanOp(ops) => new_node(ops),
             _ => unimplemented!(),
         };
 
