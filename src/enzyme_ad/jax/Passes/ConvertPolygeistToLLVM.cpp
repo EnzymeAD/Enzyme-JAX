@@ -3107,13 +3107,13 @@ struct ConvertPolygeistToLLVMPass
     {
       LLVMConversionTarget target(getContext());
       target.addLegalDialect<NVVM::NVVMDialect>();
-      RewritePatternSet patterns(&getContext());
-      // Insert our custom version of GPUFuncLowering
-      if (useCStyleMemRef) {
-        populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
-      }
 
       m->walk([&](gpu::GPUModuleOp mod) {
+        RewritePatternSet patterns(&getContext());
+        // Insert our custom version of GPUFuncLowering
+        if (useCStyleMemRef) {
+          populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+        }
         if (failed(applyPartialConversion(mod, target, std::move(patterns))))
           signalPassFailure();
       });
