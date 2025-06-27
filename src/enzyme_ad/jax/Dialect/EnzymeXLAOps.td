@@ -386,7 +386,7 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
 
 // Machine Learning Ops
 
-def GELUOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the GELU activation function";
 
   let arguments = (ins
@@ -401,7 +401,7 @@ def GELUOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def RELUOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the RELU activation function";
 
   let arguments = (ins
