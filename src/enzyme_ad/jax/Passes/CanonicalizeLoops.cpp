@@ -803,6 +803,13 @@ public:
         rewriter.create<scf::IfOp>(switchOp.getLoc(), switchOp.getResultTypes(),
                                    cmpResult, /*withElseRegion=*/true);
 
+    if (ifOp.thenBlock()->mightHaveTerminator()) {
+      rewriter.eraseOp(ifOp.thenBlock()->getTerminator());
+    }
+    if (ifOp.elseBlock()->mightHaveTerminator()) {
+      rewriter.eraseOp(ifOp.elseBlock()->getTerminator());
+    }
+
     // Move the first case block into the then region
     Block &firstBlock = switchOp.getCaseBlock(0);
     rewriter.mergeBlocks(&firstBlock, ifOp.thenBlock(),
@@ -812,6 +819,11 @@ public:
     Block &secondBlock = switchOp.getDefaultBlock();
     rewriter.mergeBlocks(&secondBlock, ifOp.elseBlock(),
                          secondBlock.getArguments());
+
+    if (ifOp.elseBlock()->getOperations().size() == 1 &&
+        switchOp.getNumResults() == 0) {
+      rewriter.eraseBlock(ifOp.elseBlock());
+    }
 
     // Replace the switch with the if
     rewriter.replaceOp(switchOp, ifOp.getResults());
