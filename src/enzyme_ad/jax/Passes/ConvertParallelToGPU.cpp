@@ -512,11 +512,56 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
       auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(
-          loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size());
+          loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
+                   (pop.getUpperBound().size() == 6 &&
+                    pop.getUpperBound() == wrapper.getOperands()));
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
         emitAlternative(blockSize, alternativesOp);
+      }
+      assert(wrapper.getOperands().size() == 6);
+      if (pop.getUpperBound().size() == 6 &&
+          pop.getUpperBound() == wrapper.getOperands()) {
+        auto block = &*alternativesOp->getRegion(curRegion).begin();
+        rewriter.setInsertionPointToStart(block);
+        // TODO not very efficient...
+        auto newWrapper = cast<enzymexla::GPUWrapperOp>(
+            rewriter.clone(*wrapper.getOperation()));
+        scf::ParallelOp pop =
+            getDirectlyNestedSingleParallel(newWrapper.getBody());
+        auto loc = pop->getLoc();
+
+        auto upperBounds = getUpperBounds<6>(pop);
+        int totalDims = upperBounds.size();
+
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(pop);
+        auto gridPop = rewriter.create<scf::ParallelOp>(
+            loc, pop.getLowerBound().slice(0, 3),
+            pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
+        rewriter.setInsertionPointToStart(gridPop.getBody());
+        auto blockPop = rewriter.create<scf::ParallelOp>(
+            loc, pop.getLowerBound().slice(3, 3),
+            pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
+        rewriter.setInsertionPointToStart(blockPop.getBody());
+
+        IRMapping mapping;
+        for (unsigned i = 0; i < 3; i++)
+          mapping.map(pop.getBody()->getArgument(i),
+                      gridPop.getBody()->getArgument(i));
+        for (unsigned i = 0; i < 3; i++)
+          mapping.map(pop.getBody()->getArgument(i + 3),
+                      blockPop.getBody()->getArgument(i));
+
+        rewriter.eraseOp(pop.getBody()->getTerminator());
+        for (auto &op : *pop.getBody())
+          rewriter.clone(op, mapping);
+        rewriter.eraseOp(pop);
+        emittedBlockSizes.insert(-1);
+        descs.push_back(rewriter.getStringAttr(
+            std::string("block_size=" + std::to_string(-1) + ",")));
+        curRegion++;
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
@@ -628,9 +673,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     for (int i = totalDims - 1; i >= 0; i--) {
       auto &bound = upperBounds[i];
-      auto cst =
-          dyn_cast_or_null<arith::ConstantIndexOp>(bound.getDefiningOp());
-      int val = cst ? cst.value() : 0;
+      int val = 0;
+      APInt aval;
+      if (matchPattern(bound, m_ConstantInt(&aval)))
+        val = (int)aval.getSExtValue();
       if (isMustBeBlockIV(i)) {
         blockDims.insert(blockDims.begin(), bound);
         blockArgId.insert(blockArgId.begin(), i);
@@ -649,9 +695,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
           // Already added
           continue;
         auto &bound = upperBounds[i];
-        auto cst =
-            dyn_cast_or_null<arith::ConstantIndexOp>(bound.getDefiningOp());
-        int val = cst ? cst.value() : 1;
+        int val = 1;
+        APInt aval;
+        bool cst = false;
+        if (matchPattern(bound, m_ConstantInt(&aval))) {
+          val = (int)aval.getSExtValue();
+          cst = true;
+        }
         bool isBlockDim = [&]() {
           if (maxThreads != -1) {
             return cst && blockDims.size() < 3 && threadNum * val <= maxThreads;
