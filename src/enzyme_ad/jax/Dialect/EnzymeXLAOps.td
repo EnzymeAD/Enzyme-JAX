@@ -397,7 +397,7 @@ def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwis
   let results = (outs HLO_Tensor:$result);
 
   let assemblyFormat = [{
-    $input `,` `gelu_approximation` $gelu_approximation attr-dict `:` functional-type($input, results)
+    $input `,` `approximation``=`$gelu_approximation attr-dict `:` functional-type($input, results)
   }];
 }
 

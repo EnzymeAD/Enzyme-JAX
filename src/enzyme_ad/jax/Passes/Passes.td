@@ -382,6 +382,7 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   let summary = "Lower enzymexla mlops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
   ];
 }
