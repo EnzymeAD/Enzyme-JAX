@@ -12,7 +12,7 @@ filename=enzyme_vs_eqsat_$datetime.txt
 
 export STATS_FILENAME=stats_enzyme_vs_eqsat_$datetime.csv
 touch $STATS_FILENAME
-echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments,while_loops" > $STATS_FILENAME
 
 echo "Eqsat vs Enzyme" > $filename
 echo "--------------------------" >> $filename

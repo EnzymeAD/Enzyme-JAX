@@ -2580,7 +2580,7 @@ tensat::apply_mlir_rewrite(rust::Vec<tensat::Node> nodes,
                       builder, moduleOp);
 }
 
-void writeStats(double eqsatTime, int segments) {
+void writeStats(double eqsatTime, int segments, int numWhileLoops) {
   const char *stats = getenv("STATS_FILENAME");
   if (!stats)
     return;
@@ -2590,7 +2590,8 @@ void writeStats(double eqsatTime, int segments) {
 
   std::ofstream ofs(stats, std::ofstream::app);
   ofs << std::setprecision(5);
-  ofs << experimentName << "," << eqsatTime << "," << segments << '\n';
+  ofs << experimentName << "," << eqsatTime << "," << segments << ","
+      << numWhileLoops << '\n';
   ofs.close();
 
   std::cout << "Wrote stats for " << experimentName << " to " << fileName
@@ -2607,7 +2608,6 @@ public:
   }
 
   void runOnOperation() override {
-    std::cout << "TIME" << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
     ModuleOp module = getOperation();
     auto context = module->getContext();
@@ -2633,8 +2633,11 @@ public:
 
     auto &entryBlock = funcOp.getBody().front();
 
+    int numWhileLoops = 0;
+
     for (auto &op : entryBlock) {
       if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
+        numWhileLoops++;
         // Recursively optimise the body of the while loop.
         // We'll create a new ModuleOp containing the body of the while loop,
         // call this pass on it, then move the result back.
@@ -2748,7 +2751,7 @@ public:
     llvm::errs() << "EqualitySaturationPass completed in "
                  << llvm::format("%.3f", elapsed.count()) << " seconds with "
                  << segmentedModules.size() << " segments\n";
-    writeStats(elapsed.count(), segmentedModules.size());
+    writeStats(elapsed.count(), segmentedModules.size(), numWhileLoops);
   }
 };
 } // end anonymous namespace

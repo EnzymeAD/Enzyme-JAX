@@ -19,7 +19,7 @@ filename=cost_model_$datetime.txt
 
 export STATS_FILENAME=stats_cost_model_$datetime.csv
 touch $STATS_FILENAME
-echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments,while_loops" > $STATS_FILENAME
 
 echo "Cost model ablation" > $filename
 echo "--------------------------" >> $filename

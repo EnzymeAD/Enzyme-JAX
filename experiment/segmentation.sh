@@ -10,7 +10,7 @@ segmentation_size_csv="stats_segmentation.csv"
 
 export STATS_FILENAME=stats_segmentation_$datetime.csv
 touch $STATS_FILENAME
-echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments,while_loops" > $STATS_FILENAME
 
 echo "Segmentation" > $filename
 echo "--------------------------" >> $filename

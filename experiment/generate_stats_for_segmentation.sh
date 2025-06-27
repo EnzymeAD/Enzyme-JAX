@@ -9,7 +9,7 @@ filename=segmentation_$datetime.txt
 
 export STATS_FILENAME=stats_segmentation_$datetime.csv
 touch $STATS_FILENAME
-echo "experiment_name,eqsat_time,segments" > $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments,while_loops" > $STATS_FILENAME
 
 run_experiment() {
     local model=$1

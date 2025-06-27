@@ -643,8 +643,13 @@ def extract_optimization_time(stats_files, model, platform, tau=None):
         matching_rows = df[df['experiment_name'].str.startswith(experiment_pattern)]
 
         if not matching_rows.empty:
-            # If there are multiple time entries, we take the last one.
-            # This is because multiple time entries are caused by (potentially nested) while loops.
+            if len(matching_entries) > 0:
+                # In case we chunk up the experiments, we allow multiple stats files. But we should have disjoint data across them
+                raise Exception(f"Multiple entries found for experiment {experiment_pattern} across stats files")
+
+            # There are two reasons why we might have multiple matching rows.
+            # The first is that the benchmark involves running code muitiple times: for example, it may run both the primal and gradient passes. In this case, we should take the sum of optimisation times.
+            # The second is that there are (potentially nested) while loops.
             # e.g
             # ...
             # while {
@@ -656,19 +661,26 @@ def extract_optimization_time(stats_files, model, platform, tau=None):
             # ...
             # [timestamp 3]
             # So only the last one will contain the correct time that contains every while loop.
-            matching_entries.append(matching_rows.iloc[-1])
+            # Unfortunately a priori it is hard to tell which one of the two reasons causes this. To deal with this, we have a `while_loops` field in the stats CSV that tells us how many while loops a particular run had. This allows us to process and combine results so that at the end, we only have the first type of duplication remaining.
+
+            matching_entries.append(matching_rows.iloc[0])
+            for i in range(2, len(matching_rows)):
+                current = matching_rows.iloc[i]
+                for j in range(int(current['while_loops'])):
+                    prev = matching_entries.pop()
+                    assert current['eqsat_time'] >= prev['eqsat_time']
+                    current['segments'] += prev['segments']
+
+                matching_entries.append(current)
 
         # except FileNotFoundError:
         #     print(f"Error: Stats file '{stats_file}' not found.")
         #     continue
 
-    # In case we chunk up the experiments, we allow multiple stats files. But we should have disjoint data across them 
-    if len(matching_entries) > 1:
-        raise Exception(f"Multiple entries found for experiment {experiment_pattern} across stats files")
-    elif len(matching_entries) == 0:
-        raise Exception(f"Warning: No entries found for experiment {experiment_pattern}")
+    if len(matching_entries) == 0:
+        raise Exception(f"Error: No entries found for experiment {experiment_pattern}")
 
-    return matching_entries[0]['eqsat_time']
+    return sum(row['eqsat_time'] for row in matching_entries)
 
 
 def plot_segmentation(plot_groups):

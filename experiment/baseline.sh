@@ -7,17 +7,21 @@ num_repeats=9
 datetime=$(date '+%Y-%m-%d_%H:%M:%S')
 filename=baseline_$datetime.txt
 
+export STATS_FILENAME=stats_baseline_$datetime.csv
+touch $STATS_FILENAME
+echo "experiment_name,eqsat_time,segments,while_loops" > $STATS_FILENAME
+
 echo "Baseline" > $filename
 echo "--------------------------" >> $filename
 
 for repeat in $(seq 1 $num_repeats); do
-    for model in "${models[@]}"; do
-        for platform in "${platforms[@]}"; do
-            export EXPERIMENT_NAME="${model}-${platform}_${datetime}_run${repeat}"
-            export EQSAT_PLATFORM=$platform
-            export SATURATION_TIME_LIMIT=10
+        for model in "${models[@]}"; do
+            for platform in "${platforms[@]}"; do
+                export EXPERIMENT_NAME="${model}-${platform}_${datetime}_run${repeat}"
+                export EQSAT_PLATFORM=$platform
+                export SATURATION_TIME_LIMIT=10
 
-            # Due to a bug in the OR-Tools ILP solver, when `ILP_TIME_LIMIT` is small, `kan1` and `kan2` nondeterministically fail during extraction. To prevent this, we set `ILP_TIME_LIMIT=30` for these models.
+                # Due to a bug in the OR-Tools ILP solver, when `ILP_TIME_LIMIT` is small, `kan1` and `kan2` nondeterministically fail during extraction. To prevent this, we set `ILP_TIME_LIMIT=30` for these models.
             if [[ "$model" == "kan1" || "$model" == "kan2" ]]; then
                 export ILP_TIME_LIMIT=30
             else
