@@ -2865,7 +2865,6 @@ struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   }
 };
 
-
 namespace mlir {
 namespace gpu {
 namespace index_lowering {
@@ -3105,20 +3104,19 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
-
     {
-    LLVMConversionTarget target(getContext());
-    target.addLegalDialect<NVVM::NVVMDialect>();
+      LLVMConversionTarget target(getContext());
+      target.addLegalDialect<NVVM::NVVMDialect>();
       RewritePatternSet patterns(&getContext());
       // Insert our custom version of GPUFuncLowering
       if (useCStyleMemRef) {
         populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
       }
 
-        m->walk([&](gpu::GPUModuleOp mod) {
+      m->walk([&](gpu::GPUModuleOp mod) {
         if (failed(applyPartialConversion(mod, target, std::move(patterns))))
           signalPassFailure();
-	});
+      });
     }
 
     LLVMConversionTarget target(getContext());
