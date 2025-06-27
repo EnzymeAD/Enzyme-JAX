@@ -101,7 +101,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       } else {
 	pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "convert-polygeist-to-llvm{";
+      pass_pipeline += "convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"
