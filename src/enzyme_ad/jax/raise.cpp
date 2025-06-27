@@ -28,7 +28,8 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
-extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
+extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
+                                              std::string outfile) {
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -89,11 +90,17 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
       "func.func(affine-loop-invariant-code-motion),"
       "canonicalize,sort-memory,";
   auto xla = getenv("EXPORT_XLA");
-  if (xla)
+  if (xla) {
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
-  else {
+      if (outfile.size() && getenv("EXPORT_REACTANT")) {
+        pass_pipeline += ",print{filename="+outfile+".mlir}";
+      }
+  } else {
+      if (outfile.size() && getenv("EXPORT_REACTANT")) {
+        pass_pipeline += "print{filename="+outfile+".mlir},";
+      }
       pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
       "convert-parallel-to-gpu2,lower-affine";
       if (getenv("REACTANT_OMP")) {
