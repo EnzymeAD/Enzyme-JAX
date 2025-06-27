@@ -664,7 +664,7 @@ def extract_optimization_time(stats_files, model, platform, tau=None):
             # Unfortunately a priori it is hard to tell which one of the two reasons causes this. To deal with this, we have a `while_loops` field in the stats CSV that tells us how many while loops a particular run had. This allows us to process and combine results so that at the end, we only have the first type of duplication remaining.
 
             matching_entries.append(matching_rows.iloc[0])
-            for i in range(2, len(matching_rows)):
+            for i in range(1, len(matching_rows)):
                 current = matching_rows.iloc[i]
                 for j in range(int(current['while_loops'])):
                     prev = matching_entries.pop()
