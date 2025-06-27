@@ -38,9 +38,6 @@ struct ParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     if (!reductionOp) {
       return failure();
     }
-    if (!parallelOp->getParentOfType<enzymexla::GPUWrapperOp>()) {
-      return failure();
-    }
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
     // nest. We do this by translating to scf.for ops and have those lowered in
