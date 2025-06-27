@@ -25,8 +25,14 @@ for repeat in $(seq 1 $num_repeats); do
                 eval "$config"
                 export EQSAT_PLATFORM=$platform
                 export LIMIT_RULES="true"
-                export ILP_TIME_LIMIT=10
                 export SATURATION_TIME_LIMIT=10
+
+                # Due to a bug in the OR-Tools ILP solver, when `ILP_TIME_LIMIT` is small, `kan1` and `kan2` nondeterministically fail during extraction. To prevent this, we set `ILP_TIME_LIMIT=30` for these models.
+                if [[ "$model" == "kan1" || "$model" == "kan2" ]]; then
+                    export ILP_TIME_LIMIT=30
+                else
+                    export ILP_TIME_LIMIT=10
+                fi
 
                 if [ "$platform" == "gpu" ]; then
                     COMMAND="python test/${model}.py"
