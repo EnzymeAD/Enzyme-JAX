@@ -2463,9 +2463,15 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
             loop.getLoc(),
             rewriter.create<AddIOp>(
                 loop.getLoc(),
-                rewriter.create<SubIOp>(
-                    loop.getLoc(), loop.getStep(),
-                    rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)),
+                rewriter
+                    .create<SubIOp>(
+                        loop.getLoc(), loop.getStep(),
+                        isa<IndexType>(loop.getStep().getType())
+                            ? rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)
+                                  .getResult()
+                            : rewriter.create<ConstantIntOp>(
+                                  loop.getLoc(), 1, loop.getStep().getType()))
+                    .getResult(),
                 rewriter.create<SubIOp>(loop.getLoc(), loop.getUpperBound(),
                                         loop.getLowerBound())),
             loop.getStep());
