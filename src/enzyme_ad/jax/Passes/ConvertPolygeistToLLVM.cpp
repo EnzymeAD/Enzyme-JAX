@@ -3105,7 +3105,7 @@ struct ConvertPolygeistToLLVMPass
     }
 
     {
-      LLVMConversionTarget target(getContext());
+      ConversionTarget target(getContext());
       target.addLegalDialect<NVVM::NVVMDialect>();
 
       m->walk([&](gpu::GPUModuleOp mod) {
@@ -3145,6 +3145,11 @@ struct ConvertPolygeistToLLVMPass
 
     populateOpenMPToLLVMConversionPatterns(converter, patterns);
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
+
+    // Insert our custom version of GPUFuncLowering
+    if (useCStyleMemRef) {
+      populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+    }
 
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
