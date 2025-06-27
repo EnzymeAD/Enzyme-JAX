@@ -64,7 +64,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
 
   std::string backend = "cuda";
   if (auto be = getenv("REACTANT_BACKEND")) {
-    backend = be
+    backend = be;
   }
   using namespace llvm;
   using namespace mlir;
