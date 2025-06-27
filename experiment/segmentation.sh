@@ -1,6 +1,6 @@
 #!/bin/bash
 
-thresholds=(10 25 100 500 1000 5000)
+thresholds=(5 10 25 100 500 1000 5000)
 platforms=("gpu" "cpu")
 models=("bert" "gpt2" "jaxmd" "kan1" "kan2" "llama" "maxtext" "nasrnn" "resnet" "searchlesschess" )
 
