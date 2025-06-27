@@ -40,6 +40,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -53,7 +54,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 
 #include "RuntimeWrapperUtils.h"
 
@@ -2736,26 +2736,23 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CMemcpyOpLowering>(typeConverter);
 }
 
-
-
 struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
   using ConvertOpToLLVMPattern<gpu::ShuffleOp>::ConvertOpToLLVMPattern;
 
-
-/// Convert gpu dialect shfl mode enum to the equivalent nvvm one.
-static NVVM::ShflKind convertShflKind(gpu::ShuffleMode mode) {
-  switch (mode) {
-  case gpu::ShuffleMode::XOR:
-    return NVVM::ShflKind::bfly;
-  case gpu::ShuffleMode::UP:
-    return NVVM::ShflKind::up;
-  case gpu::ShuffleMode::DOWN:
-    return NVVM::ShflKind::down;
-  case gpu::ShuffleMode::IDX:
-    return NVVM::ShflKind::idx;
+  /// Convert gpu dialect shfl mode enum to the equivalent nvvm one.
+  static NVVM::ShflKind convertShflKind(gpu::ShuffleMode mode) {
+    switch (mode) {
+    case gpu::ShuffleMode::XOR:
+      return NVVM::ShflKind::bfly;
+    case gpu::ShuffleMode::UP:
+      return NVVM::ShflKind::up;
+    case gpu::ShuffleMode::DOWN:
+      return NVVM::ShflKind::down;
+    case gpu::ShuffleMode::IDX:
+      return NVVM::ShflKind::idx;
+    }
+    llvm_unreachable("unknown shuffle mode");
   }
-  llvm_unreachable("unknown shuffle mode");
-}
 
   /// Lowers a shuffle to the corresponding NVVM op.
   ///
@@ -2856,6 +2853,18 @@ struct GPULaneIdOpToNVVM : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
     return success();
   }
 };
+
+struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
+  using ConvertOpToLLVMPattern<gpu::BarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    return success();
+  }
+};
+
 
 namespace mlir {
 namespace gpu {
@@ -2998,42 +3007,43 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                           ? NVVM::NVVMDialect::getKernelFuncAttrName()
                           : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
   if (gpuTarget == "cuda") {
-	  using namespace mlir::gpu::index_lowering;
-	  PatternBenefit benefit(1);
-	    patterns.add<
-      gpu::index_lowering::OpLowering<gpu::ThreadIdOp, NVVM::ThreadIdXOp,
-                                      NVVM::ThreadIdYOp, NVVM::ThreadIdZOp>>(
-      typeConverter, IndexKind::Block, IntrType::Id, benefit);
-  patterns.add<
-      gpu::index_lowering::OpLowering<gpu::BlockDimOp, NVVM::BlockDimXOp,
-                                      NVVM::BlockDimYOp, NVVM::BlockDimZOp>>(
-      typeConverter, IndexKind::Block, IntrType::Dim, benefit);
-  patterns.add<
-      gpu::index_lowering::OpLowering<gpu::ClusterIdOp, NVVM::ClusterIdXOp,
-                                      NVVM::ClusterIdYOp, NVVM::ClusterIdZOp>>(
-      typeConverter, IndexKind::Other, IntrType::Id, benefit);
-  patterns.add<gpu::index_lowering::OpLowering<
-      gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
-      NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
-                            benefit);
-  patterns.add<gpu::index_lowering::OpLowering<
-      gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
-      NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
-      typeConverter, IndexKind::Other, IntrType::Id, benefit);
-  patterns.add<gpu::index_lowering::OpLowering<
-      gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
-      NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
-      typeConverter, IndexKind::Other, IntrType::Dim, benefit);
-  patterns.add<gpu::index_lowering::OpLowering<
-      gpu::BlockIdOp, NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
-      typeConverter, IndexKind::Grid, IntrType::Id, benefit);
-  patterns.add<gpu::index_lowering::OpLowering<
-      gpu::GridDimOp, NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp>>(
-      typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
-  patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(
-      typeConverter, benefit);
+    using namespace mlir::gpu::index_lowering;
+    PatternBenefit benefit(1);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::ThreadIdOp, NVVM::ThreadIdXOp,
+                                        NVVM::ThreadIdYOp, NVVM::ThreadIdZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Id, benefit);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::BlockDimOp, NVVM::BlockDimXOp,
+                                        NVVM::BlockDimYOp, NVVM::BlockDimZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterIdOp, NVVM::ClusterIdXOp, NVVM::ClusterIdYOp,
+        NVVM::ClusterIdZOp>>(typeConverter, IndexKind::Other, IntrType::Id,
+                             benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
+        NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
+                              benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
+        NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
+        NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::BlockIdOp, NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::GridDimOp, NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
+    patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(typeConverter,
+                                                          benefit);
 
-	  populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
+    populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
+    patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
   }
 }
 
@@ -3095,25 +3105,26 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
-    LLVMConversionTarget target(getContext());
-	
+
     {
-    RewritePatternSet patterns(&getContext());
-    // Insert our custom version of GPUFuncLowering
-    if (useCStyleMemRef) {
-      populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+    LLVMConversionTarget target(getContext());
+    target.addLegalDialect<NVVM::NVVMDialect>();
+      RewritePatternSet patterns(&getContext());
+      // Insert our custom version of GPUFuncLowering
+      if (useCStyleMemRef) {
+        populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+      }
+
+        m->walk([&](gpu::GPUModuleOp mod) {
+        if (failed(applyPartialConversion(mod, target, std::move(patterns))))
+          signalPassFailure();
+	});
     }
 
-    	m->walk([](gpu::GPUModuleOp mod) {
-    if (failed(applyPartialConversion(mod, target, std::move(patterns))))
-      signalPassFailure();
-	}
-	}
-
-
+    LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
 
-    auto gpuTarget = backend;
+    std::string gpuTarget = backend;
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
