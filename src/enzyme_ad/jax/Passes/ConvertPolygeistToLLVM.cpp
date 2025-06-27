@@ -40,11 +40,13 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -114,9 +116,7 @@ struct Memref2PointerOpLowering
     auto LPT = cast<LLVM::LLVMPointerType>(op.getType());
     auto space0 = op.getSource().getType().getMemorySpaceAsInt();
     if (isa<LLVM::LLVMPointerType>(transformed.getSource().getType())) {
-      mlir::Value ptr = rewriter.create<LLVM::BitcastOp>(
-          loc, LLVM::LLVMPointerType::get(op.getContext(), space0),
-          transformed.getSource());
+      mlir::Value ptr = transformed.getSource();
       if (space0 != LPT.getAddressSpace())
         ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, LPT, ptr);
       rewriter.replaceOp(op, {ptr});
@@ -134,8 +134,6 @@ struct Memref2PointerOpLowering
     Value idxs[] = {baseOffset};
     ptr = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
                                        ptr, idxs);
-    ptr = rewriter.create<LLVM::BitcastOp>(
-        loc, LLVM::LLVMPointerType::get(op.getContext(), space0), ptr);
     if (space0 != LPT.getAddressSpace())
       ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, LPT, ptr);
 
@@ -156,14 +154,23 @@ struct Pointer2MemrefOpLowering
     // MemRefDescriptor sourceMemRef(operands.front());
     auto convertedType = getTypeConverter()->convertType(op.getType());
     assert(convertedType && "unexpected failure in memref type conversion");
+    auto space1 = op.getType().getMemorySpaceAsInt();
     if (auto PT = dyn_cast<LLVM::LLVMPointerType>(convertedType)) {
-      rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, PT, adaptor.getSource());
+      mlir::Value ptr = adaptor.getSource();
+      if (space1 != cast<LLVM::LLVMPointerType>(op.getOperand().getType())
+                        .getAddressSpace())
+        ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, PT, ptr);
+      rewriter.replaceOp(op, {ptr});
       return success();
     }
 
     auto descr = MemRefDescriptor::poison(rewriter, loc, convertedType);
-    auto ptr = rewriter.create<LLVM::BitcastOp>(
-        op.getLoc(), descr.getElementPtrType(), adaptor.getSource());
+    Value ptr = adaptor.getSource();
+
+    if (space1 != cast<LLVM::LLVMPointerType>(op.getOperand().getType())
+                      .getAddressSpace())
+      ptr = rewriter.create<LLVM::AddrSpaceCastOp>(
+          loc, descr.getElementPtrType(), ptr);
 
     // Extract all strides and offsets and verify they are static.
     int64_t offset;
@@ -1557,10 +1564,37 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Location loc = launchOp.getLoc();
 
   GPUErrorOp errOp = nullptr;
+  Block *remainingOpsBlock = nullptr;
   if ((errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp()))) {
     rewriter.setInsertionPoint(errOp);
-    rewriter.eraseOp(errOp.getBody()->getTerminator());
-    rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+    if (errOp->getRegions()[0].hasOneBlock()) {
+      rewriter.eraseOp(errOp.getBody()->getTerminator());
+      rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+      rewriter.setInsertionPoint(errOp);
+    } else {
+      auto *condBlock = rewriter.getInsertionBlock();
+      auto opPosition = rewriter.getInsertionPoint();
+      remainingOpsBlock = rewriter.splitBlock(condBlock, opPosition);
+
+      auto &region = errOp.getRegion();
+      rewriter.setInsertionPointToEnd(condBlock);
+      rewriter.create<cf::BranchOp>(errOp.getLoc(), &region.front());
+
+      for (Block &block : errOp->getRegions()[0]) {
+        if (auto terminator =
+                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+          ValueRange terminatorOperands = terminator->getOperands();
+          rewriter.setInsertionPointToEnd(&block);
+          rewriter.create<cf::BranchOp>(errOp.getLoc(), remainingOpsBlock,
+                                        terminatorOperands);
+          rewriter.eraseOp(terminator);
+        }
+      }
+
+      rewriter.inlineRegionBefore(region, remainingOpsBlock);
+
+      rewriter.setInsertionPoint(launchOp);
+    }
   }
 
   // Create an LLVM global with CUBIN extracted from the kernel annotation and
@@ -1573,10 +1607,10 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return std::string(
         llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
   };
-  auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
-    return std::string(
-        llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
-  };
+  // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
+  //   return std::string(
+  //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
+  // };
 
   // Build module constructor and destructor
   ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
@@ -1658,6 +1692,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
           moduleIDPrefix = "__hip_";
           fatMagic = HIPFatMagic;
         }
+        (void)fatbinConstantName;
+        (void)moduleIDSectionName;
 
         // Register modules and functions like clang
         // (clang/CodeGen/CGCUDANV.cpp)
@@ -1839,7 +1875,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             // to pass the GPU DL in here
             DataLayout DLI(moduleOp);
             auto size = DLI.getTypeSize(globalTy);
-            auto ret = rtRegisterVarCallBuilder.create(
+            rtRegisterVarCallBuilder.create(
                 loc, ctorBuilder,
                 {module.getResult(), bitcast, symbolName, symbolName,
                  /*isExtern*/
@@ -1929,8 +1965,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
                      : adaptor.getAsyncDependencies().front();
   // Create array of pointers to kernel arguments.
   auto kernelParams = generateParamsArray(launchOp, adaptor, rewriter);
-  auto nullpointerpointer =
-      rewriter.create<LLVM::ZeroOp>(loc, llvmPointerPointerType);
   Value dynamicSharedMemorySize = launchOp.getDynamicSharedMemorySize()
                                       ? launchOp.getDynamicSharedMemorySize()
                                       : zero;
@@ -1980,9 +2014,54 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   }
 
   if (errOp) {
-    auto cast = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getIndexType(), launchCall->getResult(0));
-    rewriter.replaceOp(errOp, cast->getResults());
+    if (remainingOpsBlock) {
+      auto parent = launchCall->getBlock();
+      assert(parent->getNumSuccessors() == 1);
+      auto resBlk = parent->getSuccessor(0);
+      auto arg = resBlk->addArgument(launchCall->getResultTypes()[0], loc);
+      auto parentBr =
+          llvm::cast<mlir::BranchOpInterface>(parent->getTerminator());
+      do {
+        for (size_t i = 0; i < parentBr->getNumSuccessors(); i++) {
+          if (parentBr->getSuccessor(i) != resBlk)
+            continue;
+          Value rng[] = {launchCall->getResult(0)};
+          parentBr.getSuccessorOperands(i).append(rng);
+        }
+        parentBr = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
+            parentBr->getPrevNode());
+      } while (parentBr);
+
+      DenseSet<Block *> blocks;
+      for (auto pred : resBlk->getPredecessors()) {
+        if (pred == parent)
+          continue;
+        if (blocks.contains(pred))
+          continue;
+        blocks.insert(pred);
+        rewriter.setInsertionPointToStart(pred);
+        auto zero = rewriter.create<arith::ConstantIntOp>(
+            loc, 0, launchCall->getResultTypes()[0]);
+        auto br = llvm::cast<mlir::BranchOpInterface>(pred->getTerminator());
+        do {
+          for (size_t i = 0; i < br->getNumSuccessors(); i++) {
+            if (br->getSuccessor(i) != resBlk)
+              continue;
+            br.getSuccessorOperands(i).append(zero->getResults());
+          }
+          br = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
+              br->getPrevNode());
+        } while (br);
+      }
+      rewriter.setInsertionPointToStart(resBlk);
+      auto cast = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), arg);
+      rewriter.replaceOp(errOp, cast->getResults());
+    } else {
+      auto cast = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), launchCall->getResult(0));
+      rewriter.replaceOp(errOp, cast->getResults());
+    }
   }
 
   return success();
@@ -2247,9 +2326,31 @@ struct ReplaceErrOpWithSuccess : public OpRewritePattern<GPUErrorOp> {
   LogicalResult matchAndRewrite(GPUErrorOp errOp,
                                 PatternRewriter &rewriter) const override {
     rewriter.setInsertionPoint(errOp);
-    rewriter.eraseOp(errOp.getBody()->getTerminator());
-    rewriter.inlineBlockBefore(errOp.getBody(), errOp);
-    rewriter.setInsertionPoint(errOp);
+    if (errOp->getRegions()[0].hasOneBlock()) {
+      rewriter.eraseOp(errOp.getBody()->getTerminator());
+      rewriter.inlineBlockBefore(errOp.getBody(), errOp);
+      rewriter.setInsertionPoint(errOp);
+    } else {
+      auto *condBlock = rewriter.getInsertionBlock();
+      auto opPosition = rewriter.getInsertionPoint();
+      auto *remainingOpsBlock = rewriter.splitBlock(condBlock, opPosition);
+
+      auto &region = errOp.getRegion();
+      rewriter.setInsertionPointToEnd(condBlock);
+      rewriter.create<cf::BranchOp>(errOp.getLoc(), &region.front());
+
+      for (Block &block : errOp->getRegions()[0]) {
+        if (auto terminator =
+                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+          ValueRange terminatorOperands = terminator->getOperands();
+          rewriter.setInsertionPointToEnd(&block);
+          rewriter.create<cf::BranchOp>(errOp.getLoc(), remainingOpsBlock,
+                                        terminatorOperands);
+          rewriter.eraseOp(terminator);
+        }
+      }
+      rewriter.inlineRegionBefore(region, remainingOpsBlock);
+    }
     auto zero = rewriter.create<arith::ConstantIndexOp>(errOp->getLoc(), 0);
     rewriter.replaceOp(errOp, zero->getResults());
     return success();
@@ -2635,6 +2736,260 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CMemcpyOpLowering>(typeConverter);
 }
 
+struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
+  using ConvertOpToLLVMPattern<gpu::ShuffleOp>::ConvertOpToLLVMPattern;
+
+  /// Convert gpu dialect shfl mode enum to the equivalent nvvm one.
+  static NVVM::ShflKind convertShflKind(gpu::ShuffleMode mode) {
+    switch (mode) {
+    case gpu::ShuffleMode::XOR:
+      return NVVM::ShflKind::bfly;
+    case gpu::ShuffleMode::UP:
+      return NVVM::ShflKind::up;
+    case gpu::ShuffleMode::DOWN:
+      return NVVM::ShflKind::down;
+    case gpu::ShuffleMode::IDX:
+      return NVVM::ShflKind::idx;
+    }
+    llvm_unreachable("unknown shuffle mode");
+  }
+
+  /// Lowers a shuffle to the corresponding NVVM op.
+  ///
+  /// Convert the `width` argument into an activeMask (a bitmask which specifies
+  /// which threads participate in the shuffle) and a maskAndClamp (specifying
+  /// the highest lane which participates in the shuffle).
+  ///
+  ///     %one = llvm.constant(1 : i32) : i32
+  ///     %minus_one = llvm.constant(-1 : i32) : i32
+  ///     %thirty_two = llvm.constant(32 : i32) : i32
+  ///     %num_lanes = llvm.sub %thirty_two, %width : i32
+  ///     %active_mask = llvm.lshr %minus_one, %num_lanes : i32
+  ///     %mask_and_clamp = llvm.sub %width, %one : i32
+  ///     %shfl = nvvm.shfl.sync.bfly %active_mask, %value, %offset,
+  ///         %mask_and_clamp : !llvm<"{ float, i1 }">
+  ///     %shfl_value = llvm.extractvalue %shfl[0] :
+  ///         !llvm<"{ float, i1 }">
+  ///     %shfl_pred = llvm.extractvalue %shfl[1] :
+  ///         !llvm<"{ float, i1 }">
+  LogicalResult
+  matchAndRewrite(gpu::ShuffleOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+
+    auto valueTy = adaptor.getValue().getType();
+    auto int32Type = IntegerType::get(rewriter.getContext(), 32);
+    auto predTy = IntegerType::get(rewriter.getContext(), 1);
+
+    Value one = rewriter.create<LLVM::ConstantOp>(loc, int32Type, 1);
+    Value minusOne = rewriter.create<LLVM::ConstantOp>(loc, int32Type, -1);
+    Value thirtyTwo = rewriter.create<LLVM::ConstantOp>(loc, int32Type, 32);
+    Value numLeadInactiveLane = rewriter.create<LLVM::SubOp>(
+        loc, int32Type, thirtyTwo, adaptor.getWidth());
+    // Bit mask of active lanes: `(-1) >> (32 - activeWidth)`.
+    Value activeMask = rewriter.create<LLVM::LShrOp>(loc, int32Type, minusOne,
+                                                     numLeadInactiveLane);
+    Value maskAndClamp;
+    if (op.getMode() == gpu::ShuffleMode::UP) {
+      // Clamp lane: `32 - activeWidth`
+      maskAndClamp = numLeadInactiveLane;
+    } else {
+      // Clamp lane: `activeWidth - 1`
+      maskAndClamp =
+          rewriter.create<LLVM::SubOp>(loc, int32Type, adaptor.getWidth(), one);
+    }
+
+    bool predIsUsed = !op->getResult(1).use_empty();
+    UnitAttr returnValueAndIsValidAttr = nullptr;
+    Type resultTy = valueTy;
+    if (predIsUsed) {
+      returnValueAndIsValidAttr = rewriter.getUnitAttr();
+      resultTy = LLVM::LLVMStructType::getLiteral(rewriter.getContext(),
+                                                  {valueTy, predTy});
+    }
+    Value shfl = rewriter.create<NVVM::ShflOp>(
+        loc, resultTy, activeMask, adaptor.getValue(), adaptor.getOffset(),
+        maskAndClamp, convertShflKind(op.getMode()), returnValueAndIsValidAttr);
+    if (predIsUsed) {
+      Value shflValue = rewriter.create<LLVM::ExtractValueOp>(loc, shfl, 0);
+      Value isActiveSrcLane =
+          rewriter.create<LLVM::ExtractValueOp>(loc, shfl, 1);
+      rewriter.replaceOp(op, {shflValue, isActiveSrcLane});
+    } else {
+      rewriter.replaceOp(op, {shfl, nullptr});
+    }
+    return success();
+  }
+};
+
+struct GPULaneIdOpToNVVM : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
+  using ConvertOpToLLVMPattern<gpu::LaneIdOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::LaneIdOp op, gpu::LaneIdOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *context = rewriter.getContext();
+    LLVM::ConstantRangeAttr bounds = nullptr;
+    if (std::optional<APInt> upperBound = op.getUpperBound())
+      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
+          /*bitWidth=*/32, /*lower=*/0, upperBound->getZExtValue());
+    else
+      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
+          /*bitWidth=*/32, /*lower=*/0, /*upper=*/kWarpSize);
+    Value newOp =
+        rewriter.create<NVVM::LaneIdOp>(loc, rewriter.getI32Type(), bounds);
+    // Truncate or extend the result depending on the index bitwidth specified
+    // by the LLVMTypeConverter options.
+    const unsigned indexBitwidth = getTypeConverter()->getIndexTypeBitwidth();
+    if (indexBitwidth > 32) {
+      newOp = rewriter.create<LLVM::SExtOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp);
+    } else if (indexBitwidth < 32) {
+      newOp = rewriter.create<LLVM::TruncOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp);
+    }
+    rewriter.replaceOp(op, {newOp});
+    return success();
+  }
+};
+
+struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
+  using ConvertOpToLLVMPattern<gpu::BarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    return success();
+  }
+};
+
+namespace mlir {
+namespace gpu {
+namespace index_lowering {
+enum class IndexKind : uint32_t { Other = 0, Block = 1, Grid = 2 };
+enum class IntrType : uint32_t {
+  None = 0,
+  Id = 1,
+  Dim = 2,
+};
+
+// Rewriting that replaces Op with XOp, YOp, or ZOp depending on the dimension
+// that Op operates on.  Op is assumed to return an `index` value and
+// XOp, YOp and ZOp are assumed to return an `llvm.i32` value.  Depending on
+// `indexBitwidth`, sign-extend or truncate the resulting value to match the
+// bitwidth expected by the consumers of the value.
+template <typename Op, typename XOp, typename YOp, typename ZOp>
+struct OpLowering : public ConvertOpToLLVMPattern<Op> {
+private:
+  unsigned indexBitwidth;
+  IndexKind indexKind;
+  IntrType intrType;
+
+public:
+  explicit OpLowering(const LLVMTypeConverter &typeConverter,
+                      PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+        indexBitwidth(typeConverter.getIndexTypeBitwidth()),
+        indexKind(IndexKind::Other), intrType(IntrType::None) {}
+
+  explicit OpLowering(const LLVMTypeConverter &typeConverter,
+                      IndexKind indexKind, IntrType intrType,
+                      PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+        indexBitwidth(typeConverter.getIndexTypeBitwidth()),
+        indexKind(indexKind), intrType(intrType) {}
+
+  // Convert the kernel arguments to an LLVM type, preserve the rest.
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *context = rewriter.getContext();
+    Operation *newOp;
+    switch (op.getDimension()) {
+    case gpu::Dimension::x:
+      newOp = rewriter.create<XOp>(loc, IntegerType::get(context, 32));
+      break;
+    case gpu::Dimension::y:
+      newOp = rewriter.create<YOp>(loc, IntegerType::get(context, 32));
+      break;
+    case gpu::Dimension::z:
+      newOp = rewriter.create<ZOp>(loc, IntegerType::get(context, 32));
+      break;
+    }
+
+    // Order of priority for bounds:
+    // 1. The upper_bound attribute
+    // 2. Inherent attributes on a surrounding gpu.func
+    // 3. Discardable attributes on a surrounding function of any kind
+    // The below code handles these in reverse order so that more important
+    // sources overwrite less important ones.
+    DenseI32ArrayAttr funcBounds = nullptr;
+    if (auto funcOp = op->template getParentOfType<FunctionOpInterface>()) {
+      switch (indexKind) {
+      case IndexKind::Block: {
+        auto blockHelper =
+            gpu::GPUDialect::KnownBlockSizeAttrHelper(op.getContext());
+        if (blockHelper.isAttrPresent(funcOp))
+          funcBounds = blockHelper.getAttr(funcOp);
+        break;
+      }
+      case IndexKind::Grid: {
+        auto gridHelper =
+            gpu::GPUDialect::KnownGridSizeAttrHelper(op.getContext());
+        if (gridHelper.isAttrPresent(funcOp))
+          funcBounds = gridHelper.getAttr(funcOp);
+        break;
+      }
+      case IndexKind::Other:
+        break;
+      }
+    }
+    if (auto gpuFunc = op->template getParentOfType<gpu::GPUFuncOp>()) {
+      switch (indexKind) {
+      case IndexKind::Block:
+        funcBounds = gpuFunc.getKnownBlockSizeAttr();
+        break;
+      case IndexKind::Grid:
+        funcBounds = gpuFunc.getKnownGridSizeAttr();
+        break;
+      case IndexKind::Other:
+        break;
+      }
+    }
+    std::optional<int32_t> upperBound;
+    if (funcBounds)
+      upperBound =
+          funcBounds.asArrayRef()[static_cast<uint32_t>(op.getDimension())];
+    if (auto opBound = op.getUpperBound())
+      upperBound = opBound->getZExtValue();
+
+    if (upperBound && intrType != IntrType::None) {
+      int32_t min = (intrType == IntrType::Dim ? 1 : 0);
+      int32_t max = *upperBound == std::numeric_limits<int32_t>::max()
+                        ? *upperBound
+                        : *upperBound + (intrType == IntrType::Id ? 0 : 1);
+      newOp->setAttr("range", LLVM::ConstantRangeAttr::get(
+                                  rewriter.getContext(), 32, min, max));
+    }
+    if (indexBitwidth > 32) {
+      newOp = rewriter.create<LLVM::SExtOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp->getResult(0));
+    } else if (indexBitwidth < 32) {
+      newOp = rewriter.create<LLVM::TruncOp>(
+          loc, IntegerType::get(context, indexBitwidth), newOp->getResult(0));
+    }
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+} // namespace index_lowering
+} // namespace gpu
+} // namespace mlir
+
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
 /// pointer to arrays of arrays.
@@ -2650,6 +3005,45 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                       gpuTarget == "cuda"
                           ? NVVM::NVVMDialect::getKernelFuncAttrName()
                           : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
+  if (gpuTarget == "cuda") {
+    using namespace mlir::gpu::index_lowering;
+    PatternBenefit benefit(1);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::ThreadIdOp, NVVM::ThreadIdXOp,
+                                        NVVM::ThreadIdYOp, NVVM::ThreadIdZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Id, benefit);
+    patterns.add<
+        gpu::index_lowering::OpLowering<gpu::BlockDimOp, NVVM::BlockDimXOp,
+                                        NVVM::BlockDimYOp, NVVM::BlockDimZOp>>(
+        typeConverter, IndexKind::Block, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterIdOp, NVVM::ClusterIdXOp, NVVM::ClusterIdYOp,
+        NVVM::ClusterIdZOp>>(typeConverter, IndexKind::Other, IntrType::Id,
+                             benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
+        NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
+                              benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
+        NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
+        NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
+        typeConverter, IndexKind::Other, IntrType::Dim, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::BlockIdOp, NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Id, benefit);
+    patterns.add<gpu::index_lowering::OpLowering<
+        gpu::GridDimOp, NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp>>(
+        typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
+    patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(typeConverter,
+                                                          benefit);
+
+    populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
+    patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
+  }
 }
 
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
@@ -2710,14 +3104,25 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
+    {
+      LLVMConversionTarget target(getContext());
+      target.addLegalDialect<NVVM::NVVMDialect>();
+
+      m->walk([&](gpu::GPUModuleOp mod) {
+        RewritePatternSet patterns(&getContext());
+        // Insert our custom version of GPUFuncLowering
+        if (useCStyleMemRef) {
+          populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+        }
+        if (failed(applyPartialConversion(mod, target, std::move(patterns))))
+          signalPassFailure();
+      });
+    }
+
+    LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
 
-    auto gpuTarget = "cuda";
-
-    // Insert our custom version of GPUFuncLowering
-    if (useCStyleMemRef) {
-      populateCStyleGPUFuncLoweringPatterns(patterns, converter, gpuTarget);
-    }
+    std::string gpuTarget = backend;
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
@@ -2779,7 +3184,6 @@ struct ConvertPolygeistToLLVMPass
              convertedOperandTypes == op->getOperandTypes();
     };
 
-    LLVMConversionTarget target(getContext());
     configureOpenMPToLLVMConversionLegality(target, converter);
     target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
                         scf::ExecuteRegionOp, func::FuncOp>();

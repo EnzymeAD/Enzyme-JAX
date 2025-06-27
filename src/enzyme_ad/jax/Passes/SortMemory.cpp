@@ -29,6 +29,11 @@ bool definedOutsideOrAt(Value v, Operation *op) {
   return !op->isProperAncestor(v.getParentBlock()->getParentOp());
 }
 
+bool definedOutside(Value v, Operation *op) {
+  return !op->isProperAncestor(v.getParentBlock()->getParentOp()) &&
+         v.getParentBlock()->getParentOp() != op;
+}
+
 bool affineCmp(AffineExpr lhs, AffineExpr rhs);
 
 bool affineCmp(AffineMap lhs, AffineMap rhs) {
@@ -124,7 +129,7 @@ void sortParallel(affine::AffineParallelOp par) {
     }
   }
   for (auto m : memrefs) {
-    if (!definedOutsideOrAt(m, par))
+    if (!definedOutside(m, par))
       return;
     for (auto u : m.getUsers()) {
       if (!isa<affine::AffineLoadOp, affine::AffineStoreOp>(u)) {

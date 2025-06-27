@@ -83,9 +83,10 @@ module {
 // REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_slice %[[a2]]#2, %iterArg_5, sizes = [1] : (tensor<3xf64>, tensor<i64>) -> tensor<1xf64>
 // REVERSE-NEXT:      %[[a8:.+]] = stablehlo.reshape %[[a7]] : (tensor<1xf64>) -> tensor<f64>
 // REVERSE-NEXT:      %[[a6:.+]] = stablehlo.add %iterArg, %c_1 : tensor<i64>
-// REVERSE-NEXT:      %[[a9:.+]] = stablehlo.multiply %iterArg_4, %[[a8]] : tensor<f64>
+// REVERSE-NEXT:      %[[i4:.+]] = arith.addf %iterArg_4, %cst_3 : tensor<f64>
+// REVERSE-NEXT:      %[[a9:.+]] = stablehlo.multiply %[[i4]], %[[a8]] : tensor<f64>
 // REVERSE-NEXT:      %[[a10:.+]] = arith.addf %[[a9]], %cst_3 : tensor<f64>
-// REVERSE-NEXT:      %[[a11:.+]] = stablehlo.multiply %iterArg_4, %[[a8]] : tensor<f64>
+// REVERSE-NEXT:      %[[a11:.+]] = stablehlo.multiply %[[i4]], %[[a8]] : tensor<f64>
 // REVERSE-NEXT:      %[[a12:.+]] = arith.addf %[[a10]], %[[a11]] : tensor<f64>
 // REVERSE-NEXT:      %[[a13:.+]] = stablehlo.subtract %iterArg_5, %c_1 : tensor<i64>
 // REVERSE-NEXT:      stablehlo.return %[[a6]], %[[a12]], %[[a13]] : tensor<i64>, tensor<f64>, tensor<i64>

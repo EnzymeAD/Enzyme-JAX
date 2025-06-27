@@ -30,6 +30,7 @@
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   llvm::LLVMContext Context;
+  Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
   auto llvmModule =
       llvm::parseIR(llvm::MemoryBufferRef(input, "conversion"), Err, Context);
@@ -57,30 +58,62 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
     exit(1);
   }
 
-  llvm::errs() << " mod: " << *mod << "\n";
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " imported mlir mod: " << *mod << "\n";
+  }
 
+  std::string backend = "cuda";
+  if (auto be = getenv("REACTANT_BACKEND")) {
+    backend = be;
+  }
   using namespace llvm;
   using namespace mlir;
+  // clang-format off
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false},gpu-launch-"
-      "recognition,canonicalize,parallel-lower{wrapParallelOps=true},llvm-to-"
+      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,parallel-"
+      "lower{wrapParallelOps=true},llvm-to-"
       "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
       "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
-      "canonicalize,func.func(canonicalize-loops),canonicalize-scf-for,"
-      "canonicalize,libdevice-funcs-raise,canonicalize,affine-cfg,canonicalize,"
-      "func.func(canonicalize-loops),canonicalize,llvm-to-affine-access,"
+      "canonicalize,"
+      "func.func(canonicalize-loops),"
+      "llvm.func(canonicalize-loops),"
+      "canonicalize-scf-for,"
+      "canonicalize,affine-cfg,canonicalize,"
+      "func.func(canonicalize-loops),"
+      "llvm.func(canonicalize-loops),"
+      "canonicalize,llvm-to-affine-access,"
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
-      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func("
-      "affine-loop-invariant-code-motion),canonicalize,sort-memory,raise-"
-      "affine-to-stablehlo{prefer_while_raising=false "
+      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
+      "func.func(affine-loop-invariant-code-motion),"
+      "canonicalize,sort-memory,";
+  auto xla = getenv("EXPORT_XLA");
+  if (xla)
+      pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
-      "convert-parallel-to-gpu2,lower-affine,convert-polygeist-to-llvm,strip-"
+      "symbol-dce";
+  else {
+      pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      "convert-parallel-to-gpu2,lower-affine";
+      if (getenv("REACTANT_OMP")) {
+        pass_pipeline += ",convert-scf-to-openmp,";
+      } else {
+	pass_pipeline += ",parallel-serialization,";
+      }
+      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "},strip-"
       "gpu-info,gpu-"
       "module-to-binary";
+  }
+
+  // clang-format on
   if (auto pipe2 = getenv("OVERRIDE_PASS_PIPELINE")) {
     pass_pipeline = pipe2;
+  }
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " passes to run: " << pass_pipeline << "\n";
   }
   mlir::PassManager pm(mod->getContext());
   std::string error_message;
@@ -104,7 +137,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
     return "";
   }
 
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " final mlir mod: " << *mod << "\n";
+  }
+
   llvm::LLVMContext llvmContext;
+  llvmContext.setDiscardValueNames(false);
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
 
   if (auto F = outModule->getFunction("mgpuModuleLoad")) {
@@ -131,8 +169,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
                                                         strlen("_binary")) +
                           "_gpubin_cst")
                              .str();
-          llvm::errs() << "oldName: " << oldName << "\n";
-          outModule->dump();
+          if (getenv("DEBUG_REACTANT")) {
+            llvm::errs() << "oldName: " << oldName << "\n";
+            llvm::errs() << " gpumod: " << *outModule << "\n";
+          }
           auto oldG = outModule->getGlobalVariable(oldName, true);
           assert(oldG);
           oldG->replaceAllUsesWith(glob);
@@ -145,6 +185,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input) {
   std::string res;
   llvm::raw_string_ostream ss(res);
   ss << *outModule;
+
+  if (getenv("DEBUG_REACTANT")) {
+    llvm::errs() << " final llvm:" << res << "\n";
+  }
 
   return res;
 }

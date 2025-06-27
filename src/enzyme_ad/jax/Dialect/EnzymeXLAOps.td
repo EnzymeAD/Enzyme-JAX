@@ -29,6 +29,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
 include "mlir/Dialect/GPU/IR/GPUBase.td"
+include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
@@ -135,6 +136,7 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
 
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   RecursiveMemoryEffects,
+  AffineScope,
   AutomaticAllocationScope,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
   let arguments = (ins Variadic<Index>:$blockDims);
@@ -150,6 +152,20 @@ def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   let builders = [
       OpBuilder<(ins "ValueRange":$blockSizes)>,
       OpBuilder<(ins)>];
+}
+
+def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "XLA Call operation";
+
+  let arguments = (ins
+    SymbolRefAttr:$fn,
+    Variadic<AnyType>:$inputs
+  );
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
 }
 
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
@@ -229,7 +245,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
   let summary = "Extract and LLVM pointer from a MemRef";
 
   let arguments = (ins AnyMemRef : $source);
-  let results = (outs AnyType:$result);
+  let results = (outs LLVM_AnyPointer:$result);
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -244,7 +260,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 ]> {
   let summary = "Upgrade a pointer to a memref";
 
-  let arguments = (ins AnyType:$source);
+  let arguments = (ins LLVM_AnyPointer:$source);
   let results = (outs AnyMemRef : $result);
 
   let hasFolder = 1;
@@ -253,6 +269,15 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
+}
+
+def AlternativesOp : EnzymeXLA_Op<"alternatives", [
+  RecursiveMemoryEffects]> {
+  let summary = "Provides several alternatives kernels for gpu code";
+  let regions = (region VariadicRegion<SizedRegion<1>>:$regions);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins "int":$regionNum)>];
+  let hasCanonicalizer = 1;
 }
 
 def AffineScopeOp : EnzymeXLA_Op<"scope", [
@@ -331,6 +356,24 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
     HLO_Tensor:$output,
     HLO_Tensor:$pivots,
     HLO_Tensor:$permutation,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
+  let summary = "QR factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$tau,
     HLO_Tensor:$info
   );
 

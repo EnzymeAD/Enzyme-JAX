@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -427,8 +429,40 @@ using UIToFPOpLowering =
     InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
 using XOrIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
-using CmpIOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::CmpIOp, LLVM::ICmpOp>;
+
+class CmpIOpLowering : public OpRewritePattern<LLVM::ICmpOp> {
+public:
+  using OpRewritePattern<LLVM::ICmpOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ICmpOp op,
+                                PatternRewriter &rewriter) const override {
+    if (isa<LLVM::LLVMPointerType>(op.getLhs().getType())) {
+      return failure();
+    }
+    if (auto VT = dyn_cast<mlir::VectorType>(op.getLhs().getType())) {
+      if (isa<LLVM::LLVMPointerType>(VT.getElementType())) {
+        return failure();
+      }
+    }
+
+    // Determine attributes for the target op
+    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
+
+    auto operands = op->getOperands();
+    auto llvmNDVectorTy = operands[0].getType();
+    if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
+      return failure();
+    }
+
+    Operation *newOp = rewriter.create(
+        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
+        operands, op->getResultTypes(), attrConvert.getAttrs());
+
+    rewriter.replaceOp(op, newOp->getResult(0));
+    return success();
+  }
+};
+
 using CmpFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::CmpFOp, LLVM::FCmpOp,
                                     AttrConvertFastMathFromLLVM>;
@@ -461,6 +495,48 @@ struct RemoveFreeze : public OpRewritePattern<LLVM::FreezeOp> {
   LogicalResult matchAndRewrite(LLVM::FreezeOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.replaceOp(op, op.getOperand());
+    return success();
+  }
+};
+
+template <typename From, typename To, mlir::gpu::Dimension dim>
+struct GPUConvert : public OpRewritePattern<From> {
+  using OpRewritePattern<From>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(From op,
+                                PatternRewriter &rewriter) const override {
+    auto res = rewriter.create<To>(op.getLoc(), dim);
+    SmallVector<Operation *> toReplace;
+    for (auto u : op->getUsers()) {
+      if (auto ext = dyn_cast<arith::ExtUIOp>(u)) {
+        toReplace.push_back(ext);
+        continue;
+      }
+      if (auto ext = dyn_cast<arith::ExtSIOp>(u)) {
+        toReplace.push_back(ext);
+        continue;
+      }
+    }
+    for (auto e : toReplace)
+      rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
+          e, e->getResultTypes()[0], res);
+    rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(op, op.getType(), res);
+    return success();
+  }
+};
+
+struct BarrierConvert : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getIntrin() != "llvm.nvvm.barrier.cta.sync.aligned.all")
+      return failure();
+
+    if (!matchPattern(op.getArgs()[0], m_Zero()))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
     return success();
   }
 };
@@ -615,6 +691,42 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
+
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdXOp, gpu::ThreadIdOp, gpu::Dimension::x>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdYOp, gpu::ThreadIdOp, gpu::Dimension::y>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::ThreadIdZOp, gpu::ThreadIdOp, gpu::Dimension::z>>(
+          converter);
+
+  patterns.add<GPUConvert<NVVM::BlockIdXOp, gpu::BlockIdOp, gpu::Dimension::x>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::BlockIdYOp, gpu::BlockIdOp, gpu::Dimension::y>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::BlockIdZOp, gpu::BlockIdOp, gpu::Dimension::z>>(
+      converter);
+
+  patterns.add<BarrierConvert>(converter);
+
+  patterns
+      .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::BlockDimYOp, gpu::BlockDimOp, gpu::Dimension::y>>(
+          converter);
+  patterns
+      .add<GPUConvert<NVVM::BlockDimZOp, gpu::BlockDimOp, gpu::Dimension::z>>(
+          converter);
+
+  patterns.add<GPUConvert<NVVM::GridDimXOp, gpu::GridDimOp, gpu::Dimension::x>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::GridDimYOp, gpu::GridDimOp, gpu::Dimension::y>>(
+      converter);
+  patterns.add<GPUConvert<NVVM::GridDimZOp, gpu::GridDimOp, gpu::Dimension::z>>(
+      converter);
 
   patterns.add<CmpFOpLowering, CmpIOpLowering>(converter);
   patterns.add<ReadOnlyAllocaElim>(converter);
