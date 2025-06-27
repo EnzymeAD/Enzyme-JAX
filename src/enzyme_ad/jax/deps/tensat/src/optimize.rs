@@ -30,21 +30,6 @@ impl CostModel {
         Self {}
     }
 
-    /// Gets cost for the enode itself.
-    ///
-    /// This function gets the cost by calling TASO's get_or_create_{some_op}()
-    /// functions with the tensor information stored in metadata. TASO side stores
-    /// hashmaps for OpBase objects. So here TASO side will simply lookup previously
-    /// created ops (with previously measured runtime).
-    ///
-    /// # Parameters
-    ///
-    /// - `egraph`: E-graph of interest
-    /// - `enode`: enode to get cost for
-    ///
-    /// # Returns
-    ///
-    /// Cost for this enode.
     pub fn get_self_cost(&self, egraph: &EGraph<Mdl, TensorAnalysis>, enode: &Mdl) -> (f32, f32) {
         match enode {
             // NO REWRITES APPLY TO THESE SO THEY CAN HAVE ARBITRARY COST
