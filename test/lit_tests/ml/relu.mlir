@@ -1,4 +1,4 @@
-// RUN: enzyme-opt --lower-enzymexla-ml %s | FileCheck %s
+// RUN: enzymexlamlir-opt --lower-enzymexla-ml %s | FileCheck %s
 
 func.func @main(%arg0: tensor<4x5x6x7xf32>) -> tensor<4x5x6x7xf32> {
     %0 = enzymexla.ml.relu %arg0 : (tensor<4x5x6x7xf32>) -> tensor<4x5x6x7xf32>
