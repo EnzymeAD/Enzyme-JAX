@@ -382,4 +382,24 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 #endif // ENZYMEXLA_OPS
