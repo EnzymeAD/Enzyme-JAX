@@ -120,8 +120,6 @@ struct LUFactorizationOpLowering
 
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
     auto pivotRank = pivotType.getRank();
-    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
-    auto permutationRank = permutationType.getRank();
     auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
     auto infoRank = infoType.getRank();
 
@@ -187,8 +185,8 @@ struct LUFactorizationOpLowering
             op.getLoc(), llvmBlasIntType,
             rewriter.getIntegerAttr(blasIntType, n));
 
-        auto mStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
-        auto nStore = rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), mVal, mPtr);
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), nVal, nPtr);
 
         rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{},
                                       SymbolRefAttr::get(ctx, lapackFn),
@@ -789,8 +787,6 @@ struct QRFactorizationOpLowering
     auto inputRank = static_cast<int64_t>(inputShape.size());
     auto inputElementType = inputType.getElementType();
 
-    const int64_t m = inputShape[inputRank - 2];
-    const int64_t n = inputShape[inputRank - 1];
     const int64_t numBatchDims = inputRank - 2;
 
     if (numBatchDims > 0) {
@@ -943,10 +939,6 @@ struct QRFactorizationOpLowering
     auto shape_input = type_input.getShape();
     auto rank_input = static_cast<int64_t>(shape_input.size());
 
-    const int64_t m = shape_input[rank_input - 2];
-    const int64_t n = shape_input[rank_input - 1];
-    const int64_t numBatchDims = rank_input - 2;
-
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
 
@@ -999,19 +991,13 @@ struct QRFactorizationOpLowering
 
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
-    auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
 
-    const int64_t m = shape_input[rank_input - 2];
-    const int64_t n = shape_input[rank_input - 1];
-    const int64_t numBatchDims = rank_input - 2;
-
-    // emit `stablehlo.custom_call` to `@QrDecomposition` kernel from XLA
+    // emit `stablehlo.custom_call` to `@Qr` kernel from XLA
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
 
     auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
-        rewriter.getStringAttr("QrDecomposition"),
+        rewriter.getStringAttr("Qr"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/ nullptr,

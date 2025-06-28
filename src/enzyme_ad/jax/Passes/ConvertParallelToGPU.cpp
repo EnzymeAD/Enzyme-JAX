@@ -512,11 +512,56 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
       auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(
-          loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size());
+          loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
+                   (pop.getUpperBound().size() == 6 &&
+                    pop.getUpperBound() == wrapper.getOperands()));
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
         emitAlternative(blockSize, alternativesOp);
+      }
+      assert(wrapper.getOperands().size() == 6);
+      if (pop.getUpperBound().size() == 6 &&
+          pop.getUpperBound() == wrapper.getOperands()) {
+        auto block = &*alternativesOp->getRegion(curRegion).begin();
+        rewriter.setInsertionPointToStart(block);
+        // TODO not very efficient...
+        auto newWrapper = cast<enzymexla::GPUWrapperOp>(
+            rewriter.clone(*wrapper.getOperation()));
+        scf::ParallelOp pop =
+            getDirectlyNestedSingleParallel(newWrapper.getBody());
+        auto loc = pop->getLoc();
+
+        auto upperBounds = getUpperBounds<6>(pop);
+        int totalDims = upperBounds.size();
+
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(pop);
+        auto gridPop = rewriter.create<scf::ParallelOp>(
+            loc, pop.getLowerBound().slice(0, 3),
+            pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
+        rewriter.setInsertionPointToStart(gridPop.getBody());
+        auto blockPop = rewriter.create<scf::ParallelOp>(
+            loc, pop.getLowerBound().slice(3, 3),
+            pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
+        rewriter.setInsertionPointToStart(blockPop.getBody());
+
+        IRMapping mapping;
+        for (unsigned i = 0; i < 3; i++)
+          mapping.map(pop.getBody()->getArgument(i),
+                      gridPop.getBody()->getArgument(i));
+        for (unsigned i = 0; i < 3; i++)
+          mapping.map(pop.getBody()->getArgument(i + 3),
+                      blockPop.getBody()->getArgument(i));
+
+        rewriter.eraseOp(pop.getBody()->getTerminator());
+        for (auto &op : *pop.getBody())
+          rewriter.clone(op, mapping);
+        rewriter.eraseOp(pop);
+        emittedBlockSizes.insert(-1);
+        descs.push_back(rewriter.getStringAttr(
+            std::string("block_size=" + std::to_string(-1) + ",")));
+        curRegion++;
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
@@ -628,9 +673,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     for (int i = totalDims - 1; i >= 0; i--) {
       auto &bound = upperBounds[i];
-      auto cst =
-          dyn_cast_or_null<arith::ConstantIndexOp>(bound.getDefiningOp());
-      int val = cst ? cst.value() : 0;
+      int val = 0;
+      APInt aval;
+      if (matchPattern(bound, m_ConstantInt(&aval)))
+        val = (int)aval.getSExtValue();
       if (isMustBeBlockIV(i)) {
         blockDims.insert(blockDims.begin(), bound);
         blockArgId.insert(blockArgId.begin(), i);
@@ -649,9 +695,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
           // Already added
           continue;
         auto &bound = upperBounds[i];
-        auto cst =
-            dyn_cast_or_null<arith::ConstantIndexOp>(bound.getDefiningOp());
-        int val = cst ? cst.value() : 1;
+        int val = 1;
+        APInt aval;
+        bool cst = false;
+        if (matchPattern(bound, m_ConstantInt(&aval))) {
+          val = (int)aval.getSExtValue();
+          cst = true;
+        }
         bool isBlockDim = [&]() {
           if (maxThreads != -1) {
             return cst && blockDims.size() < 3 && threadNum * val <= maxThreads;
@@ -935,7 +985,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
           rewriter.setInsertionPoint(ifOp.thenBlock()->getTerminator());
           // TODO currently we assume that ops with write effects will have no
           // uses - we have to introduce shared mem otherwise
-          assert(op.use_empty() && "Unhandled case");
+          if (!op.use_empty()) {
+            llvm_unreachable("could not fix parallel fusion");
+          }
         } else if (hasEffect<MemoryEffects::Read>(effects)) {
           // Reads-only ops are legal to parallelize
         }
@@ -1697,6 +1749,100 @@ uint64_t getSharedMemUsage(scf::ParallelOp pop) {
   return shmem;
 }
 
+struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ParallelOp parallelOp,
+                                PatternRewriter &rewriter) const {
+    Location loc = parallelOp.getLoc();
+    auto reductionOp =
+        dyn_cast<scf::ReduceOp>(parallelOp.getBody()->getTerminator());
+    if (!reductionOp) {
+      return failure();
+    }
+    if (!parallelOp->getParentOfType<enzymexla::GPUWrapperOp>()) {
+      return failure();
+    }
+    size_t parallelCount = 0;
+    auto par = parallelOp;
+    while ((par = par->getParentOfType<scf::ParallelOp>())) {
+      parallelCount++;
+    }
+    // is presently one of the three outer parallel loops;
+    if (parallelCount < 2)
+      return failure();
+
+    // For a parallel loop, we essentially need to create an n-dimensional loop
+    // nest. We do this by translating to scf.for ops and have those lowered in
+    // a further rewrite. If a parallel loop contains reductions (and thus
+    // returns values), forward the initial values for the reductions down the
+    // loop hierarchy and bubble up the results by modifying the "yield"
+    // terminator.
+    SmallVector<Value, 4> iterArgs =
+        llvm::to_vector<4>(parallelOp.getInitVals());
+    SmallVector<Value, 4> ivs;
+    ivs.reserve(parallelOp.getNumLoops());
+    bool first = true;
+    SmallVector<Value, 4> loopResults(iterArgs);
+    for (auto [iv, lower, upper, step] :
+         llvm::zip(parallelOp.getInductionVars(), parallelOp.getLowerBound(),
+                   parallelOp.getUpperBound(), parallelOp.getStep())) {
+      scf::ForOp forOp =
+          rewriter.create<scf::ForOp>(loc, lower, upper, step, iterArgs);
+      ivs.push_back(forOp.getInductionVar());
+      auto iterRange = forOp.getRegionIterArgs();
+      iterArgs.assign(iterRange.begin(), iterRange.end());
+
+      if (first) {
+        // Store the results of the outermost loop that will be used to replace
+        // the results of the parallel loop when it is fully rewritten.
+        loopResults.assign(forOp.result_begin(), forOp.result_end());
+        first = false;
+      } else if (!forOp.getResults().empty()) {
+        // A loop is constructed with an empty "yield" terminator if there are
+        // no results.
+        rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
+        rewriter.create<scf::YieldOp>(loc, forOp.getResults());
+      }
+
+      rewriter.setInsertionPointToStart(forOp.getBody());
+    }
+
+    // First, merge reduction blocks into the main region.
+    SmallVector<Value> yieldOperands;
+    yieldOperands.reserve(parallelOp.getNumResults());
+    for (int64_t i = 0, e = parallelOp.getNumResults(); i < e; ++i) {
+      Block &reductionBody = reductionOp.getReductions()[i].front();
+      Value arg = iterArgs[yieldOperands.size()];
+      yieldOperands.push_back(
+          cast<scf::ReduceReturnOp>(reductionBody.getTerminator()).getResult());
+      rewriter.eraseOp(reductionBody.getTerminator());
+      rewriter.inlineBlockBefore(&reductionBody, reductionOp,
+                                 {arg, reductionOp.getOperands()[i]});
+    }
+    rewriter.eraseOp(reductionOp);
+
+    // Then merge the loop body without the terminator.
+    Block *newBody = rewriter.getInsertionBlock();
+    if (newBody->empty())
+      rewriter.mergeBlocks(parallelOp.getBody(), newBody, ivs);
+    else
+      rewriter.inlineBlockBefore(parallelOp.getBody(), newBody->getTerminator(),
+                                 ivs);
+
+    // Finally, create the terminator if required (for loops with no results, it
+    // has been already created in loop construction).
+    if (!yieldOperands.empty()) {
+      rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
+      rewriter.create<scf::YieldOp>(loc, yieldOperands);
+    }
+
+    rewriter.replaceOp(parallelOp, loopResults);
+
+    return success();
+  }
+};
+
 // TODO parallel wrapper LICM
 struct ConvertParallelToGPU1Pass
     : public enzyme::impl::ConvertParallelToGPU1Base<
@@ -1704,6 +1850,16 @@ struct ConvertParallelToGPU1Pass
   using ConvertParallelToGPU1Base::ConvertParallelToGPU1Base;
   void runOnOperation() override {
     auto m = getOperation();
+    {
+      RewritePatternSet patterns(&getContext());
+      patterns.insert<InnerParallelSerialization>(&getContext());
+      GreedyRewriteConfig config;
+      if (failed(
+              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+        signalPassFailure();
+        return;
+      }
+    }
     // TODO we need to transform all parallels in gpu_wrappers to have lower
     // bounds of 0 and steps of 1 as we kind of assume that in many patterns (or
     // have the patterns check)

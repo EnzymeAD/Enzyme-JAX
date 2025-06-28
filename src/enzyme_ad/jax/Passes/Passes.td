@@ -313,7 +313,13 @@ def ConvertPolygeistToLLVM
     Option<"useCStyleMemRef", "use-c-style-memref", "bool",
            /*default=*/"true",
            "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">
+           "the default MLIR descriptor structure">,
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">
   ];
 }
 
@@ -612,7 +618,7 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
 
 def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
   let options = [Option<
        /*C++ variable name=*/"emitGPUKernelLaunchBounds",
        /*CLI argument=*/"emitGPUKernelLaunchBounds",
@@ -786,6 +792,10 @@ def SCFParallelLoopUnroll : Pass<"scf-parallel-loop-unroll"> {
 
 def ParallelLICM : Pass<"parallel-licm"> {
   let summary = "Perform LICM on known parallel (and serial) loops";
+}
+
+def SCFParallelSerialization : Pass<"parallel-serialization"> {
+  let summary = "Serialize SCF parallel loops";
 }
 
 def FixGPUFunc : Pass<"fix-gpu-func", "mlir::gpu::GPUModuleOp"> {

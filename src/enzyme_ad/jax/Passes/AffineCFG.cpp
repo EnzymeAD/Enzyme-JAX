@@ -46,8 +46,7 @@ void populateAffineParallelizationPattern(MLIRContext &context,
 Region *getLocalAffineScope(Operation *op) {
   auto curOp = op;
   while (auto parentOp = curOp->getParentOp()) {
-    if (parentOp->hasTrait<OpTrait::AffineScope>() ||
-        isa<LLVM::LLVMFuncOp>(parentOp)) {
+    if (parentOp->hasTrait<OpTrait::AffineScope>()) {
       return curOp->getParentRegion();
     }
     curOp = parentOp;
@@ -2464,9 +2463,15 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
             loop.getLoc(),
             rewriter.create<AddIOp>(
                 loop.getLoc(),
-                rewriter.create<SubIOp>(
-                    loop.getLoc(), loop.getStep(),
-                    rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)),
+                rewriter
+                    .create<SubIOp>(
+                        loop.getLoc(), loop.getStep(),
+                        isa<IndexType>(loop.getStep().getType())
+                            ? rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)
+                                  .getResult()
+                            : rewriter.create<ConstantIntOp>(
+                                  loop.getLoc(), 1, loop.getStep().getType()))
+                    .getResult(),
                 rewriter.create<SubIOp>(loop.getLoc(), loop.getUpperBound(),
                                         loop.getLowerBound())),
             loop.getStep());
@@ -5080,7 +5085,9 @@ public:
     SetVector<Operation *> backwardSlice;
     DominanceInfo dominance;
     BackwardSliceOptions options;
-    getBackwardSlice(loadOp.getOperation(), &backwardSlice, options);
+    if (getBackwardSlice(loadOp.getOperation(), &backwardSlice, options)
+            .failed())
+      return failure();
 
     Operation *conditional =
         llvm::find_singleton<Operation>(backwardSlice, [](Operation *op, bool) {
