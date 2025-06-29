@@ -670,6 +670,8 @@ class AutoDiffWhileRev
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
 
+    auto parentFn = revOuter->getParentOfType<FunctionOpInterface>();
+
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
@@ -775,12 +777,16 @@ class AutoDiffWhileRev
 
     bool anyFailed = false;
 
+    llvm::errs() << " before visit: " << *parentFn << "\n";
+
     auto rstart = origBody->rbegin(), rend = origBody->rend();
     rstart++;
     for (auto it = rstart; it != rend; it++) {
       Operation *op = &*it;
       anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
     }
+
+    llvm::errs() << " after visit: " << *parentFn << "\n";
 
     SmallVector<Value> newResults;
     for (auto &&[active, arg] :
@@ -815,6 +821,7 @@ class AutoDiffWhileRev
       }
     }
 
+    llvm::errs() << " post visit: " << *parentFn << "\n";
     return success(!anyFailed);
   }
 
