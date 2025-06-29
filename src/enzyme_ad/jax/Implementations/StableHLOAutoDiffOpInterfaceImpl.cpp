@@ -670,6 +670,8 @@ class AutoDiffWhileRev
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
 
+    auto parentFn = revOuter->getParentOfType<FunctionOpInterface>();
+
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
@@ -738,12 +740,18 @@ class AutoDiffWhileRev
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
              origBody->getArguments(), revInnerBody->getArguments())) {
       mapping.map(origarg, revinnerarg);
+      gutils->originalToNewFn.map(origarg, revinnerarg);
     }
     mapping.map(origBody->getArgument(0), currentIV);
+    gutils->originalToNewFn.map(origBody->getArgument(0), currentIV);
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
+      for (auto &&[oldv, newv] :
+           llvm::zip(op.getResults(), newOp->getResults())) {
+        gutils->originalToNewFn.map(oldv, newv);
+      }
     }
     {
       auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
@@ -770,16 +778,24 @@ class AutoDiffWhileRev
       }
     }
 
-    for (auto [oldVal, newVal] : mapping.getValueMap())
-      gutils->originalToNewFn.map(oldVal, newVal);
-
     bool anyFailed = false;
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    {
+      OpBuilder cacheBuilder(revInner);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = cacheBuilder.create<enzyme::InitOp>(loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
 
     SmallVector<Value> newResults;
